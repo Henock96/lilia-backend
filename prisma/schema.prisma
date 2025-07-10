@@ -1,0 +1,141 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String   @id @default(cuid())
+  firebaseUid String   @unique
+  email       String   @unique
+  nom        String?
+  phone       String?
+  imageUrl    String?
+  role        Role     @default(CLIENT)
+  lastLogin   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  restaurant  Restaurant?
+  deliveries  Delivery[]
+}
+
+model Restaurant {
+  id          String   @id @default(cuid())
+  nom        String
+  adresse     String
+  phone       String
+  imageUrl    String?
+  owner       User     @relation(fields: [ownerId], references: [id])
+  ownerId     String   @unique
+  products    Product[]
+  orders      Order[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Category {
+  id        String    @id @default(cuid())
+  nom      String    @unique
+  products  Product[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Product {
+  id           String           @id @default(cuid())
+  nom         String
+  description  String?
+  imageUrl     String?
+  prixOriginal  Float
+  restaurant   Restaurant       @relation(fields: [restaurantId], references: [id])
+  restaurantId String
+  category     Category?        @relation(fields: [categoryId], references: [id])
+  categoryId   String?
+  variants     ProductVariant[]
+  orderItems   OrderItem[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+}
+
+model ProductVariant {
+  id        String   @id @default(cuid())
+  label      String?  // e.g., "30cl", "1.5L", "Normal", "Grand"
+  prix     Float
+  product   Product  @relation(fields: [productId], references: [id])
+  productId String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Cart {
+  id        String     @id @default(cuid())
+  userId    String     // Corresponds to User id
+  items     Json       // Store cart items as JSON
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model Order {
+  id              String      @id @default(cuid())
+  restaurant      Restaurant  @relation(fields: [restaurantId], references: [id])
+  restaurantId    String
+  userId          String      // Corresponds to User id
+  totalPrice      Float
+  status          OrderStatus @default(EN_PREPARATION)
+  items           OrderItem[]
+  delivery        Delivery?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+}
+
+model OrderItem {
+  id         String   @id @default(cuid())
+  order      Order    @relation(fields: [orderId], references: [id])
+  orderId    String
+  product    Product  @relation(fields: [productId], references: [id])
+  productId  String
+  variant    String   // e.g., "1.5L"
+  quantite   Int
+  prix      Float
+  createdAt  DateTime @default(now())
+}
+
+model Delivery {
+  id          String         @id @default(cuid())
+  order       Order          @relation(fields: [orderId], references: [id])
+  orderId     String         @unique
+  deliverer   User?          @relation(fields: [delivererId], references: [id])
+  delivererId String?
+  status      DeliveryStatus @default(EN_ATTENTE)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+}
+
+enum Role {
+  ADMIN
+  RESTAURATEUR
+  LIVREUR
+  CLIENT
+}
+
+enum OrderStatus {
+  REÇU
+  EN_PREPARATION
+  PRET
+  LIVRER
+  ANNULER
+}
+
+enum DeliveryStatus {
+  EN_ATTENTE
+  ASSIGNER
+  EN_TRANSIT
+  LIVRER
+  ECHEC
+}
