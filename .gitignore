@@ -19,6 +19,7 @@ lerna-debug.log*
 /coverage
 /.nyc_output
 /src/firebase/keys/*.json
+
 # IDEs and editors
 /.idea
 .project
