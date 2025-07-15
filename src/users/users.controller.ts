@@ -1,9 +1,10 @@
 /* eslint-disable prettier/prettier */
 // src/auth/auth.controller.ts (exemple d'un point d'accès protégé)
-import { Controller, Get, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, UseGuards, Req, Put, Body } from '@nestjs/common';
 import { Request } from 'express'; // Pour le type de la requête
 import { FirebaseAuthGuard } from '../firebase/firebase-auth.guard';
 import { UserService } from '../users/users.service'; // Votre service utilisateur
+import { Prisma } from '@prisma/client';
 
 @Controller('auth')
 export class AuthController {
@@ -22,6 +23,18 @@ export class AuthController {
       message: 'Authentification réussie et profil récupéré !',
       firebaseInfo: firebaseUser,
       localDbInfo: localUser,
+    };
+  }
+
+  @UseGuards(FirebaseAuthGuard)
+  @Put('profile')
+  async updateProfile(@Req() req: Request, @Body() body: Prisma.UserUpdateInput) {
+    const firebaseUser = (req as any).user;
+    const localUser = await this.userService.findOrCreateUserFromFirebase(firebaseUser);
+    const updatedUser = await this.userService.updateUser(localUser.id, body);
+    return {
+      message: 'Profil mis à jour avec succès !',
+      user: updatedUser,
     };
   }
 }

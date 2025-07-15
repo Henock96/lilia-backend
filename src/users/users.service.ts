@@ -2,6 +2,7 @@
 // src/user/user.service.ts
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service'; // Assurez-vous d'avoir un service Prisma correctement configuré
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class UserService {
@@ -24,7 +25,7 @@ export class UserService {
           firebaseUid: firebaseUid,
           email: email,
           nom: displayName,
-          role: 'CLIENT',
+          role: 'RESTAURATEUR',
         },
         
       });
@@ -49,5 +50,12 @@ export class UserService {
   // Vous pouvez ajouter d'autres méthodes CRUD ici si nécessaire
   async getUserById(id: string) {
     return this.prisma.user.findUnique({ where: { id } });
+  }
+
+  async updateUser(id: string, data: Prisma.UserUpdateInput) {
+    return this.prisma.user.update({
+      where: { id },
+      data,
+    });
   }
 }

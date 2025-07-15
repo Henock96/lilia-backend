@@ -3,11 +3,20 @@
 import { Module, OnModuleInit } from '@nestjs/common';
 import * as admin from 'firebase-admin';
 import * as fs from 'fs'
+import { FirebaseAuthGuard } from './firebase-auth.guard';
+import { RolesGuard } from './roles.guard';
+import { Reflector } from '@nestjs/core';
 // Importez votre fichier de clé de compte de service
 // Idéalement, utilisez des variables d'environnement pour la production (process.env.FIREBASE_SERVICE_ACCOUNT_KEY)
 // Pour le développement, vous pouvez le require directement si le fichier est local
 const serviceAccount = JSON.parse(fs.readFileSync(process.env.FIREBASE_SERVICE_ACCOUNT, 'utf-8'))
 @Module({
+  providers: [
+    FirebaseAuthGuard,
+    RolesGuard,
+    Reflector,
+  ],
+  exports: [FirebaseAuthGuard, RolesGuard],
 })
 export class FirebaseModule implements OnModuleInit {
   onModuleInit() {

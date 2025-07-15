@@ -13,6 +13,8 @@ import { AuthModule } from './auth/auth.module';
 import { CloudinaryModule } from './cloudinary/cloudinary.module';
 import { SmsModule } from './sms/sms.module';
 import { FirebaseModule } from './firebase/firebase.module';
+import { AdressesModule } from './adresses/adresses.module';
+import { CartModule } from './cart/cart.module';
 
 @Module({
   imports: [
@@ -30,6 +32,8 @@ import { FirebaseModule } from './firebase/firebase.module';
     CloudinaryModule,
     SmsModule,
     FirebaseModule,
+    CartModule,
+    AdressesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

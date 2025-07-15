@@ -23,6 +23,20 @@ model User {
   updatedAt   DateTime @updatedAt
   restaurant  Restaurant?
   deliveries  Delivery[]
+  cart        Cart?
+  adresses   Adresses[] // Ajout de la relation aux adresses
+}
+
+model Adresses {
+  id        String   @id @default(cuid())
+  rue    String
+  ville      String
+  etat     String?  // Région/État
+  country   String
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Restaurant {
@@ -59,6 +73,7 @@ model Product {
   categoryId   String?
   variants     ProductVariant[]
   orderItems   OrderItem[]
+  cartItems     CartItem[]
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 }
@@ -69,29 +84,48 @@ model ProductVariant {
   prix     Float
   product   Product  @relation(fields: [productId], references: [id])
   productId String
+  cartItems   CartItem[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 
 model Cart {
   id        String     @id @default(cuid())
-  userId    String     // Corresponds to User id
-  items     Json       // Store cart items as JSON
+  user      User       @relation(fields: [userId], references: [id])
+  userId    String     @unique // Un utilisateur a un seul panier
+  items     CartItem[]
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 }
+model CartItem {
+  id        String   @id @default(cuid())
+  cart      Cart     @relation(fields: [cartId], references: [id])
+  cartId    String
+  product   Product  @relation(fields: [productId], references: [id])
+  productId String
+  variant   ProductVariant @relation(fields: [variantId], references: [id])
+  variantId String
+  quantite  Int
+  createdAt DateTime @default(now())
+  
+  @@unique([cartId, variantId]) // Empêche d'avoir deux fois le même variant dans le panier
+}
 
 model Order {
-  id              String      @id @default(cuid())
-  restaurant      Restaurant  @relation(fields: [restaurantId], references: [id])
+  id              String        @id @default(cuid())
+  restaurant      Restaurant    @relation(fields: [restaurantId], references: [id])
   restaurantId    String
-  userId          String      // Corresponds to User id
-  totalPrice      Float
-  status          OrderStatus @default(EN_PREPARATION)
+  userId          String        // Corresponds to User id
+  subTotal        Float         // Sous-total des articles
+  deliveryFee     Float         // Frais de livraison
+  total           Float         // Montant total (subTotal + deliveryFee)
+  deliveryAddress String        // Snapshot de l'adresse de livraison
+  paymentMethod   PaymentMethod // Méthode de paiement
+  status          OrderStatus   @default(EN_ATTENTE)
   items           OrderItem[]
   delivery        Delivery?
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 }
 
 model OrderItem {
@@ -124,8 +158,12 @@ enum Role {
   CLIENT
 }
 
+enum PaymentMethod {
+  CASH_ON_DELIVERY
+}
+
 enum OrderStatus {
-  REÇU
+  EN_ATTENTE
   EN_PREPARATION
   PRET
   LIVRER

@@ -1,4 +1,66 @@
-import { Injectable } from '@nestjs/common';
+/* eslint-disable prettier/prettier */
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { PrismaService } from 'src/prisma/prisma.service';
+import { CreateRestaurantDto } from './dto/create-restaurant.dto';
 
 @Injectable()
-export class RestaurantsService {}
+export class RestaurantsService {
+    constructor(private prisma: PrismaService){}
+
+    async create(data: CreateRestaurantDto, firebaseUid: string){
+        // 1. Trouver l'utilisateur par son firebaseUid
+        const user = await this.prisma.user.findUnique({
+            where: { firebaseUid },
+        });
+
+        if (!user) {
+            throw new NotFoundException("Utilisateur non trouvé.");
+        }
+
+        // 2. Vérifier si cet utilisateur a déjà un restaurant avec son ID interne
+        const existing = await this.prisma.restaurant.findUnique({
+            where: { ownerId: user.id },
+        });
+
+        if(existing) {
+            throw new ForbiddenException("Vous avez déjà un restaurant.");
+        }
+
+        // 3. Créer le restaurant en utilisant l'ID interne de l'utilisateur pour la relation
+        return this.prisma.restaurant.create({
+            data: {
+                ...data,
+                owner: { connect: { id: user.id }},
+            },
+        });
+    }
+
+    async findMine(firebaseUid: string){
+        return this.prisma.restaurant.findMany({
+            where: { owner: { firebaseUid } },
+        });
+    }
+
+    async findRestaurant(){
+        return this.prisma.restaurant.findMany();
+    }
+
+    async findOne(id: string) {
+        const restaurant = await this.prisma.restaurant.findUnique({
+            where: { id },
+            include: {
+                products: {
+                    include: {
+                        category: true,
+                        variants: true,
+                    },
+                },
+            },
+        });
+
+        if (!restaurant) {
+            throw new NotFoundException(`Restaurant avec l'ID "${id}" non trouvé.`);
+        }
+        return restaurant;
+    }
+}
