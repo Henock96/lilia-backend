@@ -1,50 +1,39 @@
 # syntax = docker/dockerfile:1
 
-# Adjust NODE_VERSION as desired
-ARG NODE_VERSION=22.15.0
-FROM node:${NODE_VERSION}-slim AS base
-
-LABEL fly_launch_runtime="NestJS/Prisma"
-
-# NestJS/Prisma app lives here
+# 1. Étape de base : Définir la version de Node
+ARG NODE_VERSION=20.15.0
+FROM node:${NODE_VERSION}-slim as base
+ENV NODE_ENV=production
 WORKDIR /app
 
-# Set production environment
-ENV NODE_ENV="production"
+# 2. Étape des dépendances : Installer uniquement les dépendances
+FROM base as deps
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev
 
-
-# Throw-away build stage to reduce size of final image
-FROM base AS build
-
-# Install packages needed to build node modules
-RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y build-essential node-gyp openssl pkg-config python-is-python3
-
-# Install node modules
-COPY package-lock.json package.json ./
-RUN npm ci --include=dev
-
-# Generate Prisma Client
-COPY ./prisma ./prisma
-COPY --from=builder /app/prisma ./prisma
-# Copy application code
+# 3. Étape de build : Compiler le code TypeScript
+# On réutilise les dépendances de l'étape précédente pour profiter du cache Docker
+FROM base as builder
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-
-# Build application
+# Le `postinstall` dans package.json va lancer `prisma generate`
 RUN npm run build
 
-
-# Final stage for app image
+# 4. Étape finale : Créer l'image de production légère
 FROM base
-
-# Install packages needed for deployment
+# Met à jour les paquets et installe OpenSSL, nécessaire pour Prisma
 RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y openssl && \
-    rm -rf /var/lib/apt/lists /var/cache/apt/archives
+    apt-get install -y --no-install-recommends openssl && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy built application
-COPY --from=build /app /app
+# Copier uniquement les artefacts nécessaires depuis les étapes précédentes
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/package.json ./package.json
 
-# Start the server by default, this can be overwritten at runtime
+# Exposer le port (Fly.io le détectera automatiquement mais c'est une bonne pratique)
 EXPOSE 3000
-CMD [ "npm", "run", "start" ]
+
+# Commande de démarrage pour la production
+CMD ["node", "dist/main.js"]
