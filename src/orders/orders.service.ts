@@ -240,7 +240,12 @@ export class OrdersService {
 
     // Ici, vous pourriez ajouter une logique de machine à états pour valider les transitions.
     // Par exemple, un restaurateur ne peut pas passer une commande à 'LIVRER'.
-    const allowedStatusUpdates = ['EN_PREPARATION', 'PRET'];
+    const allowedStatusUpdates = [
+      'EN_PREPARATION',
+      'PRET',
+      'LIVRER',
+      'ANNULER',
+    ];
     if (!allowedStatusUpdates.includes(newStatus)) {
       throw new BadRequestException(
         `Statut de mise à jour invalide: ${newStatus}`,

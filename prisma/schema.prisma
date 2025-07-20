@@ -40,6 +40,8 @@ model Adresses {
   userId    String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([userId])
 }
 
 model Restaurant {
@@ -79,6 +81,9 @@ model Product {
   cartItems     CartItem[]
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
+
+  @@index([restaurantId])
+  @@index([categoryId])
 }
 
 model ProductVariant {
@@ -90,6 +95,8 @@ model ProductVariant {
   cartItems   CartItem[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([productId])
 }
 
 model Cart {
@@ -112,6 +119,8 @@ model CartItem {
   createdAt DateTime @default(now())
   
   @@unique([cartId, variantId]) // Empêche d'avoir deux fois le même variant dans le panier
+  @@index([variantId])
+  @@index([productId])
 }
 
 model Order {
@@ -141,6 +150,9 @@ model OrderItem {
   quantite   Int
   prix      Float
   createdAt  DateTime @default(now())
+
+  @@index([orderId])
+  @@index([productId])
 }
 
 model Delivery {
@@ -152,6 +164,8 @@ model Delivery {
   status      DeliveryStatus @default(EN_ATTENTE)
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
+
+  @@index([delivererId])
 }
 
 enum Role {

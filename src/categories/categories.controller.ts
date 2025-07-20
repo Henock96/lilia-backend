@@ -16,7 +16,11 @@ export class CategoriesController {
   create(@Body() createCategoryDto: CreateCategoryDto) {
     return this.categoriesService.create(createCategoryDto);
   }
-
+  /*
+ g -> cmd9ipbiz0000o4hjmcbgl7ia
+ a -> cmd9is39o0001o4hj3enz97ow
+ b -> cmd9itwbi0002o4hjr7vflgfz
+*/
   @Get() // Pas de Guard, donc endpoint public
   findAll() {
     return this.categoriesService.findAll();

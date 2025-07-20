@@ -21,8 +21,8 @@ import { Reflector } from '@nestjs/core';
    if (encodedServiceAccount) {
       // ON EST EN PRODUCTION
       console.log('Initialisation de Firebase via variable d\'environnement (production)...');
-      const decodedJson = Buffer.from(encodedServiceAccount, 'base64').toString('utf-8');
-      serviceAccount = JSON.parse(decodedJson);                        
+      //const decodedJson = Buffer.from(encodedServiceAccount, 'base64').toString('utf-8');
+      serviceAccount = JSON.parse(encodedServiceAccount);                        
     } else {                                                           
       // ON EST EN LOCAL                                               
       console.log('Initialisation de Firebase via fichier local (développement)...');

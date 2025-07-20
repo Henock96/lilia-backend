@@ -25,7 +25,7 @@ export class UserService {
           firebaseUid: firebaseUid,
           email: email,
           nom: displayName,
-          role: 'RESTAURATEUR',
+          role: 'CLIENT',
         },
         
       });
