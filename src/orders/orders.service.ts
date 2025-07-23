@@ -4,12 +4,16 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 
 @Injectable()
 export class OrdersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private eventEmitter: EventEmitter2,
+  ) {}
 
   /**
    * Crée une commande à partir du panier de l'utilisateur.
@@ -85,8 +89,8 @@ export class OrdersService {
     const deliveryAddressString = `${deliveryAddress.rue}, ${deliveryAddress.ville}, ${deliveryAddress.country}`;
 
     // 5. Exécuter la création de la commande et la suppression du panier dans une transaction
-    return this.prisma.$transaction(async (tx) => {
-      const order = await tx.order.create({
+    const order = await this.prisma.$transaction(async (tx) => {
+      const newOrder = await tx.order.create({
         data: {
           userId: user.id,
           restaurantId: firstItemRestaurantId,
@@ -117,10 +121,11 @@ export class OrdersService {
         },
       });
 
-      // TODO: Envoyer une notification SMS au restaurateur ici
-
-      return order;
+      return newOrder;
     });
+
+    this.eventEmitter.emit('order.created', order);
+    return order;
   }
 
   /**
@@ -202,10 +207,13 @@ export class OrdersService {
       );
     }
 
-    return this.prisma.order.update({
+    const updatedOrder = await this.prisma.order.update({
       where: { id: orderId },
       data: { status: 'ANNULER' },
     });
+
+    this.eventEmitter.emit('order.status.updated', updatedOrder);
+    return updatedOrder;
   }
 
   /**
@@ -252,9 +260,12 @@ export class OrdersService {
       );
     }
 
-    return this.prisma.order.update({
+    const updatedOrder = await this.prisma.order.update({
       where: { id: orderId },
       data: { status: newStatus },
     });
+
+    this.eventEmitter.emit('order.status.updated', updatedOrder);
+    return updatedOrder;
   }
 }

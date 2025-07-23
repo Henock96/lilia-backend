@@ -15,12 +15,15 @@ import { SmsModule } from './sms/sms.module';
 import { FirebaseModule } from './firebase/firebase.module';
 import { AdressesModule } from './adresses/adresses.module';
 import { CartModule } from './cart/cart.module';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+    EventEmitterModule.forRoot(),
     PrismaModule,
     UsersModule,
     RestaurantsModule,
@@ -34,6 +37,7 @@ import { CartModule } from './cart/cart.module';
     FirebaseModule,
     CartModule,
     AdressesModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
