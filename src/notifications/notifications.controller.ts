@@ -16,11 +16,11 @@ export class NotificationsController {
     const orderCreated$ = fromEvent(this.eventEmitter, 'order.created');
     const orderUpdated$ = fromEvent(this.eventEmitter, 'order.status.updated');
 
-    return new Observable(subscriber => {
-      const createdSub = orderCreated$.subscribe(data => {
+    return new Observable((subscriber) => {
+      const createdSub = orderCreated$.subscribe((data) => {
         subscriber.next({ data } as MessageEvent);
       });
-      const updatedSub = orderUpdated$.subscribe(data => {
+      const updatedSub = orderUpdated$.subscribe((data) => {
         subscriber.next({ data } as MessageEvent);
       });
 
@@ -31,7 +31,9 @@ export class NotificationsController {
       });
     }).pipe(
       map((data: any) => {
-        return new MessageEvent('order_event', { data: JSON.stringify(data.data) });
+        return new MessageEvent('order_event', {
+          data: JSON.stringify(data.data),
+        });
       }),
     );
   }
