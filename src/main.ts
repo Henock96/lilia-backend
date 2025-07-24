@@ -13,7 +13,14 @@ async function bootstrap() {
     .build();
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api-docs', app, document);
-  app.enableCors();
+
+  // Configuration CORS plus permissive pour autoriser les connexions SSE
+  app.enableCors({
+    origin: true, // Autorise toutes les origines
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    credentials: true,
+  });
+
   const port = process.env.PORT || 8080;
   await app.listen(port, '0.0.0.0');
 }
