@@ -8,6 +8,12 @@ import { Prisma } from '@prisma/client';
 export class UserService {
   constructor(private prisma: PrismaService) {}
 
+  async createUser(data: Prisma.UserCreateInput) {
+    return this.prisma.user.create({
+      data
+    });
+  }
+
   async findOrCreateUserFromFirebase(decodedToken: any) {
     const firebaseUid = decodedToken.uid;
     const email = decodedToken.email;

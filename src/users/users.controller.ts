@@ -1,14 +1,32 @@
 /* eslint-disable prettier/prettier */
 // src/auth/auth.controller.ts (exemple d'un point d'accès protégé)
-import { Controller, Get, UseGuards, Req, Put, Body } from '@nestjs/common';
+import { Controller, Get, UseGuards, Req, Put, Body, Post } from '@nestjs/common';
 import { Request } from 'express'; // Pour le type de la requête
 import { FirebaseAuthGuard } from '../firebase/firebase-auth.guard';
 import { UserService } from '../users/users.service'; // Votre service utilisateur
 import { Prisma } from '@prisma/client';
+import { CreateUserDto } from './dto/create-user.dto';
 
 @Controller('auth')
 export class AuthController {
   constructor(private readonly userService: UserService) {}
+
+  @UseGuards(FirebaseAuthGuard)
+  @Post('register')
+  async registerUser(@Body() createUserDto: CreateUserDto) {
+    const { firebaseUid, email, nom, telephone } = createUserDto;
+    const newUser = await this.userService.createUser({
+      firebaseUid,
+      email,
+      nom,
+      phone: telephone,
+      role: 'CLIENT', // Rôle par défaut
+    });
+    return {
+      message: 'Utilisateur enregistré avec succès !',
+      user: newUser,
+    };
+  }
 
   @UseGuards(FirebaseAuthGuard) // Appliquez le Guard ici
   @Get('profile')
