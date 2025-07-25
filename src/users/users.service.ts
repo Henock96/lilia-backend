@@ -14,43 +14,42 @@ export class UserService {
     });
   }
 
+  async findUserByFirebaseUid(firebaseUid: string) {
+    return this.prisma.user.findUnique({
+      where: { firebaseUid },
+    });
+  }
+
+  // Cette méthode est appelée par le guard pour synchroniser les infos
+  // Elle ne doit PAS créer d'utilisateur, seulement mettre à jour un existant.
   async findOrCreateUserFromFirebase(decodedToken: any) {
     const firebaseUid = decodedToken.uid;
     const email = decodedToken.email;
-    const displayName = decodedToken.name || null; // 'name' est souvent le displayName
+    const displayName = decodedToken.name || null;
 
-    // Cherche l'utilisateur par son UID Firebase
-    let user = await this.prisma.user.findUnique({
-      where: { firebaseUid: firebaseUid },
-    });
+    let user = await this.findUserByFirebaseUid(firebaseUid);
 
     if (!user) {
-      // L'utilisateur devrait déjà exister après l'inscription.
-      // S'il n'existe pas, c'est une situation anormale.
-      // On peut choisir de le créer avec des infos minimales ou de lever une erreur.
-      // Pour plus de robustesse, on le crée.
-      user = await this.prisma.user.create({
+      // Si l'utilisateur n'existe pas, c'est une anomalie car il aurait dû
+      // être créé lors de l'inscription. On ne le crée pas ici.
+      // On pourrait logger cette anomalie.
+      console.warn(`Tentative de synchronisation pour un utilisateur inexistant: ${firebaseUid}`);
+      // On retourne null pour que le frontend sache que le profil n'est pas complet.
+      return null;
+    }
+
+    // Mettre à jour les infos si elles ont changé dans Firebase
+    if (user.email !== email || (displayName && user.nom !== displayName)) {
+      user = await this.prisma.user.update({
+        where: { id: user.id },
         data: {
-          firebaseUid: firebaseUid,
           email: email,
           nom: displayName,
-          role: 'CLIENT',
         },
       });
-      console.log(`Utilisateur non trouvé, création d'un utilisateur de secours : ${email}`);
-    } else {
-      // Optionnel : Mettez à jour les informations de l'utilisateur si elles ont changé dans Firebase
-      if (user.email !== email || (displayName && user.nom !== displayName)) {
-         user = await this.prisma.user.update({
-            where: { id: user.id },
-            data: {
-               email: email,
-               nom: displayName,
-            },
-         });
-         console.log(`Informations utilisateur mises à jour : ${email}`);
-      }
+      console.log(`Informations utilisateur mises à jour : ${email}`);
     }
+    
     return user;
   }
 
