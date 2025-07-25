@@ -25,7 +25,10 @@ export class UserService {
     });
 
     if (!user) {
-      // Si l'utilisateur n'existe pas, créez-le
+      // L'utilisateur devrait déjà exister après l'inscription.
+      // S'il n'existe pas, c'est une situation anormale.
+      // On peut choisir de le créer avec des infos minimales ou de lever une erreur.
+      // Pour plus de robustesse, on le crée.
       user = await this.prisma.user.create({
         data: {
           firebaseUid: firebaseUid,
@@ -33,13 +36,11 @@ export class UserService {
           nom: displayName,
           role: 'CLIENT',
         },
-        
       });
-      console.log(`Nouvel utilisateur créé dans la base de données : ${email}`);
+      console.log(`Utilisateur non trouvé, création d'un utilisateur de secours : ${email}`);
     } else {
       // Optionnel : Mettez à jour les informations de l'utilisateur si elles ont changé dans Firebase
-      // Par exemple, si l'e-mail ou le nom d'affichage est mis à jour dans Firebase
-      if (user.email !== email || user.nom !== displayName) {
+      if (user.email !== email || (displayName && user.nom !== displayName)) {
          user = await this.prisma.user.update({
             where: { id: user.id },
             data: {
