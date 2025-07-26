@@ -4,14 +4,13 @@ import { Controller, Get, UseGuards, Req, Put, Body, Post } from '@nestjs/common
 import { Request } from 'express'; // Pour le type de la requête
 import { FirebaseAuthGuard } from '../firebase/firebase-auth.guard';
 import { UserService } from '../users/users.service'; // Votre service utilisateur
-import { Prisma } from '@prisma/client';
 import { CreateUserDto } from './dto/create-user.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
 
 @Controller('auth')
 export class AuthController {
   constructor(private readonly userService: UserService) {}
 
-  @UseGuards(FirebaseAuthGuard)
   @Post('register')
   async registerUser(@Body() createUserDto: CreateUserDto) {
     const { firebaseUid, email, nom, telephone } = createUserDto;
@@ -46,10 +45,10 @@ export class AuthController {
 
   @UseGuards(FirebaseAuthGuard)
   @Put('profile')
-  async updateProfile(@Req() req: Request, @Body() body: Prisma.UserUpdateInput) {
+  async updateProfile(@Req() req: Request, @Body() updateUserDto: UpdateUserDto) {
     const firebaseUser = (req as any).user;
     const localUser = await this.userService.findOrCreateUserFromFirebase(firebaseUser);
-    const updatedUser = await this.userService.updateUser(localUser.id, body);
+    const updatedUser = await this.userService.updateUser(localUser.id, updateUserDto);
     return {
       message: 'Profil mis à jour avec succès !',
       user: updatedUser,

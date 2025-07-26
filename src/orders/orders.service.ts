@@ -124,7 +124,7 @@ export class OrdersService {
       return newOrder;
     });
 
-    this.eventEmitter.emit('order.created', order);
+    this.eventEmitter.emit('order.created', { order });
     return order;
   }
 
@@ -189,6 +189,7 @@ export class OrdersService {
 
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
+      include: { restaurant: true },
     });
 
     if (!order) {
@@ -212,7 +213,10 @@ export class OrdersService {
       data: { status: 'ANNULER' },
     });
 
-    this.eventEmitter.emit('order.status.updated', updatedOrder);
+    this.eventEmitter.emit('order.status.updated', {
+      order: updatedOrder,
+      restaurantOwnerId: order.restaurant.ownerId,
+    });
     return updatedOrder;
   }
 
@@ -265,7 +269,10 @@ export class OrdersService {
       data: { status: newStatus },
     });
 
-    this.eventEmitter.emit('order.status.updated', updatedOrder);
+    this.eventEmitter.emit('order.status.updated', {
+      order: updatedOrder,
+      restaurantOwnerId: order.restaurant.ownerId,
+    });
     return updatedOrder;
   }
 }
