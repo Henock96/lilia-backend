@@ -29,6 +29,10 @@ export class OrdersController {
   OrdersByUsers(@Req() req) {
     return this.ordersService.findMyOrders(req.user.uid);
   }
+  @Get('resturants')
+  RestaurantOrders(@Req() req) {
+    return this.ordersService.findRestaurantOrders(req.user.uid);
+  }
 
   @Patch(':id/cancel')
   @UseGuards(RolesGuard)
