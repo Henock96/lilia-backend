@@ -4,7 +4,7 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { NotificationsService } from 'src/notifications/notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 
@@ -12,7 +12,7 @@ import { CreateOrderDto } from './dto/create-order.dto';
 export class OrdersService {
   constructor(
     private prisma: PrismaService,
-    private eventEmitter: EventEmitter2,
+    private notificationsService: NotificationsService,
   ) {}
 
   /**
@@ -124,7 +124,27 @@ export class OrdersService {
       return newOrder;
     });
 
-    this.eventEmitter.emit('order.created', { order });
+    // Récupérer l'ID du propriétaire du restaurant pour la notification
+    const restaurant = await this.prisma.restaurant.findUnique({
+      where: { id: firstItemRestaurantId },
+    });
+
+    if (restaurant) {
+      // Notifier le client
+      this.notificationsService.sendToUser(user.id, {
+        type: 'order_created',
+        message: `Votre commande #${order.id.substring(0, 8)} a été créée.`,
+        order,
+      });
+
+      // Notifier le restaurateur
+      this.notificationsService.sendToUser(restaurant.ownerId, {
+        type: 'new_order',
+        message: `Nouvelle commande #${order.id.substring(0, 8)} reçue.`,
+        order,
+      });
+    }
+
     return order;
   }
 
@@ -213,10 +233,20 @@ export class OrdersService {
       data: { status: 'ANNULER' },
     });
 
-    this.eventEmitter.emit('order.status.updated', {
+    // Notifier le client de l'annulation
+    this.notificationsService.sendToUser(user.id, {
+      type: 'order_status_updated',
+      message: `Votre commande #${updatedOrder.id.substring(0, 8)} a été annulée.`,
       order: updatedOrder,
-      restaurantOwnerId: order.restaurant.ownerId,
     });
+
+    // Notifier le restaurateur de l'annulation
+    this.notificationsService.sendToUser(order.restaurant.ownerId, {
+      type: 'order_status_updated',
+      message: `La commande #${updatedOrder.id.substring(0, 8)} a été annulée par le client.`,
+      order: updatedOrder,
+    });
+
     return updatedOrder;
   }
 
@@ -269,10 +299,13 @@ export class OrdersService {
       data: { status: newStatus },
     });
 
-    this.eventEmitter.emit('order.status.updated', {
+    // Notifier le client du changement de statut
+    this.notificationsService.sendToUser(order.userId, {
+      type: 'order_status_updated',
+      message: `Le statut de votre commande #${updatedOrder.id.substring(0, 8)} est maintenant : ${newStatus}.`,
       order: updatedOrder,
-      restaurantOwnerId: order.restaurant.ownerId,
     });
+
     return updatedOrder;
   }
 }

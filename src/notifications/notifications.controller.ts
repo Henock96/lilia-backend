@@ -1,41 +1,19 @@
-import { Controller, Sse, Req } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
-import { fromEvent, merge, Observable } from 'rxjs';
-import { filter, map } from 'rxjs/operators';
+import { Controller, Sse, Req, Res, UseGuards } from '@nestjs/common';
+import { Response } from 'express';
+import { FirebaseAuthGuard } from 'src/firebase/firebase-auth.guard';
+import { NotificationsService } from './notifications.service';
 
 @Controller('notifications')
 export class NotificationsController {
-  constructor(private eventEmitter: EventEmitter2) {}
+  constructor(private readonly notificationsService: NotificationsService) {}
 
   @Sse('sse')
-  sse(@Req() req: any): Observable<MessageEvent> {
-    const user = req.user; // Assumes Firebase guard attaches user
-    if (!user) {
-      // Or handle unauthorized access appropriately
-      return new Observable((subscriber) => subscriber.complete());
-    }
+  @UseGuards(FirebaseAuthGuard)
+  sse(@Req() req, @Res() res: Response): void {
+    const userId = req.user.uid; // Extrait de FirebaseAuthGuard
+    this.notificationsService.addClient(userId, res);
 
-    const orderCreated$ = fromEvent(this.eventEmitter, 'order.created');
-    const orderUpdated$ = fromEvent(this.eventEmitter, 'order.status.updated');
-
-    return merge(orderCreated$, orderUpdated$).pipe(
-      filter((event: any) => {
-        const order = event.order;
-        // Notifier le client qui a passé la commande
-        if (order.userId === user.id) {
-          return true;
-        }
-        // Notifier le restaurateur concerné
-        if (event.restaurantOwnerId && event.restaurantOwnerId === user.id) {
-          return true;
-        }
-        return false;
-      }),
-      map((data: any) => {
-        return new MessageEvent('order_event', {
-          data: JSON.stringify(data.order),
-        });
-      }),
-    );
+    // Envoyer un message initial pour confirmer la connexion
+    res.write(`data: ${JSON.stringify({ message: 'Connection established' })}\n\n`);
   }
 }
