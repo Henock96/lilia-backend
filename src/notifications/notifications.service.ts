@@ -12,10 +12,16 @@ export class NotificationsService {
     });
   }
 
-  sendToUser(userId: string, data: any) {
+  sendToUser(
+    userId: string,
+    data: { type: string; order: any; message?: string },
+  ) {
     const client = this.clients.get(userId);
     if (client) {
-      client.write(`data: ${JSON.stringify(data)}
+      // Utiliser des événements nommés pour plus de clarté côté client
+      client.write(`event: ${data.type}
+`);
+      client.write(`data: ${JSON.stringify(data.order)}
 
 `);
     }

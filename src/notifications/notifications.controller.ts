@@ -14,6 +14,8 @@ export class NotificationsController {
     this.notificationsService.addClient(userId, res);
 
     // Envoyer un message initial pour confirmer la connexion
-    res.write(`data: ${JSON.stringify({ message: 'Connection established' })}\n\n`);
+    res.write(
+      `data: ${JSON.stringify({ message: 'Connection established' })}\n\n`,
+    );
   }
 }
