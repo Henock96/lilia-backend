@@ -57,4 +57,23 @@ export class UserService {
       data,
     });
   }
+
+  async findUserOrders(userId: string) {
+    return this.prisma.order.findMany({
+      where: {
+        userId: userId,
+      },
+      include: {
+        items: true, // Inclure les détails des articles de la commande
+        restaurant: {
+          select: {
+            nom: true, // On peut aussi inclure le nom du restaurant
+          }
+        }
+      },
+      orderBy: {
+        createdAt: 'desc', // Trier par date de création, la plus récente en premier
+      },
+    });
+  }
 }
