@@ -37,4 +37,14 @@ export class RestaurantsController {
     findMine(@Req() req) {
         return this.service.findMine(req.user.uid);
     }
+
+    // Endpoint pour récupérer les clients d'un restaurant spécifique
+    @Get(':id/clients')
+    @UseGuards(FirebaseAuthGuard, RolesGuard)
+    @Roles('ADMIN', 'RESTAURATEUR')
+    findClients(@Param('id') id: string, @Req() req) {
+        // Note : Une vérification supplémentaire pourrait être ajoutée ici 
+        // pour s'assurer que le 'RESTAURATEUR' est bien le propriétaire du restaurant 'id'
+        return this.service.findClients(id);
+    }
 }

@@ -63,4 +63,42 @@ export class RestaurantsService {
         }
         return restaurant;
     }
+
+    async findClients(restaurantId: string) {
+        // 1. Récupérer toutes les commandes pour le restaurant donné
+        const orders = await this.prisma.order.findMany({
+            where: { restaurantId },
+            select: {
+                userId: true, // On ne sélectionne que l'ID de l'utilisateur pour commencer
+            },
+        });
+
+        if (orders.length === 0) {
+            return []; // Pas de commandes, donc pas de clients
+        }
+
+        // 2. Extraire les IDs uniques des utilisateurs
+        const userIds = [...new Set(orders.map(order => order.userId))];
+
+        // 3. Récupérer les détails des utilisateurs correspondants
+        const clients = await this.prisma.user.findMany({
+            where: {
+                id: {
+                    in: userIds,
+                },
+            },
+            // Optionnel : sélectionner les champs à retourner pour ne pas exposer d'infos sensibles
+            select: {
+                id: true,
+                email: true,
+                nom: true,
+                phone: true,
+                imageUrl: true,
+                role: true,
+                createdAt: true,
+            }
+        });
+
+        return clients;
+    }
 }
