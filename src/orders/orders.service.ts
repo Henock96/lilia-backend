@@ -4,7 +4,10 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
-import { NotificationsService } from 'src/notifications/notifications.service';
+import {
+  NotificationsService,
+  SseMessage,
+} from 'src/notifications/notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 
@@ -130,19 +133,18 @@ export class OrdersService {
     });
 
     if (restaurant) {
-      // Notifier le client
-      this.notificationsService.sendToUser(user.id, {
-        type: 'order_created',
-        message: `Votre commande #${order.id.substring(0, 8)} a été créée.`,
-        order,
-      });
-
-      // Notifier le restaurateur
-      this.notificationsService.sendToUser(restaurant.ownerId, {
-        type: 'new_order',
-        message: `Nouvelle commande #${order.id.substring(0, 8)} reçue.`,
-        order,
-      });
+      // Notifier le restaurateur de la nouvelle commande
+      const newOrderEvent: SseMessage = { type: 'new_order', data: order };
+      this.notificationsService.sendEventToUser(
+        restaurant.ownerId,
+        newOrderEvent,
+      );
+      // Notifier le client que sa commande a été créée
+      const orderUpdateEvent: SseMessage = {
+        type: 'order_update',
+        data: order,
+      };
+      this.notificationsService.sendEventToUser(user.id, orderUpdateEvent);
     }
 
     return order;
@@ -231,21 +233,16 @@ export class OrdersService {
     const updatedOrder = await this.prisma.order.update({
       where: { id: orderId },
       data: { status: 'ANNULER' },
+      include: { restaurant: true }, // Important: inclure les données du restaurant
     });
 
-    // Notifier le client de l'annulation
-    this.notificationsService.sendToUser(user.id, {
-      type: 'order_status_updated',
-      message: `Votre commande #${updatedOrder.id.substring(0, 8)} a été annulée.`,
-      order: updatedOrder,
-    });
-
-    // Notifier le restaurateur de l'annulation
-    this.notificationsService.sendToUser(order.restaurant.ownerId, {
-      type: 'order_status_updated',
-      message: `La commande #${updatedOrder.id.substring(0, 8)} a été annulée par le client.`,
-      order: updatedOrder,
-    });
+    // Notifier le restaurateur et le client de l'annulation via SSE
+    const event: SseMessage = { type: 'order_update', data: updatedOrder };
+    this.notificationsService.sendEventToUser(updatedOrder.userId, event);
+    this.notificationsService.sendEventToUser(
+      updatedOrder.restaurant.ownerId,
+      event,
+    );
 
     return updatedOrder;
   }
@@ -297,14 +294,16 @@ export class OrdersService {
     const updatedOrder = await this.prisma.order.update({
       where: { id: orderId },
       data: { status: newStatus },
+      include: { restaurant: true }, // Important: inclure les données du restaurant
     });
 
-    // Notifier le client du changement de statut
-    this.notificationsService.sendToUser(order.userId, {
-      type: 'order_status_updated',
-      message: `Le statut de votre commande #${updatedOrder.id.substring(0, 8)} est maintenant : ${newStatus}.`,
-      order: updatedOrder,
-    });
+    // Notifier le client et le restaurateur du changement de statut
+    const event: SseMessage = { type: 'order_update', data: updatedOrder };
+    this.notificationsService.sendEventToUser(updatedOrder.userId, event);
+    this.notificationsService.sendEventToUser(
+      updatedOrder.restaurant.ownerId,
+      event,
+    );
 
     return updatedOrder;
   }
