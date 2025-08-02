@@ -114,6 +114,7 @@ export class OrdersService {
         },
         include: {
           items: true,
+          restaurant: true, // Correction: Toujours inclure le restaurant
         },
       });
 
@@ -233,7 +234,7 @@ export class OrdersService {
     const updatedOrder = await this.prisma.order.update({
       where: { id: orderId },
       data: { status: 'ANNULER' },
-      include: { 
+      include: {
         restaurant: true,
         items: true, // Correction: Toujours inclure les items
       },
@@ -297,7 +298,7 @@ export class OrdersService {
     const updatedOrder = await this.prisma.order.update({
       where: { id: orderId },
       data: { status: newStatus },
-      include: { 
+      include: {
         restaurant: true,
         items: true, // Correction: Toujours inclure les items
       },
