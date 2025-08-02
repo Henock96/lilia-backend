@@ -233,7 +233,10 @@ export class OrdersService {
     const updatedOrder = await this.prisma.order.update({
       where: { id: orderId },
       data: { status: 'ANNULER' },
-      include: { restaurant: true }, // Important: inclure les données du restaurant
+      include: { 
+        restaurant: true,
+        items: true, // Correction: Toujours inclure les items
+      },
     });
 
     // Notifier le restaurateur et le client de l'annulation via SSE
@@ -294,7 +297,10 @@ export class OrdersService {
     const updatedOrder = await this.prisma.order.update({
       where: { id: orderId },
       data: { status: newStatus },
-      include: { restaurant: true }, // Important: inclure les données du restaurant
+      include: { 
+        restaurant: true,
+        items: true, // Correction: Toujours inclure les items
+      },
     });
 
     // Notifier le client et le restaurateur du changement de statut
