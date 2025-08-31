@@ -28,6 +28,17 @@ model User {
   deliveries  Delivery[]
   cart        Cart?
   adresses   Adresses[] // Ajout de la relation aux adresses
+  fcmTokens   FcmToken[]
+}
+
+model FcmToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+
+  @@index([userId])
 }
 
 model Adresses {

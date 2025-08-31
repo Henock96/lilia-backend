@@ -1,61 +1,108 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Subject, Observable } from 'rxjs';
-
-export interface SseMessage {
-  type: 'order_update' | 'new_order';
-  data: any;
-}
+import { PrismaService } from '../prisma/prisma.service';
+import * as admin from 'firebase-admin';
 
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
-  // Map pour stocker un flux d'événements pour chaque utilisateur (clé = ID utilisateur interne)
-  private readonly userEventStreams = new Map<string, Subject<SseMessage>>();
 
-  /**
-   * Crée ou récupère le flux d'événements pour un utilisateur spécifique.
-   * @param userId L'ID interne de l'utilisateur.
-   * @returns Un Observable auquel le contrôleur peut s'abonner.
-   */
-  getStreamForUser(userId: string): Observable<SseMessage> {
-    this.logger.log(
-      `Création ou récupération du flux pour l'utilisateur: ${userId}`,
-    );
-    if (!this.userEventStreams.has(userId)) {
-      this.userEventStreams.set(userId, new Subject<SseMessage>());
+  constructor(private prisma: PrismaService) {}
+
+  async registerToken(firebaseUid: string, token: string): Promise<{ status: string }> {
+    const user = await this.prisma.user.findUnique({
+      where: { firebaseUid },
+    });
+
+    if (!user) {
+      this.logger.warn(`User with firebaseUid ${firebaseUid} not found.`);
+      return { status: 'user_not_found' };
     }
-    return this.userEventStreams.get(userId).asObservable();
+
+    await this.prisma.fcmToken.upsert({
+      where: { token },
+      update: { userId: user.id },
+      create: { token, userId: user.id },
+    });
+
+    this.logger.log(`Registered FCM token for user ${user.id}`);
+    return { status: 'success' };
   }
 
-  /**
-   * Envoie un événement à un utilisateur spécifique.
-   * @param userId L'ID interne de l'utilisateur à notifier.
-   * @param event L'événement à envoyer.
-   */
-  sendEventToUser(userId: string, event: SseMessage) {
-    const userStream = this.userEventStreams.get(userId);
-    if (userStream) {
-      this.logger.log(
-        `Envoi de l'événement de type ${event.type} à l'utilisateur: ${userId}`,
-      );
-      userStream.next(event);
-    } else {
-      this.logger.warn(
-        `Tentative d'envoi à un utilisateur non connecté au SSE: ${userId}`,
-      );
+  async sendPushNotification(
+    userId: string,
+    title: string,
+    body: string,
+    data?: { [key: string]: string },
+  ) {
+    const userTokens = await this.prisma.fcmToken.findMany({
+      where: { userId },
+      select: { token: true },
+    });
+
+    if (userTokens.length === 0) {
+      this.logger.log(`No FCM tokens found for user ${userId}. Skipping notification.`);
+      return;
+    }
+
+    const tokens = userTokens.map((t) => t.token);
+
+    const message: admin.messaging.MulticastMessage = {
+      tokens,
+      notification: { title, body },
+      data: data || {},
+      android: {
+        priority: 'high',
+      },
+      apns: {
+        payload: {
+          aps: {
+            contentAvailable: true,
+            sound: 'default',
+          },
+        },
+      },
+    };
+
+    try {
+      const response = await admin.messaging().sendMulticast(message);
+      this.logger.log(`Successfully sent notification to ${response.successCount} devices.`);
+      
+      if (response.failureCount > 0) {
+        await this.handleInvalidTokens(response, tokens);
+      }
+    } catch (error) {
+      this.logger.error('Error sending push notification:', error);
     }
   }
 
-  /**
-   * Nettoie et ferme le flux pour un utilisateur déconnecté.
-   * @param userId L'ID interne de l'utilisateur.
-   */
-  removeStreamForUser(userId: string) {
-    const userStream = this.userEventStreams.get(userId);
-    if (userStream) {
-      this.logger.log(`Fermeture du flux pour l'utilisateur: ${userId}`);
-      userStream.complete();
-      this.userEventStreams.delete(userId);
+  private async handleInvalidTokens(
+    response: admin.messaging.BatchResponse,
+    tokens: string[],
+  ) {
+    const tokensToDelete: string[] = [];
+    response.responses.forEach((result, index) => {
+      if (!result.success) {
+        const error = result.error;
+        if (
+          error.code === 'messaging/invalid-registration-token' ||
+          error.code === 'messaging/registration-token-not-registered'
+        ) {
+          const invalidToken = tokens[index];
+          tokensToDelete.push(invalidToken);
+          this.logger.log(`Marking invalid token for deletion: ${invalidToken}`);
+        } else {
+            this.logger.error(`Failed to send to token ${tokens[index]}`, error);
+        }
+      }
+    });
+
+    if (tokensToDelete.length > 0) {
+      await this.prisma.fcmToken.deleteMany({
+        where: {
+          token: { in: tokensToDelete },
+        },
+      });
+      this.logger.log(`Deleted ${tokensToDelete.length} invalid tokens from the database.`);
     }
   }
 }
