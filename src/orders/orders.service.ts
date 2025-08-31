@@ -13,7 +13,10 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 
 // Fonction utilitaire pour les messages de notification
-function getStatusUpdateMessage(status: OrderStatus): { title: string; body: string } {
+function getStatusUpdateMessage(status: OrderStatus): {
+  title: string;
+  body: string;
+} {
   switch (status) {
     case 'EN_PREPARATION':
       return {

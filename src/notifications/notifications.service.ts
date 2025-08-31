@@ -1,14 +1,65 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as admin from 'firebase-admin';
+import { Subject } from 'rxjs';
+
+// Structure de message pour les événements SSE
+export interface SseMessage {
+  type: string;
+  data: any;
+}
 
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
+  private readonly clients = new Map<string, Subject<SseMessage>>();
 
   constructor(private prisma: PrismaService) {}
 
-  async registerToken(firebaseUid: string, token: string): Promise<{ status: string }> {
+  // --- Logique pour les Server-Sent Events (SSE) ---
+
+  /**
+   * Ajoute un client à la liste d'écoute SSE.
+   * Le Subject est un observable qui peut être utilisé pour envoyer des messages.
+   */
+  addSseClient(userId: string): Subject<SseMessage> {
+    const subject = new Subject<SseMessage>();
+    this.clients.set(userId, subject);
+    this.logger.log(`SSE client connected for user: ${userId}`);
+    return subject;
+  }
+
+  /**
+   * Supprime un client de la liste d'écoute SSE.
+   */
+  removeSseClient(userId: string) {
+    if (this.clients.has(userId)) {
+      this.clients.get(userId).complete(); // Termine l'observable
+      this.clients.delete(userId);
+      this.logger.log(`SSE client disconnected for user: ${userId}`);
+    }
+  }
+
+  /**
+   * Envoie un événement SSE à un utilisateur spécifique.
+   */
+  sendEventToUser(userId: string, event: SseMessage) {
+    if (this.clients.has(userId)) {
+      this.clients.get(userId).next(event);
+      this.logger.log(`Sent SSE event '${event.type}' to user: ${userId}`);
+    } else {
+      this.logger.log(
+        `No active SSE client for user ${userId}. Skipping event '${event.type}'.`,
+      );
+    }
+  }
+
+  // --- Logique pour les Push Notifications (FCM) ---
+
+  async registerToken(
+    firebaseUid: string,
+    token: string,
+  ): Promise<{ status: string }> {
     const user = await this.prisma.user.findUnique({
       where: { firebaseUid },
     });
@@ -40,7 +91,9 @@ export class NotificationsService {
     });
 
     if (userTokens.length === 0) {
-      this.logger.log(`No FCM tokens found for user ${userId}. Skipping notification.`);
+      this.logger.log(
+        `No FCM tokens found for user ${userId}. Skipping notification.`,
+      );
       return;
     }
 
@@ -64,9 +117,11 @@ export class NotificationsService {
     };
 
     try {
-      const response = await admin.messaging().sendMulticast(message);
-      this.logger.log(`Successfully sent notification to ${response.successCount} devices.`);
-      
+      const response = await admin.messaging().sendEachForMulticast(message);
+      this.logger.log(
+        `Successfully sent notification to ${response.successCount} devices.`,
+      );
+
       if (response.failureCount > 0) {
         await this.handleInvalidTokens(response, tokens);
       }
@@ -89,9 +144,11 @@ export class NotificationsService {
         ) {
           const invalidToken = tokens[index];
           tokensToDelete.push(invalidToken);
-          this.logger.log(`Marking invalid token for deletion: ${invalidToken}`);
+          this.logger.log(
+            `Marking invalid token for deletion: ${invalidToken}`,
+          );
         } else {
-            this.logger.error(`Failed to send to token ${tokens[index]}`, error);
+          this.logger.error(`Failed to send to token ${tokens[index]}`, error);
         }
       }
     });
@@ -102,7 +159,9 @@ export class NotificationsService {
           token: { in: tokensToDelete },
         },
       });
-      this.logger.log(`Deleted ${tokensToDelete.length} invalid tokens from the database.`);
+      this.logger.log(
+        `Deleted ${tokensToDelete.length} invalid tokens from the database.`,
+      );
     }
   }
 }
