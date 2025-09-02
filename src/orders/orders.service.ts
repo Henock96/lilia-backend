@@ -189,6 +189,14 @@ export class OrdersService {
         `Vous avez reçu une nouvelle commande. Montant: ${order.total} FCFA.`,
         { orderId: order.id },
       );
+
+      // Envoyer une notification push au client
+      this.notificationsService.sendPushNotification(
+        user.id,
+        'Commande confirmée',
+        'Votre commande a été reçue et est en attente de préparation.',
+        { orderId: order.id },
+      );
     }
 
     return order;
@@ -296,6 +304,14 @@ export class OrdersService {
       updatedOrder.restaurant.ownerId,
       'Commande Annulée',
       `La commande #${order.id.substring(0, 8)} a été annulée par le client.`,
+      { orderId: updatedOrder.id },
+    );
+
+    // Envoyer une notification push au client pour l'informer de l'annulation
+    this.notificationsService.sendPushNotification(
+      updatedOrder.userId,
+      'Commande Annulée',
+      `Votre commande #${order.id.substring(0, 8)} a été annulée.`,
       { orderId: updatedOrder.id },
     );
 
