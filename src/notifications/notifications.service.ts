@@ -1,4 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Body,
+  Injectable,
+  Logger,
+  Request,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as admin from 'firebase-admin';
 import { Subject } from 'rxjs';
@@ -57,9 +63,14 @@ export class NotificationsService {
   // --- Logique pour les Push Notifications (FCM) ---
 
   async registerToken(
-    firebaseUid: string,
-    token: string,
+    @Request() req,
+    @Body('token') token: string,
   ): Promise<{ status: string }> {
+    const firebaseUid = req.user?.uid;
+
+    if (!firebaseUid) {
+      throw new UnauthorizedException('Firebase UID not found');
+    }
     const user = await this.prisma.user.findUnique({
       where: { firebaseUid },
     });
@@ -85,6 +96,10 @@ export class NotificationsService {
     body: string,
     data?: { [key: string]: string },
   ) {
+    console.log('🔵 Sending notification to userId:', userId);
+    console.log('🔵 Title:', title);
+    console.log('🔵 Body:', body);
+
     const userTokens = await this.prisma.fcmToken.findMany({
       where: { userId },
       select: { token: true },
@@ -96,7 +111,10 @@ export class NotificationsService {
       );
       return;
     }
-
+    console.log('🔵 Found tokens:', userTokens.length);
+    userTokens.forEach((t, i) => {
+      console.log(`🔵 Token ${i + 1}:`, t.token.substring(0, 20) + '...');
+    });
     const tokens = userTokens.map((t) => t.token);
 
     const message: admin.messaging.MulticastMessage = {
