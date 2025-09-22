@@ -5,52 +5,19 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { OrderStatus } from '@prisma/client';
-import {
-  NotificationsService,
-  SseMessage,
-} from 'src/notifications/notifications.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
-
-// Fonction utilitaire pour les messages de notification
-function getStatusUpdateMessage(status: OrderStatus): {
-  title: string;
-  body: string;
-} {
-  switch (status) {
-    case 'EN_PREPARATION':
-      return {
-        title: 'Votre commande est en préparation !',
-        body: 'Le restaurant a commencé à préparer votre repas.',
-      };
-    case 'PRET':
-      return {
-        title: 'Votre commande est prête !',
-        body: 'Votre commande est prête à être récupérée par le livreur.',
-      };
-    case 'LIVRER':
-      return {
-        title: 'Commande livrée !',
-        body: 'Votre commande a été livrée. Bon appétit !',
-      };
-    case 'ANNULER':
-      return {
-        title: 'Commande annulée',
-        body: 'Votre commande a été annulée.',
-      };
-    default:
-      return {
-        title: 'Mise à jour de votre commande',
-        body: `Le statut de votre commande est maintenant : ${status}`,
-      };
-  }
-}
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import {
+  OrderCreatedEvent,
+  OrderStatusUpdatedEvent,
+} from 'src/events/order-events';
 
 @Injectable()
 export class OrdersService {
   constructor(
     private prisma: PrismaService,
-    private notificationsService: NotificationsService,
+    private eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -162,43 +129,19 @@ export class OrdersService {
 
       return newOrder;
     });
+    // 🔥 ÉMETTRE L'ÉVÉNEMENT au lieu d'appeler directement les notifications
+    const orderCreatedEvent = new OrderCreatedEvent(
+      order.id,
+      order.userId,
+      order.restaurantId,
+      {
+        totalAmount: order.total,
+        itemCount: order.items.length,
+        restaurantName: order.restaurant.nom, // Exemple statique, à remplacer par une vraie estimation si disponible
+      },
+    );
 
-    // Récupérer l'ID du propriétaire du restaurant pour la notification
-    const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id: firstItemRestaurantId },
-    });
-
-    if (restaurant) {
-      // Notifier le restaurateur de la nouvelle commande
-      const newOrderEvent: SseMessage = { type: 'new_order', data: order };
-      this.notificationsService.sendEventToUser(
-        restaurant.ownerId,
-        newOrderEvent,
-      );
-      // Notifier le client que sa commande a été créée
-      const orderUpdateEvent: SseMessage = {
-        type: 'order_update',
-        data: order,
-      };
-      this.notificationsService.sendEventToUser(user.id, orderUpdateEvent);
-
-      // Envoyer une notification push au restaurateur
-      this.notificationsService.sendPushNotification(
-        restaurant.ownerId,
-        'Nouvelle Commande !',
-        `Vous avez reçu une nouvelle commande. Montant: ${order.total} FCFA.`,
-        { orderId: order.id },
-      );
-
-      // Envoyer une notification push au client
-      this.notificationsService.sendPushNotification(
-        user.id,
-        'Commande confirmée',
-        'Votre commande a été reçue et est en attente de préparation.',
-        { orderId: order.id },
-      );
-    }
-
+    this.eventEmitter.emit('order.created', orderCreatedEvent);
     return order;
   }
 
@@ -291,30 +234,6 @@ export class OrdersService {
       },
     });
 
-    // Notifier le restaurateur et le client de l'annulation via SSE
-    const event: SseMessage = { type: 'order_update', data: updatedOrder };
-    this.notificationsService.sendEventToUser(updatedOrder.userId, event);
-    this.notificationsService.sendEventToUser(
-      updatedOrder.restaurant.ownerId,
-      event,
-    );
-
-    // Envoyer une notification push au restaurateur pour l'informer de l'annulation
-    this.notificationsService.sendPushNotification(
-      updatedOrder.restaurant.ownerId,
-      'Commande Annulée',
-      `La commande #${order.id.substring(0, 8)} a été annulée par le client.`,
-      { orderId: updatedOrder.id },
-    );
-
-    // Envoyer une notification push au client pour l'informer de l'annulation
-    this.notificationsService.sendPushNotification(
-      updatedOrder.userId,
-      'Commande Annulée',
-      `Votre commande #${order.id.substring(0, 8)} a été annulée.`,
-      { orderId: updatedOrder.id },
-    );
-
     return updatedOrder;
   }
 
@@ -326,13 +245,18 @@ export class OrdersService {
     firebaseUid: string,
     newStatus: OrderStatus,
   ) {
+    console.log('🔵 === DÉBUT UPDATE ORDER STATUS ===');
+    console.log('🔵 Order ID:', orderId);
+    console.log('🔵 Firebase UID:', firebaseUid);
+    console.log('🔵 New Status:', newStatus);
+
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
     if (!user || user.role !== 'RESTAURATEUR') {
       throw new ForbiddenException(
         "Vous n'êtes pas autorisé à effectuer cette action.",
       );
     }
-
+    console.log('🔵 Restaurateur found:', user.id);
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: { restaurant: true },
@@ -341,7 +265,7 @@ export class OrdersService {
     if (!order) {
       throw new NotFoundException('Commande non trouvée.');
     }
-
+    console.log('🔵 Order found for user:', order.userId);
     if (order.restaurant.ownerId !== user.id) {
       throw new ForbiddenException(
         "Cette commande n'appartient pas à votre restaurant.",
@@ -371,23 +295,21 @@ export class OrdersService {
       },
     });
 
-    // Notifier le client et le restaurateur du changement de statut via SSE
-    const event: SseMessage = { type: 'order_update', data: updatedOrder };
-    this.notificationsService.sendEventToUser(updatedOrder.userId, event);
-    this.notificationsService.sendEventToUser(
-      updatedOrder.restaurant.ownerId,
-      event,
-    );
-
-    // Envoyer une notification push au client pour l'informer du changement de statut
-    const { title, body } = getStatusUpdateMessage(newStatus);
-    this.notificationsService.sendPushNotification(
+    // 🔥 ÉMETTRE L'ÉVÉNEMENT au lieu d'appeler directement les notifications
+    const statusUpdatedEvent = new OrderStatusUpdatedEvent(
+      updatedOrder.id,
       updatedOrder.userId,
-      title,
-      body,
-      { orderId: updatedOrder.id },
+      updatedOrder.restaurantId,
+      updatedOrder.status,
+      newStatus,
+      user.id, // updatedBy
+      {
+        restaurantName: updatedOrder.restaurant.nom,
+        totalAmount: updatedOrder.total,
+      },
     );
 
+    this.eventEmitter.emit('order.status.updated', statusUpdatedEvent);
     return updatedOrder;
   }
 }

@@ -14,7 +14,15 @@ export interface SseMessage {
   type: string;
   data: any;
 }
+interface NotificationData {
+  [key: string]: string;
+}
 
+interface NotificationResult {
+  successCount: number;
+  failureCount: number;
+  responses: admin.messaging.SendResponse[];
+}
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
@@ -94,8 +102,8 @@ export class NotificationsService {
     userId: string,
     title: string,
     body: string,
-    data?: { [key: string]: string },
-  ) {
+    data?: NotificationData,
+  ): Promise<NotificationResult | null> {
     console.log('🔵 Sending notification to userId:', userId);
     console.log('🔵 Title:', title);
     console.log('🔵 Body:', body);
@@ -104,13 +112,20 @@ export class NotificationsService {
       where: { userId },
       select: { token: true },
     });
-
+    console.log('🔵 Found tokens count:', userTokens.length);
     if (userTokens.length === 0) {
       this.logger.log(
         `No FCM tokens found for user ${userId}. Skipping notification.`,
       );
+      // Debug supplémentaire : vérifier si le userId existe
+      const userExists = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, email: true, firebaseUid: true },
+      });
+      console.log('🔍 User exists check:', userExists);
       return;
     }
+
     console.log('🔵 Found tokens:', userTokens.length);
     userTokens.forEach((t, i) => {
       console.log(`🔵 Token ${i + 1}:`, t.token.substring(0, 20) + '...');
@@ -123,6 +138,10 @@ export class NotificationsService {
       data: data || {},
       android: {
         priority: 'high',
+        notification: {
+          channelId: 'default', // Important pour Android 8+
+          priority: 'high',
+        },
       },
       apns: {
         payload: {
@@ -133,18 +152,34 @@ export class NotificationsService {
         },
       },
     };
+    console.log('🔵 FCM Message prepared:', {
+      tokenCount: tokens.length,
+      notification: message.notification,
+      data: message.data,
+    });
 
     try {
+      console.log(
+        '🔵 Calling Firebase admin.messaging().sendEachForMulticast...',
+      );
       const response = await admin.messaging().sendEachForMulticast(message);
       this.logger.log(
         `Successfully sent notification to ${response.successCount} devices.`,
       );
 
       if (response.failureCount > 0) {
+        response.responses.forEach((resp, idx) => {
+          if (!resp.success && resp.error) {
+            this.logger.error(
+              `Failed to send to token ${tokens[idx]}:${resp.error.code} - ${resp.error.message}`,
+            );
+          }
+        });
         await this.handleInvalidTokens(response, tokens);
       }
+      return response;
     } catch (error) {
-      this.logger.error('Error sending push notification:', error);
+      this.logger.error(`Error sending push notification ${userId}:`, error);
     }
   }
 
