@@ -48,9 +48,9 @@ import { FirebaseService } from './firebase.service';
     FirebaseAuthGuard,
     RolesGuard,
     Reflector,
-    FirebaseService
+    FirebaseService,
   ],
-  exports: [FirebaseAuthGuard, RolesGuard],
+  exports: [FirebaseAuthGuard, RolesGuard, FirebaseService],
 })
 export class FirebaseModule {
 }
