@@ -1,8 +1,6 @@
 /* eslint-disable prettier/prettier */
 // src/firebase/firebase.module.ts (exemple d'un module dédié)
 import { Module } from '@nestjs/common';
-import * as fs from 'fs'
-import * as path from 'path';
 import { FirebaseAuthGuard } from './firebase-auth.guard';
 import { RolesGuard } from './roles.guard';
 import { Reflector } from '@nestjs/core';
@@ -16,6 +14,7 @@ import { FirebaseService } from './firebase.service';
   //let serviceAccount: admin.ServiceAccount;
     
   // 1. On cherche d'abord la variable d'environnement pour la production (Fly.io)
+  /*
    const encodedServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
   
    if (encodedServiceAccount) {
@@ -43,7 +42,7 @@ import { FirebaseService } from './firebase.service';
   
       //const fileContents = fs.readFileSync(absolutePath, 'utf-8');
       //serviceAccount = JSON.parse(fileContents);
-   }
+   }*/
 @Module({
   providers: [
     FirebaseAuthGuard,
@@ -53,4 +52,5 @@ import { FirebaseService } from './firebase.service';
   ],
   exports: [FirebaseAuthGuard, RolesGuard],
 })
-export class FirebaseModule {}
+export class FirebaseModule {
+}
