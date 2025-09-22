@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import * as admin from 'firebase-admin';
 import { Subject } from 'rxjs';
+import { FirebaseService } from 'src/firebase/firebase.service';
 
 // Structure de message pour les événements SSE
 export interface SseMessage {
@@ -28,7 +29,10 @@ export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
   private readonly clients = new Map<string, Subject<SseMessage>>();
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private firebaseService: FirebaseService,
+  ) {}
 
   // --- Logique pour les Server-Sent Events (SSE) ---
 
@@ -94,7 +98,7 @@ export class NotificationsService {
       create: { token, userId: user.id },
     });
 
-    this.logger.log(`Registered FCM token for user ${user.id}`);
+    this.logger.log(`Registered FCM token pour l'utilisateur ${user.id}`);
     return { status: 'success' };
   }
 
@@ -104,7 +108,16 @@ export class NotificationsService {
     body: string,
     data?: NotificationData,
   ): Promise<NotificationResult | null> {
-    console.log('🔵 Sending notification to userId:', userId);
+    // Vérifier que Firebase est prêt
+    if (!this.firebaseService.isReady()) {
+      this.logger.error('Firebase not ready, cannot send notification', {
+        userId,
+        title,
+        error: this.firebaseService.getInitializationError()?.message,
+      });
+      return;
+    }
+    console.log('🔵 Envoi de notification à:', userId);
     console.log('🔵 Title:', title);
     console.log('🔵 Body:', body);
 
@@ -152,7 +165,7 @@ export class NotificationsService {
         },
       },
     };
-    console.log('🔵 FCM Message prepared:', {
+    console.log('🔵 FCM Message preparé:', {
       tokenCount: tokens.length,
       notification: message.notification,
       data: message.data,
@@ -160,18 +173,18 @@ export class NotificationsService {
 
     try {
       console.log(
-        '🔵 Calling Firebase admin.messaging().sendEachForMulticast...',
+        '🔵 Appel de Firebase admin.messaging().sendEachForMulticast...',
       );
       const response = await admin.messaging().sendEachForMulticast(message);
       this.logger.log(
-        `Successfully sent notification to ${response.successCount} devices.`,
+        `Notification envoyée avec succès aux appareils ${response.successCount}.`,
       );
 
       if (response.failureCount > 0) {
         response.responses.forEach((resp, idx) => {
           if (!resp.success && resp.error) {
             this.logger.error(
-              `Failed to send to token ${tokens[idx]}:${resp.error.code} - ${resp.error.message}`,
+              `Echec pour envoyer le token ${tokens[idx]}:${resp.error.code} - ${resp.error.message}`,
             );
           }
         });
@@ -179,7 +192,10 @@ export class NotificationsService {
       }
       return response;
     } catch (error) {
-      this.logger.error(`Error sending push notification ${userId}:`, error);
+      this.logger.error(
+        `Erreur pour envoyer la notification ${userId}:`,
+        error,
+      );
     }
   }
 
@@ -201,7 +217,10 @@ export class NotificationsService {
             `Marking invalid token for deletion: ${invalidToken}`,
           );
         } else {
-          this.logger.error(`Failed to send to token ${tokens[index]}`, error);
+          this.logger.error(
+            `Erreur token: Échec de l'envoi au token ${tokens[index]}`,
+            error,
+          );
         }
       }
     });

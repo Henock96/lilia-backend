@@ -1,19 +1,19 @@
 /* eslint-disable prettier/prettier */
 // src/firebase/firebase.module.ts (exemple d'un module dédié)
-import { Module, OnModuleInit } from '@nestjs/common';
-import * as admin from 'firebase-admin';
+import { Module } from '@nestjs/common';
 import * as fs from 'fs'
 import * as path from 'path';
 import { FirebaseAuthGuard } from './firebase-auth.guard';
 import { RolesGuard } from './roles.guard';
 import { Reflector } from '@nestjs/core';
+import { FirebaseService } from './firebase.service';
 // Importez votre fichier de clé de compte de service
 // Idéalement, utilisez des variables d'environnement pour la production (process.env.FIREBASE_SERVICE_ACCOUNT_KEY)
 // Pour le développement, vous pouvez le require directement si le fichier est local
 //const serviceAccount = JSON.parse(fs.readFileSync(process.env.FIREBASE_SERVICE_ACCOUNT, 'utf-8'))
 
  // Cette variable contiendra l'objet de configuration final, peu importe la méthode
-  let serviceAccount: admin.ServiceAccount;
+  //let serviceAccount: admin.ServiceAccount;
     
   // 1. On cherche d'abord la variable d'environnement pour la production (Fly.io)
    const encodedServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
@@ -22,7 +22,7 @@ import { Reflector } from '@nestjs/core';
       // ON EST EN PRODUCTION
       console.log('Initialisation de Firebase via variable d\'environnement (production)...');
       //const decodedJson = Buffer.from(encodedServiceAccount, 'base64').toString('utf-8');
-      serviceAccount = JSON.parse(encodedServiceAccount);                        
+      //serviceAccount = JSON.parse(encodedServiceAccount);                        
     } else {                                                           
       // ON EST EN LOCAL                                               
       console.log('Initialisation de Firebase via fichier local (développement)...');
@@ -41,25 +41,16 @@ import { Reflector } from '@nestjs/core';
       ${absolutePath}`);
      }
   
-      const fileContents = fs.readFileSync(absolutePath, 'utf-8');
-      serviceAccount = JSON.parse(fileContents);
+      //const fileContents = fs.readFileSync(absolutePath, 'utf-8');
+      //serviceAccount = JSON.parse(fileContents);
    }
 @Module({
   providers: [
     FirebaseAuthGuard,
     RolesGuard,
     Reflector,
+    FirebaseService
   ],
   exports: [FirebaseAuthGuard, RolesGuard],
 })
-export class FirebaseModule implements OnModuleInit {
-  onModuleInit() {
-    if (!admin.apps.length) {
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
-        // Vous pouvez aussi ajouter d'autres configurations si nécessaire, comme databaseURL si vous utilisez RTDB
-      });
-      console.log('Firebase Admin SDK initialized.');
-    }
-  }
-}
+export class FirebaseModule {}
