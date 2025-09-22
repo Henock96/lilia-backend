@@ -53,13 +53,13 @@ export class FirebaseService implements OnModuleInit {
       if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
         throw new Error('Firebase private key format is invalid');
       }
-
+      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT!);
       // Configuration pour Render
       const firebaseConfig = {
         credential: admin.credential.cert({
-          projectId: process.env.FIREBASE_PROJECT_ID,
-          privateKey: privateKey,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+          projectId: serviceAccount.FIREBASE_PROJECT_ID,
+          privateKey: serviceAccount.privateKey.replace(/\\n/g, '\n'),
+          clientEmail: serviceAccount.FIREBASE_CLIENT_EMAIL,
         }),
         projectId: process.env.FIREBASE_PROJECT_ID,
       };
