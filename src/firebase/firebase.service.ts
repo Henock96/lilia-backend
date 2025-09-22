@@ -58,7 +58,7 @@ export class FirebaseService implements OnModuleInit {
       const firebaseConfig = {
         credential: admin.credential.cert({
           projectId: serviceAccount.FIREBASE_PROJECT_ID,
-          privateKey: serviceAccount.privateKey.replace(/\\n/g, '\n'),
+          privateKey: serviceAccount.privateKey,
           clientEmail: serviceAccount.FIREBASE_CLIENT_EMAIL,
         }),
         projectId: process.env.FIREBASE_PROJECT_ID,
