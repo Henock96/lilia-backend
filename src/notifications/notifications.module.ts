@@ -5,9 +5,9 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { FirebaseService } from 'src/firebase/firebase.service';
 
 @Module({
-  imports: [PrismaModule, FirebaseService],
+  imports: [PrismaModule],
   controllers: [NotificationsController],
-  providers: [NotificationsService],
+  providers: [NotificationsService, FirebaseService],
   exports: [NotificationsService],
 })
 export class NotificationsModule {}
