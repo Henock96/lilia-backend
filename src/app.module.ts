@@ -18,6 +18,7 @@ import { CartModule } from './cart/cart.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { NotificationsModule } from './notifications/notifications.module';
 import { OrdersListener } from './listeners/orders.listener';
+import { HealthsModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { OrdersListener } from './listeners/orders.listener';
     CartModule,
     AdressesModule,
     NotificationsModule,
+    HealthsModule,
   ],
   controllers: [AppController],
   providers: [AppService, OrdersListener],
