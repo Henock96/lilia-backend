@@ -34,44 +34,6 @@ export class NotificationsService {
     private firebaseService: FirebaseService,
   ) {}
 
-  // --- Logique pour les Server-Sent Events (SSE) ---
-
-  /**
-   * Ajoute un client à la liste d'écoute SSE.
-   * Le Subject est un observable qui peut être utilisé pour envoyer des messages.
-   */
-  addSseClient(userId: string): Subject<SseMessage> {
-    const subject = new Subject<SseMessage>();
-    this.clients.set(userId, subject);
-    this.logger.log(`SSE client connected for user: ${userId}`);
-    return subject;
-  }
-
-  /**
-   * Supprime un client de la liste d'écoute SSE.
-   */
-  removeSseClient(userId: string) {
-    if (this.clients.has(userId)) {
-      this.clients.get(userId).complete(); // Termine l'observable
-      this.clients.delete(userId);
-      this.logger.log(`SSE client disconnected for user: ${userId}`);
-    }
-  }
-
-  /**
-   * Envoie un événement SSE à un utilisateur spécifique.
-   */
-  sendEventToUser(userId: string, event: SseMessage) {
-    if (this.clients.has(userId)) {
-      this.clients.get(userId).next(event);
-      this.logger.log(`Sent SSE event '${event.type}' to user: ${userId}`);
-    } else {
-      this.logger.log(
-        `No active SSE client for user ${userId}. Skipping event '${event.type}'.`,
-      );
-    }
-  }
-
   // --- Logique pour les Push Notifications (FCM) ---
 
   async registerToken(

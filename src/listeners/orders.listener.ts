@@ -28,8 +28,6 @@ export class OrdersListener {
       // 2. Notification au restaurateur
       await this.notifyRestaurantNewOrder(event);
 
-      // 3. Envoyer les events SSE
-      await this.sendOrderCreatedSSE(event);
 
       this.logger.log(`Notifications de création de commande envoyées pour: ${event.orderId}`);
     } catch (error) {
@@ -53,9 +51,6 @@ export class OrdersListener {
         await this.notifyRestaurantStatusUpdate(event);
       }
 
-      // 3. Envoyer les events SSE
-      await this.sendOrderStatusUpdateSSE(event);
-
       this.logger.log(`Order status update notifications sent for: ${event.orderId}`);
     } catch (error) {
       this.logger.error(`Error handling order status update event: ${error.message}`, error.stack);
@@ -74,8 +69,7 @@ export class OrdersListener {
       // 2. Notification au restaurateur
       await this.notifyRestaurantOrderCancelled(event);
 
-      // 3. Envoyer les events SSE
-      await this.sendOrderCancelledSSE(event);
+      
 
       this.logger.log(`Order cancelled notifications sent for: ${event.orderId}`);
     } catch (error) {
@@ -205,57 +199,6 @@ export class OrdersListener {
   }
 
   // ===== MÉTHODES SSE =====
-
-  private async sendOrderCreatedSSE(event: OrderCreatedEvent) {
-    const orderData = await this.getFullOrderData(event.orderId);
-    const sseEvent = { type: 'order_created', data: orderData };
-    
-    // Notifier le client
-    this.notificationsService.sendEventToUser(event.userId, sseEvent);
-    
-    // Notifier le restaurateur
-    const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id: event.restaurantId },
-      select: { ownerId: true },
-    });
-    
-    if (restaurant) {
-      this.notificationsService.sendEventToUser(restaurant.ownerId, sseEvent);
-    }
-  }
-
-  private async sendOrderStatusUpdateSSE(event: OrderStatusUpdatedEvent) {
-    const orderData = await this.getFullOrderData(event.orderId);
-    const sseEvent = { type: 'order_status_updated', data: orderData };
-    
-    this.notificationsService.sendEventToUser(event.userId, sseEvent);
-    
-    // Notifier le restaurateur si ce n'est pas lui qui a fait la mise à jour
-    const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id: event.restaurantId },
-      select: { ownerId: true },
-    });
-    
-    if (restaurant && restaurant.ownerId !== event.updatedBy) {
-      this.notificationsService.sendEventToUser(restaurant.ownerId, sseEvent);
-    }
-  }
-
-  private async sendOrderCancelledSSE(event: OrderCancelledEvent) {
-    const orderData = await this.getFullOrderData(event.orderId);
-    const sseEvent = { type: 'order_cancelled', data: orderData };
-    
-    this.notificationsService.sendEventToUser(event.userId, sseEvent);
-    
-    const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id: event.restaurantId },
-      select: { ownerId: true },
-    });
-    
-    if (restaurant) {
-      this.notificationsService.sendEventToUser(restaurant.ownerId, sseEvent);
-    }
-  }
 
   // ===== MÉTHODES UTILITAIRES =====
 
