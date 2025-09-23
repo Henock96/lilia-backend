@@ -19,11 +19,6 @@ interface NotificationData {
   [key: string]: string;
 }
 
-interface NotificationResult {
-  successCount: number;
-  failureCount: number;
-  responses: admin.messaging.SendResponse[];
-}
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
@@ -69,7 +64,7 @@ export class NotificationsService {
     title: string,
     body: string,
     data?: NotificationData,
-  ): Promise<NotificationResult | null> {
+  ): Promise<string | null> {
     // Vérifier que Firebase est prêt
     if (!this.firebaseService.isReady()) {
       this.logger.error('Firebase not ready, cannot send notification', {
@@ -107,8 +102,8 @@ export class NotificationsService {
     });
     const tokens = userTokens.map((t) => t.token);
 
-    const message: admin.messaging.MulticastMessage = {
-      tokens,
+    const message: admin.messaging.Message = {
+      token: tokens[0],
       notification: { title, body },
       data: data || {},
       android: {
@@ -127,74 +122,20 @@ export class NotificationsService {
         },
       },
     };
-    console.log('🔵 FCM Message preparé:', {
-      tokenCount: tokens.length,
-      notification: message.notification,
-      data: message.data,
-    });
 
     try {
       console.log(
         '🔵 Appel de Firebase admin.messaging().sendEachForMulticast...',
       );
-      const response = await admin.messaging().sendEachForMulticast(message);
+      const response = await admin.messaging().send(message);
       this.logger.log(
-        `Notification envoyée avec succès aux appareils ${response.successCount}.`,
+        `Notification envoyée avec succès aux appareils ${response.toString}.`,
       );
-
-      if (response.failureCount > 0) {
-        response.responses.forEach((resp, idx) => {
-          if (!resp.success && resp.error) {
-            this.logger.error(
-              `Echec pour envoyer le token ${tokens[idx]}:${resp.error.code} - ${resp.error.message}`,
-            );
-          }
-        });
-        await this.handleInvalidTokens(response, tokens);
-      }
       return response;
     } catch (error) {
       this.logger.error(
         `Erreur pour envoyer la notification ${userId}:`,
         error,
-      );
-    }
-  }
-
-  private async handleInvalidTokens(
-    response: admin.messaging.BatchResponse,
-    tokens: string[],
-  ) {
-    const tokensToDelete: string[] = [];
-    response.responses.forEach((result, index) => {
-      if (!result.success) {
-        const error = result.error;
-        if (
-          error.code === 'messaging/invalid-registration-token' ||
-          error.code === 'messaging/registration-token-not-registered'
-        ) {
-          const invalidToken = tokens[index];
-          tokensToDelete.push(invalidToken);
-          this.logger.log(
-            `Marking invalid token for deletion: ${invalidToken}`,
-          );
-        } else {
-          this.logger.error(
-            `Erreur token: Échec de l'envoi au token ${tokens[index]}`,
-            error,
-          );
-        }
-      }
-    });
-
-    if (tokensToDelete.length > 0) {
-      await this.prisma.fcmToken.deleteMany({
-        where: {
-          token: { in: tokensToDelete },
-        },
-      });
-      this.logger.log(
-        `Deleted ${tokensToDelete.length} invalid tokens from the database.`,
       );
     }
   }
