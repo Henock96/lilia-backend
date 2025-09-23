@@ -31,9 +31,9 @@ export class OrdersListener {
       // 3. Envoyer les events SSE
       await this.sendOrderCreatedSSE(event);
 
-      this.logger.log(`Order created notifications sent for: ${event.orderId}`);
+      this.logger.log(`Notifications de création de commande envoyées pour: ${event.orderId}`);
     } catch (error) {
-      this.logger.error(`Error handling order created event: ${error.message}`, error.stack);
+      this.logger.error(`Erreur lors de la gestion de l'événement de création de commande: ${error.message}`, error.stack);
     }
   }
 
@@ -41,7 +41,7 @@ export class OrdersListener {
   @OnEvent('order.status.updated')
   async handleOrderStatusUpdated(event: OrderStatusUpdatedEvent) {
     this.logger.log(
-      `Handling order status updated: ${event.orderId} (${event.previousStatus} -> ${event.newStatus})`
+      `Mise à jour du statut de la commande de traitement: ${event.orderId} (${event.previousStatus} -> ${event.newStatus})`
     );
 
     try {
@@ -87,7 +87,7 @@ export class OrdersListener {
 
   private async notifyCustomerOrderCreated(event: OrderCreatedEvent) {
     const title = '🎉 Commande confirmée !';
-    const body = `Votre commande chez ${event.orderData.restaurantName} a été reçue. Montant: ${event.orderData.totalAmount}€`;
+    const body = `Votre commande chez ${event.orderData.restaurantName} a été reçue. Montant: ${event.orderData.totalAmount} FCFA`;
 
     await this.notificationsService.sendPushNotification(
       event.userId,
@@ -110,7 +110,7 @@ export class OrdersListener {
 
     if (restaurant) {
       const title = '🔔 Nouvelle commande !';
-      const body = `Nouvelle commande de ${event.orderData.totalAmount}€ (${event.orderData.itemCount} articles)`;
+      const body = `Nouvelle commande de ${event.orderData.totalAmount} FCFA (${event.orderData.itemCount} articles)`;
 
       await this.notificationsService.sendPushNotification(
         restaurant.ownerId,
