@@ -23,7 +23,12 @@ export class FirebaseAuthGuard implements CanActivate {
     try {
       const decodedToken = await admin.auth().verifyIdToken(idToken);
       // Le jeton est valide ! Attacher les informations de l'utilisateur à l'objet de requête.
-      request.user = decodedToken;
+      request.user = {
+        uid: decodedToken.uid,
+        email: decodedToken.email,
+        emailVerified: decodedToken.email_verified,
+        ...decodedToken
+      };
       return true;
     } catch (err) {
       console.error('Erreur depuis le Token', err.message);

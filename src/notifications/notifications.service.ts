@@ -1,10 +1,4 @@
-import {
-  Body,
-  Injectable,
-  Logger,
-  Request,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as admin from 'firebase-admin';
 import { Subject } from 'rxjs';
@@ -32,11 +26,9 @@ export class NotificationsService {
   // --- Logique pour les Push Notifications (FCM) ---
 
   async registerToken(
-    @Request() req,
-    @Body('token') token: string,
+    firebaseUid: string,
+    token: string,
   ): Promise<{ status: string }> {
-    const firebaseUid = req.user?.uid;
-
     if (!firebaseUid) {
       throw new UnauthorizedException('Firebase UID not found');
     }
@@ -52,7 +44,11 @@ export class NotificationsService {
     await this.prisma.fcmToken.upsert({
       where: { token },
       update: { userId: user.id },
-      create: { token, userId: user.id },
+      create: {
+        token,
+        userId: user.id,
+        createdAt: new Date(),
+      },
     });
 
     this.logger.log(`Registered FCM token pour l'utilisateur ${user.id}`);
