@@ -19,6 +19,8 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 import { NotificationsModule } from './notifications/notifications.module';
 import { OrdersListener } from './listeners/orders.listener';
 import { HealthsModule } from './health/health.module';
+import { PaymentModule } from './payments/payment.module';
+import { PaymentListener } from './listeners/payment.listener';
 
 @Module({
   imports: [
@@ -50,8 +52,9 @@ import { HealthsModule } from './health/health.module';
     AdressesModule,
     NotificationsModule,
     HealthsModule,
+    PaymentModule,
   ],
   controllers: [AppController],
-  providers: [AppService, OrdersListener],
+  providers: [AppService, OrdersListener, PaymentListener],
 })
 export class AppModule {}

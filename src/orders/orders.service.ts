@@ -275,7 +275,7 @@ export class OrdersService {
     // Ici, vous pourriez ajouter une logique de machine à états pour valider les transitions.
     // Par exemple, un restaurateur ne peut pas passer une commande à 'LIVRER'.
     const allowedStatusUpdates: OrderStatus[] = [
-      'EN_PREPARATION',
+      'PAYER',
       'PRET',
       'LIVRER',
       'ANNULER',

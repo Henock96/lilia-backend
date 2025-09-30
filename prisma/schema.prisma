@@ -145,10 +145,15 @@ model Order {
   deliveryAddress String        // Snapshot de l'adresse de livraison
   paymentMethod   PaymentMethod // Méthode de paiement
   status          OrderStatus   @default(EN_ATTENTE)
+  paidAt          DateTime?     // Date de paiement
   items           OrderItem[]
   delivery        Delivery?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
+
+  Payment Payment[]
+
+  @@index([restaurantId])
 }
 
 model OrderItem {
@@ -192,6 +197,7 @@ enum PaymentMethod {
 
 enum OrderStatus {
   EN_ATTENTE
+  PAYER
   EN_PREPARATION
   PRET
   LIVRER
@@ -204,4 +210,29 @@ enum DeliveryStatus {
   EN_TRANSIT
   LIVRER
   ECHEC
+}
+
+model Payment {
+  id                     String        @id @default(cuid())
+  orderId                String
+  amount                 Float
+  currency               String        @default("XAF")
+  phoneNumber            String
+  status                 PaymentStatus @default(PENDING)
+  provider               String        @default("MTN_MOMO")
+  providerTransactionId  String?
+  metadata               Json          @default("{}")
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+
+  order                  Order         @relation(fields: [orderId], references: [id])
+
+  @@map("payments")
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS  
+  FAILED
+  CANCELLED
 }

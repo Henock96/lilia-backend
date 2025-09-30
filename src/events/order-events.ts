@@ -64,3 +64,18 @@ export class OrderCancelledEvent extends BaseOrderEvent {
     super(orderId, userId, restaurantId, timestamp);
   }
 }
+
+export class OrderPaymentConfirmedEvent extends BaseOrderEvent {
+  constructor(
+    orderId: string,
+    userId: string,
+    restaurantId: string,
+    public readonly paymentId: string,
+    public readonly amount: number,
+    public readonly currency: string = 'XAF',
+    public readonly paymentMethod: string = 'MTN_MOMO',
+    timestamp?: Date,
+  ) {
+    super(orderId, userId, restaurantId, timestamp);
+  }
+}
