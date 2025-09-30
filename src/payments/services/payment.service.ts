@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, Logger } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MtnMomoService } from './mtn-momo.service';
@@ -96,13 +96,21 @@ export class PaymentService {
         referenceId,
       };
     } catch (error) {
-      // Marquer le paiement comme échoué
-      await this.prisma.payment.update({
-        where: { id: payment.id },
-        data: { status: PaymentStatus.FAILED },
-      });
-      
-      throw error;
+        // ⚠️ LOG DÉTAILLÉ DE L'ERREUR
+      this.logger.error('❌ Payment request failed');
+      this.logger.error('Status:', error.response?.status);
+      this.logger.error('Status Text:', error.response?.statusText);
+      this.logger.error('Error Data:', JSON.stringify(error.response?.data, null, 2));
+      this.logger.error('Request Headers:', JSON.stringify(error.config?.headers, null, 2));
+      this.logger.error('Request Body:', JSON.stringify(error.config?.data, null, 2));
+      throw new HttpException(
+      {
+        message: 'Payment request failed',
+        details: error.response?.data,
+        status: error.response?.status,
+      },
+      error.response?.status || HttpStatus.BAD_REQUEST
+    );
     }
   }
 
