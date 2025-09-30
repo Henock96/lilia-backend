@@ -336,6 +336,9 @@ export class MtnMomoService implements OnModuleInit {
         headers: {
           'X-Reference-Id': referenceId,
           'X-Target-Environment': this.config.environment,
+          'Ocp-Apim-Subscription-Key': this.config.collectionSubscriptionKey, // ⚠️ OBLIGATOIRE
+          'Authorization': `Bearer ${this.accessToken}`, // ⚠️ OBLIGATOIRE
+          'Content-Type': 'application/json',
         },
       });
 
