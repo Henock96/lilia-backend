@@ -4,7 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { MtnMomoService } from './services/mtn-momo.service';
 import { PaymentService } from './services/payment.service';
 import { PaymentController } from './controllers/payment.controller';
-import { WebhookController } from './controllers/webhoot.controller'; 
+import { WebhookController } from './controllers/webhook.controller'; 
 import { PrismaModule } from '../prisma/prisma.module';
 
 @Module({

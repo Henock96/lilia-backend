@@ -58,7 +58,7 @@ export class MtnMomoService implements OnModuleInit {
       collectionSubscriptionKey: this.configService.get<string>('MTN_MOMO_COLLECTION_SUBSCRIPTION_KEY'),
       disbursementSubscriptionKey: this.configService.get<string>('MTN_MOMO_DISBURSEMENT_SUBSCRIPTION_KEY'),
       callbackUrl: this.configService.get<string>('MTN_MOMO_CALLBACK_URL'),
-      environment: this.configService.get<string>('NODE_ENV') === 'production' ? 'production' : 'sandbox',
+      environment:'sandbox',
     };
 
     // Valider la configuration
