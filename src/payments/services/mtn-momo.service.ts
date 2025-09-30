@@ -9,7 +9,7 @@ export interface MtnMomoConfig {
   collectionSubscriptionKey: string;
   disbursementSubscriptionKey?: string;
   callbackUrl: string;
-  environment: 'sandbox' | 'production';
+  environment: 'sandbox';
 }
 
 export interface RequestToPayRequest {
