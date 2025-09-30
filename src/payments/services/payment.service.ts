@@ -48,10 +48,10 @@ export class PaymentService {
       throw new Error('Order not found');
     }
 
-    // Assurez-vous d'importer ou de définir l'enum OrderStatus au début du fichier
-    if (order.status !== OrderStatus.ANNULER && order.status !== OrderStatus.LIVRER) {
-      throw new Error('Order cannot be paid in current status');
-    }
+      const validStatuses = ['EN_ATTENTE', 'CONFIRMER'];
+      if (!validStatuses.includes(order.status)) {
+        throw new Error(`Order cannot be paid in current status: ${order.status}`);
+      }
 
     // Créer l'enregistrement de paiement
     const payment = await this.prisma.payment.create({
