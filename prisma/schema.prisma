@@ -170,7 +170,6 @@ model OrderItem {
   @@index([orderId])
   @@index([productId])
 }
-
 model Delivery {
   id          String         @id @default(cuid())
   order       Order          @relation(fields: [orderId], references: [id])
@@ -193,6 +192,7 @@ enum Role {
 
 enum PaymentMethod {
   CASH_ON_DELIVERY
+  MTN_MOMO
 }
 
 enum OrderStatus {
