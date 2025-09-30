@@ -317,7 +317,41 @@ export class MtnMomoService implements OnModuleInit {
 
     return this.accessToken;
   }
+// Méthode pour obtenir un token valide
+async getAccessToken(): Promise<string> {
+  // Vérifier si le token existe et n'est pas expiré (avec marge de 5 minutes)
+  if (this.accessToken && this.tokenExpiresAt && new Date() < new Date(this.tokenExpiresAt.getTime() - 5 * 60 * 1000)) {
+    this.logger.log('Using existing valid token');
+    return this.accessToken;
+  }
 
+  this.logger.log('Generating new access token...');
+  
+  try {
+    const credentials = Buffer.from(`${this.apiUser}:${this.apiKey}`).toString('base64');
+    const response = await this.httpClient.post('/collection/token/', null, {
+      headers: {
+        'Ocp-Apim-Subscription-Key': this.config.collectionSubscriptionKey,
+        'Authorization': `Basic ${credentials}`,
+      },
+    });
+
+    this.accessToken = response.data.access_token;
+    
+    // Le token expire dans 1 heure
+    this.tokenExpiresAt = new Date(Date.now() + 3600 * 1000);
+    
+    this.logger.log('✅ New token generated successfully');
+    return this.accessToken;
+    
+  } catch (error) {
+    this.logger.error('❌ Failed to generate token:', error.message);
+    throw new HttpException(
+      'Failed to generate access token',
+      HttpStatus.INTERNAL_SERVER_ERROR
+    );
+  }
+}
   // ===== Fonctionnalités de paiement =====
 
   async requestToPay(request: RequestToPayRequest): Promise<string> {
@@ -331,13 +365,14 @@ export class MtnMomoService implements OnModuleInit {
       this.logger.log(`Initiating payment request: ${referenceId}`);
       this.logger.log(`Amount: ${request.amount} ${request.currency}`);
       this.logger.log(`Payer: ${request.payer.partyId}`);
-
+      // Obtenir un token valide (nouveau ou existant)
+      const token = await this.getAccessToken();
       await this.httpClient.post('/collection/v1_0/requesttopay', request, {
         headers: {
           'X-Reference-Id': referenceId,
           'X-Target-Environment': this.config.environment,
           'Ocp-Apim-Subscription-Key': this.config.collectionSubscriptionKey, // ⚠️ OBLIGATOIRE
-          'Authorization': `Bearer ${this.accessToken}`, // ⚠️ OBLIGATOIRE
+          'Authorization': `Bearer ${token}`, // ⚠️ OBLIGATOIRE
           'Content-Type': 'application/json',
         },
       });
