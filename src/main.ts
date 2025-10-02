@@ -2,6 +2,8 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import * as admin from 'firebase-admin';
+import { join } from 'path';
+import { NestExpressApplication } from '@nestjs/platform-express';
 
 async function bootstrap() {
   if (!admin.apps.length) {
@@ -43,8 +45,8 @@ async function bootstrap() {
       }
     }
   }
-  const app = await NestFactory.create(AppModule);
-
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  app.useStaticAssets(join(__dirname, '..', 'public'));
   const config = new DocumentBuilder()
     .setTitle('Lilia App API')
     .setDescription('The Lilia App API description')
