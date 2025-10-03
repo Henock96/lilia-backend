@@ -9,6 +9,7 @@ import { PrismaService } from 'src/prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
+  OrderCancelledEvent,
   OrderCreatedEvent,
   OrderStatusUpdatedEvent,
 } from 'src/events/order-events';
@@ -233,7 +234,16 @@ export class OrdersService {
         items: true, // Correction: Toujours inclure les items
       },
     });
+    const orderCancelledEvent = new OrderCancelledEvent(
+      order.id,
+      order.userId,
+      order.restaurantId,
+      'Client', // cancelledBy
+      null, // cancelReason
+      order.total >= 1000 ? order.total : 0, // refundAmount: rembourser si >= 1000
+    );
 
+    this.eventEmitter.emit('order.cancelled', orderCancelledEvent);
     return updatedOrder;
   }
 

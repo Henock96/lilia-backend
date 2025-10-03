@@ -81,7 +81,7 @@ export class OrdersListener {
 
   private async notifyCustomerOrderCreated(event: OrderCreatedEvent) {
     const title = '🎉 Commande confirmée !';
-    const body = `Votre commande chez ${event.orderData.restaurantName} a été reçue. Montant: ${event.orderData.totalAmount} FCFA`;
+    const body = `Votre commande chez Lilia Food a été reçue. Montant: ${event.orderData.totalAmount} FCFA`;
 
     await this.notificationsService.sendPushNotification(
       event.userId,
@@ -120,7 +120,7 @@ export class OrdersListener {
   }
 
   private async notifyCustomerStatusUpdate(event: OrderStatusUpdatedEvent) {
-    const { title, body } = this.getStatusUpdateMessage(event.newStatus, event.orderData.restaurantName);
+    const { title, body } = this.getStatusUpdateMessage(event.newStatus);
 
     await this.notificationsService.sendPushNotification(
       event.userId,
@@ -219,27 +219,27 @@ export class OrdersListener {
     return statusesToNotify.includes(status);
   }
 
-  private getStatusUpdateMessage(status: OrderStatus, restaurantName: string): { title: string; body: string } {
+  private getStatusUpdateMessage(status: OrderStatus): { title: string; body: string } {
     const messages = {
       EN_PREPARATION: {
         title: '👨‍🍳 En préparation',
-        body: `Votre commande chez ${restaurantName} est en cours de préparation`,
+        body: `Votre commande Lilia Food est en cours de préparation`,
       },
       PRET: {
         title: '✅ Commande prête',
-        body: `Votre commande chez ${restaurantName} est prête !`,
+        body: `Votre commande Lilia Food est prête !`,
       },
       EN_LIVRAISON: {
         title: '🚚 En livraison',
-        body: `Votre commande chez ${restaurantName} est en cours de livraison`,
+        body: `Votre commande Lilia Food est en cours de livraison`,
       },
       LIVRER: {
         title: '🎉 Commande livrée',
-        body: `Votre commande chez ${restaurantName} a été livrée. Bon appétit !`,
+        body: `Votre commande Lilia Food a été livrée. Bon appétit !`,
       },
       ANNULER: {
         title: '❌ Commande annulée',
-        body: `Votre commande chez ${restaurantName} a été annulée`,
+        body: `Votre commande Lilia Food a été annulée`,
       },
     };
 
