@@ -21,11 +21,12 @@ export class AuthController {
 
     @Post('register')
     async registerUser(@Body() createUserDto: CreateUserDto) {
-        const { firebaseUid, email, nom, telephone } = createUserDto;
+        const { firebaseUid, email, nom, telephone, imageUrl } = createUserDto;
         const newUser = await this.userService.createUser({
         firebaseUid,
         email,
         nom,
+        imageUrl,
         phone: telephone,
         role: 'CLIENT', // Rôle par défaut
     });

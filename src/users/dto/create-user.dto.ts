@@ -16,4 +16,8 @@ export class CreateUserDto {
   @IsOptional()
   @IsString()
   telephone?: string;
+
+  @IsOptional()
+  @IsString()
+  imageUrl?: string;
 }
