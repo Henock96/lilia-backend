@@ -156,7 +156,7 @@ export class OrdersService {
     return this.prisma.order.findMany({
       where: { userId: user.id },
       include: {
-        restaurant: { select: { nom: true, imageUrl: true } },
+        restaurant: { select: { nom: true, imageUrl: true, adresse: true } },
         items: {
           include: {
             product: {

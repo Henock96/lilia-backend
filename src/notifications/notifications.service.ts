@@ -105,8 +105,11 @@ export class NotificationsService {
       android: {
         priority: 'high',
         notification: {
-          channelId: 'default', // Important pour Android 8+
+          channelId: 'high_importance_channel', // Doit correspondre au canal Flutter
           priority: 'high',
+          sound: 'default',
+          defaultSound: true,
+          defaultVibrateTimings: true,
         },
       },
       apns: {
