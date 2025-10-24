@@ -228,6 +228,7 @@ model Payment {
   order                  Order         @relation(fields: [orderId], references: [id])
 
   @@map("payments")
+  @@index([orderId])
 }
 
 enum PaymentStatus {

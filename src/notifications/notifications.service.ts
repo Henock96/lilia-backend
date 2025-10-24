@@ -61,51 +61,64 @@ export class NotificationsService {
     body: string,
     data?: NotificationData,
   ): Promise<string | null> {
+    this.logger.log(`🔔 Attempting to send notification to user: ${userId}`);
+    this.logger.log(`📝 Title: ${title}`);
+    this.logger.log(`📝 Body: ${body}`);
+    this.logger.log(`📦 Data: ${JSON.stringify(data)}`);
+
     // Vérifier que Firebase est prêt
     if (!this.firebaseService.isReady()) {
-      this.logger.error('Firebase not ready, cannot send notification', {
+      this.logger.error('❌ Firebase not ready, cannot send notification', {
         userId,
         title,
         error: this.firebaseService.getInitializationError()?.message,
       });
-      return;
+      return null;
     }
-    console.log('🔵 Envoi de notification à:', userId);
-    console.log('🔵 Title:', title);
-    console.log('🔵 Body:', body);
 
+    // Récupérer les tokens FCM de l'utilisateur
     const userTokens = await this.prisma.fcmToken.findMany({
       where: { userId },
-      select: { token: true },
+      select: { token: true, createdAt: true },
     });
-    console.log('🔵 Found tokens count:', userTokens.length);
+
+    this.logger.log(`📱 Found ${userTokens.length} FCM token(s) for user ${userId}`);
+
     if (userTokens.length === 0) {
-      this.logger.log(
-        `No FCM tokens found for user ${userId}. Skipping notification.`,
-      );
-      // Debug supplémentaire : vérifier si le userId existe
+      this.logger.warn(`⚠️ No FCM tokens found for user ${userId}. Skipping notification.`);
+
+      // Debug : vérifier si le userId existe
       const userExists = await this.prisma.user.findUnique({
         where: { id: userId },
-        select: { id: true, email: true, firebaseUid: true },
+        select: { id: true, email: true, firebaseUid: true, nom: true },
       });
-      console.log('🔍 User exists check:', userExists);
-      return;
+
+      if (userExists) {
+        this.logger.log(`ℹ️ User exists: ${userExists.email} (${userExists.nom}), but has no FCM token registered`);
+      } else {
+        this.logger.error(`❌ User ${userId} not found in database`);
+      }
+
+      return null;
     }
 
-    console.log('🔵 Found tokens:', userTokens.length);
+    // Log des tokens (premiers caractères seulement pour sécurité)
     userTokens.forEach((t, i) => {
-      console.log(`🔵 Token ${i + 1}:`, t.token.substring(0, 20) + '...');
+      this.logger.log(`Token ${i + 1}: ${t.token.substring(0, 30)}... (created: ${t.createdAt})`);
     });
-    const tokens = userTokens.map((t) => t.token);
 
+    // Préparer le message
     const message: admin.messaging.Message = {
-      token: tokens[0],
-      notification: { title, body },
+      token: userTokens[0].token, // Envoyer au premier token (normalement il n'y en a qu'un)
+      notification: {
+        title,
+        body
+      },
       data: data || {},
       android: {
         priority: 'high',
         notification: {
-          channelId: 'high_importance_channel', // Doit correspondre au canal Flutter
+          channelId: 'high_importance_channel',
           priority: 'high',
           sound: 'default',
           defaultSound: true,
@@ -117,25 +130,34 @@ export class NotificationsService {
           aps: {
             contentAvailable: true,
             sound: 'default',
+            badge: 1,
           },
         },
       },
     };
 
     try {
-      console.log(
-        '🔵 Appel de Firebase admin.messaging().sendEachForMulticast...',
-      );
+      this.logger.log('📤 Sending notification via Firebase Admin SDK...');
       const response = await admin.messaging().send(message);
-      this.logger.log(
-        `Notification envoyée avec succès aux appareils ${response.toString}.`,
-      );
+      this.logger.log(`✅ Notification sent successfully! Message ID: ${response}`);
       return response;
     } catch (error) {
-      this.logger.error(
-        `Erreur pour envoyer la notification ${userId}:`,
-        error,
-      );
+      this.logger.error(`❌ Failed to send notification to user ${userId}:`, {
+        error: error.message,
+        code: error.code,
+        details: error.details,
+      });
+
+      // Si le token est invalide, le supprimer
+      if (error.code === 'messaging/invalid-registration-token' ||
+          error.code === 'messaging/registration-token-not-registered') {
+        this.logger.warn(`🗑️ Removing invalid token for user ${userId}`);
+        await this.prisma.fcmToken.delete({
+          where: { token: userTokens[0].token },
+        });
+      }
+
+      return null;
     }
   }
 }
