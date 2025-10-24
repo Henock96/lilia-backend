@@ -43,7 +43,32 @@ export class UserService {
       });
       console.log(`Informations utilisateur mises à jour : ${email}`);
     }
-    
+
+    return user;
+  }
+
+  // Nouvelle méthode pour gérer inscription ET connexion
+  async syncUserFromFirebase(firebaseUid: string, email: string, nom?: string, phone?: string, imageUrl?: string) {
+    // Upsert : créer si n'existe pas, mettre à jour si existe
+    const user = await this.prisma.user.upsert({
+      where: { firebaseUid },
+      update: {
+        email,
+        nom: nom || undefined,
+        phone: phone || undefined,
+        imageUrl: imageUrl || undefined,
+      },
+      create: {
+        firebaseUid,
+        email,
+        nom: nom || email.split('@')[0], // Utiliser la partie avant @ si pas de nom
+        phone: phone || '',
+        imageUrl: imageUrl || null,
+        role: 'CLIENT', // Rôle par défaut
+      },
+    });
+
+    console.log(`✅ User synchronized: ${user.email} (${user.id})`);
     return user;
   }
 

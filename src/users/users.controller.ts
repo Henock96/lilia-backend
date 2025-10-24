@@ -22,19 +22,21 @@ export class AuthController {
     @Post('register')
     async registerUser(@Body() createUserDto: CreateUserDto) {
         const { firebaseUid, email, nom, telephone, imageUrl } = createUserDto;
-        const newUser = await this.userService.createUser({
-        firebaseUid,
-        email,
-        nom,
-        imageUrl,
-        phone: telephone,
-        role: 'CLIENT', // Rôle par défaut
-    });
-    return {
-      message: 'Utilisateur enregistré avec succès !',
-      user: newUser,
-    };
-  }
+
+        // Utiliser syncUserFromFirebase qui gère inscription ET connexion
+        const user = await this.userService.syncUserFromFirebase(
+            firebaseUid,
+            email,
+            nom,
+            telephone,
+            imageUrl
+        );
+
+        return {
+            message: 'Utilisateur synchronisé avec succès !',
+            user: user,
+        };
+    }
 
   @UseGuards(FirebaseAuthGuard) // Appliquez le Guard ici
   @Get('profile')
