@@ -111,7 +111,6 @@ export class RestaurantsService {
             items: {
                 include: {
                     product: true,
-                    variant: true,
                 },
             },
         },
