@@ -71,15 +71,13 @@ export class RestaurantsService {
             select: {
                 userId: true, // On ne sélectionne que l'ID de l'utilisateur pour commencer
             },
+            orderBy: { createdAt: 'desc' },
         });
-
         if (orders.length === 0) {
             return []; // Pas de commandes, donc pas de clients
         }
-
         // 2. Extraire les IDs uniques des utilisateurs
         const userIds = [...new Set(orders.map(order => order.userId))];
-
         // 3. Récupérer les détails des utilisateurs correspondants
         const clients = await this.prisma.user.findMany({
             where: {
@@ -98,7 +96,28 @@ export class RestaurantsService {
                 createdAt: true,
             }
         });
-
         return clients;
     }
+
+    async findClientOrders(restaurantId: string, userId: string) {
+    const orders = await this.prisma.order.findMany({
+        where: {
+            restaurantId,
+            userId,
+        },
+        orderBy: { createdAt: 'desc' },
+        // Optionnel : inclure les détails des produits/plats de la commande
+        include: {
+            items: {
+                include: {
+                    product: true,
+                    variant: true,
+                },
+            },
+        },
+    });
+
+    return orders;
+}
+    
 }

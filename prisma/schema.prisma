@@ -146,6 +146,7 @@ model Order {
   paymentMethod   PaymentMethod // Méthode de paiement
   status          OrderStatus   @default(EN_ATTENTE)
   paidAt          DateTime?     // Date de paiement
+  notes           String?       // Notes optionnelles du client pour le restaurant
   items           OrderItem[]
   delivery        Delivery?
   createdAt       DateTime      @default(now())
