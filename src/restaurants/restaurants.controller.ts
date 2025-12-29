@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Param, Post, Req, UseGuards, Request, ForbiddenException } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import { FirebaseAuthGuard } from 'src/firebase/firebase-auth.guard';
 import { RestaurantsService } from './restaurants.service';
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
@@ -54,15 +54,7 @@ export class RestaurantsController {
     async getClientOrders(
         @Param('id') restaurantId: string,
         @Param('userId') userId: string,
-        @Request() req,
     ) {
-        // Vérifier que l'utilisateur a le droit de voir ces commandes
-        const currentUser = req.user;
-        
-        if (currentUser.id !== userId && currentUser.role !== 'ADMIN' && currentUser.role !== 'RESTAURATEUR') {
-            throw new ForbiddenException('Vous n\'avez pas accès à ces commandes');
-        }
-        
         return this.service.findClientOrders(restaurantId, userId);
     }
 }
