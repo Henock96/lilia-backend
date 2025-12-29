@@ -59,7 +59,7 @@ export class RestaurantsController {
         // Vérifier que l'utilisateur a le droit de voir ces commandes
         const currentUser = req.user;
         
-        if (currentUser.id !== userId && currentUser.role !== 'ADMIN') {
+        if (currentUser.id !== userId && currentUser.role !== 'ADMIN' && currentUser.role !== 'RESTAURATEUR') {
             throw new ForbiddenException('Vous n\'avez pas accès à ces commandes');
         }
         

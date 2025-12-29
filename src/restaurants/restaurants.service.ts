@@ -71,7 +71,7 @@ export class RestaurantsService {
             select: {
                 userId: true, // On ne sélectionne que l'ID de l'utilisateur pour commencer
             },
-            orderBy: { createdAt: 'desc' },
+            orderBy: { createdAt: 'asc' },
         });
         if (orders.length === 0) {
             return []; // Pas de commandes, donc pas de clients
