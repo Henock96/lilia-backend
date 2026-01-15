@@ -18,7 +18,12 @@ lerna-debug.log*
 # Tests
 /coverage
 /.nyc_output
+
+# Firebase credentials - NEVER commit these
 /src/firebase/keys/*.json
+/config/*.json
+*firebase-adminsdk*.json
+*serviceAccountKey*.json
 
 # IDEs and editors
 /.idea
