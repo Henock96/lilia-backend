@@ -12,7 +12,7 @@ export class CategoriesController {
 
   @Post()
   @UseGuards(FirebaseAuthGuard, RolesGuard) // Protection spécifique à cette route
-  @Roles('ADMIN')
+  @Roles('RESTAURATEUR', 'ADMIN')
   create(@Body() createCategoryDto: CreateCategoryDto) {
     return this.categoriesService.create(createCategoryDto);
   }

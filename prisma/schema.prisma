@@ -29,6 +29,7 @@ model User {
   cart        Cart?
   adresses   Adresses[] // Ajout de la relation aux adresses
   fcmTokens   FcmToken[]
+  reviews     Review[]   // Avis laissés par l'utilisateur
 }
 
 model FcmToken {
@@ -66,6 +67,7 @@ model Restaurant {
   products    Product[]
   menuDuJour    MenuDuJour[]
   orders      Order[]
+  reviews     Review[]  // Avis sur le restaurant
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
@@ -275,7 +277,25 @@ model Payment {
 
 enum PaymentStatus {
   PENDING
-  SUCCESS  
+  SUCCESS
   FAILED
   CANCELLED
+}
+
+// Modèle pour les avis et notes des clients
+model Review {
+  id           String     @id @default(cuid())
+  rating       Int        // Note de 1 à 5
+  comment      String?    // Commentaire optionnel
+  user         User       @relation(fields: [userId], references: [id])
+  userId       String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  restaurantId String
+  orderId      String?    // Optionnel: lié à une commande spécifique
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([userId, restaurantId]) // Un utilisateur ne peut laisser qu'un seul avis par restaurant
+  @@index([restaurantId])
+  @@index([userId])
 }
