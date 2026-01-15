@@ -18,7 +18,7 @@ export class AuthController {
     findUserOrders(@Param('id') id: string) {
         return this.userService.findUserOrders(id);
     }
-
+    
     @Post('register')
     async registerUser(@Body() createUserDto: CreateUserDto) {
         const { firebaseUid, email, nom, telephone, imageUrl } = createUserDto;

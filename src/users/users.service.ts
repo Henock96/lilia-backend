@@ -75,7 +75,7 @@ export class UserService {
         nom: nom || email.split('@')[0], // Utiliser la partie avant @ si pas de nom
         phone: phone || '',
         imageUrl: imageUrl || null,
-        role: 'CLIENT', // Rôle par défaut
+        role: 'RESTAURATEUR', // Rôle par défaut
       },
     });
 
