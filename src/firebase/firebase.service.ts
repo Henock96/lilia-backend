@@ -81,7 +81,7 @@ export class FirebaseService implements OnModuleInit {
           const serviceAccountPath = join(
             process.cwd(),
             'config',
-            'lilia-app-d8f6f-firebase-adminsdk-fbsvc-d78afa0663.json',
+            '',
           );
         if (!fs.existsSync(serviceAccountPath)) {
           throw new Error(
