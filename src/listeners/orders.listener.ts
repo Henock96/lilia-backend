@@ -221,18 +221,24 @@ export class OrdersListener {
 
   private getStatusUpdateMessage(status: OrderStatus): { title: string; body: string } {
     const messages = {
+      EN_ATTENTE: {
+        title: '♾️ En Attente',
+        body: `Votre commande Lilia Food est en attente de préparation`,
+      },
+      PAYER: {
+        title: '💸 Payez',
+        body: `Votre commande Lilia Food a été payée avec succès`,
+      },
       EN_PREPARATION: {
         title: '👨‍🍳 En préparation',
         body: `Votre commande Lilia Food est en cours de préparation`,
       },
+      
       PRET: {
         title: '✅ Commande prête',
         body: `Votre commande Lilia Food est prête !`,
       },
-      EN_LIVRAISON: {
-        title: '🚚 En livraison',
-        body: `Votre commande Lilia Food est en cours de livraison`,
-      },
+      
       LIVRER: {
         title: '🎉 Commande livrée',
         body: `Votre commande Lilia Food a été livrée. Bon appétit !`,

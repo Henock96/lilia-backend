@@ -64,6 +64,7 @@ model Restaurant {
   owner       User     @relation(fields: [ownerId], references: [id])
   ownerId     String   @unique
   products    Product[]
+  menuDuJour    MenuDuJour[]
   orders      Order[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -76,7 +77,41 @@ model Category {
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 }
+model MenuDuJour {
+  id           String         @id @default(cuid())
+  nom          String
+  description  String?
+  imageUrl     String?
+  prix         Float
+  dateDebut    DateTime       // Date et heure de début de validité du menu
+  dateFin      DateTime       // Date et heure de fin de validité du menu
+  isActive     Boolean        @default(true) // Permet de désactiver manuellement un menu
+  restaurant   Restaurant     @relation(fields: [restaurantId], references: [id])
+  restaurantId String
+  products     MenuProduct[]  // Relation many-to-many avec Product
+  orderItems   OrderItem[]
+  cartItems    CartItem[]
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 
+  @@index([restaurantId])
+  @@index([dateDebut, dateFin]) // Index pour les requêtes par date
+}
+
+// Table de liaison pour la relation many-to-many entre Menu et Product
+model MenuProduct {
+  id           String      @id @default(cuid())
+  menu         MenuDuJour  @relation(fields: [menuId], references: [id], onDelete: Cascade)
+  menuId       String
+  product      Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId    String
+  ordre        Int         @default(0) // Ordre d'affichage dans le menu
+  createdAt    DateTime    @default(now())
+
+  @@unique([menuId, productId]) // Un produit ne peut être ajouté qu'une seule fois dans un menu
+  @@index([menuId])
+  @@index([productId])
+}
 model Product {
   id           String           @id @default(cuid())
   nom         String
@@ -88,6 +123,7 @@ model Product {
   category     Category?        @relation(fields: [categoryId], references: [id])
   categoryId   String?
   variants     ProductVariant[]
+  menus        MenuProduct[]    // Relation many-to-many avec MenuDuJour
   orderItems   OrderItem[]
   cartItems     CartItem[]
   createdAt    DateTime         @default(now())
@@ -124,6 +160,8 @@ model CartItem {
   cartId    String
   product   Product  @relation(fields: [productId], references: [id])
   productId String
+  menu      MenuDuJour?  @relation(fields: [menuId], references: [id])
+  menuId    String?
   variant   ProductVariant @relation(fields: [variantId], references: [id])
   variantId String
   quantite  Int
@@ -142,7 +180,8 @@ model Order {
   subTotal        Float         // Sous-total des articles
   deliveryFee     Float         // Frais de livraison
   total           Float         // Montant total (subTotal + deliveryFee)
-  deliveryAddress String        // Snapshot de l'adresse de livraison
+  deliveryAddress String        // Adresse de livraison sous forme de chaîne  
+  deleteCommande  Boolean       @default(false)       
   paymentMethod   PaymentMethod // Méthode de paiement
   status          OrderStatus   @default(EN_ATTENTE)
   paidAt          DateTime?     // Date de paiement
@@ -163,6 +202,8 @@ model OrderItem {
   orderId    String
   product    Product  @relation(fields: [productId], references: [id])
   productId  String
+  menu       MenuDuJour?  @relation(fields: [menuId], references: [id])
+  menuId     String?
   variant    String   // e.g., "1.5L"
   quantite   Int
   prix      Float

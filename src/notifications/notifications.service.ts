@@ -82,10 +82,14 @@ export class NotificationsService {
       select: { token: true, createdAt: true },
     });
 
-    this.logger.log(`📱 Found ${userTokens.length} FCM token(s) for user ${userId}`);
+    this.logger.log(
+      `📱 Found ${userTokens.length} FCM token(s) for user ${userId}`,
+    );
 
     if (userTokens.length === 0) {
-      this.logger.warn(`⚠️ No FCM tokens found for user ${userId}. Skipping notification.`);
+      this.logger.warn(
+        `⚠️ No FCM tokens found for user ${userId}. Skipping notification.`,
+      );
 
       // Debug : vérifier si le userId existe
       const userExists = await this.prisma.user.findUnique({
@@ -94,7 +98,9 @@ export class NotificationsService {
       });
 
       if (userExists) {
-        this.logger.log(`ℹ️ User exists: ${userExists.email} (${userExists.nom}), but has no FCM token registered`);
+        this.logger.log(
+          `ℹ️ User exists: ${userExists.email} (${userExists.nom}), but has no FCM token registered`,
+        );
       } else {
         this.logger.error(`❌ User ${userId} not found in database`);
       }
@@ -104,7 +110,9 @@ export class NotificationsService {
 
     // Log des tokens (premiers caractères seulement pour sécurité)
     userTokens.forEach((t, i) => {
-      this.logger.log(`Token ${i + 1}: ${t.token.substring(0, 30)}... (created: ${t.createdAt})`);
+      this.logger.log(
+        `Token ${i + 1}: ${t.token.substring(0, 30)}... (created: ${t.createdAt})`,
+      );
     });
 
     // Préparer le message
@@ -112,7 +120,7 @@ export class NotificationsService {
       token: userTokens[0].token, // Envoyer au premier token (normalement il n'y en a qu'un)
       notification: {
         title,
-        body
+        body,
       },
       data: data || {},
       android: {
@@ -139,7 +147,9 @@ export class NotificationsService {
     try {
       this.logger.log('📤 Sending notification via Firebase Admin SDK...');
       const response = await admin.messaging().send(message);
-      this.logger.log(`✅ Notification sent successfully! Message ID: ${response}`);
+      this.logger.log(
+        `✅ Notification sent successfully! Message ID: ${response}`,
+      );
       return response;
     } catch (error) {
       this.logger.error(`❌ Failed to send notification to user ${userId}:`, {
@@ -150,7 +160,8 @@ export class NotificationsService {
 
       // Si le token est invalide, le supprimer
       if (error.code === 'messaging/invalid-registration-token' ||
-          error.code === 'messaging/registration-token-not-registered') {
+        error.code === 'messaging/registration-token-not-registered'
+      ) {
         this.logger.warn(`🗑️ Removing invalid token for user ${userId}`);
         await this.prisma.fcmToken.delete({
           where: { token: userTokens[0].token },

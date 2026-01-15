@@ -7,7 +7,15 @@ import {
   Body,
   Param,
   Patch,
+  Query,
 } from '@nestjs/common';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiParam,
+} from '@nestjs/swagger';
 import { OrdersService } from './orders.service';
 import { FirebaseAuthGuard } from 'src/firebase/firebase-auth.guard';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -15,6 +23,7 @@ import { Roles } from 'src/firebase/roles.decorator';
 import { RolesGuard } from 'src/firebase/roles.guard';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 
+@ApiTags('Orders')
 @Controller('orders')
 @UseGuards(FirebaseAuthGuard)
 export class OrdersController {
@@ -25,9 +34,13 @@ export class OrdersController {
     return this.ordersService.createOrderFromCart(req.user.uid, createOrderDto);
   }
 
-  @Get('me')
-  OrdersByUsers(@Req() req) {
-    return this.ordersService.findMyOrders(req.user.uid);
+  @Get('users')
+  OrdersByUsers(
+    @Req() req,
+    @Query('page') page: number,
+    @Query('limit') limit: number,
+  ) {
+    return this.ordersService.findOrdersClient(page, limit, req.user.uid);
   }
   @Get('restaurants')
   RestaurantOrders(@Req() req) {
@@ -54,5 +67,35 @@ export class OrdersController {
       req.user.uid,
       updateOrderStatusDto.status,
     );
+  }
+
+  @Post(':id/reorder')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Recommander une commande précédente',
+    description:
+      'Ajoute tous les produits d\'une commande précédente au panier actuel. Les produits indisponibles sont ignorés.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'ID de la commande à recommander',
+    type: 'string',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Commande ajoutée au panier avec succès',
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Le panier contient déjà des articles d\'un autre restaurant',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Cette commande ne vous appartient pas',
+  })
+  @ApiResponse({ status: 404, description: 'Commande non trouvée' })
+  reorderOrder(@Param('id') id: string, @Req() req) {
+    return this.ordersService.reorderFromPreviousOrder(id, req.user.uid);
   }
 }

@@ -1,12 +1,13 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
-import * as admin from 'firebase-admin';
+//import * as admin from 'firebase-admin';
 import { join } from 'path';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import { HttpExceptionFilter } from './common/exception-filters/http-exception.filter';
 
 async function bootstrap() {
-  if (!admin.apps.length) {
+  /*if (!admin.apps.length) {
     try {
       console.log('🔄 Initializing Firebase Admin SDK on Render...');
       // Vérification des variables d'environnement
@@ -44,7 +45,7 @@ async function bootstrap() {
         process.exit(1); // Arrêter en production si Firebase échoue
       }
     }
-  }
+  }*/
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   app.useStaticAssets(join(__dirname, '..', 'public'));
   const config = new DocumentBuilder()
@@ -62,7 +63,7 @@ async function bootstrap() {
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
   });
-
+  app.useGlobalFilters(new HttpExceptionFilter());
   const port = process.env.PORT || 8080;
   await app.listen(port, '0.0.0.0');
 }

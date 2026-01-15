@@ -27,22 +27,36 @@ export class RestaurantsService {
         }
 
         // 3. Créer le restaurant en utilisant l'ID interne de l'utilisateur pour la relation
-        return this.prisma.restaurant.create({
+        const resto = await this.prisma.restaurant.create({
             data: {
                 ...data,
                 owner: { connect: { id: user.id }},
             },
         });
+
+        return {
+            data : resto,
+            message: 'Création de restaurant réussie',
+        }
     }
 
-    async findMine(firebaseUid: string){
-        return this.prisma.restaurant.findMany({
+    async findRestaurantOwner(firebaseUid: string){
+        const resto =  await this.prisma.restaurant.findMany({
             where: { owner: { firebaseUid } },
         });
+
+        return {
+            data: resto,
+            message: 'Restaurant du propriétaire récupéré avec succès'
+        }
     }
 
     async findRestaurant(){
-        return this.prisma.restaurant.findMany();
+        const resto =  await this.prisma.restaurant.findMany();
+        return {
+            data: resto,
+            message: 'Restaurant récupéré avec succès'
+        }
     }
 
     async findOne(id: string) {
@@ -63,15 +77,30 @@ export class RestaurantsService {
         }
         return restaurant;
     }
+    // Retourne le nombre de commandes du restaurant
+    async findCountOrdersResto(restaurantId: string ){
+        // 1. Récupérer toutes les commandes pour le restaurant donné
+        const orders = await this.prisma.order.count({
+            where: { restaurantId },
+            select: {
+                userId: true, // On ne sélectionne que l'ID de l'utilisateur pour commencer
+            },
+        });
 
-    async findClients(restaurantId: string) {
+        return {
+            data: orders,
+            message: "Nombre de commandes du restaurant"
+        }
+    }
+    async findClients(page = 1, limit = 10, restaurantId: string) {
         // 1. Récupérer toutes les commandes pour le restaurant donné
         const orders = await this.prisma.order.findMany({
             where: { restaurantId },
             select: {
                 userId: true, // On ne sélectionne que l'ID de l'utilisateur pour commencer
+                delivery: true
             },
-            orderBy: { createdAt: 'asc' },
+            orderBy: { createdAt: 'desc' },
         });
         if (orders.length === 0) {
             return []; // Pas de commandes, donc pas de clients
@@ -80,6 +109,8 @@ export class RestaurantsService {
         const userIds = [...new Set(orders.map(order => order.userId))];
         // 3. Récupérer les détails des utilisateurs correspondants
         const clients = await this.prisma.user.findMany({
+            take: limit,
+            skip: (page - 1) * limit,
             where: {
                 id: {
                     in: userIds,
@@ -96,10 +127,13 @@ export class RestaurantsService {
                 createdAt: true,
             }
         });
-        return clients;
+        return {
+            data: clients,
+            message: 'Listes des clients récupérés avec succès'
+        };
     }
 
-    async findClientOrders(restaurantId: string, userId: string) {
+    async findClientWithOrders(restaurantId: string, userId: string) {
     const orders = await this.prisma.order.findMany({
         where: {
             restaurantId,
@@ -116,7 +150,10 @@ export class RestaurantsService {
         },
     });
 
-    return orders;
+    return {
+        data: orders,
+        message : "Listes des commandes d'un client."
+    };
 }
     
 }

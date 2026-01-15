@@ -2,10 +2,13 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CreateProductDto } from './dto/create-product.dto';
+import { PaginationService } from 'src/common/pagination/pagination.service';
 
 @Injectable()
 export class ProductsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService,
+    private readonly paginationService: PaginationService
+  ) {}
 
   async create(dto: CreateProductDto, firebaseUid: string) {
     const restaurant = await this.prisma.restaurant.findFirst({
@@ -31,7 +34,7 @@ export class ProductsService {
       }
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const produit = this.prisma.$transaction(async (tx) => {
       // 1. Créer le produit de base
       const product = await tx.product.create({
         data: {
@@ -68,5 +71,10 @@ export class ProductsService {
         },
       });
     });
+    return {
+      message: 'Création de produit réussie',
+      data: produit,
+    }
   }
+  
 }

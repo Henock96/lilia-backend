@@ -13,7 +13,6 @@ import { FirebaseService } from './firebase.service';
  // Cette variable contiendra l'objet de configuration final, peu importe la méthode
   //let serviceAccount: admin.ServiceAccount;
     
-  // 1. On cherche d'abord la variable d'environnement pour la production (Fly.io)
   /*
    const encodedServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
   

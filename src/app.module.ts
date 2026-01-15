@@ -9,7 +9,6 @@ import { ProductsModule } from './products/products.module';
 import { CategoriesModule } from './categories/categories.module';
 import { OrdersModule } from './orders/orders.module';
 import { DeliveriesModule } from './deliveries/deliveries.module';
-import { AuthModule } from './auth/auth.module';
 import { CloudinaryModule } from './cloudinary/cloudinary.module';
 import { SmsModule } from './sms/sms.module';
 import { FirebaseModule } from './firebase/firebase.module';
@@ -21,6 +20,8 @@ import { OrdersListener } from './listeners/orders.listener';
 import { HealthsModule } from './health/health.module';
 import { PaymentModule } from './payments/payment.module';
 import { PaymentListener } from './listeners/payment.listener';
+import { MenusModule } from './menus/menus.module';
+import { MenusListener } from './listeners/menus.listener';
 
 @Module({
   imports: [
@@ -44,7 +45,6 @@ import { PaymentListener } from './listeners/payment.listener';
     CategoriesModule,
     OrdersModule,
     DeliveriesModule,
-    AuthModule,
     CloudinaryModule,
     SmsModule,
     FirebaseModule,
@@ -53,8 +53,9 @@ import { PaymentListener } from './listeners/payment.listener';
     NotificationsModule,
     HealthsModule,
     PaymentModule,
+    MenusModule,
   ],
   controllers: [AppController],
-  providers: [AppService, OrdersListener, PaymentListener],
+  providers: [AppService, OrdersListener, PaymentListener, MenusListener],
 })
 export class AppModule {}

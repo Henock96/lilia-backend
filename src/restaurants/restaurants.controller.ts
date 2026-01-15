@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { FirebaseAuthGuard } from 'src/firebase/firebase-auth.guard';
 import { RestaurantsService } from './restaurants.service';
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
@@ -14,6 +14,13 @@ export class RestaurantsController {
     @Get()
     findAll() {
         return this.service.findRestaurant();
+    }
+
+    @Get('/nombre-commandes')
+    @UseGuards(FirebaseAuthGuard, RolesGuard)
+    @Roles('ADMIN', 'RESTAURATEUR')
+    findCountOrders(@Req() req) {
+        return this.service.findOne(req.user.uid);
     }
 
     // Endpoint public pour récupérer un restaurant par son ID avec ses produits
@@ -35,17 +42,17 @@ export class RestaurantsController {
     @UseGuards(FirebaseAuthGuard, RolesGuard)
     @Roles('ADMIN', 'RESTAURATEUR')
     findMine(@Req() req) {
-        return this.service.findMine(req.user.uid);
+        return this.service.findRestaurantOwner(req.user.uid);
     }
 
     // Endpoint pour récupérer les clients d'un restaurant spécifique
     @Get(':id/clients')
     @UseGuards(FirebaseAuthGuard, RolesGuard)
     @Roles('ADMIN', 'RESTAURATEUR')
-    findClients(@Param('id') id: string) {
+    findClients(@Param('id') id: string, @Query('page') page: number, @Query('limit') limit: number) {
         // Note : Une vérification supplémentaire pourrait être ajoutée ici 
         // pour s'assurer que le 'RESTAURATEUR' est bien le propriétaire du restaurant 'id'
-        return this.service.findClients(id);
+        return this.service.findClients(page, limit, id);
     }
 
     @Get(':id/clients/:userId/orders')
@@ -55,6 +62,6 @@ export class RestaurantsController {
         @Param('id') restaurantId: string,
         @Param('userId') userId: string,
     ) {
-        return this.service.findClientOrders(restaurantId, userId);
+        return this.service.findClientWithOrders(restaurantId, userId);
     }
 }

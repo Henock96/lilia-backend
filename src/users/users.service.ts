@@ -4,10 +4,14 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UserCreatedEvent } from 'src/events/user-events';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+
 
 @Injectable()
 export class UserService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService,     private eventEmitter: EventEmitter2,
+  ) {}
 
   async createUser(data: Prisma.UserCreateInput) {
     return this.prisma.user.create({
@@ -43,7 +47,14 @@ export class UserService {
       });
       console.log(`Informations utilisateur mises à jour : ${email}`);
     }
+    // 🔥 ÉMETTRE L'ÉVÉNEMENT au lieu d'appeler directement les notifications
+    const userCreatedEvent = new UserCreatedEvent(
+      user.id,
+      user.nom,
+      user.createdAt
+    );
 
+    this.eventEmitter.emit('user.created', userCreatedEvent);
     return user;
   }
 

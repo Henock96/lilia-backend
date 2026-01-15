@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Module, OnModuleInit } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MtnMomoService } from './services/mtn-momo.service';
 import { PaymentService } from './services/payment.service';
@@ -13,10 +13,10 @@ import { PrismaModule } from '../prisma/prisma.module';
   providers: [MtnMomoService, PaymentService],
   exports: [PaymentService],
 })
-export class PaymentModule implements OnModuleInit {
+export class PaymentModule {
   constructor(private readonly mtnMomoService: MtnMomoService) {}
 
-  async onModuleInit() {
+  /*async onModuleInit() {
     await this.mtnMomoService.initialize();
-  }
+  }*/
 }

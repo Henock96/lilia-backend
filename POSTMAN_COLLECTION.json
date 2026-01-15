@@ -1,0 +1,305 @@
+{
+  "info": {
+    "name": "Lilia Food - Tests Nouveautés",
+    "description": "Collection de tests pour les menus et la fonctionnalité reorder",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Menus",
+      "item": [
+        {
+          "name": "1. Créer un Menu",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{firebase_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nom\": \"Menu du Jour - Test\",\n  \"description\": \"Menu spécial pour les tests\",\n  \"prix\": 5000,\n  \"imageUrl\": \"https://example.com/menu-test.jpg\",\n  \"dateDebut\": \"2026-01-15T08:00:00Z\",\n  \"dateFin\": \"2026-01-15T22:00:00Z\",\n  \"isActive\": true,\n  \"products\": [\n    {\n      \"productId\": \"{{product_id_1}}\",\n      \"ordre\": 1\n    },\n    {\n      \"productId\": \"{{product_id_2}}\",\n      \"ordre\": 2\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/menus",
+              "host": ["{{base_url}}"],
+              "path": ["menus"]
+            }
+          }
+        },
+        {
+          "name": "2. Lister Tous les Menus",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/menus",
+              "host": ["{{base_url}}"],
+              "path": ["menus"]
+            }
+          }
+        },
+        {
+          "name": "3. Menus Actifs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/menus/active",
+              "host": ["{{base_url}}"],
+              "path": ["menus", "active"]
+            }
+          }
+        },
+        {
+          "name": "4. Mes Menus (Restaurateur)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{firebase_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/menus/restaurant",
+              "host": ["{{base_url}}"],
+              "path": ["menus", "restaurant"]
+            }
+          }
+        },
+        {
+          "name": "5. Récupérer Menu par ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/menus/{{menu_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["menus", "{{menu_id}}"]
+            }
+          }
+        },
+        {
+          "name": "6. Mettre à Jour Menu",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{firebase_token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nom\": \"Menu Modifié\",\n  \"prix\": 4500,\n  \"isActive\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/menus/{{menu_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["menus", "{{menu_id}}"]
+            }
+          }
+        },
+        {
+          "name": "7. Toggle Actif/Inactif",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{firebase_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/menus/{{menu_id}}/toggle",
+              "host": ["{{base_url}}"],
+              "path": ["menus", "{{menu_id}}", "toggle"]
+            }
+          }
+        },
+        {
+          "name": "8. Supprimer Menu",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{firebase_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/menus/{{menu_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["menus", "{{menu_id}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reorder",
+      "item": [
+        {
+          "name": "1. Recommander une Commande",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{firebase_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/orders/{{order_id}}/reorder",
+              "host": ["{{base_url}}"],
+              "path": ["orders", "{{order_id}}", "reorder"]
+            }
+          }
+        },
+        {
+          "name": "2. Voir Mon Panier",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{firebase_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/cart",
+              "host": ["{{base_url}}"],
+              "path": ["cart"]
+            }
+          }
+        },
+        {
+          "name": "3. Vider le Panier",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{firebase_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/cart/clear",
+              "host": ["{{base_url}}"],
+              "path": ["cart", "clear"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Utilitaires",
+      "item": [
+        {
+          "name": "Lister Mes Commandes",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{firebase_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/orders/users?page=1&limit=10",
+              "host": ["{{base_url}}"],
+              "path": ["orders", "users"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Lister Produits du Restaurant",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/products?restaurantId={{restaurant_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["products"],
+              "query": [
+                {
+                  "key": "restaurantId",
+                  "value": "{{restaurant_id}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "firebase_token",
+      "value": "YOUR_FIREBASE_TOKEN_HERE",
+      "type": "string"
+    },
+    {
+      "key": "menu_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "order_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "restaurant_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "product_id_1",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "product_id_2",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}
