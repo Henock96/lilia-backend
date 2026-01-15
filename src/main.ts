@@ -5,9 +5,9 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { join } from 'path';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { HttpExceptionFilter } from './common/exception-filters/http-exception.filter';
-
+import * as admin from 'firebase-admin';
 async function bootstrap() {
-  /*if (!admin.apps.length) {
+  if (!admin.apps.length) {
     try {
       console.log('🔄 Initializing Firebase Admin SDK on Render...');
       // Vérification des variables d'environnement
@@ -45,7 +45,7 @@ async function bootstrap() {
         process.exit(1); // Arrêter en production si Firebase échoue
       }
     }
-  }*/
+  }
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   app.useStaticAssets(join(__dirname, '..', 'public'));
   const config = new DocumentBuilder()
