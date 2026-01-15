@@ -57,3 +57,4 @@ pids
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 /generated/prisma
+/config/lilia-app-d8f6f-firebase-adminsdk-fbsvc-d78afa0663.json
