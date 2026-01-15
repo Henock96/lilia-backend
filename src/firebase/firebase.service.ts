@@ -1,6 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import * as admin from 'firebase-admin';
+import * as fs from 'fs';
+import * as path from 'path';
 
 @Injectable()
 export class FirebaseService implements OnModuleInit {
@@ -22,48 +24,52 @@ export class FirebaseService implements OnModuleInit {
     try {
       this.logger.log('Initializing Firebase Admin SDK...');
 
-      // Verification des variables d'environnement requises
-      const requiredEnvVars = [
-        'FIREBASE_PROJECT_ID',
-        'FIREBASE_PRIVATE_KEY',
-        'FIREBASE_CLIENT_EMAIL'
-      ];
+      let credential: admin.credential.Credential;
 
-      const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+      // Option 1: Utiliser le chemin vers le fichier JSON (pour le dev local)
+      if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+        const serviceAccountPath = path.resolve(process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
 
-      if (missingVars.length > 0) {
-        throw new Error(
-          `Missing Firebase environment variables: ${missingVars.join(', ')}\n` +
-          'Please set these in your .env file or environment'
-        );
+        if (!fs.existsSync(serviceAccountPath)) {
+          throw new Error(
+            `Firebase service account file not found at: ${serviceAccountPath}`
+          );
+        }
+
+        this.logger.log('Using service account file for Firebase initialization');
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const serviceAccount = require(serviceAccountPath);
+        credential = admin.credential.cert(serviceAccount);
       }
+      // Option 2: Utiliser les variables d'environnement (pour la production)
+      else if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL) {
+        this.logger.log('Using environment variables for Firebase initialization');
 
-      // Debug des variables d'environnement (sans exposer les secrets)
-      this.logger.log(`Project ID: ${process.env.FIREBASE_PROJECT_ID ? 'SET' : 'NOT SET'}`);
-      this.logger.log(`Client Email: ${process.env.FIREBASE_CLIENT_EMAIL ? 'SET' : 'NOT SET'}`);
-      this.logger.log(`Private Key: ${process.env.FIREBASE_PRIVATE_KEY ? `SET (${process.env.FIREBASE_PRIVATE_KEY.length} chars)` : 'NOT SET'}`);
+        // Traitement de la cle privee
+        let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+        privateKey = privateKey.replace(/\\n/g, '\n');
 
-      // Traitement de la cle privee
-      let privateKey = process.env.FIREBASE_PRIVATE_KEY!;
+        if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
+          throw new Error('Firebase private key format is invalid');
+        }
 
-      // Remplacer les \n litteraux par des vrais retours a la ligne
-      privateKey = privateKey.replace(/\\n/g, '\n');
-
-      // Validation du format de la cle
-      if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
-        throw new Error(
-          'Firebase private key format is invalid.\n' +
-          'Make sure the key includes "-----BEGIN PRIVATE KEY-----" header'
-        );
-      }
-
-      // Initialisation avec les variables d'environnement
-      admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId: process.env.FIREBASE_PROJECT_ID!,
+        credential = admin.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID,
           privateKey: privateKey,
-          clientEmail: process.env.FIREBASE_CLIENT_EMAIL!,
-        }),
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        });
+      }
+      else {
+        throw new Error(
+          'Firebase configuration not found. Please set either:\n' +
+          '- FIREBASE_SERVICE_ACCOUNT_PATH (path to JSON file)\n' +
+          '- Or all of: FIREBASE_PROJECT_ID, FIREBASE_PRIVATE_KEY, FIREBASE_CLIENT_EMAIL'
+        );
+      }
+
+      // Initialiser Firebase
+      admin.initializeApp({
+        credential: credential,
         projectId: process.env.FIREBASE_PROJECT_ID,
       });
 
@@ -75,24 +81,12 @@ export class FirebaseService implements OnModuleInit {
 
     } catch (error) {
       this.initializationError = error;
-      this.logger.error('Firebase initialization failed:', {
-        message: error.message,
-        code: error.code,
-      });
-
-      // Debug supplementaire en cas d'erreur
-      this.logger.error('Debugging info:', {
-        nodeEnv: process.env.NODE_ENV,
-        hasProjectId: !!process.env.FIREBASE_PROJECT_ID,
-        hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
-        privateKeyLength: process.env.FIREBASE_PRIVATE_KEY?.length || 0,
-      });
+      this.logger.error('Firebase initialization failed:', error.message);
     }
   }
 
   private async validateConnection() {
     try {
-      // Test FCM pour verifier que le service est accessible
       const messaging = admin.messaging();
 
       // Test avec un token invalide pour verifier que le service repond
@@ -102,7 +96,6 @@ export class FirebaseService implements OnModuleInit {
           notification: { title: 'Test', body: 'Test' }
         });
       } catch (testError) {
-        // On s'attend a une erreur "invalid-registration-token" - c'est normal
         if (testError.code === 'messaging/invalid-registration-token') {
           this.logger.log('FCM service accessible (validation successful)');
         } else {
@@ -115,7 +108,6 @@ export class FirebaseService implements OnModuleInit {
     }
   }
 
-  // Methode pour obtenir le service Messaging
   getMessaging() {
     if (!this.isInitialized) {
       throw new Error(`Firebase not initialized: ${this.initializationError?.message}`);
@@ -123,7 +115,6 @@ export class FirebaseService implements OnModuleInit {
     return admin.messaging();
   }
 
-  // Methode pour obtenir le service Auth
   getAuth() {
     if (!this.isInitialized) {
       throw new Error(`Firebase not initialized: ${this.initializationError?.message}`);
@@ -131,7 +122,6 @@ export class FirebaseService implements OnModuleInit {
     return admin.auth();
   }
 
-  // Methode utilitaire pour verifier le statut
   isReady(): boolean {
     return this.isInitialized;
   }
