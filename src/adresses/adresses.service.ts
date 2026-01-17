@@ -32,6 +32,9 @@ export class AdressesService {
     }
     return this.prisma.adresses.findMany({
       where: { userId: user.id },
+      include: {
+        quartier: true, // Inclure les infos du quartier
+      },
     });
   }
 

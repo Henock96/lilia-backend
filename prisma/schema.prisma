@@ -43,33 +43,40 @@ model FcmToken {
 }
 
 model Adresses {
-  id        String   @id @default(cuid())
-  rue    String
+  id         String    @id @default(cuid())
+  rue        String
   ville      String
-  etat     String?  // Région/État
-  country   String
-  user      User     @relation(fields: [userId], references: [id])
-  userId    String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  etat       String?   // Région/État
+  country    String
+  user       User      @relation(fields: [userId], references: [id])
+  userId     String
+  quartier   Quartier? @relation(fields: [quartierId], references: [id])
+  quartierId String?   // Référence au quartier pour le calcul des frais
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   @@index([userId])
+  @@index([quartierId])
 }
 
 model Restaurant {
-  id          String   @id @default(cuid())
-  nom        String
-  adresse     String
-  phone       String
-  imageUrl    String?
-  owner       User     @relation(fields: [ownerId], references: [id])
-  ownerId     String   @unique
-  products    Product[]
-  menuDuJour    MenuDuJour[]
-  orders      Order[]
-  reviews     Review[]  // Avis sur le restaurant
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                String            @id @default(cuid())
+  nom               String
+  adresse           String
+  phone             String
+  imageUrl          String?
+  owner             User              @relation(fields: [ownerId], references: [id])
+  ownerId           String            @unique
+  products          Product[]
+  menuDuJour        MenuDuJour[]
+  orders            Order[]
+  reviews           Review[]          // Avis sur le restaurant
+  // Configuration de la livraison
+  deliveryPriceMode DeliveryPriceMode @default(FIXED)
+  fixedDeliveryFee  Float             @default(500)  // Prix fixe si mode FIXED
+  deliveryZones     DeliveryZone[]    // Zones de livraison si mode ZONE_BASED
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
 }
 
 model Category {
@@ -283,6 +290,12 @@ enum PaymentStatus {
   CANCELLED
 }
 
+// Mode de tarification de la livraison pour chaque restaurant
+enum DeliveryPriceMode {
+  FIXED       // Prix fixe pour toutes les livraisons
+  ZONE_BASED  // Prix selon le quartier/zone
+}
+
 // Modèle pour les avis et notes des clients
 model Review {
   id           String     @id @default(cuid())
@@ -299,4 +312,41 @@ model Review {
   @@unique([userId, restaurantId]) // Un utilisateur ne peut laisser qu'un seul avis par restaurant
   @@index([restaurantId])
   @@index([userId])
+}
+
+// Zones de livraison avec prix personnalisé par restaurant
+model DeliveryZone {
+  id           String     @id @default(cuid())
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  restaurantId String
+  zoneName     String     // Ex: "Zone 1", "Centre-ville", etc.
+  fee          Float      // Prix de livraison pour cette zone
+  quartiers    QuartierZone[] // Quartiers inclus dans cette zone
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([restaurantId])
+}
+
+// Liste des quartiers de Brazzaville
+model Quartier {
+  id        String         @id @default(cuid())
+  nom       String         @unique  // Ex: "Bacongo", "Poto-Poto", "Talangaï"
+  ville     String         @default("Brazzaville")
+  zones     QuartierZone[]
+  adresses  Adresses[]
+  createdAt DateTime       @default(now())
+}
+
+// Table de liaison entre quartiers et zones de livraison
+model QuartierZone {
+  id             String       @id @default(cuid())
+  quartier       Quartier     @relation(fields: [quartierId], references: [id], onDelete: Cascade)
+  quartierId     String
+  deliveryZone   DeliveryZone @relation(fields: [deliveryZoneId], references: [id], onDelete: Cascade)
+  deliveryZoneId String
+
+  @@unique([quartierId, deliveryZoneId])
+  @@index([quartierId])
+  @@index([deliveryZoneId])
 }

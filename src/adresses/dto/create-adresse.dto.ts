@@ -16,4 +16,8 @@ export class CreateAdresseDto {
   @IsString()
   @IsNotEmpty()
   country: string;
+
+  @IsString()
+  @IsOptional()
+  quartierId?: string; // ID du quartier pour le calcul des frais de livraison
 }
