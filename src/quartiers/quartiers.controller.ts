@@ -1,6 +1,7 @@
+/* eslint-disable prettier/prettier */
 import { Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { QuartiersService } from './quartiers.service';
-import { FirebaseAuthGuard } from 'src/auth/firebase-auth.guard';
+import { FirebaseAuthGuard } from 'src/firebase/firebase-auth.guard';
 
 @Controller('quartiers')
 export class QuartiersController {
