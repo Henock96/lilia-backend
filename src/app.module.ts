@@ -22,6 +22,7 @@ import { PaymentModule } from './payments/payment.module';
 import { PaymentListener } from './listeners/payment.listener';
 import { MenusModule } from './menus/menus.module';
 import { MenusListener } from './listeners/menus.listener';
+import { ReviewsModule } from './reviews/reviews.module';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { MenusListener } from './listeners/menus.listener';
     HealthsModule,
     PaymentModule,
     MenusModule,
+    ReviewsModule,
   ],
   controllers: [AppController],
   providers: [AppService, OrdersListener, PaymentListener, MenusListener],

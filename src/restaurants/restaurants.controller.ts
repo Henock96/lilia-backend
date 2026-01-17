@@ -23,6 +23,15 @@ export class RestaurantsController {
         return this.service.findOne(req.user.uid);
     }
 
+    // Endpoint protégé pour que le restaurateur récupère son propre restaurant
+    // IMPORTANT: Cette route doit être AVANT :id pour éviter que 'mine' soit interprété comme un ID
+    @Get('mine')
+    @UseGuards(FirebaseAuthGuard, RolesGuard)
+    @Roles('ADMIN', 'RESTAURATEUR')
+    findMine(@Req() req) {
+        return this.service.findRestaurantOwner(req.user.uid);
+    }
+
     // Endpoint public pour récupérer un restaurant par son ID avec ses produits
     @Get(':id')
     findOne(@Param('id') id: string) {
@@ -35,14 +44,6 @@ export class RestaurantsController {
     @Roles('ADMIN', 'RESTAURATEUR')
     create(@Body() dto: CreateRestaurantDto, @Req() req){
         return this.service.create(dto, req.user.uid)
-    }
-
-    // Endpoint protégé pour que le restaurateur récupère son propre restaurant
-    @Get('mine')
-    @UseGuards(FirebaseAuthGuard, RolesGuard)
-    @Roles('ADMIN', 'RESTAURATEUR')
-    findMine(@Req() req) {
-        return this.service.findRestaurantOwner(req.user.uid);
     }
 
     // Endpoint pour récupérer les clients d'un restaurant spécifique

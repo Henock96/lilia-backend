@@ -180,10 +180,11 @@ model Order {
   restaurantId    String
   userId          String        // Corresponds to User id
   subTotal        Float         // Sous-total des articles
-  deliveryFee     Float         // Frais de livraison
+  deliveryFee     Float         // Frais de livraison (0 si retrait)
   total           Float         // Montant total (subTotal + deliveryFee)
-  deliveryAddress String        // Adresse de livraison sous forme de chaîne  
-  deleteCommande  Boolean       @default(false)       
+  isDelivery      Boolean       @default(true)  // true = livraison, false = retrait au restaurant
+  deliveryAddress String?       // Adresse de livraison (null si retrait)
+  deleteCommande  Boolean       @default(false)
   paymentMethod   PaymentMethod // Méthode de paiement
   status          OrderStatus   @default(EN_ATTENTE)
   paidAt          DateTime?     // Date de paiement

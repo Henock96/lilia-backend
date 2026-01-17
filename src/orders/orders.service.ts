@@ -33,7 +33,7 @@ export class OrdersService {
     firebaseUid: string,
     createOrderDto: CreateOrderDto,
   ) {
-    const { adresseId, paymentMethod, notes } = createOrderDto;
+    const { adresseId, paymentMethod, notes, isDelivery = true } = createOrderDto;
 
     const user = await this.prisma.user.findUnique({
       where: { firebaseUid },
@@ -55,17 +55,30 @@ export class OrdersService {
       throw new NotFoundException('Utilisateur non trouvé.');
     }
 
-    // 1. Vérifier l'adresse de livraison
-    const deliveryAddress = await this.prisma.adresses.findUnique({
-      where: { id: adresseId },
-    });
-    if (!deliveryAddress) {
-      throw new NotFoundException(
-        "L'adresse de livraison spécifiée n'existe pas.",
-      );
-    }
-    if (deliveryAddress.userId !== user.id) {
-      throw new ForbiddenException('Cette adresse ne vous appartient pas.');
+    // 1. Vérifier l'adresse de livraison (seulement si c'est une livraison)
+    let deliveryAddressString: string | null = null;
+
+    if (isDelivery) {
+      if (!adresseId) {
+        throw new BadRequestException(
+          'Une adresse de livraison est requise pour la livraison à domicile.',
+        );
+      }
+
+      const deliveryAddress = await this.prisma.adresses.findUnique({
+        where: { id: adresseId },
+      });
+      if (!deliveryAddress) {
+        throw new NotFoundException(
+          "L'adresse de livraison spécifiée n'existe pas.",
+        );
+      }
+      if (deliveryAddress.userId !== user.id) {
+        throw new ForbiddenException('Cette adresse ne vous appartient pas.');
+      }
+
+      // Formatter l'adresse pour le snapshot
+      deliveryAddressString = `${deliveryAddress.rue}, ${deliveryAddress.ville}, ${deliveryAddress.country}`;
     }
 
     // 2. Vérifier le panier
@@ -92,11 +105,9 @@ export class OrdersService {
       return total + item.variant.prix * item.quantite;
     }, 0);
 
-    const deliveryFee = parseFloat(process.env.DELIVERY_FEE || '500');
+    // Frais de livraison: appliqués seulement si c'est une livraison à domicile
+    const deliveryFee = isDelivery ? parseFloat(process.env.DELIVERY_FEE || '500') : 0;
     const total = subTotal + deliveryFee;
-
-    // Formatter l'adresse pour le snapshot
-    const deliveryAddressString = `${deliveryAddress.rue}, ${deliveryAddress.ville}, ${deliveryAddress.country}`;
 
     // 5. Exécuter la création de la commande et la suppression du panier dans une transaction
     const order = await this.prisma.$transaction(async (tx) => {
@@ -107,6 +118,7 @@ export class OrdersService {
           subTotal,
           deliveryFee,
           total,
+          isDelivery,
           notes,
           deliveryAddress: deliveryAddressString,
           paymentMethod,
