@@ -33,7 +33,12 @@ export class OrdersService {
     firebaseUid: string,
     createOrderDto: CreateOrderDto,
   ) {
-    const { adresseId, paymentMethod, notes, isDelivery = true } = createOrderDto;
+    const {
+      adresseId,
+      paymentMethod,
+      notes,
+      isDelivery = true,
+    } = createOrderDto;
 
     const user = await this.prisma.user.findUnique({
       where: { firebaseUid },
@@ -106,7 +111,9 @@ export class OrdersService {
     }, 0);
 
     // Frais de livraison: appliqués seulement si c'est une livraison à domicile
-    const deliveryFee = isDelivery ? parseFloat(process.env.DELIVERY_FEE || '500') : 0;
+    const deliveryFee = isDelivery
+      ? parseFloat(process.env.DELIVERY_FEE || '1000')
+      : 0;
     const total = subTotal + deliveryFee;
 
     // 5. Exécuter la création de la commande et la suppression du panier dans une transaction
@@ -370,7 +377,7 @@ export class OrdersService {
     // 1. Vérifier l'utilisateur
     const user = await this.prisma.user.findUnique({
       where: { firebaseUid },
-      include: { cart: true }
+      include: { cart: true },
     });
 
     if (!user) {
@@ -405,9 +412,7 @@ export class OrdersService {
 
     // 3. Vérifier que l'utilisateur est le propriétaire de la commande
     if (order.userId !== user.id) {
-      throw new ForbiddenException(
-        "Cette commande ne vous appartient pas.",
-      );
+      throw new ForbiddenException('Cette commande ne vous appartient pas.');
     }
 
     // 4. Vérifier le panier actuel
@@ -457,14 +462,14 @@ export class OrdersService {
         // Trouver la variante correspondante
         // On cherche par label ou on prend la première variante disponible
         let variant = product.variants.find(
-          (v) => v.label === orderItem.variant
+          (v) => v.label === orderItem.variant,
         );
 
         // Si la variante n'existe plus, prendre la première disponible
         if (!variant && product.variants.length > 0) {
           variant = product.variants[0];
           this.logger.warn(
-            `Variant "${orderItem.variant}" not found for product ${product.id}, using default variant`
+            `Variant "${orderItem.variant}" not found for product ${product.id}, using default variant`,
           );
         }
 
@@ -514,7 +519,7 @@ export class OrdersService {
       } catch (error) {
         this.logger.error(
           `Error adding item ${orderItem.productId} to cart:`,
-          error
+          error,
         );
         results.errors.push({
           productId: orderItem.productId,
@@ -533,13 +538,13 @@ export class OrdersService {
               select: {
                 nom: true,
                 imageUrl: true,
-                restaurantId: true
+                restaurantId: true,
               },
             },
             variant: {
               select: {
                 label: true,
-                prix: true
+                prix: true,
               },
             },
           },
