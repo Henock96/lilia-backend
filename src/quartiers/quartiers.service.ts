@@ -4,18 +4,23 @@ import { PrismaService } from 'src/prisma/prisma.service';
 
 // Liste des quartiers de Brazzaville
 export const QUARTIERS_BRAZZAVILLE = [
+  // Centre-ville
+  'Centre-ville',
+  'Plateau',
+  'La Gare',
+  'Marché Total',
+  'Marché Poto-Poto',
   // Arrondissement 1 - Makélékélé
   'Makélékélé',
-  'Ngangouoni',
-  'Matour',
+  //'Ngangouoni',
+  //'Matour',
   'Bifouiti',
-  'Mbota',
+  //'Mbota',
 
   // Arrondissement 2 - Bacongo
   'Bacongo',
-  'Mpissa',
-  'Dahlia',
-  'Saint-Pierre',
+  //'Mpissa',
+  //'Saint-Pierre',
 
   // Arrondissement 3 - Poto-Poto
   'Poto-Poto',
@@ -25,11 +30,11 @@ export const QUARTIERS_BRAZZAVILLE = [
   // Arrondissement 4 - Moungali
   'Moungali',
   'Ouenzé',
-  'Moukoundzi-Ngouaka',
-  'Dragage',
+  //'Moukoundzi-Ngouaka',
+  //'Dragage',
 
   // Arrondissement 5 - Ouenzé
-  'La Tsiémé',
+  //'La Tsiémé',
   'Mpila',
   'Texaco',
 
@@ -38,32 +43,27 @@ export const QUARTIERS_BRAZZAVILLE = [
   'Mikalou',
   'Nkombo',
   'Massengo',
-  'Yoro',
+  //'Yoro',
 
   // Arrondissement 7 - Mfilou
   'Mfilou',
   'Ngamakosso',
-  'Madibou',
+  //'Madibou',
   'Kinsoundi',
-  'Mafouta',
+  //'Mafouta',
 
   // Arrondissement 8 - Madibou
-  'Madibou-Gare',
-  'Mayanga',
-  'Mbouono',
+  //'Madibou-Gare',
+  //'Mayanga',
+  //'Mbouono',
 
   // Arrondissement 9 - Djiri
   'Djiri',
-  'Itatolo',
-  'Kibouendé',
-  'Sadelmi',
+  //'Itatolo',
+  //'Kibouendé',
+  //'Sadelmi',
 
-  // Centre-ville
-  'Centre-ville',
-  'Plateau',
-  'La Gare',
-  'Marché Total',
-  'Marché Poto-Poto',
+  
 ];
 
 @Injectable()
