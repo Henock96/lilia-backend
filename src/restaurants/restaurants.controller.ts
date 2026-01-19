@@ -1,8 +1,14 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { FirebaseAuthGuard } from 'src/firebase/firebase-auth.guard';
 import { RestaurantsService } from './restaurants.service';
-import { CreateRestaurantDto } from './dto/create-restaurant.dto';
+import {
+    CreateRestaurantDto,
+    UpdateDeliverySettingsDto,
+    UpdateOpenStatusDto,
+    AddSpecialtyDto,
+    UpdateRestaurantDto
+} from './dto/create-restaurant.dto';
 import { Roles } from 'src/firebase/roles.decorator';
 import { RolesGuard } from 'src/firebase/roles.guard';
 
@@ -46,13 +52,101 @@ export class RestaurantsController {
         return this.service.create(dto, req.user.uid)
     }
 
+    // ============ NOUVEAUX ENDPOINTS ============
+
+    /**
+     * PATCH /restaurants/:id
+     * Met à jour les informations générales du restaurant
+     */
+    @Patch(':id')
+    @UseGuards(FirebaseAuthGuard, RolesGuard)
+    @Roles('ADMIN', 'RESTAURATEUR')
+    updateRestaurant(
+        @Param('id') id: string,
+        @Body() dto: UpdateRestaurantDto,
+        @Req() req,
+    ) {
+        return this.service.updateRestaurant(id, req.user.uid, dto);
+    }
+
+    /**
+     * PATCH /restaurants/:id/open-status
+     * Active/désactive le restaurant (ouvert/fermé)
+     */
+    @Patch(':id/open-status')
+    @UseGuards(FirebaseAuthGuard, RolesGuard)
+    @Roles('ADMIN', 'RESTAURATEUR')
+    updateOpenStatus(
+        @Param('id') id: string,
+        @Body() dto: UpdateOpenStatusDto,
+        @Req() req,
+    ) {
+        return this.service.updateOpenStatus(id, req.user.uid, dto);
+    }
+
+    /**
+     * PATCH /restaurants/:id/delivery-settings
+     * Met à jour les paramètres de livraison
+     */
+    @Patch(':id/delivery-settings')
+    @UseGuards(FirebaseAuthGuard, RolesGuard)
+    @Roles('ADMIN', 'RESTAURATEUR')
+    updateDeliverySettings(
+        @Param('id') id: string,
+        @Body() dto: UpdateDeliverySettingsDto,
+        @Req() req,
+    ) {
+        return this.service.updateDeliverySettings(id, req.user.uid, dto);
+    }
+
+    // ============ ENDPOINTS SPÉCIALITÉS ============
+
+    /**
+     * GET /restaurants/:id/specialties
+     * Récupère les spécialités d'un restaurant
+     */
+    @Get(':id/specialties')
+    getSpecialties(@Param('id') id: string) {
+        return this.service.getSpecialties(id);
+    }
+
+    /**
+     * POST /restaurants/:id/specialties
+     * Ajoute une spécialité au restaurant
+     */
+    @Post(':id/specialties')
+    @UseGuards(FirebaseAuthGuard, RolesGuard)
+    @Roles('ADMIN', 'RESTAURATEUR')
+    addSpecialty(
+        @Param('id') id: string,
+        @Body() dto: AddSpecialtyDto,
+        @Req() req,
+    ) {
+        return this.service.addSpecialty(id, req.user.uid, dto);
+    }
+
+    /**
+     * DELETE /restaurants/:id/specialties/:specialtyId
+     * Supprime une spécialité du restaurant
+     */
+    @Delete(':id/specialties/:specialtyId')
+    @UseGuards(FirebaseAuthGuard, RolesGuard)
+    @Roles('ADMIN', 'RESTAURATEUR')
+    removeSpecialty(
+        @Param('id') id: string,
+        @Param('specialtyId') specialtyId: string,
+        @Req() req,
+    ) {
+        return this.service.removeSpecialty(id, specialtyId, req.user.uid);
+    }
+
+    // ============ ENDPOINTS CLIENTS ============
+
     // Endpoint pour récupérer les clients d'un restaurant spécifique
     @Get(':id/clients')
     @UseGuards(FirebaseAuthGuard, RolesGuard)
     @Roles('ADMIN', 'RESTAURATEUR')
     findClients(@Param('id') id: string, @Query('page') page: number, @Query('limit') limit: number) {
-        // Note : Une vérification supplémentaire pourrait être ajoutée ici 
-        // pour s'assurer que le 'RESTAURATEUR' est bien le propriétaire du restaurant 'id'
         return this.service.findClients(page, limit, id);
     }
 

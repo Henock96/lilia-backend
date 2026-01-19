@@ -1,7 +1,13 @@
 /* eslint-disable prettier/prettier */
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { CreateRestaurantDto } from './dto/create-restaurant.dto';
+import {
+    CreateRestaurantDto,
+    UpdateDeliverySettingsDto,
+    UpdateOpenStatusDto,
+    AddSpecialtyDto,
+    UpdateRestaurantDto
+} from './dto/create-restaurant.dto';
 
 @Injectable()
 export class RestaurantsService {
@@ -26,11 +32,22 @@ export class RestaurantsService {
             throw new ForbiddenException("Vous avez déjà un restaurant.");
         }
 
+        const { specialties, ...restaurantData } = data;
+
         // 3. Créer le restaurant en utilisant l'ID interne de l'utilisateur pour la relation
         const resto = await this.prisma.restaurant.create({
             data: {
-                ...data,
+                ...restaurantData,
                 owner: { connect: { id: user.id }},
+                // Créer les spécialités si fournies
+                ...(specialties && specialties.length > 0 && {
+                    specialties: {
+                        create: specialties.map(name => ({ name })),
+                    },
+                }),
+            },
+            include: {
+                specialties: true,
             },
         });
 
@@ -40,9 +57,176 @@ export class RestaurantsService {
         }
     }
 
+    /**
+     * Met à jour le statut d'ouverture du restaurant
+     */
+    async updateOpenStatus(restaurantId: string, firebaseUid: string, dto: UpdateOpenStatusDto) {
+        const restaurant = await this.verifyOwnership(restaurantId, firebaseUid);
+
+        const updated = await this.prisma.restaurant.update({
+            where: { id: restaurant.id },
+            data: { isOpen: dto.isOpen },
+            include: { specialties: true },
+        });
+
+        return {
+            data: updated,
+            message: dto.isOpen ? 'Restaurant ouvert' : 'Restaurant fermé',
+        };
+    }
+
+    /**
+     * Met à jour les paramètres de livraison du restaurant
+     */
+    async updateDeliverySettings(restaurantId: string, firebaseUid: string, dto: UpdateDeliverySettingsDto) {
+        const restaurant = await this.verifyOwnership(restaurantId, firebaseUid);
+
+        const updated = await this.prisma.restaurant.update({
+            where: { id: restaurant.id },
+            data: {
+                ...(dto.fixedDeliveryFee !== undefined && { fixedDeliveryFee: dto.fixedDeliveryFee }),
+                ...(dto.estimatedDeliveryTimeMin !== undefined && { estimatedDeliveryTimeMin: dto.estimatedDeliveryTimeMin }),
+                ...(dto.estimatedDeliveryTimeMax !== undefined && { estimatedDeliveryTimeMax: dto.estimatedDeliveryTimeMax }),
+                ...(dto.minimumOrderAmount !== undefined && { minimumOrderAmount: dto.minimumOrderAmount }),
+                ...(dto.deliveryPriceMode !== undefined && { deliveryPriceMode: dto.deliveryPriceMode }),
+            },
+            include: { specialties: true },
+        });
+
+        return {
+            data: updated,
+            message: 'Paramètres de livraison mis à jour',
+        };
+    }
+
+    /**
+     * Met à jour les informations générales du restaurant
+     */
+    async updateRestaurant(restaurantId: string, firebaseUid: string, dto: UpdateRestaurantDto) {
+        const restaurant = await this.verifyOwnership(restaurantId, firebaseUid);
+
+        const updated = await this.prisma.restaurant.update({
+            where: { id: restaurant.id },
+            data: dto,
+            include: { specialties: true },
+        });
+
+        return {
+            data: updated,
+            message: 'Restaurant mis à jour',
+        };
+    }
+
+    /**
+     * Ajoute une spécialité au restaurant
+     */
+    async addSpecialty(restaurantId: string, firebaseUid: string, dto: AddSpecialtyDto) {
+        const restaurant = await this.verifyOwnership(restaurantId, firebaseUid);
+
+        // Vérifier si la spécialité existe déjà
+        const existing = await this.prisma.specialty.findUnique({
+            where: {
+                restaurantId_name: {
+                    restaurantId: restaurant.id,
+                    name: dto.name,
+                },
+            },
+        });
+
+        if (existing) {
+            throw new BadRequestException('Cette spécialité existe déjà pour ce restaurant');
+        }
+
+        const specialty = await this.prisma.specialty.create({
+            data: {
+                name: dto.name,
+                restaurantId: restaurant.id,
+            },
+        });
+
+        return {
+            data: specialty,
+            message: 'Spécialité ajoutée',
+        };
+    }
+
+    /**
+     * Supprime une spécialité du restaurant
+     */
+    async removeSpecialty(restaurantId: string, specialtyId: string, firebaseUid: string) {
+        const restaurant = await this.verifyOwnership(restaurantId, firebaseUid);
+
+        const specialty = await this.prisma.specialty.findFirst({
+            where: {
+                id: specialtyId,
+                restaurantId: restaurant.id,
+            },
+        });
+
+        if (!specialty) {
+            throw new NotFoundException('Spécialité non trouvée');
+        }
+
+        await this.prisma.specialty.delete({
+            where: { id: specialtyId },
+        });
+
+        return {
+            message: 'Spécialité supprimée',
+        };
+    }
+
+    /**
+     * Récupère les spécialités d'un restaurant
+     */
+    async getSpecialties(restaurantId: string) {
+        const specialties = await this.prisma.specialty.findMany({
+            where: { restaurantId },
+            orderBy: { name: 'asc' },
+        });
+
+        return {
+            data: specialties,
+            count: specialties.length,
+        };
+    }
+
+    /**
+     * Vérifie que l'utilisateur est bien le propriétaire du restaurant
+     */
+    private async verifyOwnership(restaurantId: string, firebaseUid: string) {
+        const user = await this.prisma.user.findUnique({
+            where: { firebaseUid },
+        });
+
+        if (!user) {
+            throw new NotFoundException('Utilisateur non trouvé');
+        }
+
+        const restaurant = await this.prisma.restaurant.findUnique({
+            where: { id: restaurantId },
+        });
+
+        if (!restaurant) {
+            throw new NotFoundException('Restaurant non trouvé');
+        }
+
+        if (restaurant.ownerId !== user.id && user.role !== 'ADMIN') {
+            throw new ForbiddenException('Vous n\'êtes pas autorisé à modifier ce restaurant');
+        }
+
+        return restaurant;
+    }
+
     async findRestaurantOwner(firebaseUid: string){
         const resto =  await this.prisma.restaurant.findMany({
             where: { owner: { firebaseUid } },
+            include: {
+                specialties: true,
+                _count: {
+                    select: { orders: true, products: true },
+                },
+            },
         });
 
         return {
@@ -52,7 +236,12 @@ export class RestaurantsService {
     }
 
     async findRestaurant(){
-        const resto =  await this.prisma.restaurant.findMany();
+        const resto =  await this.prisma.restaurant.findMany({
+            include: {
+                specialties: true,
+            },
+            orderBy: { createdAt: 'desc' },
+        });
         return {
             data: resto,
             message: 'Restaurant récupéré avec succès'
@@ -69,6 +258,7 @@ export class RestaurantsService {
                         variants: true,
                     },
                 },
+                specialties: true,
             },
         });
 

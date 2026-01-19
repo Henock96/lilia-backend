@@ -105,15 +105,40 @@ export class OrdersService {
       );
     }
 
+    // 3.1 Récupérer le restaurant et vérifier s'il est ouvert
+    const restaurant = await this.prisma.restaurant.findUnique({
+      where: { id: firstItemRestaurantId },
+    });
+
+    if (!restaurant) {
+      throw new NotFoundException('Restaurant non trouvé.');
+    }
+
+    // Vérifier si le restaurant est ouvert
+    if (!restaurant.isOpen) {
+      throw new BadRequestException(
+        `Le restaurant "${restaurant.nom}" est actuellement fermé et n'accepte pas de commandes.`,
+      );
+    }
+
     // 4. Calculer les montants
     const subTotal = cartItems.reduce((total, item) => {
       return total + item.variant.prix * item.quantite;
     }, 0);
 
+    // 4.1 Vérifier le montant minimum de commande
+    if (
+      restaurant.minimumOrderAmount > 0 &&
+      subTotal < restaurant.minimumOrderAmount
+    ) {
+      throw new BadRequestException(
+        `Le montant minimum de commande pour ce restaurant est de ${restaurant.minimumOrderAmount} FCFA. Votre panier actuel: ${subTotal} FCFA.`,
+      );
+    }
+
     // Frais de livraison: appliqués seulement si c'est une livraison à domicile
-    const deliveryFee = isDelivery
-      ? parseFloat(process.env.DELIVERY_FEE || '1000')
-      : 0;
+    // Utilise le prix fixe du restaurant ou le prix par défaut
+    const deliveryFee = isDelivery ? restaurant.fixedDeliveryFee : 0;
     const total = subTotal + deliveryFee;
 
     // 5. Exécuter la création de la commande et la suppression du panier dans une transaction

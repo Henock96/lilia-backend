@@ -60,23 +60,44 @@ model Adresses {
 }
 
 model Restaurant {
-  id                String            @id @default(cuid())
-  nom               String
-  adresse           String
-  phone             String
-  imageUrl          String?
-  owner             User              @relation(fields: [ownerId], references: [id])
-  ownerId           String            @unique
-  products          Product[]
-  menuDuJour        MenuDuJour[]
-  orders            Order[]
-  reviews           Review[]          // Avis sur le restaurant
+  id                      String            @id @default(cuid())
+  nom                     String
+  adresse                 String
+  phone                   String
+  imageUrl                String?
+  owner                   User              @relation(fields: [ownerId], references: [id])
+  ownerId                 String            @unique
+  products                Product[]
+  menuDuJour              MenuDuJour[]
+  orders                  Order[]
+  reviews                 Review[]          // Avis sur le restaurant
+  specialties             Specialty[]       // Spécialités du restaurant
+
+  // Statut d'ouverture
+  isOpen                  Boolean           @default(true)  // Restaurant ouvert/fermé
+
   // Configuration de la livraison
-  deliveryPriceMode DeliveryPriceMode @default(FIXED)
-  fixedDeliveryFee  Float             @default(500)  // Prix fixe si mode FIXED
-  deliveryZones     DeliveryZone[]    // Zones de livraison si mode ZONE_BASED
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
+  deliveryPriceMode       DeliveryPriceMode @default(FIXED)
+  fixedDeliveryFee        Float             @default(500)   // Prix fixe si mode FIXED
+  deliveryZones           DeliveryZone[]    // Zones de livraison si mode ZONE_BASED
+  estimatedDeliveryTimeMin Int              @default(15)    // Temps de livraison min (minutes)
+  estimatedDeliveryTimeMax Int              @default(30)    // Temps de livraison max (minutes)
+  minimumOrderAmount      Float             @default(0)     // Montant minimum de commande
+
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
+}
+
+// Spécialités d'un restaurant (ex: "Pizza", "Sushi", "Burgers", "Africain")
+model Specialty {
+  id           String     @id @default(cuid())
+  name         String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  restaurantId String
+  createdAt    DateTime   @default(now())
+
+  @@unique([restaurantId, name]) // Une spécialité unique par restaurant
+  @@index([restaurantId])
 }
 
 model Category {
