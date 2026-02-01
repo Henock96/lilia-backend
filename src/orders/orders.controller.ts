@@ -74,7 +74,7 @@ export class OrdersController {
   @ApiOperation({
     summary: 'Recommander une commande précédente',
     description:
-      'Ajoute tous les produits d\'une commande précédente au panier actuel. Les produits indisponibles sont ignorés.',
+      "Ajoute tous les produits d'une commande précédente au panier actuel. Les produits indisponibles sont ignorés.",
   })
   @ApiParam({
     name: 'id',
@@ -87,8 +87,7 @@ export class OrdersController {
   })
   @ApiResponse({
     status: 400,
-    description:
-      'Le panier contient déjà des articles d\'un autre restaurant',
+    description: "Le panier contient déjà des articles d'un autre restaurant",
   })
   @ApiResponse({
     status: 403,

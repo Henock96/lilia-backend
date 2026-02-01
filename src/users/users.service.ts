@@ -22,6 +22,9 @@ export class UserService {
   async findUserByFirebaseUid(firebaseUid: string) {
     return this.prisma.user.findUnique({
       where: { firebaseUid },
+      include: {
+        restaurant: true, // Inclure le restaurant pour les admins/restaurateurs
+      },
     });
   }
 
@@ -60,6 +63,13 @@ export class UserService {
 
   // Nouvelle méthode pour gérer inscription ET connexion
   async syncUserFromFirebase(firebaseUid: string, email: string, nom?: string, phone?: string, imageUrl?: string) {
+    // Vérifier d'abord si l'utilisateur existe
+    const existingUser = await this.prisma.user.findUnique({
+      where: { firebaseUid },
+    });
+
+    const isNewUser = !existingUser;
+
     // Upsert : créer si n'existe pas, mettre à jour si existe
     const user = await this.prisma.user.upsert({
       where: { firebaseUid },
@@ -80,6 +90,18 @@ export class UserService {
     });
 
     console.log(`✅ User synchronized: ${user.email} (${user.id})`);
+
+    // Émettre l'événement uniquement pour les nouveaux utilisateurs
+    if (isNewUser) {
+      console.log(`🎉 New user registered, emitting user.created event`);
+      const userCreatedEvent = new UserCreatedEvent(
+        user.id,
+        user.nom,
+        user.createdAt
+      );
+      this.eventEmitter.emit('user.created', userCreatedEvent);
+    }
+
     return user;
   }
 

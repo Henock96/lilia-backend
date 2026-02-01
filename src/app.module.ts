@@ -25,6 +25,8 @@ import { MenusListener } from './listeners/menus.listener';
 import { ReviewsModule } from './reviews/reviews.module';
 import { QuartiersModule } from './quartiers/quartiers.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { EmailModule } from './email/email.module';
+import { EmailListener } from './listeners/email.listener';
 
 @Module({
   imports: [
@@ -60,8 +62,9 @@ import { DashboardModule } from './dashboard/dashboard.module';
     ReviewsModule,
     QuartiersModule,
     DashboardModule,
+    EmailModule,
   ],
   controllers: [AppController],
-  providers: [AppService, OrdersListener, PaymentListener, MenusListener],
+  providers: [AppService, OrdersListener, PaymentListener, MenusListener, EmailListener],
 })
 export class AppModule {}
