@@ -47,6 +47,9 @@ export class UserService {
           email: email,
           nom: displayName,
         },
+        include: {
+          restaurant: true,
+        },
       });
       console.log(`Informations utilisateur mises à jour : ${email}`);
     }
