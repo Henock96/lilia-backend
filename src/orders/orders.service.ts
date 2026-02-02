@@ -381,8 +381,8 @@ export class OrdersService {
       updatedOrder.id,
       updatedOrder.userId,
       updatedOrder.restaurantId,
-      updatedOrder.status,
-      newStatus,
+      order.status, // L'ancien statut (avant la mise à jour)
+      newStatus, // Le nouveau statut
       user.id, // updatedBy
       {
         restaurantName: updatedOrder.restaurant.nom,

@@ -125,6 +125,20 @@ export class ProductsService {
 
       // 2. Gérer les variantes si fournies
       if (variants !== undefined) {
+        // Récupérer les IDs des anciennes variantes
+        const oldVariants = await tx.productVariant.findMany({
+          where: { productId: id },
+          select: { id: true },
+        });
+        const oldVariantIds = oldVariants.map((v) => v.id);
+
+        // Supprimer d'abord les CartItems qui référencent ces variantes
+        if (oldVariantIds.length > 0) {
+          await tx.cartItem.deleteMany({
+            where: { variantId: { in: oldVariantIds } },
+          });
+        }
+
         // Supprimer les anciennes variantes
         await tx.productVariant.deleteMany({
           where: { productId: id },
@@ -191,7 +205,21 @@ export class ProductsService {
 
     // Supprimer les variantes et le produit dans une transaction
     await this.prisma.$transaction(async (tx) => {
-      // Supprimer d'abord les variantes
+      // Récupérer les IDs des variantes
+      const variants = await tx.productVariant.findMany({
+        where: { productId: id },
+        select: { id: true },
+      });
+      const variantIds = variants.map((v) => v.id);
+
+      // Supprimer les CartItems qui référencent ces variantes
+      if (variantIds.length > 0) {
+        await tx.cartItem.deleteMany({
+          where: { variantId: { in: variantIds } },
+        });
+      }
+
+      // Supprimer les variantes
       await tx.productVariant.deleteMany({
         where: { productId: id },
       });
