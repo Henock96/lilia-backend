@@ -28,15 +28,43 @@ export class CategoriesService {
     };
   }
 
-  async findAll() {
-    const categories = await this.prisma.category.findMany({
-      orderBy: { nom: 'asc' },
-      include: {
-        _count: {
-          select: { products: true },
+  async findAll(restaurantId?: string) {
+    let categories;
+
+    if (restaurantId) {
+      // Filtrer les catégories qui ont au moins un produit dans ce restaurant
+      categories = await this.prisma.category.findMany({
+        where: {
+          products: {
+            some: {
+              restaurantId: restaurantId,
+            },
+          },
         },
-      },
-    });
+        orderBy: { nom: 'asc' },
+        include: {
+          _count: {
+            select: {
+              products: {
+                where: {
+                  restaurantId: restaurantId,
+                },
+              },
+            },
+          },
+        },
+      });
+    } else {
+      // Retourner toutes les catégories
+      categories = await this.prisma.category.findMany({
+        orderBy: { nom: 'asc' },
+        include: {
+          _count: {
+            select: { products: true },
+          },
+        },
+      });
+    }
 
     return {
       data: categories,

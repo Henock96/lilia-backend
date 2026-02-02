@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, UseGuards, Patch, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, UseGuards, Patch, Delete, Query } from '@nestjs/common';
 import { CategoriesService } from './categories.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
@@ -24,10 +24,11 @@ export class CategoriesController {
   /**
    * GET /categories
    * Récupère toutes les catégories
+   * Optionnel: filtrer par restaurantId pour n'avoir que les catégories utilisées
    */
   @Get()
-  findAll() {
-    return this.categoriesService.findAll();
+  findAll(@Query('restaurantId') restaurantId?: string) {
+    return this.categoriesService.findAll(restaurantId);
   }
 
   /**
