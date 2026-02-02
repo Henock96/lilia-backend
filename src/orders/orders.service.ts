@@ -332,7 +332,7 @@ export class OrdersService {
     console.log('🔵 New Status:', newStatus);
 
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
-    if (!user || user.role !== 'RESTAURATEUR') {
+    if (!user || (user.role !== 'RESTAURATEUR' && user.role !== 'ADMIN')) {
       throw new ForbiddenException(
         "Vous n'êtes pas autorisé à effectuer cette action.",
       );
@@ -353,10 +353,10 @@ export class OrdersService {
       );
     }
 
-    // Ici, vous pourriez ajouter une logique de machine à états pour valider les transitions.
-    // Par exemple, un restaurateur ne peut pas passer une commande à 'LIVRER'.
+    // Liste des statuts que le restaurateur peut utiliser
     const allowedStatusUpdates: OrderStatus[] = [
       'PAYER',
+      'EN_PREPARATION',
       'PRET',
       'LIVRER',
       'ANNULER',
