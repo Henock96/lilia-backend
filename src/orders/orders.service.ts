@@ -49,6 +49,7 @@ export class OrdersService {
               include: {
                 product: true,
                 variant: true,
+                menu: { select: { id: true, nom: true, prix: true } },
               },
             },
           },
@@ -122,9 +123,32 @@ export class OrdersService {
     }
 
     // 4. Calculer les montants
-    const subTotal = cartItems.reduce((total, item) => {
+    // Grouper les items par menuId pour utiliser le prix du menu
+    const menuGroups = new Map<string, typeof cartItems>();
+    const individualItems: typeof cartItems = [];
+
+    for (const item of cartItems) {
+      if (item.menuId && item.menu) {
+        if (!menuGroups.has(item.menuId)) {
+          menuGroups.set(item.menuId, []);
+        }
+        menuGroups.get(item.menuId)!.push(item);
+      } else {
+        individualItems.push(item);
+      }
+    }
+
+    // Sous-total des produits individuels
+    let subTotal = individualItems.reduce((total, item) => {
       return total + item.variant.prix * item.quantite;
     }, 0);
+
+    // Sous-total des menus (prix du menu * quantité du premier item du groupe)
+    for (const [, groupItems] of menuGroups) {
+      const menuPrix = groupItems[0].menu!.prix;
+      const quantite = groupItems[0].quantite;
+      subTotal += menuPrix * quantite;
+    }
 
     // 4.1 Vérifier le montant minimum de commande
     if (
@@ -156,12 +180,23 @@ export class OrdersService {
           paymentMethod,
           status: 'EN_ATTENTE',
           items: {
-            create: cartItems.map((item) => ({
-              productId: item.productId,
-              quantite: item.quantite,
-              prix: item.variant.prix,
-              variant: item.variant.label || 'Standard',
-            })),
+            create: cartItems.map((item, index) => {
+              // Pour les items de menu: le premier item du groupe porte le prix menu, les autres 0
+              let prix = item.variant.prix;
+              if (item.menuId && item.menu) {
+                const isFirstInGroup = cartItems.findIndex(
+                  (ci) => ci.menuId === item.menuId,
+                ) === index;
+                prix = isFirstInGroup ? item.menu.prix : 0;
+              }
+              return {
+                productId: item.productId,
+                menuId: item.menuId || undefined,
+                quantite: item.quantite,
+                prix,
+                variant: item.variant.label || 'Standard',
+              };
+            }),
           },
         },
         include: {
@@ -506,13 +541,12 @@ export class OrdersService {
           continue;
         }
 
-        // Vérifier si l'item existe déjà dans le panier
-        const existingCartItem = await this.prisma.cartItem.findUnique({
+        // Vérifier si l'item existe déjà dans le panier (individuel uniquement)
+        const existingCartItem = await this.prisma.cartItem.findFirst({
           where: {
-            cartId_variantId: {
-              cartId: cart.id,
-              variantId: variant.id,
-            },
+            cartId: cart.id,
+            variantId: variant.id,
+            menuId: null,
           },
         });
 

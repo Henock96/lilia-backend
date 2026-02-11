@@ -197,9 +197,10 @@ model CartItem {
   quantite  Int
   createdAt DateTime @default(now())
   
-  @@unique([cartId, variantId]) // Empêche d'avoir deux fois le même variant dans le panier
+  @@unique([cartId, variantId, menuId]) // Permet un même variant comme produit individuel ET dans un menu
   @@index([variantId])
   @@index([productId])
+  @@index([menuId])
 }
 
 model Order {
