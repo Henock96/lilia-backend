@@ -305,7 +305,7 @@ export class CartService {
 
     if (cartItem.menuId) {
       throw new BadRequestException(
-        'Cet article fait partie d\'un menu. Utilisez la mise à jour du menu pour modifier la quantité.',
+        "Cet article fait partie d'un menu. Utilisez la mise à jour du menu pour modifier la quantité.",
       );
     }
 
@@ -333,7 +333,7 @@ export class CartService {
 
     if (cartItem.menuId) {
       throw new BadRequestException(
-        'Cet article fait partie d\'un menu. Utilisez la suppression du menu pour le retirer.',
+        "Cet article fait partie d'un menu. Utilisez la suppression du menu pour le retirer.",
       );
     }
 

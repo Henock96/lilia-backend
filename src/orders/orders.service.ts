@@ -430,6 +430,43 @@ export class OrdersService {
   }
 
   /**
+   * Supprime (soft delete) une commande annulée pour un client.
+   */
+  async deleteOrder(orderId: string, firebaseUid: string) {
+    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    if (!user) {
+      throw new NotFoundException('Utilisateur non trouvé.');
+    }
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Commande non trouvée.');
+    }
+
+    if (order.userId !== user.id) {
+      throw new ForbiddenException(
+        "Vous n'êtes pas autorisé à supprimer cette commande.",
+      );
+    }
+
+    if (order.status !== 'ANNULER') {
+      throw new BadRequestException(
+        'Seules les commandes annulées peuvent être supprimées.',
+      );
+    }
+
+    await this.prisma.order.update({
+      where: { id: orderId },
+      data: { deleteCommande: true },
+    });
+
+    return { message: 'Commande supprimée avec succès.' };
+  }
+
+  /**
    * Recommande (reorder) une commande précédente.
    * Ajoute tous les produits de la commande au panier actuel.
    */

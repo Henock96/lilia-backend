@@ -7,6 +7,7 @@ import {
   Body,
   Param,
   Patch,
+  Delete,
   Query,
 } from '@nestjs/common';
 import {
@@ -67,6 +68,13 @@ export class OrdersController {
       req.user.uid,
       updateOrderStatusDto.status,
     );
+  }
+
+  @Delete(':id')
+  @UseGuards(RolesGuard)
+  @Roles('CLIENT')
+  deleteOrder(@Param('id') id: string, @Req() req) {
+    return this.ordersService.deleteOrder(id, req.user.uid);
   }
 
   @Post(':id/reorder')
