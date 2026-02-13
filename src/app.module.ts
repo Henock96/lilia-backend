@@ -28,6 +28,8 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { EmailModule } from './email/email.module';
 import { EmailListener } from './listeners/email.listener';
 import { AppScheduleModule } from './schedule/schedule.module';
+import { BannersModule } from './banners/banners.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -65,6 +67,8 @@ import { AppScheduleModule } from './schedule/schedule.module';
     DashboardModule,
     EmailModule,
     AppScheduleModule,
+    BannersModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService, OrdersListener, PaymentListener, MenusListener, EmailListener],

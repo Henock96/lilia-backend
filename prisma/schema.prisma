@@ -72,6 +72,7 @@ model Restaurant {
   orders                  Order[]
   reviews                 Review[]          // Avis sur le restaurant
   specialties             Specialty[]       // Spécialités du restaurant
+  banners                 Banner[]          // Bannières du restaurant
 
   // Statut d'ouverture
   isOpen                  Boolean           @default(true)  // Restaurant ouvert/fermé
@@ -383,6 +384,23 @@ model QuartierZone {
   @@unique([quartierId, deliveryZoneId])
   @@index([quartierId])
   @@index([deliveryZoneId])
+}
+
+model Banner {
+  id           String      @id @default(cuid())
+  title        String
+  imageUrl     String
+  description  String?
+  linkUrl      String?
+  isActive     Boolean     @default(true)
+  displayOrder Int         @default(0)
+  restaurant   Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  restaurantId String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([restaurantId])
+  @@index([isActive])
 }
 
 model OperatingHours {
