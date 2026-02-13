@@ -75,6 +75,8 @@ model Restaurant {
 
   // Statut d'ouverture
   isOpen                  Boolean           @default(true)  // Restaurant ouvert/fermé
+  manualOverride          Boolean           @default(false) // Si true, le cron ne modifie pas isOpen
+  operatingHours          OperatingHours[]
 
   // Configuration de la livraison
   deliveryPriceMode       DeliveryPriceMode @default(FIXED)
@@ -312,6 +314,16 @@ enum PaymentStatus {
   CANCELLED
 }
 
+enum DayOfWeek {
+  LUNDI
+  MARDI
+  MERCREDI
+  JEUDI
+  VENDREDI
+  SAMEDI
+  DIMANCHE
+}
+
 // Mode de tarification de la livraison pour chaque restaurant
 enum DeliveryPriceMode {
   FIXED       // Prix fixe pour toutes les livraisons
@@ -371,4 +383,20 @@ model QuartierZone {
   @@unique([quartierId, deliveryZoneId])
   @@index([quartierId])
   @@index([deliveryZoneId])
+}
+
+model OperatingHours {
+  id           String     @id @default(cuid())
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  restaurantId String
+  dayOfWeek    DayOfWeek
+  openTime     String     // "HH:mm"
+  closeTime    String     // "HH:mm"
+  isClosed     Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([restaurantId, dayOfWeek])
+  @@index([restaurantId])
+  @@index([dayOfWeek])
 }

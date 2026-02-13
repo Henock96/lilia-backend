@@ -61,6 +61,7 @@ npm run render-build
 - **SMS**: Twilio integration
 - **Payments**: MTN Mobile Money integration
 - **Real-time**: EventEmitter for order/payment events
+- **Cron Jobs**: @nestjs/schedule pour les taches planifiees (horaires d'ouverture)
 - **API Documentation**: Swagger/OpenAPI
 
 #### Module Structure
@@ -85,6 +86,7 @@ src/
 ├── firebase/          # Firebase Admin SDK setup
 ├── prisma/            # Prisma service (global)
 ├── health/            # Health check endpoint
+├── schedule/          # Cron jobs (mise a jour auto isOpen selon horaires)
 ├── events/            # Event definitions (orders, payments, menus)
 └── listeners/         # Event listeners (orders, payments, menus)
 ```
@@ -106,6 +108,8 @@ Key models and relationships:
 - **Payment**: Tracks MTN MoMo payment transactions
 - **Adresses**: User's saved addresses
 - **FcmToken**: Firebase Cloud Messaging tokens for push notifications
+- **OperatingHours**: Horaires d'ouverture par jour de la semaine (Lundi-Dimanche) pour chaque restaurant. Contrainte unique sur [restaurantId, dayOfWeek]. Champs: openTime/closeTime (format "HH:mm"), isClosed (jour ferme), dayOfWeek (enum DayOfWeek)
+- **Restaurant.manualOverride**: Si true, le cron job ne modifie pas le champ isOpen (toggle manuel prioritaire)
 
 #### Authentication Flow
 1. Client authenticates with Firebase (client-side)
@@ -132,8 +136,17 @@ Key models and relationships:
 - `DELETE /cart/items/:id` - Remove item from cart
 
 **Restaurants**:
-- `GET /restaurants` - List all restaurants
-- `GET /restaurants/:id` - Get restaurant details with products
+- `GET /restaurants` - Liste tous les restaurants (inclut operatingHours)
+- `GET /restaurants/:id` - Details d'un restaurant avec produits et horaires
+- `GET /restaurants/mine` - Restaurant du proprietaire connecte (RESTAURATEUR/ADMIN)
+- `PATCH /restaurants/:id` - Modifier infos generales du restaurant
+- `PATCH /restaurants/:id/open-status` - Toggle ouvert/ferme (active manualOverride)
+- `PATCH /restaurants/:id/delivery-settings` - Parametres de livraison
+
+**Horaires d'ouverture** (Operating Hours):
+- `GET /restaurants/:id/operating-hours` - Recuperer les horaires (public)
+- `PUT /restaurants/:id/operating-hours` - Definir les horaires de la semaine en bulk (RESTAURATEUR/ADMIN, desactive manualOverride)
+- `PATCH /restaurants/:id/operating-hours/:dayOfWeek` - Modifier un seul jour (RESTAURATEUR/ADMIN)
 
 **Products**:
 - `GET /products` - List products (with filters)
@@ -542,7 +555,51 @@ POST /menus
 
 ## Current Development Focus
 
-### ✅ Recently Completed (January 2026)
+### ✅ Recemment Complete (Fevrier 2026)
+
+**Horaires d'ouverture + Cron auto-update isOpen**:
+- ✅ Backend: Enum `DayOfWeek` (LUNDI-DIMANCHE) et modele `OperatingHours` dans Prisma
+- ✅ Backend: Champ `manualOverride` sur Restaurant pour priorite du toggle manuel
+- ✅ Backend: 3 endpoints API (GET/PUT/PATCH) pour gerer les horaires
+- ✅ Backend: Cron job (`@nestjs/schedule`) chaque minute qui ouvre/ferme automatiquement les restaurants
+- ✅ Backend: Gestion des horaires passant minuit (ex: 20:00 -> 02:00)
+- ✅ Backend: Timezone UTC+1 (Afrique Centrale/Ouest, pas de DST)
+- ✅ Backend: Migration `20260212222828_add_operating_hours` appliquee
+
+**Fichiers crees**:
+- `src/restaurants/dto/operating-hours.dto.ts` - DTOs avec validation HH:mm
+- `src/schedule/restaurant-schedule.service.ts` - Cron job (chaque minute)
+- `src/schedule/schedule.module.ts` - Module wrappant ScheduleModule.forRoot()
+
+**Fichiers modifies**:
+- `prisma/schema.prisma` - Enum DayOfWeek, modele OperatingHours, champs manualOverride + operatingHours sur Restaurant
+- `src/restaurants/restaurants.service.ts` - +3 methodes (setOperatingHours, getOperatingHours, updateOperatingHour), updateOpenStatus set manualOverride:true, findRestaurant/findOne/findRestaurantOwner incluent operatingHours
+- `src/restaurants/restaurants.controller.ts` - +3 endpoints horaires, import Put
+- `src/app.module.ts` - Import AppScheduleModule
+
+**Logique du cron**:
+- Tourne chaque minute
+- Ignore les restaurants avec `manualOverride: true`
+- Ignore les restaurants sans horaires definis
+- Ne met a jour `isOpen` que si le statut doit changer (evite les writes inutiles)
+- Gere les horaires traversant minuit (ex: 20:00 -> 02:00)
+
+**Exemple d'utilisation PUT /restaurants/:id/operating-hours**:
+```json
+{
+  "hours": [
+    { "dayOfWeek": "LUNDI", "openTime": "08:00", "closeTime": "22:00" },
+    { "dayOfWeek": "MARDI", "openTime": "08:00", "closeTime": "22:00" },
+    { "dayOfWeek": "MERCREDI", "openTime": "08:00", "closeTime": "22:00" },
+    { "dayOfWeek": "JEUDI", "openTime": "08:00", "closeTime": "22:00" },
+    { "dayOfWeek": "VENDREDI", "openTime": "08:00", "closeTime": "23:00" },
+    { "dayOfWeek": "SAMEDI", "openTime": "10:00", "closeTime": "23:00" },
+    { "dayOfWeek": "DIMANCHE", "isClosed": true, "openTime": "00:00", "closeTime": "00:00" }
+  ]
+}
+```
+
+### ✅ Complete (Janvier 2026)
 
 **Daily Menu System with Push Notifications**:
 - ✅ Backend: Complete CRUD API for daily/special menus (`/menus` endpoints)

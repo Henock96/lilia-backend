@@ -27,6 +27,7 @@ import { QuartiersModule } from './quartiers/quartiers.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { EmailModule } from './email/email.module';
 import { EmailListener } from './listeners/email.listener';
+import { AppScheduleModule } from './schedule/schedule.module';
 
 @Module({
   imports: [
@@ -63,6 +64,7 @@ import { EmailListener } from './listeners/email.listener';
     QuartiersModule,
     DashboardModule,
     EmailModule,
+    AppScheduleModule,
   ],
   controllers: [AppController],
   providers: [AppService, OrdersListener, PaymentListener, MenusListener, EmailListener],

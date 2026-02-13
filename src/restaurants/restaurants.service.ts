@@ -8,6 +8,7 @@ import {
     AddSpecialtyDto,
     UpdateRestaurantDto
 } from './dto/create-restaurant.dto';
+import { DayOfWeek, SetOperatingHoursDto, UpdateOperatingHourDto } from './dto/operating-hours.dto';
 
 @Injectable()
 export class RestaurantsService {
@@ -65,13 +66,13 @@ export class RestaurantsService {
 
         const updated = await this.prisma.restaurant.update({
             where: { id: restaurant.id },
-            data: { isOpen: dto.isOpen },
-            include: { specialties: true },
+            data: { isOpen: dto.isOpen, manualOverride: true },
+            include: { specialties: true, operatingHours: true },
         });
 
         return {
             data: updated,
-            message: dto.isOpen ? 'Restaurant ouvert' : 'Restaurant fermé',
+            message: dto.isOpen ? 'Restaurant ouvert (mode manuel)' : 'Restaurant fermé (mode manuel)',
         };
     }
 
@@ -223,6 +224,7 @@ export class RestaurantsService {
             where: { owner: { firebaseUid } },
             include: {
                 specialties: true,
+                operatingHours: true,
                 _count: {
                     select: { orders: true, products: true },
                 },
@@ -239,6 +241,7 @@ export class RestaurantsService {
         const resto =  await this.prisma.restaurant.findMany({
             include: {
                 specialties: true,
+                operatingHours: true,
             },
             orderBy: { createdAt: 'desc' },
         });
@@ -259,6 +262,7 @@ export class RestaurantsService {
                     },
                 },
                 specialties: true,
+                operatingHours: true,
             },
         });
 
@@ -267,6 +271,113 @@ export class RestaurantsService {
         }
         return restaurant;
     }
+    // ============ HORAIRES D'OUVERTURE ============
+
+    /**
+     * Définit les horaires d'ouverture pour tous les jours (bulk upsert)
+     * Désactive aussi le manualOverride pour que le cron prenne le relais
+     */
+    async setOperatingHours(restaurantId: string, firebaseUid: string, dto: SetOperatingHoursDto) {
+        const restaurant = await this.verifyOwnership(restaurantId, firebaseUid);
+
+        const results = await this.prisma.$transaction(async (tx) => {
+            const upserted = [];
+            for (const hour of dto.hours) {
+                const result = await tx.operatingHours.upsert({
+                    where: {
+                        restaurantId_dayOfWeek: {
+                            restaurantId: restaurant.id,
+                            dayOfWeek: hour.dayOfWeek,
+                        },
+                    },
+                    update: {
+                        openTime: hour.openTime,
+                        closeTime: hour.closeTime,
+                        isClosed: hour.isClosed ?? false,
+                    },
+                    create: {
+                        restaurantId: restaurant.id,
+                        dayOfWeek: hour.dayOfWeek,
+                        openTime: hour.openTime,
+                        closeTime: hour.closeTime,
+                        isClosed: hour.isClosed ?? false,
+                    },
+                });
+                upserted.push(result);
+            }
+
+            // Désactiver le manualOverride pour que le cron gère isOpen
+            await tx.restaurant.update({
+                where: { id: restaurant.id },
+                data: { manualOverride: false },
+            });
+
+            return upserted;
+        });
+
+        return {
+            data: results,
+            message: 'Horaires d\'ouverture mis à jour',
+        };
+    }
+
+    /**
+     * Récupère les horaires d'ouverture d'un restaurant
+     */
+    async getOperatingHours(restaurantId: string) {
+        const restaurant = await this.prisma.restaurant.findUnique({
+            where: { id: restaurantId },
+        });
+
+        if (!restaurant) {
+            throw new NotFoundException('Restaurant non trouvé');
+        }
+
+        const hours = await this.prisma.operatingHours.findMany({
+            where: { restaurantId },
+            orderBy: { dayOfWeek: 'asc' },
+        });
+
+        return {
+            data: hours,
+            count: hours.length,
+        };
+    }
+
+    /**
+     * Met à jour les horaires d'un seul jour
+     */
+    async updateOperatingHour(restaurantId: string, dayOfWeek: DayOfWeek, firebaseUid: string, dto: UpdateOperatingHourDto) {
+        const restaurant = await this.verifyOwnership(restaurantId, firebaseUid);
+
+        const existing = await this.prisma.operatingHours.findUnique({
+            where: {
+                restaurantId_dayOfWeek: {
+                    restaurantId: restaurant.id,
+                    dayOfWeek,
+                },
+            },
+        });
+
+        if (!existing) {
+            throw new NotFoundException(`Aucun horaire défini pour ${dayOfWeek}`);
+        }
+
+        const updated = await this.prisma.operatingHours.update({
+            where: { id: existing.id },
+            data: {
+                ...(dto.openTime !== undefined && { openTime: dto.openTime }),
+                ...(dto.closeTime !== undefined && { closeTime: dto.closeTime }),
+                ...(dto.isClosed !== undefined && { isClosed: dto.isClosed }),
+            },
+        });
+
+        return {
+            data: updated,
+            message: `Horaires de ${dayOfWeek} mis à jour`,
+        };
+    }
+
     // Retourne le nombre de commandes du restaurant
     async findCountOrdersResto(restaurantId: string ){
         // 1. Récupérer toutes les commandes pour le restaurant donné

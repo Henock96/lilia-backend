@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { FirebaseAuthGuard } from 'src/firebase/firebase-auth.guard';
 import { RestaurantsService } from './restaurants.service';
 import {
@@ -11,6 +11,7 @@ import {
 } from './dto/create-restaurant.dto';
 import { Roles } from 'src/firebase/roles.decorator';
 import { RolesGuard } from 'src/firebase/roles.guard';
+import { DayOfWeek, SetOperatingHoursDto, UpdateOperatingHourDto } from './dto/operating-hours.dto';
 
 @Controller('restaurants')
 export class RestaurantsController {
@@ -138,6 +139,48 @@ export class RestaurantsController {
         @Req() req,
     ) {
         return this.service.removeSpecialty(id, specialtyId, req.user.uid);
+    }
+
+    // ============ ENDPOINTS HORAIRES D'OUVERTURE ============
+
+    /**
+     * GET /restaurants/:id/operating-hours
+     * Récupère les horaires d'ouverture d'un restaurant (public)
+     */
+    @Get(':id/operating-hours')
+    getOperatingHours(@Param('id') id: string) {
+        return this.service.getOperatingHours(id);
+    }
+
+    /**
+     * PUT /restaurants/:id/operating-hours
+     * Définit les horaires de la semaine (bulk upsert)
+     */
+    @Put(':id/operating-hours')
+    @UseGuards(FirebaseAuthGuard, RolesGuard)
+    @Roles('ADMIN', 'RESTAURATEUR')
+    setOperatingHours(
+        @Param('id') id: string,
+        @Body() dto: SetOperatingHoursDto,
+        @Req() req,
+    ) {
+        return this.service.setOperatingHours(id, req.user.uid, dto);
+    }
+
+    /**
+     * PATCH /restaurants/:id/operating-hours/:dayOfWeek
+     * Modifier un seul jour
+     */
+    @Patch(':id/operating-hours/:dayOfWeek')
+    @UseGuards(FirebaseAuthGuard, RolesGuard)
+    @Roles('ADMIN', 'RESTAURATEUR')
+    updateOperatingHour(
+        @Param('id') id: string,
+        @Param('dayOfWeek') dayOfWeek: DayOfWeek,
+        @Body() dto: UpdateOperatingHourDto,
+        @Req() req,
+    ) {
+        return this.service.updateOperatingHour(id, dayOfWeek, req.user.uid, dto);
     }
 
     // ============ ENDPOINTS CLIENTS ============
