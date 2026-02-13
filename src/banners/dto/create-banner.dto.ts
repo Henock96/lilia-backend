@@ -9,8 +9,8 @@ import {
 
 export class CreateBannerDto {
   @IsString()
-  @IsNotEmpty()
-  title: string;
+  @IsOptional()
+  title?: string;
 
   @IsUrl()
   @IsNotEmpty()

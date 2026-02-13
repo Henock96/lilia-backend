@@ -20,7 +20,7 @@ export class RestaurantScheduleService {
 
     constructor(private prisma: PrismaService) {}
 
-    @Cron(CronExpression.EVERY_MINUTE)
+    @Cron(CronExpression.EVERY_HOUR)
     async handleScheduleCheck() {
         this.logger.log('Checking restaurant schedules...');
 

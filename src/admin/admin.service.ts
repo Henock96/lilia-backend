@@ -1,4 +1,8 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common';
 import * as admin from 'firebase-admin';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
@@ -59,5 +63,42 @@ export class AdminService {
         `Erreur lors de la création: ${error}`,
       );
     }
+  }
+
+  async toggleRestaurantActive(restaurantId: string, isActive: boolean) {
+    const restaurant = await this.prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+    });
+
+    if (!restaurant) {
+      throw new NotFoundException('Restaurant non trouvé');
+    }
+
+    const updated = await this.prisma.restaurant.update({
+      where: { id: restaurantId },
+      data: { isActive },
+      include: { specialties: true, operatingHours: true },
+    });
+
+    return {
+      data: updated,
+      message: isActive ? 'Restaurant activé' : 'Restaurant désactivé',
+    };
+  }
+
+  async getAllRestaurants() {
+    const restaurants = await this.prisma.restaurant.findMany({
+      include: {
+        owner: { select: { id: true, nom: true, email: true, phone: true } },
+        specialties: true,
+        _count: { select: { orders: true, products: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return {
+      data: restaurants,
+      message: 'Liste des restaurants récupérée',
+    };
   }
 }

@@ -74,6 +74,9 @@ model Restaurant {
   specialties             Specialty[]       // Spécialités du restaurant
   banners                 Banner[]          // Bannières du restaurant
 
+  // Statut d'activité (contrôlé par l'admin)
+  isActive                Boolean           @default(true)  // Restaurant actif/désactivé par l'admin
+
   // Statut d'ouverture
   isOpen                  Boolean           @default(true)  // Restaurant ouvert/fermé
   manualOverride          Boolean           @default(false) // Si true, le cron ne modifie pas isOpen
@@ -388,7 +391,7 @@ model QuartierZone {
 
 model Banner {
   id           String      @id @default(cuid())
-  title        String
+  title        String?
   imageUrl     String
   description  String?
   linkUrl      String?

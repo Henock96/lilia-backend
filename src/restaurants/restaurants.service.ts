@@ -239,6 +239,7 @@ export class RestaurantsService {
 
     async findRestaurant(){
         const resto =  await this.prisma.restaurant.findMany({
+            where: { isActive: true },
             include: {
                 specialties: true,
                 operatingHours: true,

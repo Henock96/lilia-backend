@@ -263,8 +263,10 @@ export class CartService {
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
     if (!user) throw new NotFoundException('Utilisateur non trouvé.');
 
+    const cart = await this.getOrCreateCart(user.id);
+
     return this.prisma.cart.findUnique({
-      where: { userId: user.id },
+      where: { id: cart.id },
       include: {
         items: {
           include: {

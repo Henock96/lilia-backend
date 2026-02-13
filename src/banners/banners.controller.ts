@@ -33,14 +33,14 @@ export class BannersController {
 
   @Post()
   @UseGuards(FirebaseAuthGuard, RolesGuard)
-  @Roles('RESTAURATEUR', 'ADMIN')
+  @Roles('ADMIN')
   create(@Body() createBannerDto: CreateBannerDto, @Req() req) {
     return this.bannersService.create(createBannerDto, req.user.uid);
   }
 
   @Patch(':id')
   @UseGuards(FirebaseAuthGuard, RolesGuard)
-  @Roles('RESTAURATEUR', 'ADMIN')
+  @Roles('ADMIN')
   update(
     @Param('id') id: string,
     @Body() updateBannerDto: UpdateBannerDto,
@@ -51,14 +51,14 @@ export class BannersController {
 
   @Delete(':id')
   @UseGuards(FirebaseAuthGuard, RolesGuard)
-  @Roles('RESTAURATEUR', 'ADMIN')
+  @Roles('ADMIN')
   remove(@Param('id') id: string, @Req() req) {
     return this.bannersService.remove(id, req.user.uid);
   }
 
   @Patch(':id/reorder')
   @UseGuards(FirebaseAuthGuard, RolesGuard)
-  @Roles('RESTAURATEUR', 'ADMIN')
+  @Roles('ADMIN')
   reorder(
     @Param('id') id: string,
     @Body('displayOrder') displayOrder: number,

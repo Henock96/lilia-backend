@@ -1,4 +1,4 @@
-import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { FirebaseAuthGuard } from '../firebase/firebase-auth.guard';
 import { RolesGuard } from '../firebase/roles.guard';
 import { Roles } from '../firebase/roles.decorator';
@@ -16,5 +16,20 @@ export class AdminController {
     @Body() dto: CreateRestaurantWithOwnerDto,
   ) {
     return this.adminService.createRestaurantWithOwner(dto);
+  }
+
+  @Patch('restaurants/:id/toggle-active')
+  @Roles('ADMIN')
+  async toggleRestaurantActive(
+    @Param('id') id: string,
+    @Body('isActive') isActive: boolean,
+  ) {
+    return this.adminService.toggleRestaurantActive(id, isActive);
+  }
+
+  @Get('restaurants')
+  @Roles('ADMIN')
+  async getAllRestaurants() {
+    return this.adminService.getAllRestaurants();
   }
 }
