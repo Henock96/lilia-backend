@@ -51,15 +51,12 @@ export class AdminService {
         try {
           await admin.auth().deleteUser(firebaseUid);
         } catch (rollbackError) {
-          console.error(
-            'Failed to rollback Firebase user:',
-            rollbackError.message,
-          );
+          console.error('Failed to rollback Firebase user:', rollbackError);
         }
       }
 
       throw new InternalServerErrorException(
-        `Erreur lors de la création: ${error.message}`,
+        `Erreur lors de la création: ${error}`,
       );
     }
   }
