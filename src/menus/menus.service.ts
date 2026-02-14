@@ -488,6 +488,42 @@ export class MenusService {
   }
 
   /**
+   * Met à jour le stock d'un menu
+   */
+  async updateStock(menuId: string, stockQuotidien: number | null, firebaseUid: string) {
+    const menu = await this.prisma.menuDuJour.findUnique({
+      where: { id: menuId },
+      include: { restaurant: { include: { owner: true } } },
+    });
+
+    if (!menu) {
+      throw new NotFoundException('Menu non trouvé');
+    }
+
+    const user = await this.prisma.user.findFirst({ where: { firebaseUid } });
+    if (!user) throw new NotFoundException('Utilisateur non trouvé.');
+
+    if (user.role !== 'ADMIN' && menu.restaurant.owner.firebaseUid !== firebaseUid) {
+      throw new ForbiddenException(
+        'Vous n\'êtes pas autorisé à modifier le stock de ce menu',
+      );
+    }
+
+    const updated = await this.prisma.menuDuJour.update({
+      where: { id: menuId },
+      data: {
+        stockQuotidien: stockQuotidien,
+        stockRestant: stockQuotidien,
+      },
+    });
+
+    return {
+      message: 'Stock du menu mis à jour avec succès',
+      data: updated,
+    };
+  }
+
+  /**
    * Désactiver/activer un menu
    */
   async toggleActive(id: string, firebaseUid: string) {

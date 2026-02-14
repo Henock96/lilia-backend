@@ -122,6 +122,38 @@ export class OrdersService {
       );
     }
 
+    // 3.2 Vérifier le stock des produits et menus
+    const outOfStockItems: string[] = [];
+    for (const item of cartItems) {
+      const product = await this.prisma.product.findUnique({
+        where: { id: item.productId },
+      });
+      if (product && product.stockRestant !== null && product.stockRestant < item.quantite) {
+        outOfStockItems.push(
+          product.stockRestant === 0
+            ? `"${product.nom}" est épuisé`
+            : `"${product.nom}" : seulement ${product.stockRestant} restant(s)`,
+        );
+      }
+      if (item.menuId) {
+        const menu = await this.prisma.menuDuJour.findUnique({
+          where: { id: item.menuId },
+        });
+        if (menu && menu.stockRestant !== null && menu.stockRestant < item.quantite) {
+          outOfStockItems.push(
+            menu.stockRestant === 0
+              ? `Menu "${menu.nom}" est épuisé`
+              : `Menu "${menu.nom}" : seulement ${menu.stockRestant} restant(s)`,
+          );
+        }
+      }
+    }
+    if (outOfStockItems.length > 0) {
+      throw new BadRequestException(
+        `Produits en rupture de stock : ${outOfStockItems.join(', ')}`,
+      );
+    }
+
     // 4. Calculer les montants
     // Grouper les items par menuId pour utiliser le prix du menu
     const menuGroups = new Map<string, typeof cartItems>();
@@ -205,7 +237,33 @@ export class OrdersService {
         },
       });
 
-      // 6. Vider le panier
+      // 6. Décrémenter le stock des produits et menus commandés
+      const decrementedProductIds = new Set<string>();
+      const decrementedMenuIds = new Set<string>();
+      for (const item of cartItems) {
+        if (!decrementedProductIds.has(item.productId)) {
+          const prod = await tx.product.findUnique({ where: { id: item.productId } });
+          if (prod && prod.stockRestant !== null) {
+            await tx.product.update({
+              where: { id: item.productId },
+              data: { stockRestant: Math.max(0, prod.stockRestant - item.quantite) },
+            });
+          }
+          decrementedProductIds.add(item.productId);
+        }
+        if (item.menuId && !decrementedMenuIds.has(item.menuId)) {
+          const menu = await tx.menuDuJour.findUnique({ where: { id: item.menuId } });
+          if (menu && menu.stockRestant !== null) {
+            await tx.menuDuJour.update({
+              where: { id: item.menuId },
+              data: { stockRestant: Math.max(0, menu.stockRestant - item.quantite) },
+            });
+          }
+          decrementedMenuIds.add(item.menuId);
+        }
+      }
+
+      // 7. Vider le panier
       await tx.cartItem.deleteMany({
         where: {
           cartId: cart.id,
@@ -277,8 +335,25 @@ export class OrdersService {
 
   /**
    * Récupère les commandes d'un restaurant spécifique.
+   * ADMIN voit toutes les commandes de tous les restaurants.
    */
   async findRestaurantOrders(firebaseUid: string) {
+    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    if (!user) throw new NotFoundException('Utilisateur non trouvé.');
+
+    if (user.role === 'ADMIN') {
+      // ADMIN : retourner toutes les commandes de tous les restaurants
+      const orders = await this.prisma.order.findMany({
+        include: {
+          items: { include: { product: { select: { nom: true } } } },
+          restaurant: { select: { nom: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      return { data: orders };
+    }
+
+    // RESTAURATEUR : comportement actuel
     const restaurant = await this.prisma.restaurant.findFirst({
       where: { owner: { firebaseUid } },
     });
@@ -382,7 +457,7 @@ export class OrdersService {
       throw new NotFoundException('Commande non trouvée.');
     }
     console.log('🔵 Order found for user:', order.userId);
-    if (order.restaurant.ownerId !== user.id) {
+    if (user.role !== 'ADMIN' && order.restaurant.ownerId !== user.id) {
       throw new ForbiddenException(
         "Cette commande n'appartient pas à votre restaurant.",
       );
@@ -464,6 +539,57 @@ export class OrdersService {
     });
 
     return { message: 'Commande supprimée avec succès.' };
+  }
+
+  /**
+   * Invalide les commandes EN_ATTENTE contenant des produits en rupture de stock.
+   * Passe ces commandes en ANNULER et notifie le client.
+   */
+  async invalidateOutOfStockOrders() {
+    // Trouver les commandes en attente dont au moins un produit a stockRestant == 0
+    const pendingOrders = await this.prisma.order.findMany({
+      where: {
+        status: 'EN_ATTENTE',
+        items: {
+          some: {
+            product: {
+              stockRestant: 0,
+            },
+          },
+        },
+      },
+      include: {
+        items: { include: { product: { select: { nom: true, stockRestant: true } } } },
+        restaurant: true,
+      },
+    });
+
+    for (const order of pendingOrders) {
+      const outOfStock = order.items
+        .filter((item) => item.product.stockRestant === 0)
+        .map((item) => item.product.nom);
+
+      await this.prisma.order.update({
+        where: { id: order.id },
+        data: { status: 'ANNULER' },
+      });
+
+      const cancelledEvent = new OrderCancelledEvent(
+        order.id,
+        order.userId,
+        order.restaurantId,
+        'Système',
+        `Produits en rupture de stock : ${outOfStock.join(', ')}`,
+        0,
+      );
+      this.eventEmitter.emit('order.cancelled', cancelledEvent);
+
+      this.logger.log(
+        `Commande ${order.id} annulée (rupture de stock: ${outOfStock.join(', ')})`,
+      );
+    }
+
+    return { cancelled: pendingOrders.length };
   }
 
   /**

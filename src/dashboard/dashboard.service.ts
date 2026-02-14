@@ -7,9 +7,16 @@ export class DashboardService {
   constructor(private prisma: PrismaService) {}
 
   /**
-   * Récupère le restaurant de l'utilisateur
+   * Récupère le restaurant de l'utilisateur ou null si ADMIN (stats globales)
    */
   private async getRestaurant(firebaseUid: string) {
+    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    if (!user) throw new ForbiddenException('Utilisateur non trouvé.');
+
+    if (user.role === 'ADMIN') {
+      return null; // ADMIN = stats globales
+    }
+
     const restaurant = await this.prisma.restaurant.findFirst({
       where: { owner: { firebaseUid } },
     });
@@ -26,6 +33,7 @@ export class DashboardService {
    */
   async getOverview(firebaseUid: string) {
     const restaurant = await this.getRestaurant(firebaseUid);
+    const restaurantFilter = restaurant ? { restaurantId: restaurant.id } : {};
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -50,92 +58,80 @@ export class DashboardService {
       pendingOrders,
       averageRating,
     ] = await Promise.all([
-      // Total des commandes
       this.prisma.order.count({
-        where: { restaurantId: restaurant.id, status: { not: 'ANNULER' } },
+        where: { ...restaurantFilter, status: { not: 'ANNULER' } },
       }),
-      // Commandes du jour
       this.prisma.order.count({
         where: {
-          restaurantId: restaurant.id,
+          ...restaurantFilter,
           createdAt: { gte: today },
           status: { not: 'ANNULER' },
         },
       }),
-      // Commandes de la semaine
       this.prisma.order.count({
         where: {
-          restaurantId: restaurant.id,
+          ...restaurantFilter,
           createdAt: { gte: startOfWeek },
           status: { not: 'ANNULER' },
         },
       }),
-      // Commandes du mois
       this.prisma.order.count({
         where: {
-          restaurantId: restaurant.id,
+          ...restaurantFilter,
           createdAt: { gte: startOfMonth },
           status: { not: 'ANNULER' },
         },
       }),
-      // Revenue total
       this.prisma.order.aggregate({
-        where: { restaurantId: restaurant.id, status: { not: 'ANNULER' } },
+        where: { ...restaurantFilter, status: { not: 'ANNULER' } },
         _sum: { total: true },
       }),
-      // Revenue du jour
       this.prisma.order.aggregate({
         where: {
-          restaurantId: restaurant.id,
+          ...restaurantFilter,
           createdAt: { gte: today },
           status: { not: 'ANNULER' },
         },
         _sum: { total: true },
       }),
-      // Revenue de la semaine
       this.prisma.order.aggregate({
         where: {
-          restaurantId: restaurant.id,
+          ...restaurantFilter,
           createdAt: { gte: startOfWeek },
           status: { not: 'ANNULER' },
         },
         _sum: { total: true },
       }),
-      // Revenue du mois
       this.prisma.order.aggregate({
         where: {
-          restaurantId: restaurant.id,
+          ...restaurantFilter,
           createdAt: { gte: startOfMonth },
           status: { not: 'ANNULER' },
         },
         _sum: { total: true },
       }),
-      // Total produits
       this.prisma.product.count({
-        where: { restaurantId: restaurant.id },
+        where: restaurant ? { restaurantId: restaurant.id } : {},
       }),
-      // Total clients uniques
       this.prisma.order.findMany({
-        where: { restaurantId: restaurant.id },
+        where: { ...restaurantFilter },
         select: { userId: true },
         distinct: ['userId'],
       }),
-      // Commandes en attente
       this.prisma.order.count({
         where: {
-          restaurantId: restaurant.id,
+          ...restaurantFilter,
           status: { in: ['EN_ATTENTE', 'PAYER', 'EN_PREPARATION'] },
         },
       }),
-      // Note moyenne
       this.prisma.review.aggregate({
-        where: { restaurantId: restaurant.id },
+        where: restaurant ? { restaurantId: restaurant.id } : {},
         _avg: { rating: true },
         _count: { rating: true },
       }),
     ]);
 
-    return {
+    const result: any = {
       data: {
         orders: {
           total: totalOrders,
@@ -163,6 +159,13 @@ export class DashboardService {
         },
       },
     };
+
+    // Pour ADMIN : ajouter le nombre total de restaurants
+    if (!restaurant) {
+      result.data.totalRestaurants = await this.prisma.restaurant.count();
+    }
+
+    return result;
   }
 
   /**
@@ -170,13 +173,14 @@ export class DashboardService {
    */
   async getOrderStats(firebaseUid: string, period?: string) {
     const restaurant = await this.getRestaurant(firebaseUid);
+    const restaurantFilter = restaurant ? { restaurantId: restaurant.id } : {};
 
     const dateFilter = this.getDateFilter(period);
 
     const stats = await this.prisma.order.groupBy({
       by: ['status'],
       where: {
-        restaurantId: restaurant.id,
+        ...restaurantFilter,
         ...(dateFilter && { createdAt: { gte: dateFilter } }),
       },
       _count: { status: true },
@@ -208,6 +212,7 @@ export class DashboardService {
    */
   async getTopProducts(firebaseUid: string, limit = 10, period?: string) {
     const restaurant = await this.getRestaurant(firebaseUid);
+    const restaurantFilter = restaurant ? { restaurantId: restaurant.id } : {};
 
     const dateFilter = this.getDateFilter(period);
 
@@ -215,7 +220,7 @@ export class DashboardService {
       by: ['productId'],
       where: {
         order: {
-          restaurantId: restaurant.id,
+          ...restaurantFilter,
           status: { not: 'ANNULER' },
           ...(dateFilter && { createdAt: { gte: dateFilter } }),
         },
@@ -256,6 +261,7 @@ export class DashboardService {
    */
   async getRevenueChart(firebaseUid: string, days = 30) {
     const restaurant = await this.getRestaurant(firebaseUid);
+    const restaurantFilter = restaurant ? { restaurantId: restaurant.id } : {};
 
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
@@ -263,7 +269,7 @@ export class DashboardService {
 
     const orders = await this.prisma.order.findMany({
       where: {
-        restaurantId: restaurant.id,
+        ...restaurantFilter,
         createdAt: { gte: startDate },
         status: { not: 'ANNULER' },
       },
@@ -311,6 +317,7 @@ export class DashboardService {
    */
   async getClientStats(firebaseUid: string) {
     const restaurant = await this.getRestaurant(firebaseUid);
+    const restaurantFilter = restaurant ? { restaurantId: restaurant.id } : {};
 
     const today = new Date();
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
@@ -319,7 +326,7 @@ export class DashboardService {
     // Clients ce mois-ci
     const thisMonthClients = await this.prisma.order.findMany({
       where: {
-        restaurantId: restaurant.id,
+        ...restaurantFilter,
         createdAt: { gte: startOfMonth },
       },
       select: { userId: true },
@@ -329,7 +336,7 @@ export class DashboardService {
     // Clients le mois dernier
     const lastMonthClients = await this.prisma.order.findMany({
       where: {
-        restaurantId: restaurant.id,
+        ...restaurantFilter,
         createdAt: {
           gte: startOfLastMonth,
           lt: startOfMonth,
@@ -343,7 +350,7 @@ export class DashboardService {
     const topClients = await this.prisma.order.groupBy({
       by: ['userId'],
       where: {
-        restaurantId: restaurant.id,
+        ...restaurantFilter,
         status: { not: 'ANNULER' },
       },
       _count: { userId: true },
@@ -402,12 +409,13 @@ export class DashboardService {
    */
   async getPeakHours(firebaseUid: string, period?: string) {
     const restaurant = await this.getRestaurant(firebaseUid);
+    const restaurantFilter = restaurant ? { restaurantId: restaurant.id } : {};
 
     const dateFilter = this.getDateFilter(period);
 
     const orders = await this.prisma.order.findMany({
       where: {
-        restaurantId: restaurant.id,
+        ...restaurantFilter,
         status: { not: 'ANNULER' },
         ...(dateFilter && { createdAt: { gte: dateFilter } }),
       },
@@ -432,6 +440,52 @@ export class DashboardService {
       peakHour: hourlyStats.reduce((max, current) =>
         current.count > max.count ? current : max
       ),
+    };
+  }
+
+  /**
+   * Classement des restaurants par revenu (ADMIN uniquement)
+   */
+  async getRestaurantRanking(period?: string) {
+    const dateFilter = this.getDateFilter(period);
+
+    const restaurants = await this.prisma.restaurant.findMany({
+      select: {
+        id: true,
+        nom: true,
+        imageUrl: true,
+        isActive: true,
+        _count: { select: { orders: true } },
+      },
+    });
+
+    const rankings = await Promise.all(
+      restaurants.map(async (r) => {
+        const revenue = await this.prisma.order.aggregate({
+          where: {
+            restaurantId: r.id,
+            status: { not: 'ANNULER' },
+            ...(dateFilter && { createdAt: { gte: dateFilter } }),
+          },
+          _sum: { total: true },
+          _count: { id: true },
+        });
+
+        return {
+          id: r.id,
+          nom: r.nom,
+          imageUrl: r.imageUrl,
+          isActive: r.isActive,
+          orderCount: revenue._count.id,
+          totalRevenue: revenue._sum.total || 0,
+        };
+      }),
+    );
+
+    rankings.sort((a, b) => b.totalRevenue - a.totalRevenue);
+
+    return {
+      data: rankings,
     };
   }
 

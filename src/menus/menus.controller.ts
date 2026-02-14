@@ -125,6 +125,21 @@ export class MenusController {
     return this.menusService.update(id, updateMenuDto, req.user.uid);
   }
 
+  @Patch(':id/stock')
+  @UseGuards(FirebaseAuthGuard, RolesGuard)
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Mettre à jour le stock d\'un menu' })
+  @ApiResponse({ status: 200, description: 'Stock mis à jour avec succès' })
+  @ApiResponse({ status: 404, description: 'Menu non trouvé' })
+  updateStock(
+    @Param('id') id: string,
+    @Body('stockQuotidien') stockQuotidien: number | null,
+    @Req() req,
+  ) {
+    return this.menusService.updateStock(id, stockQuotidien, req.user.uid);
+  }
+
   @Patch(':id/toggle')
   @UseGuards(FirebaseAuthGuard, RolesGuard)
   @Roles('RESTAURATEUR', 'ADMIN')

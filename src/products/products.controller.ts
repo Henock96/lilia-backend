@@ -77,6 +77,21 @@ export class ProductsController {
   }
 
   /**
+   * PATCH /products/:id/stock
+   * Met à jour le stock d'un produit
+   */
+  @Patch(':id/stock')
+  @UseGuards(FirebaseAuthGuard, RolesGuard)
+  @Roles('RESTAURATEUR', 'ADMIN')
+  updateStock(
+    @Param('id') id: string,
+    @Body('stockQuotidien') stockQuotidien: number | null,
+    @Req() req,
+  ) {
+    return this.productsService.updateStock(id, stockQuotidien, req.user.uid);
+  }
+
+  /**
    * DELETE /products/:id
    * Supprime un produit
    */

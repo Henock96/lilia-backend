@@ -32,4 +32,10 @@ export class AdminController {
   async getAllRestaurants() {
     return this.adminService.getAllRestaurants();
   }
+
+  @Get('clients')
+  @Roles('ADMIN')
+  async getAllClients() {
+    return this.adminService.getAllClients();
+  }
 }

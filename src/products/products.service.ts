@@ -240,6 +240,40 @@ export class ProductsService {
     };
   }
 
+  /**
+   * Met à jour le stock d'un produit
+   */
+  async updateStock(productId: string, stockQuotidien: number | null, firebaseUid: string) {
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+      include: { restaurant: { include: { owner: true } } },
+    });
+
+    if (!product) {
+      throw new NotFoundException(`Produit avec l'ID "${productId}" non trouvé.`);
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    if (!user) throw new NotFoundException('Utilisateur non trouvé.');
+
+    if (user.role !== 'ADMIN' && product.restaurant.owner.firebaseUid !== firebaseUid) {
+      throw new ForbiddenException('Vous n\'êtes pas autorisé à modifier le stock de ce produit.');
+    }
+
+    const updated = await this.prisma.product.update({
+      where: { id: productId },
+      data: {
+        stockQuotidien: stockQuotidien,
+        stockRestant: stockQuotidien,
+      },
+    });
+
+    return {
+      message: 'Stock mis à jour avec succès',
+      data: updated,
+    };
+  }
+
   async create(dto: CreateProductDto, firebaseUid: string) {
     const restaurant = await this.prisma.restaurant.findFirst({
       where: {

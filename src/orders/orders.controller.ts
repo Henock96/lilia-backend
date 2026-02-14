@@ -57,7 +57,7 @@ export class OrdersController {
 
   @Patch(':id/status')
   @UseGuards(RolesGuard)
-  @Roles('RESTAURATEUR')
+  @Roles('RESTAURATEUR', 'ADMIN')
   updateOrderStatus(
     @Param('id') id: string,
     @Req() req,

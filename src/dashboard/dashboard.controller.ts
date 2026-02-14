@@ -78,4 +78,15 @@ export class DashboardController {
   getPeakHours(@Req() req, @Query('period') period?: string) {
     return this.dashboardService.getPeakHours(req.user.uid, period);
   }
+
+  /**
+   * GET /dashboard/restaurant-ranking
+   * Classement des restaurants par revenu (ADMIN uniquement)
+   * Paramètres: period (today, week, month, year)
+   */
+  @Get('restaurant-ranking')
+  @Roles('ADMIN')
+  getRestaurantRanking(@Query('period') period?: string) {
+    return this.dashboardService.getRestaurantRanking(period);
+  }
 }

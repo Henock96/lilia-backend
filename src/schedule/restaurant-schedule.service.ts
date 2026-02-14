@@ -80,6 +80,28 @@ export class RestaurantScheduleService {
     }
 
     /**
+     * Reset quotidien du stock : remet stockRestant = stockQuotidien
+     * pour tous les produits et menus actifs ayant un stockQuotidien défini.
+     * S'exécute tous les jours à 5h du matin (UTC+1).
+     */
+    @Cron('0 4 * * *') // 4h UTC = 5h UTC+1
+    async handleDailyStockReset() {
+        this.logger.log('Resetting daily stock for products and menus...');
+
+        const productResult = await this.prisma.$executeRaw`
+            UPDATE "Product" SET "stockRestant" = "stockQuotidien"
+            WHERE "stockQuotidien" IS NOT NULL
+        `;
+        this.logger.log(`Stock reset for ${productResult} products`);
+
+        const menuResult = await this.prisma.$executeRaw`
+            UPDATE "MenuDuJour" SET "stockRestant" = "stockQuotidien"
+            WHERE "stockQuotidien" IS NOT NULL AND "isActive" = true
+        `;
+        this.logger.log(`Stock reset for ${menuResult} menus`);
+    }
+
+    /**
      * Vérifie si l'heure courante est dans la plage horaire.
      * Gère les horaires qui passent minuit (ex: 20:00 → 02:00).
      */

@@ -86,6 +86,47 @@ export class AdminService {
     };
   }
 
+  /**
+   * Récupère tous les clients de la plateforme (ADMIN uniquement)
+   */
+  async getAllClients() {
+    const clients = await this.prisma.user.findMany({
+      where: { role: 'CLIENT' },
+      select: {
+        id: true,
+        firebaseUid: true,
+        nom: true,
+        email: true,
+        phone: true,
+        imageUrl: true,
+        createdAt: true,
+        _count: { select: { adresses: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Ajouter le count des commandes pour chaque client
+    const clientsWithOrders = await Promise.all(
+      clients.map(async (client) => {
+        const orderStats = await this.prisma.order.aggregate({
+          where: { userId: client.id },
+          _count: { id: true },
+          _sum: { total: true },
+        });
+        return {
+          ...client,
+          orderCount: orderStats._count.id,
+          totalSpent: orderStats._sum.total || 0,
+        };
+      }),
+    );
+
+    return {
+      data: clientsWithOrders,
+      message: 'Liste des clients récupérée',
+    };
+  }
+
   async getAllRestaurants() {
     const restaurants = await this.prisma.restaurant.findMany({
       include: {

@@ -114,21 +114,23 @@ model Category {
   updatedAt DateTime  @updatedAt
 }
 model MenuDuJour {
-  id           String         @id @default(cuid())
-  nom          String
-  description  String?
-  imageUrl     String?
-  prix         Float
-  dateDebut    DateTime       // Date et heure de début de validité du menu
-  dateFin      DateTime       // Date et heure de fin de validité du menu
-  isActive     Boolean        @default(true) // Permet de désactiver manuellement un menu
-  restaurant   Restaurant     @relation(fields: [restaurantId], references: [id])
-  restaurantId String
-  products     MenuProduct[]  // Relation many-to-many avec Product
-  orderItems   OrderItem[]
-  cartItems    CartItem[]
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  id             String         @id @default(cuid())
+  nom            String
+  description    String?
+  imageUrl       String?
+  prix           Float
+  stockQuotidien Int?           // Quantite disponible par jour (null = illimite)
+  stockRestant   Int?           // Quantite restante aujourd'hui (null = illimite)
+  dateDebut      DateTime       // Date et heure de début de validité du menu
+  dateFin        DateTime       // Date et heure de fin de validité du menu
+  isActive       Boolean        @default(true) // Permet de désactiver manuellement un menu
+  restaurant     Restaurant     @relation(fields: [restaurantId], references: [id])
+  restaurantId   String
+  products       MenuProduct[]  // Relation many-to-many avec Product
+  orderItems     OrderItem[]
+  cartItems      CartItem[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 
   @@index([restaurantId])
   @@index([dateDebut, dateFin]) // Index pour les requêtes par date
@@ -149,21 +151,23 @@ model MenuProduct {
   @@index([productId])
 }
 model Product {
-  id           String           @id @default(cuid())
-  nom         String
-  description  String?
-  imageUrl     String?
-  prixOriginal  Float
-  restaurant   Restaurant       @relation(fields: [restaurantId], references: [id])
-  restaurantId String
-  category     Category?        @relation(fields: [categoryId], references: [id])
-  categoryId   String?
-  variants     ProductVariant[]
-  menus        MenuProduct[]    // Relation many-to-many avec MenuDuJour
-  orderItems   OrderItem[]
-  cartItems     CartItem[]
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
+  id             String           @id @default(cuid())
+  nom            String
+  description    String?
+  imageUrl       String?
+  prixOriginal   Float
+  stockQuotidien Int?             // Quantite disponible par jour (null = illimite)
+  stockRestant   Int?             // Quantite restante aujourd'hui (null = illimite)
+  restaurant     Restaurant       @relation(fields: [restaurantId], references: [id])
+  restaurantId   String
+  category       Category?        @relation(fields: [categoryId], references: [id])
+  categoryId     String?
+  variants       ProductVariant[]
+  menus          MenuProduct[]    // Relation many-to-many avec MenuDuJour
+  orderItems     OrderItem[]
+  cartItems      CartItem[]
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
 
   @@index([restaurantId])
   @@index([categoryId])
