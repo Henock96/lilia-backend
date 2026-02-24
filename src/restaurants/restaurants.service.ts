@@ -405,7 +405,7 @@ export class RestaurantsService {
             orderBy: { createdAt: 'desc' },
         });
         if (orders.length === 0) {
-            return []; // Pas de commandes, donc pas de clients
+            return { data: [], message: 'Aucun client trouvé' };
         }
         // 2. Extraire les IDs uniques des utilisateurs
         const userIds = [...new Set(orders.map(order => order.userId))];
