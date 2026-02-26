@@ -33,8 +33,11 @@ export class PaymentService {
   ) {}
 
   async createPayment(request: CreatePaymentRequest): Promise<{ paymentId: string; referenceId: string }> {
+    this.logger.log(`💰 [PAIEMENT] Début - commande: ${request.orderId}, montant: ${request.amount} ${request.currency}, tel: ${request.phoneNumber}`);
+
     // Valider le numéro de téléphone
     if (!this.mtnMomoService.validatePhoneNumber(request.phoneNumber)) {
+      this.logger.warn(`💰 [PAIEMENT] Échec: numéro invalide "${request.phoneNumber}" - commande: ${request.orderId}`);
       throw new Error('Invalid phone number format');
     }
 
@@ -45,11 +48,13 @@ export class PaymentService {
     });
 
     if (!order) {
+      this.logger.warn(`💰 [PAIEMENT] Échec: commande ${request.orderId} introuvable`);
       throw new Error('Order not found');
     }
 
       const validStatuses = ['EN_ATTENTE', 'CONFIRMER'];
       if (!validStatuses.includes(order.status)) {
+        this.logger.warn(`💰 [PAIEMENT] Échec: commande ${request.orderId} en statut "${order.status}" (attendu: ${validStatuses.join('/')})`);
         throw new Error(`Order cannot be paid in current status: ${order.status}`);
       }
 
@@ -115,21 +120,25 @@ export class PaymentService {
   }
 
   async checkPaymentStatus(paymentId: string): Promise<PaymentStatus> {
+    this.logger.log(`💰 [PAIEMENT] Vérification statut - payment: ${paymentId}`);
     const payment = await this.prisma.payment.findUnique({
       where: { id: paymentId },
       include: { order: { include: { restaurant: true } } },
     });
 
     if (!payment) {
+      this.logger.warn(`💰 [PAIEMENT] Échec vérification: payment ${paymentId} introuvable`);
       throw new Error('Payment not found');
     }
 
     if (payment.status === PaymentStatus.SUCCESS) {
+      this.logger.log(`💰 [PAIEMENT] Déjà confirmé: ${paymentId} (commande: ${payment.orderId})`);
       return PaymentStatus.SUCCESS;
     }
 
     try {
       // Vérifier le statut chez MTN
+      this.logger.log(`💰 [PAIEMENT] Interrogation MTN MoMo - ref: ${payment.providerTransactionId}`);
       const status = await this.mtnMomoService.getTransactionStatus(payment.providerTransactionId);
       
       let newStatus: PaymentStatus;
@@ -144,11 +153,13 @@ export class PaymentService {
           newStatus = PaymentStatus.PENDING;
       }
 
+      this.logger.log(`💰 [PAIEMENT] Réponse MTN: ${status.status} (actuel: ${payment.status}) - commande: ${payment.orderId}`);
+
       // Mettre à jour le statut
       if (newStatus !== payment.status) {
         await this.prisma.payment.update({
           where: { id: paymentId },
-          data: { 
+          data: {
             status: newStatus,
             metadata: { ...(typeof payment.metadata === 'object' && payment.metadata !== null ? payment.metadata : {}), lastStatusCheck: new Date() }
           },
@@ -156,8 +167,10 @@ export class PaymentService {
 
         // Si le paiement est confirmé, émettre un événement
         if (newStatus === PaymentStatus.SUCCESS) {
+          this.logger.log(`💰 [PAIEMENT] ✅ Paiement confirmé - commande: ${payment.orderId}, montant: ${payment.amount} ${payment.currency}`);
           await this.handleSuccessfulPayment(payment);
-        }else if (newStatus === PaymentStatus.FAILED) {
+        } else if (newStatus === PaymentStatus.FAILED) {
+          this.logger.warn(`💰 [PAIEMENT] ❌ Paiement échoué - commande: ${payment.orderId}, raison: ${status.reason || 'inconnue'}`);
           this.eventEmitter.emit('order.payment.failed', {
             orderId: payment.orderId,
             userId: payment.order.userId,
@@ -169,7 +182,7 @@ export class PaymentService {
 
       return newStatus;
     } catch (error) {
-      this.logger.error(`Failed to check payment status: ${error.message}`);
+      this.logger.error(`💰 [PAIEMENT] Erreur vérification statut - payment: ${paymentId}, erreur: ${error.message}`, error.stack);
       return payment.status as PaymentStatus;
     }
   }
@@ -196,12 +209,16 @@ export class PaymentService {
   }
 
   async handlePaymentTimeout(paymentId: string) {
+    this.logger.warn(`💰 [PAIEMENT] Timeout - payment: ${paymentId}`);
     const payment = await this.prisma.payment.findUnique({
       where: { id: paymentId },
       include: { order: true },
     });
 
-    if (!payment) return;
+    if (!payment) {
+      this.logger.warn(`💰 [PAIEMENT] Timeout ignoré: payment ${paymentId} introuvable`);
+      return;
+    }
 
     // Marquer comme timeout
     await this.prisma.payment.update({

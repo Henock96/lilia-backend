@@ -599,6 +599,25 @@ POST /menus
 }
 ```
 
+### ✅ Complete (Février 2026) - Logging & Données Client dans Commandes
+
+**Logging structuré du flux de commandes**:
+- ✅ Backend: Ajout de logs détaillés dans `orders.service.ts` pour chaque étape de `createOrderFromCart` (validation adresse, panier, restaurant ouvert, stock, calcul montants)
+- ✅ Backend: Remplacement de tous les `console.log` par `this.logger` dans `updateOrderStatusByRestaurateur`
+- ✅ Backend: Ajout de logs détaillés dans `payment.service.ts` (createPayment, checkPaymentStatus, handlePaymentTimeout)
+- ✅ Backend: Chaque log est préfixé par catégorie (📦 [COMMANDE], 🔄 [STATUT], 💰 [PAIEMENT]) pour faciliter le filtrage
+
+**Données client incluses dans l'API commandes restaurant**:
+- ✅ Prisma: Ajout relation `user User @relation(...)` dans le modèle `Order` et `orders Order[]` dans le modèle `User`
+- ✅ Prisma: Ajout `@@index([userId])` sur Order pour les performances
+- ✅ Backend: `findRestaurantOrders` inclut maintenant `user: { select: { id, nom, phone, email, imageUrl } }` dans les deux cas (ADMIN et RESTAURATEUR)
+- ⚠️ **Migration requise**: `npx prisma migrate dev --name add_user_order_relation` puis `npx prisma generate`
+
+**Fichiers modifiés**:
+- `prisma/schema.prisma` - Relations User↔Order ajoutées + index userId
+- `src/orders/orders.service.ts` - Logging structuré + include user dans findRestaurantOrders
+- `src/payments/services/payment.service.ts` - Logging structuré complet
+
 ### ✅ Complete (Janvier 2026)
 
 **Daily Menu System with Push Notifications**:

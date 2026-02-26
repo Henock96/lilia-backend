@@ -33,6 +33,8 @@ export class OrdersService {
     firebaseUid: string,
     createOrderDto: CreateOrderDto,
   ) {
+    this.logger.log(`📦 [COMMANDE] Début création commande - user: ${firebaseUid}, payload: ${JSON.stringify({ adresseId: createOrderDto.adresseId, paymentMethod: createOrderDto.paymentMethod, isDelivery: createOrderDto.isDelivery })}`);
+
     const {
       adresseId,
       paymentMethod,
@@ -58,14 +60,17 @@ export class OrdersService {
     });
 
     if (!user) {
+      this.logger.warn(`📦 [COMMANDE] Utilisateur introuvable: ${firebaseUid}`);
       throw new NotFoundException('Utilisateur non trouvé.');
     }
+    this.logger.log(`📦 [COMMANDE] Utilisateur trouvé: ${user.id} (${user.nom || user.email}), panier: ${user.cart?.items?.length || 0} articles`);
 
     // 1. Vérifier l'adresse de livraison (seulement si c'est une livraison)
     let deliveryAddressString: string | null = null;
 
     if (isDelivery) {
       if (!adresseId) {
+        this.logger.warn(`📦 [COMMANDE] Échec: adresse manquante pour livraison - user: ${user.id}`);
         throw new BadRequestException(
           'Une adresse de livraison est requise pour la livraison à domicile.',
         );
@@ -75,21 +80,27 @@ export class OrdersService {
         where: { id: adresseId },
       });
       if (!deliveryAddress) {
+        this.logger.warn(`📦 [COMMANDE] Échec: adresse ${adresseId} introuvable - user: ${user.id}`);
         throw new NotFoundException(
           "L'adresse de livraison spécifiée n'existe pas.",
         );
       }
       if (deliveryAddress.userId !== user.id) {
+        this.logger.warn(`📦 [COMMANDE] Échec: adresse ${adresseId} n'appartient pas à user ${user.id}`);
         throw new ForbiddenException('Cette adresse ne vous appartient pas.');
       }
 
       // Formatter l'adresse pour le snapshot
       deliveryAddressString = `${deliveryAddress.rue}, ${deliveryAddress.ville}, ${deliveryAddress.country}`;
+      this.logger.log(`📦 [COMMANDE] Adresse validée: ${deliveryAddressString}`);
+    } else {
+      this.logger.log(`📦 [COMMANDE] Mode retrait au restaurant`);
     }
 
     // 2. Vérifier le panier
     const cart = user.cart;
     if (!cart || cart.items.length === 0) {
+      this.logger.warn(`📦 [COMMANDE] Échec: panier vide - user: ${user.id}`);
       throw new BadRequestException('Votre panier est vide.');
     }
 
@@ -112,11 +123,15 @@ export class OrdersService {
     });
 
     if (!restaurant) {
+      this.logger.warn(`📦 [COMMANDE] Échec: restaurant ${firstItemRestaurantId} introuvable`);
       throw new NotFoundException('Restaurant non trouvé.');
     }
 
+    this.logger.log(`📦 [COMMANDE] Restaurant: ${restaurant.nom} (${restaurant.id}), ouvert: ${restaurant.isOpen}`);
+
     // Vérifier si le restaurant est ouvert
     if (!restaurant.isOpen) {
+      this.logger.warn(`📦 [COMMANDE] Échec: restaurant "${restaurant.nom}" fermé - user: ${user.id}`);
       throw new BadRequestException(
         `Le restaurant "${restaurant.nom}" est actuellement fermé et n'accepte pas de commandes.`,
       );
@@ -149,6 +164,7 @@ export class OrdersService {
       }
     }
     if (outOfStockItems.length > 0) {
+      this.logger.warn(`📦 [COMMANDE] Échec: rupture de stock - user: ${user.id}, items: ${outOfStockItems.join(', ')}`);
       throw new BadRequestException(
         `Produits en rupture de stock : ${outOfStockItems.join(', ')}`,
       );
@@ -182,11 +198,14 @@ export class OrdersService {
       subTotal += menuPrix * quantite;
     }
 
+    this.logger.log(`📦 [COMMANDE] Calcul montant - sous-total: ${subTotal} FCFA, items individuels: ${individualItems.length}, menus: ${menuGroups.size}`);
+
     // 4.1 Vérifier le montant minimum de commande
     if (
       restaurant.minimumOrderAmount > 0 &&
       subTotal < restaurant.minimumOrderAmount
     ) {
+      this.logger.warn(`📦 [COMMANDE] Échec: montant minimum non atteint - user: ${user.id}, sous-total: ${subTotal}, minimum: ${restaurant.minimumOrderAmount}`);
       throw new BadRequestException(
         `Le montant minimum de commande pour ce restaurant est de ${restaurant.minimumOrderAmount} FCFA. Votre panier actuel: ${subTotal} FCFA.`,
       );
@@ -196,6 +215,7 @@ export class OrdersService {
     // Utilise le prix fixe du restaurant ou le prix par défaut
     const deliveryFee = isDelivery ? restaurant.fixedDeliveryFee : 0;
     const total = subTotal + deliveryFee;
+    this.logger.log(`📦 [COMMANDE] Total calculé: ${total} FCFA (sous-total: ${subTotal} + livraison: ${deliveryFee})`);
 
     // 5. Exécuter la création de la commande et la suppression du panier dans une transaction
     const order = await this.prisma.$transaction(async (tx) => {
@@ -341,13 +361,17 @@ export class OrdersService {
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
     if (!user) throw new NotFoundException('Utilisateur non trouvé.');
 
+    // Include commun pour les données utilisateur et items
+    const orderInclude = {
+      items: { include: { product: { select: { nom: true, imageUrl: true } } } },
+      restaurant: { select: { nom: true } },
+      user: { select: { id: true, nom: true, phone: true, email: true, imageUrl: true } },
+    };
+
     if (user.role === 'ADMIN') {
       // ADMIN : retourner toutes les commandes de tous les restaurants
       const orders = await this.prisma.order.findMany({
-        include: {
-          items: { include: { product: { select: { nom: true } } } },
-          restaurant: { select: { nom: true } },
-        },
+        include: orderInclude,
         orderBy: { createdAt: 'desc' },
       });
       return { data: orders };
@@ -366,9 +390,7 @@ export class OrdersService {
 
     const orders = await this.prisma.order.findMany({
       where: { restaurantId: restaurant.id },
-      include: {
-        items: { include: { product: { select: { nom: true } } } },
-      },
+      include: orderInclude,
       orderBy: { createdAt: 'desc' },
     });
 
@@ -436,27 +458,26 @@ export class OrdersService {
     firebaseUid: string,
     newStatus: OrderStatus,
   ) {
-    console.log('🔵 === DÉBUT UPDATE ORDER STATUS ===');
-    console.log('🔵 Order ID:', orderId);
-    console.log('🔵 Firebase UID:', firebaseUid);
-    console.log('🔵 New Status:', newStatus);
+    this.logger.log(`🔄 [STATUT] Début mise à jour - commande: ${orderId}, nouveau statut: ${newStatus}, par: ${firebaseUid}`);
 
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
     if (!user || (user.role !== 'RESTAURATEUR' && user.role !== 'ADMIN')) {
+      this.logger.warn(`🔄 [STATUT] Échec: accès refusé - user: ${firebaseUid}, rôle: ${user?.role || 'inconnu'}`);
       throw new ForbiddenException(
         "Vous n'êtes pas autorisé à effectuer cette action.",
       );
     }
-    console.log('🔵 Restaurateur found:', user.id);
+    this.logger.log(`🔄 [STATUT] Autorisé: ${user.id} (${user.role})`);
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: { restaurant: true },
     });
 
     if (!order) {
+      this.logger.warn(`🔄 [STATUT] Échec: commande ${orderId} introuvable`);
       throw new NotFoundException('Commande non trouvée.');
     }
-    console.log('🔵 Order found for user:', order.userId);
+    this.logger.log(`🔄 [STATUT] Commande trouvée: ${orderId}, statut actuel: ${order.status}, client: ${order.userId}, restaurant: ${order.restaurant.nom}`);
     if (user.role !== 'ADMIN' && order.restaurant.ownerId !== user.id) {
       throw new ForbiddenException(
         "Cette commande n'appartient pas à votre restaurant.",
@@ -472,6 +493,7 @@ export class OrdersService {
       'ANNULER',
     ];
     if (!allowedStatusUpdates.includes(newStatus)) {
+      this.logger.warn(`🔄 [STATUT] Échec: statut invalide "${newStatus}" pour commande ${orderId}`);
       throw new BadRequestException(
         `Statut de mise à jour invalide: ${newStatus}`,
       );
@@ -501,6 +523,7 @@ export class OrdersService {
     );
 
     this.eventEmitter.emit('order.status.updated', statusUpdatedEvent);
+    this.logger.log(`🔄 [STATUT] Succès: commande ${orderId} - ${order.status} → ${newStatus} (par ${user.id}/${user.role})`);
     return updatedOrder;
   }
 
