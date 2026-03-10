@@ -42,6 +42,40 @@ export class ProductsController {
   }
 
   /**
+   * GET /products/search?q=...
+   * Recherche de produits et restaurants
+   */
+  @Get('search')
+  search(@Query('q') q: string, @Query('limit') limit?: string) {
+    return this.productsService.search(
+      q || '',
+      limit ? parseInt(limit, 10) : 20,
+    );
+  }
+
+  /**
+   * GET /products/popular?limit=10
+   * Récupère les plats les plus commandés
+   */
+  @Get('popular')
+  findPopular(@Query('limit') limit?: string) {
+    return this.productsService.findPopular(limit ? parseInt(limit, 10) : 10);
+  }
+
+  /**
+   * GET /products/recommendations
+   * Recommandations basées sur l'historique de l'utilisateur (authentifié)
+   */
+  @Get('recommendations')
+  @UseGuards(FirebaseAuthGuard)
+  getRecommendations(@Req() req, @Query('limit') limit?: string) {
+    return this.productsService.getRecommendations(
+      req.user.uid,
+      limit ? parseInt(limit, 10) : 10,
+    );
+  }
+
+  /**
    * GET /products/:id
    * Récupère un produit par son ID
    */

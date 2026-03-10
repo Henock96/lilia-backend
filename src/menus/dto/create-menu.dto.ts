@@ -7,10 +7,13 @@ import {
   IsArray,
   IsDateString,
   IsBoolean,
-  ArrayMinSize,
+  IsEnum,
   ValidateNested,
+  ValidateIf,
+  ArrayMinSize,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { MenuType } from '@prisma/client';
 
 export class MenuProductDto {
   @ApiProperty({ description: 'ID du produit à inclure dans le menu' })
@@ -60,6 +63,25 @@ export class CreateMenuDto {
   prix: number;
 
   @ApiProperty({
+    description: 'Type de menu: COMBO (multi-produits) ou PLAT_SPECIAL (plat unique)',
+    enum: MenuType,
+    default: 'COMBO',
+    required: false,
+  })
+  @IsOptional()
+  @IsEnum(MenuType)
+  type?: MenuType;
+
+  @ApiProperty({
+    description: 'Composition du plat special (texte libre). Utilise uniquement pour PLAT_SPECIAL.',
+    example: 'Riz, poulet grille, legumes sautes, sauce tomate',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  ingredients?: string;
+
+  @ApiProperty({
     description: 'Date et heure de début de validité du menu',
     example: '2024-01-15T08:00:00Z',
   })
@@ -83,12 +105,15 @@ export class CreateMenuDto {
   isActive?: boolean;
 
   @ApiProperty({
-    description: 'Liste des produits à inclure dans le menu',
+    description: 'Liste des produits à inclure dans le menu (requis pour COMBO, ignore pour PLAT_SPECIAL)',
     type: [MenuProductDto],
+    required: false,
   })
+  @IsOptional()
+  @ValidateIf((o) => o.type !== 'PLAT_SPECIAL')
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => MenuProductDto)
-  products: MenuProductDto[];
+  products?: MenuProductDto[];
 }

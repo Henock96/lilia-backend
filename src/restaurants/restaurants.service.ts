@@ -237,6 +237,58 @@ export class RestaurantsService {
         }
     }
 
+    /**
+     * Récupère les restaurants les plus populaires (plus commandés)
+     */
+    async findPopular(limit = 6) {
+        // 1. Agréger le nombre de commandes par restaurant
+        const popularRestaurantIds = await this.prisma.order.groupBy({
+            by: ['restaurantId'],
+            _count: { restaurantId: true },
+            orderBy: { _count: { restaurantId: 'desc' } },
+            take: limit,
+        });
+
+        if (popularRestaurantIds.length === 0) {
+            return { data: [] };
+        }
+
+        const restaurantIds = popularRestaurantIds.map(r => r.restaurantId);
+        const countMap = Object.fromEntries(
+            popularRestaurantIds.map(r => [r.restaurantId, r._count.restaurantId]),
+        );
+
+        // 2. Récupérer les détails des restaurants
+        const restaurants = await this.prisma.restaurant.findMany({
+            where: { id: { in: restaurantIds }, isActive: true },
+            include: {
+                specialties: true,
+                operatingHours: true,
+                reviews: { select: { rating: true } },
+            },
+        });
+
+        // 3. Trier et calculer les moyennes
+        const sorted = restaurantIds
+            .map(id => restaurants.find(r => r.id === id))
+            .filter(Boolean)
+            .map(r => {
+                const ratings = r.reviews || [];
+                const avgRating = ratings.length > 0
+                    ? ratings.reduce((sum, rev) => sum + rev.rating, 0) / ratings.length
+                    : null;
+                const { ...rest } = r;
+                return {
+                    ...rest,
+                    orderCount: countMap[r.id] || 0,
+                    averageRating: avgRating ? Math.round(avgRating * 10) / 10 : null,
+                    totalReviews: ratings.length,
+                };
+            });
+
+        return { data: sorted };
+    }
+
     async findRestaurant(){
         const resto =  await this.prisma.restaurant.findMany({
             where: { isActive: true },

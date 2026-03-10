@@ -22,6 +22,7 @@ export class MenusService {
   /**
    * Créer un nouveau menu pour un restaurant
    * Seul le propriétaire du restaurant peut créer un menu
+   * Supporte deux types : COMBO (multi-produits) et PLAT_SPECIAL (plat unique auto-cree)
    */
   async create(dto: CreateMenuDto, firebaseUid: string) {
     // 1. Vérifier que l'utilisateur possède un restaurant
@@ -49,62 +50,128 @@ export class MenusService {
       );
     }
 
-    // 3. Vérifier que tous les produits existent et appartiennent au restaurant
-    const productIds = dto.products.map((p) => p.productId);
-    const products = await this.prisma.product.findMany({
-      where: {
-        id: { in: productIds },
-        restaurantId: restaurant.id,
-      },
-    });
+    const menuType = dto.type || 'COMBO';
 
-    if (products.length !== productIds.length) {
-      throw new BadRequestException(
-        'Certains produits n\'existent pas ou n\'appartiennent pas à votre restaurant.',
-      );
-    }
-
-    // 4. Créer le menu avec ses produits
-    const menu = await this.prisma.menuDuJour.create({
-      data: {
-        nom: dto.nom,
-        description: dto.description,
-        imageUrl: dto.imageUrl,
-        prix: dto.prix,
-        dateDebut: dateDebut,
-        dateFin: dateFin,
-        isActive: dto.isActive ?? true,
-        restaurantId: restaurant.id,
-        products: {
-          create: dto.products.map((p) => ({
-            productId: p.productId,
-            ordre: p.ordre ?? 0,
-          })),
+    const menuInclude = {
+      products: {
+        include: {
+          product: {
+            include: {
+              category: true,
+              variants: true,
+            },
+          },
+        },
+        orderBy: {
+          ordre: 'asc' as const,
         },
       },
-      include: {
-        products: {
-          include: {
-            product: {
-              include: {
-                category: true,
-                variants: true,
+      restaurant: {
+        select: {
+          id: true,
+          nom: true,
+          imageUrl: true,
+        },
+      },
+    };
+
+    let menu;
+
+    if (menuType === 'PLAT_SPECIAL') {
+      // PLAT_SPECIAL : auto-creer un produit phantom + variante Standard
+      menu = await this.prisma.$transaction(async (tx) => {
+        // 3a. Creer le produit phantom
+        const phantomProduct = await tx.product.create({
+          data: {
+            nom: dto.nom,
+            description: dto.description || dto.ingredients,
+            imageUrl: dto.imageUrl,
+            prixOriginal: dto.prix,
+            restaurantId: restaurant.id,
+          },
+        });
+
+        // 3b. Creer la variante Standard
+        await tx.productVariant.create({
+          data: {
+            label: 'Standard',
+            prix: dto.prix,
+            productId: phantomProduct.id,
+          },
+        });
+
+        // 3c. Creer le menu avec lien vers le produit phantom
+        return tx.menuDuJour.create({
+          data: {
+            nom: dto.nom,
+            description: dto.description,
+            imageUrl: dto.imageUrl,
+            prix: dto.prix,
+            type: 'PLAT_SPECIAL',
+            ingredients: dto.ingredients,
+            dateDebut: dateDebut,
+            dateFin: dateFin,
+            isActive: dto.isActive ?? true,
+            restaurantId: restaurant.id,
+            products: {
+              create: {
+                productId: phantomProduct.id,
+                ordre: 0,
               },
             },
           },
-          orderBy: {
-            ordre: 'asc',
+          include: menuInclude,
+        });
+      });
+
+      this.logger.log(
+        `🍽️ PLAT_SPECIAL cree: menu=${menu.id}, produit phantom=${menu.products[0]?.productId}`,
+      );
+    } else {
+      // COMBO : comportement classique
+      // 3. Vérifier que tous les produits existent et appartiennent au restaurant
+      if (!dto.products || dto.products.length === 0) {
+        throw new BadRequestException(
+          'Un menu COMBO doit contenir au moins un produit.',
+        );
+      }
+
+      const productIds = dto.products.map((p) => p.productId);
+      const products = await this.prisma.product.findMany({
+        where: {
+          id: { in: productIds },
+          restaurantId: restaurant.id,
+        },
+      });
+
+      if (products.length !== productIds.length) {
+        throw new BadRequestException(
+          'Certains produits n\'existent pas ou n\'appartiennent pas à votre restaurant.',
+        );
+      }
+
+      // 4. Créer le menu avec ses produits
+      menu = await this.prisma.menuDuJour.create({
+        data: {
+          nom: dto.nom,
+          description: dto.description,
+          imageUrl: dto.imageUrl,
+          prix: dto.prix,
+          type: 'COMBO',
+          dateDebut: dateDebut,
+          dateFin: dateFin,
+          isActive: dto.isActive ?? true,
+          restaurantId: restaurant.id,
+          products: {
+            create: dto.products.map((p) => ({
+              productId: p.productId,
+              ordre: p.ordre ?? 0,
+            })),
           },
         },
-        restaurant: {
-          select: {
-            id: true,
-            nom: true,
-            imageUrl: true,
-          },
-        },
-      },
-    });
+        include: menuInclude,
+      });
+    }
 
     // 5. Émettre l'événement de création de menu pour envoyer les notifications
     this.logger.log(`📢 Emitting menu.created event for menu: ${menu.id}`);
@@ -334,6 +401,7 @@ export class MenusService {
 
   /**
    * Mettre à jour un menu
+   * Pour PLAT_SPECIAL, met aussi a jour le produit phantom associe
    */
   async update(id: string, dto: UpdateMenuDto, firebaseUid: string) {
     // 1. Vérifier que le menu existe
@@ -345,6 +413,7 @@ export class MenusService {
             owner: true,
           },
         },
+        products: true,
       },
     });
 
@@ -375,8 +444,33 @@ export class MenusService {
       }
     }
 
-    // 4. Vérifier les produits si fournis
-    if (dto.products && dto.products.length > 0) {
+    // 4. Si PLAT_SPECIAL, mettre a jour le produit phantom
+    if (existingMenu.type === 'PLAT_SPECIAL' && existingMenu.products.length > 0) {
+      const phantomProductId = existingMenu.products[0].productId;
+      const productUpdate: any = {};
+      if (dto.nom) productUpdate.nom = dto.nom;
+      if (dto.description !== undefined) productUpdate.description = dto.description;
+      if (dto.imageUrl !== undefined) productUpdate.imageUrl = dto.imageUrl;
+      if (dto.prix) productUpdate.prixOriginal = dto.prix;
+
+      if (Object.keys(productUpdate).length > 0) {
+        await this.prisma.product.update({
+          where: { id: phantomProductId },
+          data: productUpdate,
+        });
+
+        // Mettre a jour le prix de la variante Standard si le prix change
+        if (dto.prix) {
+          await this.prisma.productVariant.updateMany({
+            where: { productId: phantomProductId, label: 'Standard' },
+            data: { prix: dto.prix },
+          });
+        }
+      }
+    }
+
+    // 5. Vérifier les produits si fournis (COMBO uniquement)
+    if (existingMenu.type !== 'PLAT_SPECIAL' && dto.products && dto.products.length > 0) {
       const productIds = dto.products.map((p) => p.productId);
       const products = await this.prisma.product.findMany({
         where: {
@@ -397,7 +491,7 @@ export class MenusService {
       });
     }
 
-    // 5. Mettre à jour le menu
+    // 6. Mettre à jour le menu
     const updateData: any = {};
     if (dto.nom) updateData.nom = dto.nom;
     if (dto.description !== undefined)
@@ -407,8 +501,9 @@ export class MenusService {
     if (dto.dateDebut) updateData.dateDebut = new Date(dto.dateDebut);
     if (dto.dateFin) updateData.dateFin = new Date(dto.dateFin);
     if (dto.isActive !== undefined) updateData.isActive = dto.isActive;
+    if (dto.ingredients !== undefined) updateData.ingredients = dto.ingredients;
 
-    if (dto.products && dto.products.length > 0) {
+    if (existingMenu.type !== 'PLAT_SPECIAL' && dto.products && dto.products.length > 0) {
       updateData.products = {
         create: dto.products.map((p) => ({
           productId: p.productId,
@@ -452,6 +547,7 @@ export class MenusService {
 
   /**
    * Supprimer un menu
+   * Pour PLAT_SPECIAL, supprime aussi le produit phantom associe
    */
   async remove(id: string, firebaseUid: string) {
     // 1. Vérifier que le menu existe
@@ -463,6 +559,7 @@ export class MenusService {
             owner: true,
           },
         },
+        products: true,
       },
     });
 
@@ -477,10 +574,38 @@ export class MenusService {
       );
     }
 
-    // 3. Supprimer le menu (cascade sur MenuProduct)
+    // 3. Si PLAT_SPECIAL, recuperer l'ID du produit phantom avant suppression
+    const phantomProductId =
+      menu.type === 'PLAT_SPECIAL' && menu.products.length > 0
+        ? menu.products[0].productId
+        : null;
+
+    // 4. Supprimer le menu (cascade sur MenuProduct)
     await this.prisma.menuDuJour.delete({
       where: { id },
     });
+
+    // 5. Supprimer le produit phantom si PLAT_SPECIAL
+    if (phantomProductId) {
+      try {
+        // Supprimer les variantes puis le produit
+        await this.prisma.productVariant.deleteMany({
+          where: { productId: phantomProductId },
+        });
+        await this.prisma.product.delete({
+          where: { id: phantomProductId },
+        });
+        this.logger.log(
+          `🗑️ Produit phantom ${phantomProductId} supprime avec le menu PLAT_SPECIAL ${id}`,
+        );
+      } catch (e) {
+        // Le produit phantom peut etre reference par des commandes passees,
+        // dans ce cas on le laisse (orphelin mais necessaire pour l'historique)
+        this.logger.warn(
+          `⚠️ Impossible de supprimer le produit phantom ${phantomProductId}: ${e.message}`,
+        );
+      }
+    }
 
     return {
       message: 'Menu supprimé avec succès',

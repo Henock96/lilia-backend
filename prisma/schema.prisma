@@ -120,6 +120,8 @@ model MenuDuJour {
   description    String?
   imageUrl       String?
   prix           Float
+  type           MenuType       @default(COMBO) // COMBO = multi-produits, PLAT_SPECIAL = plat unique
+  ingredients    String?        // Composition du plat special (texte libre, ex: "Riz, poulet, legumes")
   stockQuotidien Int?           // Quantite disponible par jour (null = illimite)
   stockRestant   Int?           // Quantite restante aujourd'hui (null = illimite)
   dateDebut      DateTime       // Date et heure de début de validité du menu
@@ -339,6 +341,11 @@ enum DayOfWeek {
 enum DeliveryPriceMode {
   FIXED       // Prix fixe pour toutes les livraisons
   ZONE_BASED  // Prix selon le quartier/zone
+}
+
+enum MenuType {
+  COMBO          // Menu compose de plusieurs produits existants
+  PLAT_SPECIAL   // Plat special du jour (produit auto-cree)
 }
 
 // Modèle pour les avis et notes des clients

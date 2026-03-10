@@ -98,7 +98,7 @@ Key models and relationships:
 - **Restaurant**: Owned by a User with RESTAURATEUR role
 - **Product**: Belongs to Restaurant and Category, has ProductVariants
 - **ProductVariant**: Different sizes/options for products (30cl, 1.5L, etc.)
-- **MenuDuJour**: Daily/special menus for restaurants with validity dates, contains multiple products
+- **MenuDuJour**: Daily/special menus for restaurants with validity dates. Supports two types via `MenuType` enum: `COMBO` (multi-produits existants) and `PLAT_SPECIAL` (plat unique temporaire avec produit phantom auto-cree). Champs: `type`, `ingredients` (composition texte libre pour PLAT_SPECIAL)
 - **MenuProduct**: Junction table for many-to-many relationship between MenuDuJour and Product
 - **Cart**: One per user, contains CartItems
 - **CartItem**: Links Product + ProductVariant with quantity (can also link to MenuDuJour)
@@ -448,16 +448,19 @@ The `OrderController` listens to this stream and refreshes orders when events ar
 
 **Menu Lifecycle** (Daily/Special Menus):
 1. Restaurant owner creates a daily menu with start/end dates
-2. Menu includes multiple existing products from their catalog
+2. Two types supported:
+   - **COMBO**: Menu includes multiple existing products from the catalog
+   - **PLAT_SPECIAL**: A temporary unique dish (e.g., "Riz compose") - backend auto-creates a phantom Product + Standard variant so cart/order systems work unchanged. The `ingredients` field stores the free-text composition.
 3. When menu is created, push notifications are sent to all previous customers of that restaurant
-4. Clients receive notification: "🔥 Nouveau menu chez [Restaurant] - [Menu Name] à [Price] FCFA"
+4. Clients receive notification: "Nouveau menu chez [Restaurant] - [Menu Name] a [Price] FCFA"
 5. Menu is automatically visible during its validity period (dateDebut to dateFin)
 6. Menu can be manually activated/deactivated by restaurant owner
 7. Expired menus are automatically filtered out from active queries
+8. When a PLAT_SPECIAL menu is deleted, the phantom product is also cleaned up (unless referenced by past orders)
 
 **Real-time Communication**:
 - **Mobile App**: Uses FCM for push notifications
-- **Admin Dashboard**: Uses SSE for real-time order updates
+- **Admin Dashboard**: Uses FCM for push notifications + SSE for real-time order updates
 - **Backend**: EventEmitter broadcasts events, listeners send notifications
 
 ### API Base URL
@@ -521,20 +524,21 @@ Both Flutter apps require running `build_runner` after:
 5. Admin dashboard: Update SSE listener if relevant
 
 #### Creating Daily Menus
-1. Backend: Menu model already exists with many-to-many relationship to products
+1. Backend: Menu model exists with many-to-many relationship to products + MenuType enum (COMBO/PLAT_SPECIAL)
 2. Backend: MenusService handles CRUD operations with date validations
-3. Backend: MenusListener automatically sends FCM notifications to previous customers
-4. Mobile app: Display active menus in restaurant detail screen
-5. Admin dashboard: Create menu management UI (future)
+3. Backend: For PLAT_SPECIAL, MenusService auto-creates a phantom Product + Standard variant in a transaction
+4. Backend: MenusListener automatically sends FCM notifications to previous customers
+5. Mobile app: Display active menus with type-specific UI (composition for PLAT_SPECIAL, product list for COMBO)
+6. Admin dashboard: Full menu management UI with type selector (SegmentedButton)
 
-**Menu Creation Example**:
+**Menu Creation Example (COMBO)**:
 ```json
 POST /menus
 {
   "nom": "Menu du Jour - Mercredi",
-  "description": "Notre menu spécial",
+  "description": "Notre menu special",
   "prix": 5000,
-  "imageUrl": "https://...",
+  "type": "COMBO",
   "dateDebut": "2026-01-15T08:00:00Z",
   "dateFin": "2026-01-15T20:00:00Z",
   "isActive": true,
@@ -544,6 +548,28 @@ POST /menus
   ]
 }
 ```
+
+**Menu Creation Example (PLAT_SPECIAL)**:
+```json
+POST /menus
+{
+  "nom": "Riz compose poulet-legumes",
+  "description": "Plat special du jour",
+  "prix": 3500,
+  "type": "PLAT_SPECIAL",
+  "ingredients": "Riz, poulet grille, legumes sautes, sauce tomate",
+  "dateDebut": "2026-02-27T08:00:00Z",
+  "dateFin": "2026-02-27T20:00:00Z",
+  "isActive": true
+}
+```
+
+**PLAT_SPECIAL Technical Details**:
+- Backend auto-creates a Product (nom, description, imageUrl, prixOriginal from menu) + ProductVariant (label: "Standard", prix from menu)
+- The phantom product is linked to the menu via MenuProduct (ordre: 0)
+- On update: phantom product and variant are also updated (nom, prix, description, imageUrl)
+- On delete: phantom product + variants are deleted (with fallback if referenced by orders)
+- Cart/order systems work unchanged since PLAT_SPECIAL always has a valid productId/variantId
 
 **Notification Flow**:
 - Event `menu.created` is emitted by MenusService

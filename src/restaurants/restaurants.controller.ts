@@ -23,6 +23,14 @@ export class RestaurantsController {
         return this.service.findRestaurant();
     }
 
+    // Endpoint public pour les restaurants populaires (les plus commandés)
+    @Get('popular')
+    findPopular(@Query('limit') limit?: string) {
+        return this.service.findPopular(
+            limit ? parseInt(limit, 10) : 6,
+        );
+    }
+
     @Get('/nombre-commandes')
     @UseGuards(FirebaseAuthGuard, RolesGuard)
     @Roles('ADMIN', 'RESTAURATEUR')
