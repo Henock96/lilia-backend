@@ -40,6 +40,7 @@ export class OrdersService {
       paymentMethod,
       notes,
       isDelivery = true,
+      contactPhone,
     } = createOrderDto;
 
     const user = await this.prisma.user.findUnique({
@@ -228,6 +229,7 @@ export class OrdersService {
           total,
           isDelivery,
           notes,
+          contactPhone,
           deliveryAddress: deliveryAddressString,
           paymentMethod,
           status: 'EN_ATTENTE',
@@ -693,10 +695,13 @@ export class OrdersService {
       errors: [],
     };
 
+    this.logger.log(`🔄 [REORDER] Commande ${orderId}: ${order.items.length} items à ajouter au panier`);
+
     for (const orderItem of order.items) {
       try {
         // Vérifier que le produit existe toujours
         const product = orderItem.product;
+        this.logger.log(`🔄 [REORDER] Item: productId=${orderItem.productId}, variant="${orderItem.variant}", product exists=${!!product}, variants count=${product?.variants?.length ?? 0}`);
         if (!product) {
           results.unavailable.push({
             productId: orderItem.productId,
@@ -706,16 +711,24 @@ export class OrdersService {
         }
 
         // Trouver la variante correspondante
-        // On cherche par label ou on prend la première variante disponible
+        // 1. Chercher par label exact
         let variant = product.variants.find(
           (v) => v.label === orderItem.variant,
         );
 
-        // Si la variante n'existe plus, prendre la première disponible
+        // 2. Chercher par label case-insensitive / trimmed
+        if (!variant) {
+          const orderVariantLower = (orderItem.variant || '').trim().toLowerCase();
+          variant = product.variants.find(
+            (v) => (v.label || '').trim().toLowerCase() === orderVariantLower,
+          );
+        }
+
+        // 3. Si la variante n'existe plus, prendre la première disponible
         if (!variant && product.variants.length > 0) {
           variant = product.variants[0];
           this.logger.warn(
-            `Variant "${orderItem.variant}" not found for product ${product.id}, using default variant`,
+            `Variant "${orderItem.variant}" not found for product ${product.id}, using default variant "${variant.label}"`,
           );
         }
 

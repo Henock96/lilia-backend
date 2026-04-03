@@ -19,4 +19,8 @@ export class CreateOrderDto {
   @IsOptional()
   @Transform(({ value }) => value ?? true) // Par défaut: livraison
   isDelivery?: boolean = true;
+
+  @IsString()
+  @IsOptional()
+  contactPhone?: string;
 }

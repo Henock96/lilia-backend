@@ -232,6 +232,7 @@ model Order {
   status          OrderStatus   @default(EN_ATTENTE)
   paidAt          DateTime?     // Date de paiement
   notes           String?       // Notes optionnelles du client pour le restaurant
+  contactPhone    String?       // Numéro de téléphone saisi lors de la commande
   items           OrderItem[]
   delivery        Delivery?
   createdAt       DateTime      @default(now())

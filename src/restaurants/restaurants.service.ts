@@ -316,13 +316,25 @@ export class RestaurantsService {
                 },
                 specialties: true,
                 operatingHours: true,
+                reviews: { select: { rating: true } },
             },
         });
 
         if (!restaurant) {
             throw new NotFoundException(`Restaurant avec l'ID "${id}" non trouvé.`);
         }
-        return restaurant;
+
+        const ratings = restaurant.reviews || [];
+        const avgRating = ratings.length > 0
+            ? ratings.reduce((sum, rev) => sum + rev.rating, 0) / ratings.length
+            : null;
+
+        const { reviews, ...rest } = restaurant;
+        return {
+            ...rest,
+            averageRating: avgRating ? Math.round(avgRating * 10) / 10 : null,
+            totalReviews: ratings.length,
+        };
     }
     // ============ HORAIRES D'OUVERTURE ============
 
