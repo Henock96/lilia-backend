@@ -15,7 +15,8 @@ async function bootstrap() {
   });
 
   // ─── Dossier statique public (optionnel) ────────────────────────────────────
-  const publicDir = join(__dirname, '..', 'public');
+  // process.cwd() = racine du projet (fonctionne avec webpack monorepo)
+  const publicDir = join(process.cwd(), 'public');
   if (existsSync(publicDir)) {
     app.useStaticAssets(publicDir);
   }
