@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview: Lilia Food
 
 Lilia Food is a complete food delivery platform consisting of three main components:
-1. **Backend API** (NestJS + Prisma + PostgreSQL + Firebase Admin SDK)
+1. **Backend API** (NestJS Monorepo + Prisma + PostgreSQL + Firebase Admin SDK)
 2. **Client Mobile App** (Flutter + Riverpod)
 3. **Admin Dashboard** (Flutter + Riverpod)
 
@@ -13,7 +13,7 @@ All components communicate through a RESTful API with Firebase Authentication pr
 
 ---
 
-## Backend - NestJS API
+## Backend - NestJS API (Monorepo)
 
 **Location**: `C:\Users\fatak\lilia-app`
 
@@ -23,14 +23,17 @@ All components communicate through a RESTful API with Firebase Authentication pr
 # Install dependencies
 npm install
 
-# Development mode with hot reload
+# Development mode with hot reload (main API)
 npm run start:dev
 
-# Build for production
+# Build all apps (monorepo)
 npm run build
 
+# Build specific app
+npx nest build worker
+
 # Run production build
-npm run start:prod
+npm run start:prod    # → node dist/apps/lilia-app/main
 
 # Run tests
 npm run test
@@ -38,8 +41,8 @@ npm run test:watch
 npm run test:e2e
 
 # Lint and format
-npm run lint
-npm run format
+npm run lint          # Lints apps/ and libs/
+npm run format        # Prettier on apps/ and libs/
 
 # Prisma commands
 npx prisma generate              # Generate Prisma client
@@ -53,161 +56,330 @@ npm run render-build
 
 ### Architecture
 
+#### Monorepo Structure
+
+The backend uses NestJS monorepo mode with 2 applications:
+
+```
+C:\Users\fatak\lilia-app/
+├── apps/
+│   ├── lilia-app/           # Main REST API application
+│   │   ├── src/
+│   │   │   ├── main.ts           # Bootstrap + Firebase init + Swagger
+│   │   │   ├── app.module.ts     # Root module (wires all modules)
+│   │   │   ├── app.controller.ts
+│   │   │   ├── app.service.ts
+│   │   │   ├── prisma/           # Prisma ORM service (global)
+│   │   │   ├── common/           # Shared utils (pagination, interceptors, filters)
+│   │   │   └── modules/          # All domain & infra modules (20+)
+│   │   ├── tsconfig.app.json
+│   │   └── test/
+│   └── worker/              # Background job processor (skeleton)
+│       ├── src/
+│       │   ├── main.ts
+│       │   ├── worker.module.ts
+│       │   ├── worker.controller.ts
+│       │   └── worker.service.ts
+│       └── tsconfig.app.json
+├── prisma/
+│   ├── schema.prisma             # Shared database schema
+│   └── migrations/
+├── nest-cli.json                 # Monorepo config (projects: lilia-app, worker)
+├── tsconfig.json                 # Root TS config (ES2021, CommonJS)
+├── tsconfig.build.json
+├── tsconfig.eslint.json
+├── package.json
+└── .eslintrc.js
+```
+
+**Build output**: `dist/apps/lilia-app/` and `dist/apps/worker/`
+
 #### Tech Stack
-- **Framework**: NestJS 11.x
-- **Database**: PostgreSQL via Prisma ORM
-- **Authentication**: Firebase Admin SDK for token verification
+- **Framework**: NestJS 11.x (monorepo mode with webpack)
+- **Database**: PostgreSQL via Prisma ORM 6.x
+- **Authentication**: Firebase Admin SDK for token verification (global guards)
 - **File Storage**: Cloudinary for image uploads
-- **SMS**: Twilio integration
-- **Payments**: MTN Mobile Money integration
-- **Real-time**: EventEmitter for order/payment events
-- **Cron Jobs**: @nestjs/schedule pour les taches planifiees (horaires d'ouverture)
-- **API Documentation**: Swagger/OpenAPI
+- **SMS**: Africa's Talking integration
+- **Email**: Mailtrap integration
+- **Payments**: MTN Mobile Money (sandbox + manual + production modes)
+- **Real-time**: EventEmitter2 for order/payment/menu events
+- **Push Notifications**: Firebase Cloud Messaging (FCM)
+- **Cron Jobs**: @nestjs/schedule (auto-open/close restaurants, daily stock reset)
+- **API Documentation**: Swagger/OpenAPI v11
 
 #### Module Structure
-The backend follows NestJS modular architecture:
+
+All modules are under `apps/lilia-app/src/modules/`:
 
 ```
-src/
-├── auth/              # Firebase authentication middleware
-├── users/             # User management (sync with Firebase)
-├── restaurants/       # Restaurant CRUD operations
-├── products/          # Product catalog management
-├── categories/        # Product categories
-├── menus/             # Daily menu management (CRUD + notifications)
-├── cart/              # Shopping cart operations
-├── orders/            # Order management + SSE streams
-├── deliveries/        # Delivery assignment and tracking
-├── adresses/          # User addresses
-├── payments/          # MTN MoMo payment processing
-├── notifications/     # FCM push notifications + SSE
-├── cloudinary/        # Image upload service
-├── sms/               # Twilio SMS service
-├── firebase/          # Firebase Admin SDK setup
-├── prisma/            # Prisma service (global)
-├── health/            # Health check endpoint
-├── schedule/          # Cron jobs (mise a jour auto isOpen selon horaires)
-├── events/            # Event definitions (orders, payments, menus)
-└── listeners/         # Event listeners (orders, payments, menus)
+apps/lilia-app/src/
+├── main.ts
+├── app.module.ts
+├── prisma/                    # Prisma service (global singleton)
+│   ├── prisma.module.ts
+│   └── prisma.service.ts
+├── common/                    # Shared infrastructure
+│   ├── common.module.ts
+│   ├── exception-filters/http-exception.filter.ts
+│   ├── interceptors/api-response-interceptor.ts
+│   ├── pagination/pagination.service.ts
+│   └── types/APIResponse.ts
+└── modules/
+    ├── auth/                  # Authentication & authorization (global guards)
+    │   ├── auth.module.ts          # Registers FirebaseAuthGuard + RolesGuard as APP_GUARD
+    │   ├── guards/
+    │   │   ├── firebase-auth.guard.ts   # Verifies Firebase ID tokens
+    │   │   └── roles.guard.ts           # Role-based access control
+    │   ├── decorators/
+    │   │   ├── public.decorator.ts      # @Public() - bypass auth
+    │   │   ├── roles.decorator.ts       # @Roles('ADMIN', 'RESTAURATEUR')
+    │   │   ├── firebase-user.decorator.ts  # @FirebaseUser() → DecodedIdToken
+    │   │   └── current-user.decorator.ts   # @CurrentUser() → Prisma User
+    │   └── types/authenticated-request.interface.ts
+    ├── firebase/              # Firebase Admin SDK wrapper
+    ├── users/                 # User management (sync with Firebase)
+    ├── restaurants/           # Restaurant CRUD + operating hours
+    ├── products/              # Product catalog management
+    ├── categories/            # Product categories
+    ├── menus/                 # Daily menu management (COMBO + PLAT_SPECIAL)
+    ├── cart/                  # Shopping cart operations
+    ├── orders/                # Order management (state machine + validators + stock)
+    │   ├── orders.module.ts
+    │   ├── orders.controller.ts
+    │   ├── orders.service.ts
+    │   ├── order-state.machine.ts      # Finite state machine for status transitions
+    │   ├── order-validator.service.ts  # Pre-order validation (address, stock, restaurant open)
+    │   ├── order-calculator.service.ts # Price calc (subTotal, deliveryFee, serviceFee 10%)
+    │   ├── stock.service.ts            # Atomic stock decrement via raw SQL
+    │   └── dto/
+    ├── deliveries/            # Delivery assignment and tracking
+    ├── payments/              # MTN MoMo payment processing
+    │   ├── payment.module.ts
+    │   ├── controllers/
+    │   │   ├── payment.controller.ts   # Payment initiation + confirmation
+    │   │   └── webhook.controller.ts   # MTN MoMo webhook receiver
+    │   ├── services/
+    │   │   ├── payment.service.ts      # Payment logic (MANUAL/SANDBOX/MTN_PRODUCTION)
+    │   │   └── mtn-momo.service.ts     # MTN MoMo API client
+    │   └── types/mtn-momo.types.ts
+    ├── reviews/               # Customer ratings & reviews
+    ├── dashboard/             # Analytics (revenue, top products, peak hours, clients)
+    ├── admin/                 # Platform admin (user management, restaurant creation)
+    ├── banners/               # Promotional banners with display order
+    ├── notifications/         # FCM push notifications + SSE
+    ├── email/                 # Email service via Mailtrap
+    ├── sms/                   # SMS via Africa's Talking
+    ├── cloudinary/            # Image upload service
+    ├── adresses/              # User addresses
+    ├── quartiers/             # Delivery zones
+    ├── schedule/              # Cron jobs (auto isOpen + daily stock reset)
+    ├── health/                # Health check endpoint
+    ├── events/                # Event definitions (order, menu, user events)
+    └── listeners/             # Event handlers (orders, payments, menus, user)
 ```
+
+#### Global Guards Architecture
+
+Authentication is centralized in `AuthModule` via `APP_GUARD`:
+1. **FirebaseAuthGuard** (global) - Verifies `Authorization: Bearer <token>`, populates `request.firebaseUser`
+2. **RolesGuard** (global) - If `@Roles()` present, checks role and populates `request.user` (Prisma User)
+
+Routes are protected by default. Use `@Public()` to exempt. Use `@Roles('RESTAURATEUR', 'ADMIN')` for role restrictions.
+
+Decorators available in controllers:
+- `@FirebaseUser()` → `DecodedIdToken` (Firebase uid, email, etc.)
+- `@CurrentUser()` → Prisma `User` (id, role, nom, etc.) - available after `@Roles()`
+- `@Public()` → bypass authentication entirely
+- `@Roles('CLIENT', 'RESTAURATEUR', 'LIVREUR', 'ADMIN')` → role requirement
 
 #### Database Schema Overview (Prisma)
 
 Key models and relationships:
 - **User**: Links Firebase UID to app data, has role (ADMIN, RESTAURATEUR, LIVREUR, CLIENT)
-- **Restaurant**: Owned by a User with RESTAURATEUR role
-- **Product**: Belongs to Restaurant and Category, has ProductVariants
+- **Restaurant**: Owned by a User with RESTAURATEUR role, has `manualOverride` for cron control
+- **Product**: Belongs to Restaurant and Category, has ProductVariants, has `stockQuotidien`/`stockRestant`
 - **ProductVariant**: Different sizes/options for products (30cl, 1.5L, etc.)
-- **MenuDuJour**: Daily/special menus for restaurants with validity dates. Supports two types via `MenuType` enum: `COMBO` (multi-produits existants) and `PLAT_SPECIAL` (plat unique temporaire avec produit phantom auto-cree). Champs: `type`, `ingredients` (composition texte libre pour PLAT_SPECIAL)
-- **MenuProduct**: Junction table for many-to-many relationship between MenuDuJour and Product
-- **Cart**: One per user, contains CartItems
-- **CartItem**: Links Product + ProductVariant with quantity (can also link to MenuDuJour)
-- **Order**: Placed by user, belongs to restaurant, has OrderItems
-- **OrderItem**: Snapshot of product/variant/price at order time (can also link to MenuDuJour)
+- **MenuDuJour**: Daily/special menus via `MenuType` enum: `COMBO` | `PLAT_SPECIAL`
+- **MenuProduct**: Junction table for MenuDuJour ↔ Product (many-to-many)
+- **Cart/CartItem**: One cart per user, items link Product + ProductVariant + optional MenuDuJour
+- **Order/OrderItem**: Immutable price snapshots at order time, includes `serviceFee` (10%)
 - **Delivery**: One per order, tracks delivery status and deliverer
-- **Payment**: Tracks MTN MoMo payment transactions
-- **Adresses**: User's saved addresses
-- **FcmToken**: Firebase Cloud Messaging tokens for push notifications
-- **OperatingHours**: Horaires d'ouverture par jour de la semaine (Lundi-Dimanche) pour chaque restaurant. Contrainte unique sur [restaurantId, dayOfWeek]. Champs: openTime/closeTime (format "HH:mm"), isClosed (jour ferme), dayOfWeek (enum DayOfWeek)
-- **Restaurant.manualOverride**: Si true, le cron job ne modifie pas le champ isOpen (toggle manuel prioritaire)
-
-#### Authentication Flow
-1. Client authenticates with Firebase (client-side)
-2. Client sends Firebase ID token in `Authorization: Bearer <token>` header
-3. Backend verifies token with Firebase Admin SDK
-4. If valid, extracts `firebaseUid` and finds/creates User in database
-5. Endpoints are protected by guards that check authentication and roles
+- **Payment**: MTN MoMo transactions (modes: MANUAL, SANDBOX, MTN_PRODUCTION)
+- **Review**: Customer ratings (1-5) with optional comment, unique per user+restaurant (`@@unique([userId, restaurantId])`)
+- **DeliveryZone/QuartierZone**: Restaurant-specific delivery pricing per zone
+- **Banner**: Promotional banners with `displayOrder` and `isActive`
+- **Adresses**: User's saved delivery addresses with `isDefault` flag
+- **FcmToken**: FCM tokens for push notifications
+- **OperatingHours**: Weekly hours per restaurant (DayOfWeek enum, openTime/closeTime HH:mm)
 
 #### Key Endpoints
 
-**Auth**: No explicit auth endpoints (handled by Firebase on client)
-- Backend auto-registers users via `/auth/register` when they first authenticate
+**Users** (`/users`):
+- `POST /users/sync` - Sync Firebase user to DB (called at each login)
+- `GET /users/me` - Get current user profile
+- `PUT /users/me` - Update profile
 
-**Orders**:
-- `GET /orders/restaurants` - Get all orders for restaurant owner
-- `GET /orders/user` - Get orders for current user
-- `PATCH /orders/:id/status` - Update order status (admin/restaurant)
-- Real-time updates via Server-Sent Events (SSE)
+**Orders** (`/orders`):
+- `POST /orders/checkout` - Create order from cart
+- `GET /orders/my` - Get current user's orders (paginated)
+- `GET /orders/restaurant` - Get restaurant's orders (RESTAURATEUR/ADMIN)
+- `GET /orders/user/:userId` - Get user's orders (ADMIN)
+- `PATCH /orders/:id/status` - Update order status (RESTAURATEUR/ADMIN)
+- `PATCH /orders/:id/cancel` - Cancel order (CLIENT, only from EN_ATTENTE)
+- `DELETE /orders/:id` - Soft-delete cancelled order (CLIENT)
+- `POST /orders/:id/reorder` - Re-order from previous order
 
-**Cart**:
-- `GET /cart` - Get current user's cart
-- `POST /cart/items` - Add item to cart
-- `PATCH /cart/items/:id` - Update cart item quantity
-- `DELETE /cart/items/:id` - Remove item from cart
+**Cart** (`/cart`):
+- `GET /cart` - Get current cart
+- `POST /cart/add` - Add product to cart
+- `POST /cart/add-menu` - Add menu to cart
+- `PATCH /cart/items/:id` - Update item quantity
+- `PATCH /cart/menus/:menuId` - Update menu quantity
+- `DELETE /cart/items/:id` - Remove item
+- `DELETE /cart/menus/:menuId` - Remove menu
+- `DELETE /cart/clear` - Clear cart
 
-**Restaurants**:
-- `GET /restaurants` - Liste tous les restaurants (inclut operatingHours)
-- `GET /restaurants/:id` - Details d'un restaurant avec produits et horaires
-- `GET /restaurants/mine` - Restaurant du proprietaire connecte (RESTAURATEUR/ADMIN)
-- `PATCH /restaurants/:id` - Modifier infos generales du restaurant
-- `PATCH /restaurants/:id/open-status` - Toggle ouvert/ferme (active manualOverride)
-- `PATCH /restaurants/:id/delivery-settings` - Parametres de livraison
+**Restaurants** (`/restaurants`):
+- `GET /restaurants` - List all (includes operatingHours)
+- `GET /restaurants/:id` - Details with products and hours
+- `GET /restaurants/mine` - Owner's restaurant (RESTAURATEUR/ADMIN)
+- `PATCH /restaurants/:id` - Update info
+- `PATCH /restaurants/:id/open-status` - Toggle open/closed (sets manualOverride)
+- `PATCH /restaurants/:id/delivery-settings` - Delivery settings
+- `GET /restaurants/:id/operating-hours` - Get hours (public)
+- `PUT /restaurants/:id/operating-hours` - Set weekly hours in bulk
+- `PATCH /restaurants/:id/operating-hours/:dayOfWeek` - Update single day
 
-**Horaires d'ouverture** (Operating Hours):
-- `GET /restaurants/:id/operating-hours` - Recuperer les horaires (public)
-- `PUT /restaurants/:id/operating-hours` - Definir les horaires de la semaine en bulk (RESTAURATEUR/ADMIN, desactive manualOverride)
-- `PATCH /restaurants/:id/operating-hours/:dayOfWeek` - Modifier un seul jour (RESTAURATEUR/ADMIN)
+**Products** (`/products`):
+- `GET /products` - List (with filters)
+- `POST /products` - Create (restaurant owner)
+- `PATCH /products/:id` - Update
+- `DELETE /products/:id` - Delete
 
-**Products**:
-- `GET /products` - List products (with filters)
-- `POST /products` - Create product (restaurant owner)
-- `PATCH /products/:id` - Update product
-- `DELETE /products/:id` - Delete product
+**Menus** (`/menus`):
+- `POST /menus` - Create menu
+- `GET /menus` - List (filters: restaurantId, isActive, includeExpired)
+- `GET /menus/active` - Active menus for today
+- `GET /menus/restaurant` - Owner's menus
+- `GET /menus/:id` - Menu details with products
+- `PATCH /menus/:id` - Update
+- `PATCH /menus/:id/toggle` - Activate/deactivate
+- `DELETE /menus/:id` - Delete
 
-**Menus** (Daily/Special Menus):
-- `POST /menus` - Create menu (restaurant owner)
-- `GET /menus` - List all menus (with filters: restaurantId, isActive, includeExpired)
-- `GET /menus/active` - Get active menus for today (optionally filtered by restaurant)
-- `GET /menus/restaurant` - Get all menus for authenticated restaurant owner
-- `GET /menus/:id` - Get menu details with products
-- `PATCH /menus/:id` - Update menu (restaurant owner)
-- `PATCH /menus/:id/toggle` - Activate/deactivate menu (restaurant owner)
-- `DELETE /menus/:id` - Delete menu (restaurant owner)
+**Reviews** (`/reviews`):
+- `POST /reviews` - Create review (must have delivered order)
+- `GET /reviews/restaurant/:id` - Restaurant reviews + stats
+- `GET /reviews/restaurant/:id/stats` - Rating stats
+- `GET /reviews/my/:restaurantId` - User's review for restaurant
+- `GET /reviews/can-review/:restaurantId` - Check if can review
+- `GET /reviews/:id` - Get review
+- `PATCH /reviews/:id` - Update (author only)
+- `DELETE /reviews/:id` - Delete (author or admin)
 
-**Notifications**:
+**Dashboard** (`/dashboard`):
+- `GET /dashboard/overview` - Global stats (orders, revenue, clients)
+- `GET /dashboard/orders` - Orders by status with percentages
+- `GET /dashboard/top-products` - Top 10 best-selling products
+- `GET /dashboard/revenue` - Daily revenue chart (30 days)
+- `GET /dashboard/clients` - Client analytics (new/returning/top)
+- `GET /dashboard/peak-hours` - Hourly order distribution
+- `GET /dashboard/restaurants` - Restaurant ranking (ADMIN)
+
+**Payments** (`/payments`):
+- `POST /payments` - Initiate payment (MANUAL/SANDBOX/MTN)
+- `GET /payments/:paymentId/status` - Check payment status
+- `POST /payments/:paymentId/confirm` - Manual confirmation (ADMIN)
+
+**Notifications** (`/notifications`):
 - `POST /notifications/register-token` - Register FCM token
-- `GET /notifications/sse` - SSE endpoint for real-time order updates
+- `DELETE /notifications/token` - Remove FCM token (logout)
 
-**Payments**:
-- `POST /payments/initiate` - Initiate MTN MoMo payment
-- `POST /payments/webhook` - Payment provider webhook
+**Admin** (`/admin`):
+- Admin-only endpoints for user role management, restaurant creation with owner, user ban/activate
+
+**Banners** (`/banners`):
+- CRUD for promotional banners with display order management
+
+#### Order State Machine
+
+Valid status transitions enforced by `OrderStateMachine`:
+```
+EN_ATTENTE → CONFIRMER → EN_PREPARATION → PRET → LIVRER
+EN_ATTENTE → ANNULER (client can cancel)
+CONFIRMER → ANNULER (restaurateur/admin)
+EN_ATTENTE → PAYER (after payment success)
+```
+
+Transition permissions:
+- **CLIENT**: can cancel (EN_ATTENTE → ANNULER)
+- **RESTAURATEUR**: can confirm, prepare, mark ready, deliver, cancel
+- **ADMIN**: all transitions
 
 #### Event-Driven Architecture
-The backend uses NestJS EventEmitter for decoupling:
 
-**Events**:
-- `order.created` → Send notification to restaurant and client
-- `order.status.updated` → Send notification to client
-- `payment.success` → Update order status to PAYER
-- `menu.created` → Send push notification to all previous customers of the restaurant
+**Events** (defined in `modules/events/`):
+- `order.created` → Notify restaurant + client
+- `order.status.updated` → Notify client of status change
+- `order.cancelled` → Notify parties
+- `order.payment.confirmed` → Update order to PAYER
+- `order.payment.failed` → Handle failed payment
+- `menu.created` → Notify previous customers (FCM + email)
+- `user.created` → Send welcome email
 
-**Listeners**:
-- `OrdersListener` (src/listeners/orders.listener.ts) - Handles order events
-- `PaymentListener` (src/listeners/payment.listener.ts) - Handles payment events
-- `MenusListener` (src/listeners/menus.listener.ts) - Handles menu events and sends notifications
+**Listeners** (in `modules/listeners/`):
+- `OrdersListener` - Order creation/status events → FCM notifications
+- `PaymentListener` - Payment success → update order + notify
+- `MenusListener` - Menu creation → query past customers → send push notifications
+- `UserListener` - User registration → send welcome email via Mailtrap
+
+#### Payment Modes
+
+The payment system supports 3 modes via `PAYMENT_MODE` env var:
+- **MANUAL** (default): Client pays via MTN MoMo transfer to Lilia number, admin confirms manually
+- **SANDBOX**: MTN MoMo sandbox API for testing
+- **MTN_PRODUCTION**: Live MTN MoMo API (requires aggregator agreement)
 
 #### Environment Variables Required
 ```
 DATABASE_URL=postgresql://...
+PORT=8080
+
+# Firebase
 FIREBASE_PROJECT_ID=...
-FIREBASE_PRIVATE_KEY=...
 FIREBASE_CLIENT_EMAIL=...
+FIREBASE_PRIVATE_KEY=...
+FIREBASE_SERVICE_ACCOUNT_PATH=...  # Dev only: path to service account JSON
+
+# Cloudinary
 CLOUDINARY_CLOUD_NAME=...
 CLOUDINARY_API_KEY=...
 CLOUDINARY_API_SECRET=...
-TWILIO_ACCOUNT_SID=...
-TWILIO_AUTH_TOKEN=...
-TWILIO_PHONE_NUMBER=...
+
+# SMS (Africa's Talking)
+AFRICAS_TALKING_API_KEY=...
+AFRICAS_TALKING_USERNAME=...
+SMS_SENDER_ID=LiliaFood
+
+# Email (Mailtrap)
+MAILTRAP_API_TOKEN=...
+MAILTRAP_SENDER_EMAIL=noreply@lilia-food.com
+MAILTRAP_SENDER_NAME=Lilia Food
+
+# Payments
+PAYMENT_MODE=MANUAL              # MANUAL | SANDBOX | MTN_PRODUCTION
+LILIA_PAYMENT_PHONE=...          # Lilia Food MTN MoMo number (MANUAL mode)
 MTN_MOMO_API_KEY=...
 MTN_MOMO_API_USER=...
 ```
 
 #### Deployment
-The backend is deployed on Render with the `render-build` script that:
-1. Installs dependencies
-2. Generates Prisma client
-3. Applies migrations
-4. Builds NestJS application
+The backend is deployed on **Render** with the `render-build` script:
+1. `npm install`
+2. `npx prisma generate`
+3. `npx prisma migrate deploy`
+4. `npm run build`
+
+Production start: `node dist/apps/lilia-app/main`
 
 ---
 
@@ -279,7 +451,7 @@ lib/
 
 #### Authentication Flow
 1. Firebase Authentication (email/password, Google Sign-In)
-2. On successful auth, sync user to backend via `/auth/register`
+2. On successful auth, sync user to backend via `/users/sync`
 3. All API calls include Firebase ID token: `Authorization: Bearer <token>`
 4. Auth state changes trigger navigation via `authStateChangeProvider`
 5. On sign out, invalidate all user-related providers
@@ -402,13 +574,6 @@ Admin can update orders through these statuses:
 - `LIVRER` - Delivered
 - `ANNULER` - Cancelled
 
-#### Key APIs Used
-- `GET /orders/restaurants` - Fetch all orders for the restaurant
-- `PATCH /orders/:id/status` - Update order status
-- `GET /notifications/sse` - SSE stream for real-time updates
-- `GET /users` - List all clients (filtered by restaurant)
-- `GET /orders/user/:userId` - Get orders for specific client
-
 #### SSE Integration
 The `OrderService` connects to SSE endpoint:
 ```dart
@@ -424,8 +589,6 @@ Stream<SSEModel> getSseStream(String token) {
 }
 ```
 
-The `OrderController` listens to this stream and refreshes orders when events arrive.
-
 ---
 
 ## Cross-Project Context
@@ -440,37 +603,36 @@ The `OrderController` listens to this stream and refreshes orders when events ar
 
 **Order Lifecycle**:
 1. Client adds products to cart (mobile app)
-2. Client proceeds to checkout, creates order
-3. Restaurant owner receives notification (admin dashboard)
-4. Owner updates status through admin dashboard
-5. Client receives notifications about status changes (mobile app)
-6. Order reaches LIVRER status
+2. Client proceeds to checkout, order validated (address, stock, restaurant open)
+3. Order created with immutable price snapshots (subTotal + deliveryFee + serviceFee)
+4. Client pays via MTN MoMo (manual or automatic)
+5. Restaurant owner receives notification (admin dashboard)
+6. Owner updates status through admin dashboard (state machine enforced)
+7. Client receives notifications about status changes
+8. Order reaches LIVRER status
 
 **Menu Lifecycle** (Daily/Special Menus):
 1. Restaurant owner creates a daily menu with start/end dates
 2. Two types supported:
    - **COMBO**: Menu includes multiple existing products from the catalog
-   - **PLAT_SPECIAL**: A temporary unique dish (e.g., "Riz compose") - backend auto-creates a phantom Product + Standard variant so cart/order systems work unchanged. The `ingredients` field stores the free-text composition.
+   - **PLAT_SPECIAL**: A temporary unique dish - backend auto-creates a phantom Product + Standard variant
 3. When menu is created, push notifications are sent to all previous customers of that restaurant
-4. Clients receive notification: "Nouveau menu chez [Restaurant] - [Menu Name] a [Price] FCFA"
-5. Menu is automatically visible during its validity period (dateDebut to dateFin)
-6. Menu can be manually activated/deactivated by restaurant owner
-7. Expired menus are automatically filtered out from active queries
-8. When a PLAT_SPECIAL menu is deleted, the phantom product is also cleaned up (unless referenced by past orders)
+4. Menu is automatically visible during its validity period (dateDebut to dateFin)
+5. Menu can be manually activated/deactivated by restaurant owner
 
 **Real-time Communication**:
 - **Mobile App**: Uses FCM for push notifications
 - **Admin Dashboard**: Uses FCM for push notifications + SSE for real-time order updates
-- **Backend**: EventEmitter broadcasts events, listeners send notifications
+- **Backend**: EventEmitter2 broadcasts events, listeners send notifications
 
 ### API Base URL
 All frontends connect to: `https://lilia-backend.onrender.com`
 
 ### Authentication Pattern
 1. User signs in via Firebase (client-side)
-2. Backend verifies Firebase ID token on each request
+2. Backend verifies Firebase ID token on each request (global guard)
 3. Backend uses `firebaseUid` to link Firebase user to database User
-4. Role-based access control enforced on backend
+4. Role-based access control enforced globally via `@Roles()` decorator
 
 ### Code Generation Reminder
 Both Flutter apps require running `build_runner` after:
@@ -489,11 +651,12 @@ Both Flutter apps require running `build_runner` after:
 #### Adding a New Feature Involving All Three Projects
 
 1. **Backend First**:
-   - Add Prisma model changes to `schema.prisma`
+   - Add Prisma model changes to `prisma/schema.prisma`
    - Run `npx prisma migrate dev --name feature_name`
-   - Create module: `nest g module feature`
+   - Create module under `apps/lilia-app/src/modules/feature/`
    - Create controller, service, DTOs
-   - Add endpoints with proper guards and validation
+   - Add to `app.module.ts` imports
+   - Use `@Public()` or `@Roles()` for access control
    - Update Swagger documentation
 
 2. **Mobile App**:
@@ -510,182 +673,76 @@ Both Flutter apps require running `build_runner` after:
    - Focus on admin-specific views (tables, forms)
 
 #### Modifying Order Status
-1. Update `OrderStatus` enum in Prisma schema (backend)
-2. Run migration
-3. Update `OrderStatus` enum in both Flutter apps (models/order.dart)
-4. Update UI dropdowns in admin dashboard
-5. Update status display in mobile app
+1. Update `OrderStatus` enum in Prisma schema
+2. Update `OrderStateMachine` transitions in `apps/lilia-app/src/modules/orders/order-state.machine.ts`
+3. Run migration
+4. Update `OrderStatus` enum in both Flutter apps
+5. Update UI dropdowns in admin dashboard
 
 #### Adding New Notification Type
-1. Backend: Add event emitter call in relevant service
-2. Backend: Add FCM notification logic in notifications module
-3. Mobile app: Handle notification in `NotificationService`
-4. Mobile app: Add UI handler for notification action
-5. Admin dashboard: Update SSE listener if relevant
-
-#### Creating Daily Menus
-1. Backend: Menu model exists with many-to-many relationship to products + MenuType enum (COMBO/PLAT_SPECIAL)
-2. Backend: MenusService handles CRUD operations with date validations
-3. Backend: For PLAT_SPECIAL, MenusService auto-creates a phantom Product + Standard variant in a transaction
-4. Backend: MenusListener automatically sends FCM notifications to previous customers
-5. Mobile app: Display active menus with type-specific UI (composition for PLAT_SPECIAL, product list for COMBO)
-6. Admin dashboard: Full menu management UI with type selector (SegmentedButton)
-
-**Menu Creation Example (COMBO)**:
-```json
-POST /menus
-{
-  "nom": "Menu du Jour - Mercredi",
-  "description": "Notre menu special",
-  "prix": 5000,
-  "type": "COMBO",
-  "dateDebut": "2026-01-15T08:00:00Z",
-  "dateFin": "2026-01-15T20:00:00Z",
-  "isActive": true,
-  "products": [
-    { "productId": "clxxx123", "ordre": 1 },
-    { "productId": "clxxx456", "ordre": 2 }
-  ]
-}
-```
-
-**Menu Creation Example (PLAT_SPECIAL)**:
-```json
-POST /menus
-{
-  "nom": "Riz compose poulet-legumes",
-  "description": "Plat special du jour",
-  "prix": 3500,
-  "type": "PLAT_SPECIAL",
-  "ingredients": "Riz, poulet grille, legumes sautes, sauce tomate",
-  "dateDebut": "2026-02-27T08:00:00Z",
-  "dateFin": "2026-02-27T20:00:00Z",
-  "isActive": true
-}
-```
-
-**PLAT_SPECIAL Technical Details**:
-- Backend auto-creates a Product (nom, description, imageUrl, prixOriginal from menu) + ProductVariant (label: "Standard", prix from menu)
-- The phantom product is linked to the menu via MenuProduct (ordre: 0)
-- On update: phantom product and variant are also updated (nom, prix, description, imageUrl)
-- On delete: phantom product + variants are deleted (with fallback if referenced by orders)
-- Cart/order systems work unchanged since PLAT_SPECIAL always has a valid productId/variantId
-
-**Notification Flow**:
-- Event `menu.created` is emitted by MenusService
-- MenusListener queries all clients who previously ordered from this restaurant
-- Push notifications sent via Firebase Cloud Messaging
-- Notification includes: menu name, price, restaurant name
+1. Backend: Create event class in `modules/events/`
+2. Backend: Emit event in relevant service
+3. Backend: Create/update listener in `modules/listeners/`
+4. Backend: Add listener to `app.module.ts` providers
+5. Mobile app: Handle notification in `NotificationService`
+6. Admin dashboard: Update SSE listener if relevant
 
 ---
 
 ## Current Development Focus
 
-### ✅ Recemment Complete (Fevrier 2026)
+### Completed (April 2026) - Monorepo Refactoring
 
-**Horaires d'ouverture + Cron auto-update isOpen**:
-- ✅ Backend: Enum `DayOfWeek` (LUNDI-DIMANCHE) et modele `OperatingHours` dans Prisma
-- ✅ Backend: Champ `manualOverride` sur Restaurant pour priorite du toggle manuel
-- ✅ Backend: 3 endpoints API (GET/PUT/PATCH) pour gerer les horaires
-- ✅ Backend: Cron job (`@nestjs/schedule`) chaque minute qui ouvre/ferme automatiquement les restaurants
-- ✅ Backend: Gestion des horaires passant minuit (ex: 20:00 -> 02:00)
-- ✅ Backend: Timezone UTC+1 (Afrique Centrale/Ouest, pas de DST)
-- ✅ Backend: Migration `20260212222828_add_operating_hours` appliquee
+**Backend refactored to NestJS monorepo architecture**:
+- Migrated from flat `src/` to `apps/lilia-app/src/modules/` structure
+- Created centralized `AuthModule` with global guards (no more per-controller `@UseGuards()`)
+- Added `OrderStateMachine` for enforced status transitions
+- Added `OrderValidatorService` for comprehensive pre-order validation
+- Added `OrderCalculatorService` for price snapshots (subTotal, deliveryFee, serviceFee 10%)
+- Added `StockService` with atomic SQL-level stock decrement (no race conditions)
+- Added `DashboardModule` with 8 analytics endpoints
+- Added `ReviewsModule` with ratings, stats, and unique constraints
+- Added `AdminModule` for platform administration
+- Added `BannersModule` for promotional content
+- Added `EmailModule` via Mailtrap (welcome emails, menu notifications)
+- Added `SmsModule` via Africa's Talking
+- Migrated SMS from Twilio to Africa's Talking
+- Upgraded `@nestjs/swagger` from v2.5.1 to v11.x
+- Upgraded `@nestjs/config` from v1.1.5 to v4.x
+- Worker app skeleton created for future background jobs
+- Added `@@unique([userId, restaurantId])` on Review model
+- Added `@unique` on Review.orderId
 
-**Fichiers crees**:
-- `src/restaurants/dto/operating-hours.dto.ts` - DTOs avec validation HH:mm
-- `src/schedule/restaurant-schedule.service.ts` - Cron job (chaque minute)
-- `src/schedule/schedule.module.ts` - Module wrappant ScheduleModule.forRoot()
+### Previously Completed
 
-**Fichiers modifies**:
-- `prisma/schema.prisma` - Enum DayOfWeek, modele OperatingHours, champs manualOverride + operatingHours sur Restaurant
-- `src/restaurants/restaurants.service.ts` - +3 methodes (setOperatingHours, getOperatingHours, updateOperatingHour), updateOpenStatus set manualOverride:true, findRestaurant/findOne/findRestaurantOwner incluent operatingHours
-- `src/restaurants/restaurants.controller.ts` - +3 endpoints horaires, import Put
-- `src/app.module.ts` - Import AppScheduleModule
+**Horaires d'ouverture + Cron auto-update isOpen** (Feb 2026):
+- Operating hours per day (DayOfWeek enum)
+- Cron job every minute auto-opens/closes restaurants
+- Manual override support
+- Midnight-crossing hours handled
+- Timezone UTC+1
 
-**Logique du cron**:
-- Tourne chaque minute
-- Ignore les restaurants avec `manualOverride: true`
-- Ignore les restaurants sans horaires definis
-- Ne met a jour `isOpen` que si le statut doit changer (evite les writes inutiles)
-- Gere les horaires traversant minuit (ex: 20:00 -> 02:00)
+**Daily Menu System** (Jan 2026):
+- Complete CRUD for COMBO + PLAT_SPECIAL menus
+- Event-driven FCM notifications to past customers
+- Phantom product creation for PLAT_SPECIAL
 
-**Exemple d'utilisation PUT /restaurants/:id/operating-hours**:
-```json
-{
-  "hours": [
-    { "dayOfWeek": "LUNDI", "openTime": "08:00", "closeTime": "22:00" },
-    { "dayOfWeek": "MARDI", "openTime": "08:00", "closeTime": "22:00" },
-    { "dayOfWeek": "MERCREDI", "openTime": "08:00", "closeTime": "22:00" },
-    { "dayOfWeek": "JEUDI", "openTime": "08:00", "closeTime": "22:00" },
-    { "dayOfWeek": "VENDREDI", "openTime": "08:00", "closeTime": "23:00" },
-    { "dayOfWeek": "SAMEDI", "openTime": "10:00", "closeTime": "23:00" },
-    { "dayOfWeek": "DIMANCHE", "isClosed": true, "openTime": "00:00", "closeTime": "00:00" }
-  ]
-}
-```
-
-### ✅ Complete (Février 2026) - Logging & Données Client dans Commandes
-
-**Logging structuré du flux de commandes**:
-- ✅ Backend: Ajout de logs détaillés dans `orders.service.ts` pour chaque étape de `createOrderFromCart` (validation adresse, panier, restaurant ouvert, stock, calcul montants)
-- ✅ Backend: Remplacement de tous les `console.log` par `this.logger` dans `updateOrderStatusByRestaurateur`
-- ✅ Backend: Ajout de logs détaillés dans `payment.service.ts` (createPayment, checkPaymentStatus, handlePaymentTimeout)
-- ✅ Backend: Chaque log est préfixé par catégorie (📦 [COMMANDE], 🔄 [STATUT], 💰 [PAIEMENT]) pour faciliter le filtrage
-
-**Données client incluses dans l'API commandes restaurant**:
-- ✅ Prisma: Ajout relation `user User @relation(...)` dans le modèle `Order` et `orders Order[]` dans le modèle `User`
-- ✅ Prisma: Ajout `@@index([userId])` sur Order pour les performances
-- ✅ Backend: `findRestaurantOrders` inclut maintenant `user: { select: { id, nom, phone, email, imageUrl } }` dans les deux cas (ADMIN et RESTAURATEUR)
-- ⚠️ **Migration requise**: `npx prisma migrate dev --name add_user_order_relation` puis `npx prisma generate`
-
-**Fichiers modifiés**:
-- `prisma/schema.prisma` - Relations User↔Order ajoutées + index userId
-- `src/orders/orders.service.ts` - Logging structuré + include user dans findRestaurantOrders
-- `src/payments/services/payment.service.ts` - Logging structuré complet
-
-### ✅ Complete (Janvier 2026)
-
-**Daily Menu System with Push Notifications**:
-- ✅ Backend: Complete CRUD API for daily/special menus (`/menus` endpoints)
-- ✅ Backend: Event-driven notification system for new menu creation
-- ✅ Backend: Prisma schema updated with MenuDuJour and MenuProduct models
-- ✅ Backend: MenusListener sends FCM notifications to previous customers
-- 🔄 Mobile App: Display active menus (in progress)
-- 🔄 Admin Dashboard: Menu management UI (in progress)
-
-**Key Files**:
-- Backend: `src/menus/menus.service.ts` - CRUD operations
-- Backend: `src/menus/menus.controller.ts` - 8 REST endpoints
-- Backend: `src/listeners/menus.listener.ts` - Notification handling
-- Backend: `src/events/menu-events.ts` - Event definitions
-
-### Order Management (Already Implemented)
-
-The admin dashboard has full order management capabilities:
-`C:\Users\fatak\Desktop\dreesiscode\code\lilia_admin`
-
-Key files:
-- `lib/features/home/data/order_service.dart` - API client + SSE
-- `lib/features/home/data/order_controller.dart` - State management
-- `lib/features/home/presentation/screens/restaurant_orders_screen.dart` - UI
-
-Backend endpoints:
-- `GET /orders/restaurants` - Fetch orders
-- `PATCH /orders/:id/status` - Update status
-- `GET /notifications/sse` - Real-time updates
+**Order Management**:
+- Full lifecycle from cart to delivery
+- Real-time SSE updates for admin dashboard
+- Structured logging throughout
 
 ### Next Steps
 
 **Planned Features**:
-1. ⭐ Favorites system (restaurants and products)
-2. 🔄 Re-order functionality (quick repeat orders)
-3. 🔍 Search functionality (restaurants, products, categories)
-4. 🏷️ Visual badges (popular, fast delivery, new)
-5. 🎁 Promo codes system
-6. 💯 Loyalty points program
-7. ⭐ Reviews and ratings
-8. 📊 Personalized recommendations
+1. Favorites system (restaurants and products)
+2. Search functionality (restaurants, products, categories)
+3. Visual badges (popular, fast delivery, new)
+4. Promo codes system
+5. Loyalty points program
+6. Personalized recommendations
+7. Delivery driver app (LIVREUR role)
+8. Worker app implementation (email queues, scheduled reports)
 
 ---
 
@@ -693,8 +750,14 @@ Backend endpoints:
 
 ### Backend
 - **Prisma Client Out of Sync**: Run `npx prisma generate` after schema changes
-- **Migration Fails**: Check database connection and rollback if needed
-- **Firebase Token Invalid**: Ensure Firebase Admin SDK is properly configured with service account
+- **Migration Fails**: Check `DATABASE_URL` and rollback if needed
+- **Firebase Token Invalid**: Ensure Firebase Admin SDK configured (env vars or service account JSON)
+- **Import Paths After Moving Files**: Modules in `apps/lilia-app/src/modules/xxx/` use:
+  - `../../prisma/prisma.service` for Prisma (goes to `src/prisma/`)
+  - `../../common/...` for common utils (goes to `src/common/`)
+  - `../events/...` for event definitions (sibling under `modules/`)
+  - `../auth/decorators/...` for auth decorators (sibling under `modules/`)
+- **Swagger Errors**: Ensure `@nestjs/swagger` v11+ is installed (v2 API is incompatible)
 
 ### Flutter Apps
 - **Provider Not Found**: Run `dart run build_runner build --delete-conflicting-outputs`
@@ -704,34 +767,7 @@ Backend endpoints:
 
 ### Cross-Platform
 - **401 Unauthorized**: Check Firebase token is being sent correctly in headers
-- **CORS Issues**: Backend should have CORS enabled for web debugging
+- **CORS Issues**: Backend has CORS enabled with permissive settings for SSE
 - **Real-time Updates Not Working**:
   - Mobile: Check FCM token is registered with backend
   - Admin: Check SSE connection is active and not timing out
-
----
-
-## Future Enhancements
-
-### High Priority (User Engagement)
-- ⭐ **Favorites System**: Mark restaurants and products as favorites
-- 🔄 **Re-order Feature**: Quick repeat of previous orders
-- 🔍 **Search & Filters**: Search restaurants/products, filter by price/distance/rating
-- 🏷️ **Visual Badges**: Popular, fast delivery, new restaurant indicators
-- 🎁 **Promo Codes**: Restaurant-specific promotional codes
-- 💯 **Loyalty Program**: Points-based rewards system
-- ⭐ **Reviews & Ratings**: Rate restaurants and products, view average ratings
-
-### Medium Priority (Business Tools)
-- 📊 **Analytics Dashboard**: Sales reports for restaurant owners
-- 📅 **Scheduled Orders**: Order for a specific date/time
-- 👥 **Group Orders**: Multiple people ordering together, split delivery fees
-- 💬 **In-app Chat**: Simple messaging between clients and restaurants
-- 📧 **Email Notifications**: Order confirmations and updates via email
-
-### Long Term (Platform Growth)
-- 🚚 **Delivery Driver App**: Complete app for LIVREUR role
-- 🏪 **Multi-restaurant Orders**: Order from multiple restaurants in one transaction
-- 🌍 **Geolocation**: Distance-based search and delivery fee calculation
-- 📱 **Social Features**: Share restaurants, referral program with bonuses
-- 🤖 **AI Recommendations**: Personalized product suggestions based on order history

@@ -21,6 +21,7 @@ model User {
   phone       String?
   imageUrl    String?
   role        Role     @default(CLIENT)
+  driverStatus DriverStatus? // Statut du livreur, null pour les non-livreurs
   lastLogin   DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -31,6 +32,9 @@ model User {
   fcmTokens   FcmToken[]
   reviews     Review[]   // Avis laissés par l'utilisateur
   orders      Order[]    // Commandes passées par l'utilisateur
+
+  // Ajout recent 04/04/2026
+  statusUser StatusUser   @default(ACTIVE)
 }
 
 model FcmToken {
@@ -51,6 +55,7 @@ model Adresses {
   country    String
   user       User      @relation(fields: [userId], references: [id])
   userId     String
+  isDefault Boolean @default(false)
   quartier   Quartier? @relation(fields: [quartierId], references: [id])
   quartierId String?   // Référence au quartier pour le calcul des frais
   createdAt  DateTime  @default(now())
@@ -66,6 +71,11 @@ model Restaurant {
   adresse                 String
   phone                   String
   imageUrl                String?
+
+  //Ajout 04/04
+  latitude                Float?
+  longitude               Float?
+
   owner                   User              @relation(fields: [ownerId], references: [id])
   ownerId                 String            @unique
   products                Product[]
@@ -85,7 +95,7 @@ model Restaurant {
 
   // Configuration de la livraison
   deliveryPriceMode       DeliveryPriceMode @default(FIXED)
-  fixedDeliveryFee        Float             @default(500)   // Prix fixe si mode FIXED
+  fixedDeliveryFee        Float             @default(1000)   // Prix fixe si mode FIXED
   deliveryZones           DeliveryZone[]    // Zones de livraison si mode ZONE_BASED
   estimatedDeliveryTimeMin Int              @default(15)    // Temps de livraison min (minutes)
   estimatedDeliveryTimeMax Int              @default(30)    // Temps de livraison max (minutes)
@@ -209,11 +219,24 @@ model CartItem {
   variantId String
   quantite  Int
   createdAt DateTime @default(now())
+  //04/04/2026 Nouveau champ — nullable au début pour ne pas casser l'existant
+  itemKey String? // "productId:variantId:menuId|none"
   
   @@unique([cartId, variantId, menuId]) // Permet un même variant comme produit individuel ET dans un menu
   @@index([variantId])
   @@index([productId])
   @@index([menuId])
+  @@index([cartId, itemKey]) // index de remplacement
+}
+
+// 04/04/2026 ÉTAPE 1 — Ajouter les nouveaux enums (non-breaking)
+enum OrderLifecycleStatus {
+  DRAFT           // Panier validé, pas encore payé
+  CONFIRMED       // Paiement confirmé
+  IN_PREPARATION  // Restaurant prépare
+  READY           // Prêt pour livraison/retrait
+  COMPLETED       // Livré ou retiré
+  CANCELLED       // Annulé
 }
 
 model Order {
@@ -224,16 +247,24 @@ model Order {
   userId          String
   subTotal        Float         // Sous-total des articles
   deliveryFee     Float         // Frais de livraison (0 si retrait)
-  total           Float         // Montant total (subTotal + deliveryFee)
+  serviceFee      Float   @default(0)   // ← nouveau : commission 10%
+  total           Float                 // subTotal + deliveryFee + serviceFee        // Montant total (subTotal + deliveryFee)
   isDelivery      Boolean       @default(true)  // true = livraison, false = retrait au restaurant
   deliveryAddress String?       // Adresse de livraison (null si retrait)
+  // 04/04/2026
+  orderHistory      OrderHistory[] // Historique des changements de statut
+  deliveryLatitude    Float?   // nouveau
+  deliveryLongitude   Float?   // nouveau  
+  deliveryQuartierId  String?  // nouveau — pour les frais de zone
   deleteCommande  Boolean       @default(false)
   paymentMethod   PaymentMethod // Méthode de paiement
   status          OrderStatus   @default(EN_ATTENTE)
+  lifecycleStatus OrderLifecycleStatus? // nouveau, nullable
   paidAt          DateTime?     // Date de paiement
   notes           String?       // Notes optionnelles du client pour le restaurant
   contactPhone    String?       // Numéro de téléphone saisi lors de la commande
   items           OrderItem[]
+  reviews         Review[]
   delivery        Delivery?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
@@ -242,6 +273,9 @@ model Order {
 
   @@index([restaurantId])
   @@index([userId])
+  @@index([status])           // ← manquait
+  @@index([lifecycleStatus])  // ← nouveau
+  @@index([createdAt])        // ← manquait
 }
 
 model OrderItem {
@@ -257,8 +291,31 @@ model OrderItem {
   prix      Float
   createdAt  DateTime @default(now())
 
+  // 04/04/2026
+  variantId      String?  // nullable pour les commandes existantes
+  variantLabel   String?  // snapshot du label au moment de la commande
+  snapshotPrice  Float?   // snapshot du prix au moment de la commande
+
   @@index([orderId])
   @@index([productId])
+}
+model OrderHistory {
+  id         String   @id @default(cuid())
+  order      Order    @relation(fields: [orderId], references: [id])
+  orderId    String
+  fromStatus OrderStatus
+  toStatus   OrderStatus
+  actionId    String  // "CLIENT", "RESTAURATEUR", "LIVREUR", "SYSTEM"
+  reason      String? // Raison de l'annulation ou du changement de statut
+  createdAt   DateTime @default(now())
+
+  @@index([orderId])
+}
+
+enum DriverStatus {
+  AVAILABLE
+  ON_DELIVERY
+  OFFLINE
 }
 model Delivery {
   id          String         @id @default(cuid())
@@ -270,14 +327,42 @@ model Delivery {
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 
-  @@index([delivererId])
-}
+  estimatedArrival DateTime?   // ETA calculé
+  pickedUpAt       DateTime?   // quand le livreur a pris la commande
+  deliveredAt      DateTime?   // timestamp réel de livraison
+  
+  // Position dernière connue du livreur
+  lastLatitude     Float?
+  lastLongitude    Float?
+  lastPositionAt   DateTime?
+  locations        DeliveryLocation[]
 
+  @@index([delivererId])
+  @@index([status])    // ← manquait
+}
+// Nouvelle table — n'affecte pas l'existant
+model DeliveryLocation {
+  id          String   @id @default(cuid())
+  deliveryId  String
+  delivery    Delivery @relation(fields: [deliveryId], references: [id])
+  latitude    Float
+  longitude   Float
+  accuracy    Float?   // précision GPS en mètres
+  recordedAt  DateTime @default(now())
+  
+  @@index([deliveryId, recordedAt])
+}
 enum Role {
   ADMIN
   RESTAURATEUR
   LIVREUR
   CLIENT
+}
+
+enum StatusUser {
+  INACTIVE
+  ACTIVE
+  BLOCKED
 }
 
 enum PaymentMethod {
@@ -358,11 +443,12 @@ model Review {
   userId       String
   restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
   restaurantId String
-  orderId      String?    // Optionnel: lié à une commande spécifique
+  order        Order?     @relation(fields: [orderId], references: [id])
+  orderId      String?    @unique // Optionnel: lié à une commande spécifique
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
-  @@unique([userId, restaurantId]) // Un utilisateur ne peut laisser qu'un seul avis par restaurant
+  @@unique([userId, restaurantId])
   @@index([restaurantId])
   @@index([userId])
 }
