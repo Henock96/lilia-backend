@@ -16,10 +16,7 @@ export class SmsService {
     this.isEnabled = !!(apiKey && username);
 
     if (this.isEnabled) {
-      // Import dynamique pour ne pas bloquer si non installé
-      const AfricasTalking = require('africastalking');
-      const at = AfricasTalking({ apiKey, username });
-      this.client = at.SMS;
+      // Import dynamique pour ne pas bloquer si non installé     this.client = at.SMS;
       this.logger.log('SMS service initialisé (Africa\'s Talking)');
     } else {
       this.logger.warn('SMS service désactivé — AFRICAS_TALKING_API_KEY manquant');
