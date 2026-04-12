@@ -6,8 +6,8 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
-    "build": "nest build",
-    "render-build": "npm install && npx prisma generate && npx prisma migrate deploy && npm run build",
+    "build": "npx nest/cli build",
+    "render-build": "npm install && npx prisma generate && npx prisma migrate deploy && npx nest/cli build",
     "format": "prettier --write \"apps/**/*.ts\" \"libs/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",
