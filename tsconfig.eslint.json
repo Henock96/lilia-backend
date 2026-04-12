@@ -1,0 +1,12 @@
+// tsconfig.eslint.json  ← à créer à la RACINE du monorepo
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "apps/*/src/**/*.ts",
+    "apps/*/test/**/*.ts",
+    "libs/*/src/**/*.ts"
+  ]
+}
