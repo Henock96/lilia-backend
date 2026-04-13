@@ -48,8 +48,8 @@ lerna-debug.log*
 .env.production.local
 .env.local
 
-*CLAUDE.md
-*TEST_GUIDE.md
+CLAUDE.local.md
+TEST_GUIDE.md
 # temp directory
 .temp
 .tmp
