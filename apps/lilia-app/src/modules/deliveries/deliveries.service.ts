@@ -1,15 +1,22 @@
 /* eslint-disable prettier/prettier */
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DeliveryStatus } from './dto/update-delivery.dto';
+import { DriverStatus, OrderStatus } from '@prisma/client';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class DeliveriesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService,
+    private readonly notificationsService: NotificationsService,
+    private readonly eventEmitter: EventEmitter2,
+  ) {}
 
   /**
    * Récupère toutes les livraisons pour un restaurant
@@ -305,6 +312,17 @@ export class DeliveriesService {
       },
     });
 
+    await this.notificationsService.sendPushNotification(
+      deliverer.id,
+      'Nouvelle livraison',
+      `Commande à récupérer chez ${delivery.order.restaurant.nom}`,
+      {
+        type: 'delivery_assigned',
+        deliveryId: id,
+        orderId: delivery.orderId,
+      },
+    );
+
     return {
       data: updated,
       message: 'Livreur assigné avec succès',
@@ -342,5 +360,85 @@ export class DeliveriesService {
       data: deliverers,
       count: deliverers.length,
     };
+  }
+
+  async acceptDelivery(deliveryId: string, firebaseUid: string) {
+    const user = await this.getUserOrThrow(firebaseUid);
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
+      include: { order: true },
+    });
+
+    if (delivery.delivererId !== user.id) {
+      throw new ForbiddenException('Cette livraison ne vous est pas assignée');
+    }
+    if (delivery.status !== 'ASSIGNER') {
+      throw new BadRequestException('Livraison déjà acceptée ou non assignée');
+    }
+
+    // Met à jour livraison + statut livreur en transaction
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.delivery.update({
+        where: { id: deliveryId },
+        data: { status: 'EN_TRANSIT' },
+      }),
+      this.prisma.user.update({
+        where: { id: user.id },
+        data: { driverStatus: 'ON_DELIVERY' },
+      }),
+      // Passe la commande en EN_LIVRAISON via state machine
+      this.prisma.order.update({
+        where: { id: delivery.orderId },
+        data: { status: OrderStatus.EN_ROUTE },
+      }),
+    ]);
+
+    // Notifie le client que le livreur est en route
+    this.eventEmitter.emit('order.status.updated', {
+      orderId: delivery.orderId,
+      newStatus: OrderStatus.EN_ROUTE,
+      ...delivery.order,
+    });
+
+    return updated;
+  }
+
+  async getUserOrThrow(firebaseUid: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { firebaseUid },
+    });
+
+    if (!user) {
+      throw new NotFoundException('Utilisateur non trouvé.');
+    }
+    return user;
+  }
+
+  async setDriverStatus(firebaseUid: string, status: DriverStatus) {
+    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    if (user.role !== 'LIVREUR') throw new ForbiddenException();
+
+    return this.prisma.user.update({
+      where: { id: user.id },
+      data: { driverStatus: status },
+    });
+  }
+
+  async getMyAssignedDeliveries(firebaseUid: string) {
+    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    return this.prisma.delivery.findMany({
+      where: {
+        delivererId: user.id,
+        status: { in: ['ASSIGNER', 'EN_TRANSIT'] },
+      },
+      include: {
+        order: {
+          include: {
+            restaurant: { select: { nom: true, adresse: true, phone: true } },
+            items: { include: { product: { select: { nom: true } } } },
+          },
+        },
+      },
+    });
   }
 }

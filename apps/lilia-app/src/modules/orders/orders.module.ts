@@ -8,6 +8,7 @@ import { OrderStateMachine } from './order-state.machine';
 import { StockService } from './stock.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
+import { PromoService } from '../promo/promo.service';
 
 @Module({
   imports: [PrismaModule, NotificationsModule],
@@ -19,6 +20,7 @@ import { OrderCalculatorService } from './order-calculator.service';
     StockService,
     OrderValidatorService,
     OrderCalculatorService,
+    PromoService,
   ],
 })
 export class OrdersModule {}
