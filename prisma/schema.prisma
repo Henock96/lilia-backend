@@ -380,6 +380,7 @@ enum OrderStatus {
   PAYER
   EN_PREPARATION
   PRET
+  EN_ROUTE
   LIVRER
   ANNULER
 }

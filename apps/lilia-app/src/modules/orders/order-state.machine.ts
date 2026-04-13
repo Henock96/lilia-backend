@@ -7,9 +7,11 @@ export const ORDER_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   EN_ATTENTE: ['PAYER', 'ANNULER'],
   PAYER: ['EN_PREPARATION', 'ANNULER'],
   EN_PREPARATION: ['PRET'],
-  PRET: ['LIVRER'],
+  PRET: ['EN_ROUTE'],
+  EN_ROUTE: ['LIVRER'],
   LIVRER: [], // terminal
-  ANNULER: [], // terminal
+  ANNULER: [],
+ 
 };
 
 // Qui a le droit de faire quelle transition

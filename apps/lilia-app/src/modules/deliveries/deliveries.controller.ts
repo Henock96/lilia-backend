@@ -16,6 +16,7 @@ import { DeliveriesService } from './deliveries.service';
 import { AssignDeliveryDto, DeliveryStatus, UpdateDeliveryStatusDto } from './dto/update-delivery.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { DriverStatus } from '@prisma/client';
 
 @ApiTags('Deliveries')
 @ApiBearerAuth()
@@ -113,5 +114,31 @@ export class DeliveriesController {
     @FirebaseUser() fbUser: DecodedIdToken,
   ) {
     return this.deliveriesService.assignDeliverer(id, dto.delivererId, fbUser.uid);
+  }
+
+  @Patch(':id/accept')
+  @Roles('LIVREUR')
+  @HttpCode(HttpStatus.OK)
+  acceptDelivery(
+    @Param('id') id: string,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return this.deliveriesService.acceptDelivery(id, fbUser.uid);
+  }
+
+  @Get('my-missions')
+  @Roles('LIVREUR')
+  getMyMissions(@FirebaseUser() fbUser: DecodedIdToken) {
+    return this.deliveriesService.getMyAssignedDeliveries(fbUser.uid);
+  }
+
+  @Patch('driver-status')
+  @Roles('LIVREUR')
+  @HttpCode(HttpStatus.OK)
+  setStatus(
+    @FirebaseUser() fbUser: DecodedIdToken,
+    @Body('status') status: DriverStatus,
+  ) {
+    return this.deliveriesService.setDriverStatus(fbUser.uid, status);
   }
 }
