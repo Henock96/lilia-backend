@@ -7,10 +7,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PromoService } from '../promo/promo.service';
 
 @Injectable()
 export class OrderValidatorService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly promoService: PromoService) {}
 
   async validateAndGetUser(firebaseUid: string) {
     const user = await this.prisma.user.findUnique({
@@ -123,4 +124,15 @@ export class OrderValidatorService {
         `Montant minimum pour ${restaurantName} : ${minimum} FCFA. Votre panier : ${subTotal} FCFA.`,
       );
   }
+  // ─── Promo ─────────────────────────────────────────────────────────────────────
+  async validatePromoCode(
+    code: string,
+    userId: string,
+    restaurantId: string,
+    subTotal: number,
+    deliveryFee: number,
+  ) {
+    return this.promoService.validateCode(code, userId, restaurantId, subTotal, deliveryFee);
+  }
 }
+//

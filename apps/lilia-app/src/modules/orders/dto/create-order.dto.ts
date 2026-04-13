@@ -23,4 +23,8 @@ export class CreateOrderDto {
   @IsString()
   @IsOptional()
   contactPhone?: string;
+  
+  @IsOptional()
+  @IsString()
+  promoCode?: string;
 }

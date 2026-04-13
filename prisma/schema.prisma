@@ -30,6 +30,7 @@ model User {
   fcmTokens   FcmToken[]
   reviews     Review[]   // Avis laissés par l'utilisateur
   orders      Order[]    // Commandes passées par l'utilisateur
+  promoUsages     PromoUsage[] @relation("UserPromoUsages")
 
   // Ajout recent 04/04/2026
   statusUser StatusUser   @default(ACTIVE)
@@ -90,6 +91,7 @@ model Restaurant {
   isOpen                  Boolean           @default(true)  // Restaurant ouvert/fermé
   manualOverride          Boolean           @default(false) // Si true, le cron ne modifie pas isOpen
   operatingHours          OperatingHours[]
+  promoCodes      PromoCode[]  @relation("RestaurantPromoCodes")
 
   // Configuration de la livraison
   deliveryPriceMode       DeliveryPriceMode @default(FIXED)
@@ -268,7 +270,11 @@ model Order {
   updatedAt       DateTime      @updatedAt
 
   Payment Payment[]
+  promoCodeId     String?
+  promoCode       PromoCode? @relation(fields: [promoCodeId], references: [id])
+  discountAmount  Float      @default(0)  // montant déduit par le code promo
 
+  @@index([promoCodeId])
   @@index([restaurantId])
   @@index([userId])
   @@index([status])           // ← manquait
@@ -296,6 +302,7 @@ model OrderItem {
 
   @@index([orderId])
   @@index([productId])
+  @@index([menuId])
 }
 model OrderHistory {
   id         String   @id @default(cuid())
@@ -519,4 +526,57 @@ model OperatingHours {
   @@unique([restaurantId, dayOfWeek])
   @@index([restaurantId])
   @@index([dayOfWeek])
+}
+
+enum DiscountType {
+  FIXED           // montant fixe : -500 FCFA
+  PERCENT         // pourcentage : -10%
+  FREE_DELIVERY   // livraison gratuite
+}
+
+model PromoCode {
+  id              String       @id @default(cuid())
+  code            String       @unique  // "BIENVENUE500" — toujours uppercase
+  description     String?      // affiché dans l'app : "500 FCFA offerts sur ta 1ère commande"
+
+  discountType    DiscountType
+  discountValue   Float        // 500 si FIXED, 10 si PERCENT (= 10%), 0 si FREE_DELIVERY
+  maxDiscount     Float?       // plafond si PERCENT : max 2000 FCFA de réduction
+
+  minOrderAmount  Float        @default(0)    // montant minimum pour activer le code
+  maxUsageTotal   Int?         // null = illimité — ex: 100 pour une campagne limitée
+  maxUsagePerUser Int          @default(1)    // 1 = 1 fois par utilisateur
+
+  firstOrderOnly  Boolean      @default(false) // réservé aux nouveaux clients
+  isActive        Boolean      @default(true)
+
+  // Restriction par restaurant (null = toute la plateforme)
+  restaurantId    String?
+  restaurant      Restaurant?  @relation("RestaurantPromoCodes", fields: [restaurantId], references: [id])
+  discountAmount  Float      @default(0)  // montant déduit par le code promo
+  startsAt        DateTime     @default(now())
+  expiresAt       DateTime?    // null = pas d'expiration
+
+  usages          PromoUsage[]
+  orders          Order[]
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([code])
+  @@index([isActive, startsAt, expiresAt])
+  @@index([restaurantId])
+}
+
+model PromoUsage {
+  id          String     @id @default(cuid())
+  promoCode   PromoCode  @relation(fields: [promoCodeId], references: [id])
+  promoCodeId String
+  userId      String
+  user            User       @relation("UserPromoUsages", fields: [userId], references: [id])
+  orderId     String     @unique  // 1 promo max par commande
+  discountApplied Float           // montant réellement déduit (snapshot)
+  usedAt      DateTime   @default(now())
+
+  @@index([promoCodeId])
+  @@index([userId])
 }

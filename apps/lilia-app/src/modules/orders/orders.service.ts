@@ -19,6 +19,7 @@ import { OrderStateMachine } from './order-state.machine';
 import { StockService } from './stock.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
+import { PromoService, PromoValidationResult } from '../promo/promo.service';
 
 @Injectable()
 export class OrdersService {
@@ -31,6 +32,7 @@ export class OrdersService {
     private readonly stockService: StockService,
     private readonly validator: OrderValidatorService,
     private readonly calculator: OrderCalculatorService,
+    private readonly promoService: PromoService,
   ) {}
 
   /**
@@ -44,6 +46,7 @@ export class OrdersService {
       notes,
       isDelivery = true,
       contactPhone,
+      promoCode,
     } = dto;
     this.logger.log(
       `📦 [COMMANDE] Début création commande - user: ${firebaseUid}, payload: ${JSON.stringify({ adresseId: dto.adresseId, paymentMethod: dto.paymentMethod, isDelivery: dto.isDelivery })}`,
@@ -89,7 +92,22 @@ export class OrdersService {
       restaurant.nom,
     );
     const itemSnapshots = this.calculator.buildOrderItemSnapshots(cartItems);
+    // Validation et calcul promo AVANT la transaction
+    let promoResult: PromoValidationResult | null = null;
+    if (promoCode) {
+      promoResult = await this.promoService.validateCode(
+        promoCode,
+        user.id,
+        restaurantId,
+        amounts.subTotal,
+        amounts.deliveryFee,
+      );
+    }
 
+    // Montants finaux après promo
+    const finalDeliveryFee = promoResult?.newDeliveryFee ?? amounts.deliveryFee;
+    const discountAmount = promoResult?.discountAmount ?? 0;
+    const finalTotal = amounts.subTotal + finalDeliveryFee + amounts.serviceFee - discountAmount;
     // 5. Exécuter la création de la commande et la suppression du panier dans une transaction
     const order = await this.prisma.$transaction(async (tx) => {
       const newOrder = await tx.order.create({
@@ -99,7 +117,9 @@ export class OrdersService {
           subTotal: amounts.subTotal,
           deliveryFee: amounts.deliveryFee,
           serviceFee: amounts.serviceFee,
+          discountAmount,
           total: amounts.total,
+          promoCodeId: promoResult?.promoCodeId ?? null,
           isDelivery,
           notes,
           contactPhone,
@@ -123,6 +143,16 @@ export class OrdersService {
           restaurant: { select: { nom: true } }, // Correction: Toujours inclure le restaurant
         },
       });
+      // Consomme le code dans la transaction
+      if (promoResult) {
+        await this.promoService.applyCode(
+          tx,
+          promoResult.promoCodeId,
+          user.id,
+          newOrder.id,
+          discountAmount,
+        );
+      }
 
       // 6. Décrémenter le stock des produits et menus commandés
       await this.stockService.decrementInTransaction(tx, cartItems);
