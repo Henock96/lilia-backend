@@ -1,6 +1,6 @@
 // app.module.ts
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 
 import { PrismaModule } from './prisma/prisma.module';
@@ -37,11 +37,21 @@ import { OrdersListener } from './modules/listeners/orders.listener';
 import { PaymentListener } from './modules/listeners/payment.listener';
 import { MenusListener } from './modules/listeners/menus.listener';
 import { UserListener } from './modules/listeners/user.listener';
+import { TrackingModule } from './modules/tracking/tracking.module';
 // EmailListener supprimé — logique déplacée dans UserListener
-
+import { RedisModule } from '@nestjs-modules/ioredis';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    // app.module.ts — ajouter
+    RedisModule.forRootAsync({
+      useFactory: (config: ConfigService) => ({
+        type: 'single',
+        url: config.get('REDIS_URL'),
+      }),
+      inject: [ConfigService],
+    }),
+    TrackingModule,
     EventEmitterModule.forRoot({
       wildcard: false,
       delimiter: '.',

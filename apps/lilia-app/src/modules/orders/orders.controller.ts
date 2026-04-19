@@ -107,6 +107,19 @@ export class OrdersController {
   }
 
   /**
+   * Détail d'une commande — accessible par son propriétaire ou un admin.
+   */
+  @Get(':id')
+  @ApiOperation({ summary: 'Détail d\'une commande' })
+  @ApiParam({ name: 'id', description: 'ID de la commande' })
+  @ApiResponse({ status: 200, description: 'Commande trouvée' })
+  @ApiResponse({ status: 403, description: 'Accès refusé' })
+  @ApiResponse({ status: 404, description: 'Commande introuvable' })
+  getOrder(@Param('id') id: string, @FirebaseUser() fbUser: DecodedIdToken) {
+    return this.ordersService.findOrderById(id, fbUser.uid);
+  }
+
+  /**
    * Annulation par le client — uniquement depuis EN_ATTENTE.
    * La state machine dans OrdersService valide la transition.
    */
