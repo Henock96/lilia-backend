@@ -189,6 +189,34 @@ export class OrdersService {
   }
 
   /**
+   * Récupère une commande par son ID — accessible par son propriétaire ou un admin.
+   */
+  async findOrderById(orderId: string, firebaseUid: string) {
+    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    if (!user) throw new NotFoundException('Utilisateur non trouvé.');
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        restaurant: { select: { nom: true, imageUrl: true, adresse: true } },
+        items: {
+          include: {
+            product: { select: { nom: true, imageUrl: true } },
+          },
+        },
+        delivery: true,
+      },
+    });
+
+    if (!order) throw new NotFoundException('Commande introuvable.');
+    if (order.userId !== user.id && user.role !== 'ADMIN') {
+      throw new ForbiddenException('Accès refusé.');
+    }
+
+    return order;
+  }
+
+  /**
    * Récupère les commandes d'un client spécifique.
    */
   async findOrdersClient(page = 1, limit = 10, firebaseUid: string) {

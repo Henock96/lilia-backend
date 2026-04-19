@@ -7,13 +7,17 @@ import { join } from 'path';
 import { existsSync } from 'fs';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/exception-filters/http-exception.filter';
+import { RedisIoAdapter } from './common/adapters/redis-io.adapter';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     logger: ['error', 'warn', 'log', 'debug'],
   });
-
+  // main.ts — ajouter après NestFactory.create()
+  const redisIoAdapter = new RedisIoAdapter(app);
+  await redisIoAdapter.connectToRedis(process.env.REDIS_URL);
+  app.useWebSocketAdapter(redisIoAdapter);
   // ─── Dossier statique public (optionnel) ────────────────────────────────────
   // process.cwd() = racine du projet (fonctionne avec webpack monorepo)
   const publicDir = join(process.cwd(), 'public');

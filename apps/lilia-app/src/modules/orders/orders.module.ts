@@ -9,9 +9,10 @@ import { StockService } from './stock.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
 import { PromoService } from '../promo/promo.service';
+import { TrackingModule } from '../tracking/tracking.module';
 
 @Module({
-  imports: [PrismaModule, NotificationsModule],
+  imports: [PrismaModule, NotificationsModule, TrackingModule],
   controllers: [OrdersController],
   providers: [
     OrdersService,

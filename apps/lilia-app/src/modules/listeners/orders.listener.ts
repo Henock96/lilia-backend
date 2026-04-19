@@ -5,6 +5,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderCreatedEvent, OrderStatusUpdatedEvent, OrderCancelledEvent } from '../events/order-events';
 import { OrderStatus } from '@prisma/client';
+import { TrackingGateway } from '../tracking/tracking.gateway';
 
 @Injectable()
 export class OrdersListener {
@@ -13,6 +14,7 @@ export class OrdersListener {
   constructor(
     private readonly notificationsService: NotificationsService,
     private readonly prisma: PrismaService,
+    private readonly trackingGateway: TrackingGateway, // injecté pour notifier les clients en temps réel
   ) {}
 
 
@@ -46,7 +48,8 @@ export class OrdersListener {
           )
         : Promise.resolve(),
     ]);
-
+      // Broadcast WebSocket — le client voit le statut EN_ATTENTE en temps réel
+    this.trackingGateway.broadcastOrderStatus(event.orderId, 'EN_ATTENTE');
       this.logger.log(`Notifications de création de commande envoyées pour: ${event.orderId}`);
     } catch (error) {
       this.logger.error(`Erreur lors de la gestion de l'événement de création de commande: ${error.message}`, error.stack);
@@ -57,7 +60,8 @@ export class OrdersListener {
   @OnEvent('order.status.updated')
   async handleOrderStatusUpdated(event: OrderStatusUpdatedEvent) {
     this.logger.log(`order.status.updated : ${event.orderId} → ${event.newStatus}`);
-
+    // Le client voit le changement de statut en temps réel sur sa carte
+    this.trackingGateway.broadcastOrderStatus(event.orderId, event.newStatus);
     const msg = this.getStatusMessage(event.newStatus);
     const notifs: Promise<any>[] = [
       this.notificationsService.sendPushNotification(
@@ -69,7 +73,7 @@ export class OrdersListener {
     ];
 
     // Notifie le restaurant uniquement pour LIVRER et ANNULER
-    const notifyRestaurantOn: OrderStatus[] = ['LIVRER', 'ANNULER'];
+    const notifyRestaurantOn: OrderStatus[] = ['EN_ROUTE','LIVRER', 'ANNULER'];
     if (notifyRestaurantOn.includes(event.newStatus)) {
       const restaurant = await this.prisma.restaurant.findUnique({
         where: { id: event.restaurantId },
@@ -94,7 +98,8 @@ export class OrdersListener {
   @OnEvent('order.cancelled')
   async handleOrderCancelled(event: OrderCancelledEvent) {
     this.logger.log(`order.cancelled : ${event.orderId}`);
-
+     // Broadcast WebSocket — ferme le tracking côté client
+    this.trackingGateway.broadcastOrderStatus(event.orderId, 'ANNULER');
     const restaurant = await this.prisma.restaurant.findUnique({
       where: { id: event.restaurantId },
       select: { ownerId: true },
@@ -268,6 +273,7 @@ export class OrdersListener {
       PAYER:          { title: '💸 Paiement confirmé', body: 'Votre paiement a été accepté' },
       EN_PREPARATION: { title: '👨‍🍳 En préparation', body: 'Le restaurant prépare votre commande' },
       PRET:           { title: '✅ Commande prête', body: 'Votre commande est prête !' },
+      EN_LIVRAISON:   { title: 'En route 🛵', body: 'Votre livreur est en chemin !' },
       LIVRER:         { title: '🎉 Commande livrée', body: 'Votre commande a été livrée. Bon appétit !' },
       ANNULER:        { title: '❌ Commande annulée', body: 'Votre commande a été annulée' },
     };
@@ -292,7 +298,10 @@ export class OrdersListener {
         title: '✅ Commande prête',
         body: `Votre commande Lilia Food est prête !`,
       },
-      
+      EN_ROUTE: {
+        title: 'En route 🛵',
+        body: `Votre livreur est en chemin pour livrer votre commande Lilia Food !`,
+      },
       LIVRER: {
         title: '🎉 Commande livrée',
         body: `Votre commande Lilia Food a été livrée. Bon appétit !`,
