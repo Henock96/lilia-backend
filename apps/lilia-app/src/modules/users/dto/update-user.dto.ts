@@ -8,7 +8,7 @@ export class UpdateUserDto {
 
   @IsOptional()
   @IsString()
-  telephone?: string;
+  phone?: string;
 
   @IsOptional()
   @IsUrl({}, { message: 'L\'URL de l\'image doit être une URL valide.' })

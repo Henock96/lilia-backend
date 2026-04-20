@@ -72,11 +72,10 @@ export class UserService {
         role: 'CLIENT', // Rôle par défaut
       },
       update: {
-         // On ne met à jour que si la valeur est présente
-        // pour éviter d'écraser des données saisies par l'utilisateur
         ...(email && { email }),
         ...(name && { nom: name }),
         ...(picture && { imageUrl: picture }),
+        ...(phone && { phone }),
         lastLogin: new Date(),
       }
     });
