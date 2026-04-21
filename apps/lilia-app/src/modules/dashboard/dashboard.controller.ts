@@ -51,7 +51,7 @@ export class DashboardController {
   ) {
     return this.dashboardService.getTopProducts(
       fbUser.uid,
-      parseInt(limit, 10),
+      limit ? parseInt(limit, 10) : undefined,
       period,
     );
   }
