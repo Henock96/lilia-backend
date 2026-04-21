@@ -403,6 +403,7 @@ export class OrdersService {
       'PAYER',
       'EN_PREPARATION',
       'PRET',
+      'EN_ROUTE',
       'LIVRER',
       'ANNULER',
     ];
