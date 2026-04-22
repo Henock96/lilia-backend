@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Param, Query } from '@nestjs/common';
 import { DashboardService } from './dashboard.service';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -82,6 +82,15 @@ export class DashboardController {
   @ApiOperation({ summary: 'Stats clients : nouveaux, fidèles, top dépensiers' })
   getClientStats(@FirebaseUser() fbUser: DecodedIdToken) {
     return this.dashboardService.getClientStats(fbUser.uid);
+  }
+
+  @Get('clients/:clientId')
+  @ApiOperation({ summary: 'Détail complet d\'un client (commandes, dépenses, adresses)' })
+  getClientDetail(
+    @FirebaseUser() fbUser: DecodedIdToken,
+    @Param('clientId') clientId: string,
+  ) {
+    return this.dashboardService.getClientDetail(fbUser.uid, clientId);
   }
 
   /**

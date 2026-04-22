@@ -55,6 +55,8 @@ export class DashboardService {
       monthRevenue,
       totalProducts,
       totalClients,
+      weekClients,
+      monthClients,
       pendingOrders,
       averageRating,
     ] = await Promise.all([
@@ -118,6 +120,16 @@ export class DashboardService {
         select: { userId: true },
         distinct: ['userId'],
       }),
+      this.prisma.order.findMany({
+        where: { ...restaurantFilter, createdAt: { gte: startOfWeek } },
+        select: { userId: true },
+        distinct: ['userId'],
+      }),
+      this.prisma.order.findMany({
+        where: { ...restaurantFilter, createdAt: { gte: startOfMonth } },
+        select: { userId: true },
+        distinct: ['userId'],
+      }),
       this.prisma.order.count({
         where: {
           ...restaurantFilter,
@@ -152,6 +164,8 @@ export class DashboardService {
         },
         clients: {
           total: totalClients.length,
+          week: weekClients.length,
+          month: monthClients.length,
         },
         rating: {
           average: averageRating._avg.rating || 0,
@@ -367,7 +381,9 @@ export class DashboardService {
         id: true,
         nom: true,
         email: true,
+        phone: true,
         imageUrl: true,
+        createdAt: true,
       },
     });
 
@@ -400,6 +416,70 @@ export class DashboardService {
           orderCount: tc._count.userId,
           totalSpent: tc._sum.total || 0,
         })),
+      },
+    };
+  }
+
+  /**
+   * Détail complet d'un client pour un restaurateur
+   */
+  async getClientDetail(firebaseUid: string, clientId: string) {
+    const restaurant = await this.getRestaurant(firebaseUid);
+    const restaurantFilter = restaurant ? { restaurantId: restaurant.id } : {};
+
+    const [client, orders] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: clientId },
+        select: {
+          id: true,
+          nom: true,
+          email: true,
+          phone: true,
+          imageUrl: true,
+          createdAt: true,
+          adresses: {
+            select: { label: true, adresse: true, isDefault: true },
+            take: 5,
+          },
+        },
+      }),
+      this.prisma.order.findMany({
+        where: { ...restaurantFilter, userId: clientId, status: { not: 'ANNULER' } },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+        select: {
+          id: true,
+          total: true,
+          status: true,
+          createdAt: true,
+          isDelivery: true,
+          deliveryAddress: true,
+          items: {
+            select: {
+              quantite: true,
+              prix: true,
+              product: { select: { nom: true } },
+            },
+          },
+        },
+      }),
+    ]);
+
+    if (!client) throw new Error('Client introuvable');
+
+    const totalSpent = orders.reduce((s, o) => s + (o.total ?? 0), 0);
+    const lastOrder = orders[0] ?? null;
+
+    return {
+      data: {
+        client,
+        stats: {
+          orderCount: orders.length,
+          totalSpent,
+          averageOrder: orders.length > 0 ? Math.round(totalSpent / orders.length) : 0,
+          lastOrderAt: lastOrder?.createdAt ?? null,
+        },
+        recentOrders: orders,
       },
     };
   }
