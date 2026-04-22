@@ -100,7 +100,8 @@ export class ProductsService {
       throw new NotFoundException(`Produit avec l'ID "${id}" non trouvé.`);
     }
 
-    if (product.restaurant.owner.firebaseUid !== firebaseUid) {
+    const actorUpdate = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    if (actorUpdate?.role !== 'ADMIN' && product.restaurant.owner.firebaseUid !== firebaseUid) {
       throw new ForbiddenException('Vous n\'êtes pas autorisé à modifier ce produit.');
     }
 
@@ -199,7 +200,8 @@ export class ProductsService {
       throw new NotFoundException(`Produit avec l'ID "${id}" non trouvé.`);
     }
 
-    if (product.restaurant.owner.firebaseUid !== firebaseUid) {
+    const actorRemove = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    if (actorRemove?.role !== 'ADMIN' && product.restaurant.owner.firebaseUid !== firebaseUid) {
       throw new ForbiddenException('Vous n\'êtes pas autorisé à supprimer ce produit.');
     }
 
