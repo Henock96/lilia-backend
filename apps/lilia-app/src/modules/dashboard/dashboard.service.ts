@@ -438,7 +438,7 @@ export class DashboardService {
           imageUrl: true,
           createdAt: true,
           adresses: {
-            select: { label: true, adresse: true, isDefault: true },
+            select: { rue: true, ville: true, etat: true, isDefault: true },
             take: 5,
           },
         },
