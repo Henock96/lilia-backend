@@ -90,14 +90,12 @@ export class CartService {
     });
 
     if (existingItem) {
-      // Mettre à jour la quantité si l'article existe déjà
-      return this.prisma.cartItem.update({
+      await this.prisma.cartItem.update({
         where: { id: existingItem.id },
         data: { quantite: existingItem.quantite + dto.quantite },
       });
     } else {
-      // Créer un nouvel article dans le panier
-      return this.prisma.cartItem.create({
+      await this.prisma.cartItem.create({
         data: {
           cartId: cart.id,
           productId: variant.productId,
@@ -106,6 +104,8 @@ export class CartService {
         },
       });
     }
+
+    return this.getCart(firebaseUid);
   }
 
   /**
@@ -307,13 +307,14 @@ export class CartService {
 
     if (dto.quantite === 0) {
       await this.prisma.cartItem.delete({ where: { id: cartItemId } });
-      return this.getCart(firebaseUid);
+    } else {
+      await this.prisma.cartItem.update({
+        where: { id: cartItemId },
+        data: { quantite: dto.quantite },
+      });
     }
 
-    return this.prisma.cartItem.update({
-      where: { id: cartItemId },
-      data: { quantite: dto.quantite },
-    });
+    return this.getCart(firebaseUid);
   }
 
   /**
@@ -337,9 +338,11 @@ export class CartService {
       );
     }
 
-    return this.prisma.cartItem.delete({
+    await this.prisma.cartItem.delete({
       where: { id: cartItemId },
     });
+
+    return this.getCart(firebaseUid);
   }
 
   /**
