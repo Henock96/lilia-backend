@@ -23,6 +23,7 @@ import { QuartiersModule } from './modules/quartiers/quartiers.module';
 import { BannersModule } from './modules/banners/banners.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { PromoModule } from './modules/promo/promo.module';
 
 // Infrastructure
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -80,6 +81,7 @@ import { RedisModule } from '@nestjs-modules/ioredis';
     BannersModule,
     AdminModule,
     DashboardModule,
+    PromoModule,
 
     // Infrastructure
     NotificationsModule,
