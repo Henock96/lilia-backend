@@ -23,6 +23,7 @@ export class PromoController {
    * Appelé depuis l'écran checkout de l'app mobile.
    */
   @Post('validate')
+  @Roles('CLIENT', 'RESTAURATEUR', 'ADMIN')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Valider un code promo au checkout' })
   validate(
