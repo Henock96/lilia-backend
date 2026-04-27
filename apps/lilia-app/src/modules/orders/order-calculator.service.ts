@@ -2,7 +2,7 @@
 // orders/order-calculator.service.ts
 import { Injectable } from '@nestjs/common';
 
-export const SERVICE_FEE_RATE = 0.1; // 10% — centralisé ici, facile à changer
+export const SERVICE_FEE_RATE = 0.08; // 8% — centralisé ici, facile à changer
 
 export interface OrderAmounts {
   subTotal: number;

@@ -1,6 +1,6 @@
 // promo/promo.controller.ts
 import {
-  Body, Controller, Get, HttpCode,
+  Body, Controller, Delete, Get, HttpCode,
   HttpStatus, Param, Patch, Post, Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -66,6 +66,14 @@ export class PromoController {
   @ApiOperation({ summary: 'Activer / désactiver un code promo' })
   toggle(@Param('id') id: string) {
     return this.promoService.toggle(id);
+  }
+
+  @Delete(':id')
+  @Roles('ADMIN')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Supprimer un code promo (admin)' })
+  remove(@Param('id') id: string) {
+    return this.promoService.remove(id);
   }
 
   @Get(':id/stats')
