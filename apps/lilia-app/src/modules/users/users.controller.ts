@@ -37,18 +37,28 @@ export class UsersController {
    *   4. Backend vérifie le token, upsert en DB, retourne le profil
    */
   @Post('sync')
-  @HttpCode(HttpStatus.OK) // 200 au lieu de 201 pour éviter confusion côté client
+  @HttpCode(HttpStatus.OK)
   async sync(
-    @FirebaseUser() fbUser : DecodedIdToken,
-    @Body('telephone') phone?: string
+    @FirebaseUser() fbUser: DecodedIdToken,
+    @Body('telephone') phone?: string,
+    @Body('referralCode') referralCode?: string,
   ) {
-      const { user, isNewUser } = await this.userService.syncFromFirebase(fbUser, phone);
+    const { user, isNewUser } = await this.userService.syncFromFirebase(fbUser, phone, referralCode);
+    return {
+      message: isNewUser ? 'Compte créé avec succès.' : 'Profil synchronisé.',
+      isNew: isNewUser,
+      user,
+    };
+  }
 
-      return {
-        message: isNewUser ? 'Compte créé avec succès.' : 'Profil synchronisé.',
-        isNew: isNewUser,
-        user,
-      };
+  @Get('me/referral-stats')
+  getReferralStats(@CurrentUser() user: User) {
+    return this.userService.getReferralStats(user.id);
+  }
+
+  @Get('me/loyalty')
+  getLoyaltyTransactions(@CurrentUser() user: User) {
+    return this.userService.getLoyaltyTransactions(user.id);
   }
 
 

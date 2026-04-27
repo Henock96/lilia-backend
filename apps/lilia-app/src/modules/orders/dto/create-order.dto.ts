@@ -27,4 +27,8 @@ export class CreateOrderDto {
   @IsOptional()
   @IsString()
   promoCode?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  useLoyaltyPoints?: boolean;
 }
