@@ -50,7 +50,58 @@ export class UserService {
    * Appelé par l'AuthController à chaque connexion/inscription depuis l'app mobile.
    * Le token Firebase décodé est le seul paramètre — pas de any.
    */
-  async syncFromFirebase(decoded: DecodedIdToken, phone?: string) {
+  private generateReferralCode(): string {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 8; i++) {
+      code += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return code;
+  }
+
+  private async generateUniqueReferralCode(): Promise<string> {
+    for (let i = 0; i < 5; i++) {
+      const code = this.generateReferralCode();
+      const existing = await this.prisma.user.findUnique({ where: { referralCode: code } });
+      if (!existing) return code;
+    }
+    return `LF${Date.now().toString(36).toUpperCase().slice(-6)}`;
+  }
+
+  async getReferralStats(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { referralCode: true, loyaltyPoints: true },
+    });
+
+    const totalReferrals = user?.referralCode
+      ? await this.prisma.user.count({ where: { referredByCode: user.referralCode } })
+      : 0;
+
+    const rewardedReferrals = user?.referralCode
+      ? await this.prisma.user.count({
+          where: { referredByCode: user.referralCode, referralRewarded: true },
+        })
+      : 0;
+
+    return {
+      referralCode: user?.referralCode ?? null,
+      totalReferrals,
+      rewardedReferrals,
+      loyaltyPoints: user?.loyaltyPoints ?? 0,
+    };
+  }
+
+  async getLoyaltyTransactions(userId: string) {
+    const transactions = await this.prisma.loyaltyTransaction.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+    return { data: transactions };
+  }
+
+  async syncFromFirebase(decoded: DecodedIdToken, phone?: string, referralCode?: string) {
     const { uid, email, name, picture } = decoded;
 
     // Vérifier d'abord si l'utilisateur existe
@@ -61,15 +112,26 @@ export class UserService {
     const isNewUser = !existingUser;
 
     // Upsert : créer si n'existe pas, mettre à jour si existe
+    // Valider le code de parrainage si fourni
+    let validReferredByCode: string | null = null;
+    if (referralCode && isNewUser === false) {
+      // Ignorer si le user existe déjà (pas de rétro-application)
+    } else if (referralCode && isNewUser !== false) {
+      const referrer = await this.prisma.user.findUnique({ where: { referralCode } });
+      if (referrer) validReferredByCode = referralCode;
+    }
+
     const user = await this.prisma.user.upsert({
       where: { firebaseUid: uid },
       create: {
         firebaseUid: uid,
         email: email ?? '',
-        nom: name ?? email?.split('@')[0] ?? 'Utilisateur',// Utiliser la partie avant @ si pas de nom
+        nom: name ?? email?.split('@')[0] ?? 'Utilisateur',
         phone: phone ?? '',
         imageUrl: picture ?? null,
-        role: 'CLIENT', // Rôle par défaut
+        role: 'CLIENT',
+        referralCode: await this.generateUniqueReferralCode(),
+        referredByCode: validReferredByCode,
       },
       update: {
         ...(email && { email }),

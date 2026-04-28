@@ -39,6 +39,66 @@ export class OrdersService {
    * Crée une commande à partir du panier de l'utilisateur.
    * Utilise une transaction pour garantir l'intégrité des données.
    */
+  // ─── Constantes points de fidélité ──────────────────────────────────────────
+  private static readonly POINTS_PER_100_FCFA = 1;   // 1 point par 100 FCFA livrés
+  private static readonly POINT_VALUE_FCFA = 5;       // 1 point = 5 FCFA
+  private static readonly MIN_POINTS_REDEEM = 100;    // minimum 100 points
+  private static readonly REFERRER_POINTS = 500;      // récompense parrain
+  private static readonly REFERRED_POINTS = 200;      // récompense filleul
+
+  private async handleReferralReward(userId: string): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { referredByCode: true, referralRewarded: true },
+    });
+    if (!user?.referredByCode || user.referralRewarded) return;
+
+    const orderCount = await this.prisma.order.count({ where: { userId } });
+    if (orderCount !== 1) return;
+
+    const referrer = await this.prisma.user.findUnique({
+      where: { referralCode: user.referredByCode },
+      select: { id: true },
+    });
+    if (!referrer) return;
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: referrer.id },
+        data: { loyaltyPoints: { increment: OrdersService.REFERRER_POINTS } },
+      }),
+      this.prisma.loyaltyTransaction.create({
+        data: { userId: referrer.id, points: OrdersService.REFERRER_POINTS, reason: 'Récompense parrainage — filleul activé' },
+      }),
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { loyaltyPoints: { increment: OrdersService.REFERRED_POINTS }, referralRewarded: true },
+      }),
+      this.prisma.loyaltyTransaction.create({
+        data: { userId, points: OrdersService.REFERRED_POINTS, reason: 'Bonus bienvenue parrainage' },
+      }),
+    ]);
+
+    this.logger.log(`🎁 Parrainage: +${OrdersService.REFERRER_POINTS}pts → parrain ${referrer.id}, +${OrdersService.REFERRED_POINTS}pts → filleul ${userId}`);
+  }
+
+  private async awardLoyaltyPoints(userId: string, orderId: string, subTotal: number): Promise<void> {
+    const points = Math.floor(subTotal / 100) * OrdersService.POINTS_PER_100_FCFA;
+    if (points <= 0) return;
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { loyaltyPoints: { increment: points } },
+      }),
+      this.prisma.loyaltyTransaction.create({
+        data: { userId, orderId, points, reason: `+${points} pts — commande livrée` },
+      }),
+    ]);
+
+    this.logger.log(`⭐ +${points} points fidélité user ${userId}`);
+  }
+
   async createOrderFromCart(firebaseUid: string, dto: CreateOrderDto) {
     const {
       adresseId,
@@ -47,6 +107,7 @@ export class OrdersService {
       isDelivery = true,
       contactPhone,
       promoCode,
+      useLoyaltyPoints,
     } = dto;
     this.logger.log(
       `📦 [COMMANDE] Début création commande - user: ${firebaseUid}, payload: ${JSON.stringify({ adresseId: dto.adresseId, paymentMethod: dto.paymentMethod, isDelivery: dto.isDelivery })}`,
@@ -107,7 +168,21 @@ export class OrdersService {
     // Montants finaux après promo
     const finalDeliveryFee = promoResult?.newDeliveryFee ?? amounts.deliveryFee;
     const discountAmount = promoResult?.discountAmount ?? 0;
-    const finalTotal = amounts.subTotal + finalDeliveryFee + amounts.serviceFee - discountAmount;
+
+    // Réduction points de fidélité
+    let loyaltyDiscount = 0;
+    if (useLoyaltyPoints) {
+      const userPoints = await this.prisma.user.findUnique({
+        where: { id: user.id },
+        select: { loyaltyPoints: true },
+      });
+      const pts = userPoints?.loyaltyPoints ?? 0;
+      if (pts >= OrdersService.MIN_POINTS_REDEEM) {
+        loyaltyDiscount = pts * OrdersService.POINT_VALUE_FCFA;
+      }
+    }
+
+    const finalTotal = Math.max(0, amounts.subTotal + finalDeliveryFee + amounts.serviceFee - discountAmount - loyaltyDiscount);
     // 5. Exécuter la création de la commande et la suppression du panier dans une transaction
     const order = await this.prisma.$transaction(async (tx) => {
       const newOrder = await tx.order.create({
@@ -117,7 +192,7 @@ export class OrdersService {
           subTotal: amounts.subTotal,
           deliveryFee: finalDeliveryFee,
           serviceFee: amounts.serviceFee,
-          discountAmount,
+          discountAmount: discountAmount + loyaltyDiscount,
           total: finalTotal,
           promoCodeId: promoResult?.promoCodeId ?? null,
           isDelivery,
@@ -143,7 +218,7 @@ export class OrdersService {
           restaurant: { select: { nom: true } }, // Correction: Toujours inclure le restaurant
         },
       });
-      // Consomme le code dans la transaction
+      // Consomme le code promo dans la transaction
       if (promoResult) {
         await this.promoService.applyCode(
           tx,
@@ -152,6 +227,23 @@ export class OrdersService {
           newOrder.id,
           discountAmount,
         );
+      }
+
+      // Consomme les points de fidélité dans la transaction
+      if (useLoyaltyPoints && loyaltyDiscount > 0) {
+        const pointsUsed = Math.ceil(loyaltyDiscount / OrdersService.POINT_VALUE_FCFA);
+        await tx.user.update({
+          where: { id: user.id },
+          data: { loyaltyPoints: { decrement: pointsUsed } },
+        });
+        await tx.loyaltyTransaction.create({
+          data: {
+            userId: user.id,
+            orderId: newOrder.id,
+            points: -pointsUsed,
+            reason: `${pointsUsed} pts utilisés — réduction ${loyaltyDiscount} FCFA`,
+          },
+        });
       }
 
       // 6. Décrémenter le stock des produits et menus commandés
@@ -182,6 +274,12 @@ export class OrdersService {
     );
 
     this.eventEmitter.emit('order.created', orderCreatedEvent);
+
+    // Récompense parrainage sur la 1ère commande (non-bloquant)
+    this.handleReferralReward(user.id).catch((err) =>
+      this.logger.error(`Erreur récompense parrainage: ${err}`),
+    );
+
     return {
       message: 'Commande créée avec succès.',
       data: order,
@@ -443,6 +541,14 @@ export class OrdersService {
     this.logger.log(
       `🔄 [STATUT] Succès: commande ${orderId} - ${order.status} → ${newStatus} (par ${user.id}/${user.role})`,
     );
+
+    // Points fidélité quand la commande est livrée (non-bloquant)
+    if (newStatus === 'LIVRER') {
+      this.awardLoyaltyPoints(updatedOrder.userId, orderId, updatedOrder.subTotal).catch((err) =>
+        this.logger.error(`Erreur points fidélité: ${err}`),
+      );
+    }
+
     return updatedOrder;
   }
 

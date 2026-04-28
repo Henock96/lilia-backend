@@ -34,6 +34,27 @@ model User {
 
   // Ajout recent 04/04/2026
   statusUser StatusUser   @default(ACTIVE)
+
+  // Parrainage
+  referralCode     String?  @unique          // code unique à partager
+  referredByCode   String?                   // code du parrain utilisé à l'inscription
+  referralRewarded Boolean  @default(false)  // vrai quand la récompense a été émise
+
+  // Points de fidélité
+  loyaltyPoints    Int      @default(0)
+  loyaltyTransactions LoyaltyTransaction[]
+}
+
+model LoyaltyTransaction {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  points      Int                           // positif = gain, négatif = dépense
+  reason      String                        // ex: "Commande #ABC123", "Récompense parrainage"
+  orderId     String?                       // lien optionnel à la commande
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
 }
 
 model FcmToken {
