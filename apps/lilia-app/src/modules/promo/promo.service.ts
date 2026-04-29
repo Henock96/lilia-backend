@@ -227,7 +227,10 @@ export class PromoService {
   async remove(id: string) {
     const promo = await this.prisma.promoCode.findUnique({ where: { id } });
     if (!promo) throw new NotFoundException('Code promo introuvable');
-    await this.prisma.promoCode.delete({ where: { id } });
+    await this.prisma.$transaction([
+      this.prisma.promoUsage.deleteMany({ where: { promoCodeId: id } }),
+      this.prisma.promoCode.delete({ where: { id } }),
+    ]);
     return { message: 'Code promo supprimé' };
   }
 

@@ -1,4 +1,4 @@
-// app.module.ts
+﻿// app.module.ts
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
@@ -24,6 +24,7 @@ import { BannersModule } from './modules/banners/banners.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { PromoModule } from './modules/promo/promo.module';
+import { FavoritesModule } from './modules/favorites/favorites.module';
 
 // Infrastructure
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -39,12 +40,12 @@ import { PaymentListener } from './modules/listeners/payment.listener';
 import { MenusListener } from './modules/listeners/menus.listener';
 import { UserListener } from './modules/listeners/user.listener';
 import { TrackingModule } from './modules/tracking/tracking.module';
-// EmailListener supprimé — logique déplacée dans UserListener
+// EmailListener supprimÃ© â€” logique dÃ©placÃ©e dans UserListener
 import { RedisModule } from '@nestjs-modules/ioredis';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    // app.module.ts — ajouter
+    // app.module.ts â€” ajouter
     RedisModule.forRootAsync({
       useFactory: (config: ConfigService) => ({
         type: 'single',
@@ -56,7 +57,7 @@ import { RedisModule } from '@nestjs-modules/ioredis';
     EventEmitterModule.forRoot({
       wildcard: false,
       delimiter: '.',
-      maxListeners: 20, // augmenté pour tous les listeners
+      maxListeners: 20, // augmentÃ© pour tous les listeners
       ignoreErrors: false,
     }),
 
@@ -82,6 +83,7 @@ import { RedisModule } from '@nestjs-modules/ioredis';
     AdminModule,
     DashboardModule,
     PromoModule,
+    FavoritesModule,
 
     // Infrastructure
     NotificationsModule,
@@ -100,3 +102,4 @@ import { RedisModule } from '@nestjs-modules/ioredis';
   ],
 })
 export class AppModule {}
+
