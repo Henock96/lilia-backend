@@ -3,6 +3,7 @@ import {
   Body, Controller, Delete, Get, HttpCode,
   HttpStatus, Param, Patch, Post, Query,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DecodedIdToken } from 'firebase-admin/auth';
 import { PromoService } from './promo.service';
@@ -24,6 +25,7 @@ export class PromoController {
    */
   @Post('validate')
   @Roles('CLIENT', 'RESTAURATEUR', 'ADMIN')
+  @Throttle({ long: { limit: 5, ttl: 60000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Valider un code promo au checkout' })
   validate(

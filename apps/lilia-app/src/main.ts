@@ -14,10 +14,19 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     logger: ['error', 'warn', 'log', 'debug'],
   });
-  // main.ts — ajouter après NestFactory.create()
-  const redisIoAdapter = new RedisIoAdapter(app);
-  await redisIoAdapter.connectToRedis(process.env.REDIS_URL);
-  app.useWebSocketAdapter(redisIoAdapter);
+  // WebSocket adapter — Redis si REDIS_URL configuré, sinon adapter par défaut
+  if (process.env.REDIS_URL) {
+    try {
+      const redisIoAdapter = new RedisIoAdapter(app);
+      await redisIoAdapter.connectToRedis(process.env.REDIS_URL);
+      app.useWebSocketAdapter(redisIoAdapter);
+      logger.log('WebSocket adapter : Redis (multi-instance)');
+    } catch (err) {
+      logger.warn(`Redis non disponible, adapter par défaut utilisé : ${err.message}`);
+    }
+  } else {
+    logger.warn('REDIS_URL non défini — WebSocket en mode single-instance');
+  }
   // ─── Dossier statique public (optionnel) ────────────────────────────────────
   // process.cwd() = racine du projet (fonctionne avec webpack monorepo)
   const publicDir = join(process.cwd(), 'public');

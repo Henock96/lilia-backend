@@ -1,5 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Controller, Get, Post, Body, Put, HttpCode, HttpStatus } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { UserService } from './users.service';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
@@ -37,6 +38,7 @@ export class UsersController {
    *   4. Backend vérifie le token, upsert en DB, retourne le profil
    */
   @Post('sync')
+  @Throttle({ short: { limit: 5, ttl: 1000 }, long: { limit: 15, ttl: 3600000 } })
   @HttpCode(HttpStatus.OK)
   async sync(
     @FirebaseUser() fbUser: DecodedIdToken,

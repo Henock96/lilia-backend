@@ -441,4 +441,59 @@ export class DeliveriesService {
       },
     });
   }
+
+  /**
+   * Met à jour la position GPS du livreur pour une livraison EN_TRANSIT
+   */
+  async updateLocation(
+    deliveryId: string,
+    latitude: number,
+    longitude: number,
+    accuracy: number | undefined,
+    firebaseUid: string,
+  ) {
+    const user = await this.getUserOrThrow(firebaseUid);
+    const delivery = await this.prisma.delivery.findUnique({ where: { id: deliveryId } });
+
+    if (!delivery) throw new NotFoundException(`Livraison "${deliveryId}" non trouvée.`);
+    if (delivery.delivererId !== user.id) throw new ForbiddenException('Cette livraison ne vous est pas assignée.');
+    if (delivery.status !== 'EN_TRANSIT') throw new BadRequestException('La position ne peut être mise à jour que pour une livraison EN_TRANSIT.');
+
+    const now = new Date();
+
+    await this.prisma.$transaction([
+      this.prisma.delivery.update({
+        where: { id: deliveryId },
+        data: { lastLatitude: latitude, lastLongitude: longitude, lastPositionAt: now },
+      }),
+      this.prisma.deliveryLocation.create({
+        data: { deliveryId, latitude, longitude, accuracy, recordedAt: now },
+      }),
+    ]);
+
+    return { message: 'Position mise à jour', latitude, longitude };
+  }
+
+  /**
+   * Récupère la livraison associée à une commande (pour le client qui veut tracker)
+   */
+  async findByOrderId(orderId: string) {
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { orderId },
+      select: {
+        id: true,
+        status: true,
+        lastLatitude: true,
+        lastLongitude: true,
+        lastPositionAt: true,
+        estimatedArrival: true,
+        deliverer: {
+          select: { id: true, nom: true, phone: true, imageUrl: true },
+        },
+      },
+    });
+
+    if (!delivery) throw new NotFoundException('Aucune livraison trouvée pour cette commande.');
+    return { data: delivery };
+  }
 }

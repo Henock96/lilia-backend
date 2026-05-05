@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 // orders/stock.service.ts
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
 @Injectable()
@@ -34,25 +34,46 @@ export class StockService {
       }
     }
 
-    // UPDATE atomique — pas de SELECT avant
-    // stockRestant ne descend jamais en dessous de 0 grâce au GREATEST
-    const productUpdates = productIds.map((id) =>
-      tx.$executeRaw`
+    // UPDATE atomique avec vérification du stock dans la même requête.
+    // WHERE stockRestant >= qty garantit qu'on ne vend pas ce qu'on n'a pas.
+    // Si 0 lignes mises à jour → le stock a été épuisé entre la validation et la transaction.
+    const productUpdates = productIds.map((id) => {
+      const qty = qtyByProduct.get(id) ?? 0;
+      return tx.$executeRaw`
         UPDATE "Product"
-        SET "stockRestant" = GREATEST(0, "stockRestant" - ${qtyByProduct.get(id)})
-        WHERE id = ${id} AND "stockRestant" IS NOT NULL
-      `,
-    );
+        SET "stockRestant" = "stockRestant" - ${qty}
+        WHERE id = ${id}
+          AND "stockRestant" IS NOT NULL
+          AND "stockRestant" >= ${qty}
+      `;
+    });
 
-    const menuUpdates = menuIds.map((id) =>
-      tx.$executeRaw`
+    const menuUpdates = menuIds.map((id) => {
+      const qty = qtyByMenu.get(id) ?? 0;
+      return tx.$executeRaw`
         UPDATE "MenuDuJour"
-        SET "stockRestant" = GREATEST(0, "stockRestant" - ${qtyByMenu.get(id)})
-        WHERE id = ${id} AND "stockRestant" IS NOT NULL
-      `,
-    );
+        SET "stockRestant" = "stockRestant" - ${qty}
+        WHERE id = ${id}
+          AND "stockRestant" IS NOT NULL
+          AND "stockRestant" >= ${qty}
+      `;
+    });
 
-    await Promise.all([...productUpdates, ...menuUpdates]);
+    const [productResults, menuResults] = await Promise.all([
+      Promise.all(productUpdates),
+      Promise.all(menuUpdates),
+    ]);
+
+    if (productResults.some((n) => n === 0)) {
+      throw new BadRequestException(
+        'Stock épuisé pour un ou plusieurs produits. Veuillez mettre à jour votre panier.',
+      );
+    }
+    if (menuResults.some((n) => n === 0)) {
+      throw new BadRequestException(
+        'Stock épuisé pour un ou plusieurs menus. Veuillez mettre à jour votre panier.',
+      );
+    }
   }
 
   // Reset quotidien (appelé par le scheduler à minuit)

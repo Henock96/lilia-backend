@@ -20,10 +20,14 @@ import { StockService } from './stock.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
 import { PromoService, PromoValidationResult } from '../promo/promo.service';
+import { ConfigService } from '@nestjs/config';
+import Redis from 'ioredis';
 
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
+  private readonly redis: Redis;
+
   constructor(
     private prisma: PrismaService,
     private eventEmitter: EventEmitter2,
@@ -33,7 +37,11 @@ export class OrdersService {
     private readonly validator: OrderValidatorService,
     private readonly calculator: OrderCalculatorService,
     private readonly promoService: PromoService,
-  ) {}
+    private readonly config: ConfigService,
+  ) {
+    const redisUrl = this.config.get<string>('REDIS_URL');
+    this.redis = redisUrl ? new Redis(redisUrl) : null as any;
+  }
 
   /**
    * Crée une commande à partir du panier de l'utilisateur.
@@ -99,7 +107,7 @@ export class OrdersService {
     this.logger.log(`⭐ +${points} points fidélité user ${userId}`);
   }
 
-  async createOrderFromCart(firebaseUid: string, dto: CreateOrderDto) {
+  async createOrderFromCart(firebaseUid: string, dto: CreateOrderDto, idempotencyKey?: string) {
     const {
       adresseId,
       paymentMethod,
@@ -109,6 +117,16 @@ export class OrdersService {
       promoCode,
       useLoyaltyPoints,
     } = dto;
+    // Idempotency check — évite les doublons sur double-tap ou retry réseau
+    if (idempotencyKey && this.redis) {
+      const cacheKey = `idempotency:${firebaseUid}:${idempotencyKey}`;
+      const cached = await this.redis.get(cacheKey);
+      if (cached) {
+        this.logger.log(`📦 [IDEMPOTENCY] Réponse cachée retournée — key: ${idempotencyKey}`);
+        return JSON.parse(cached);
+      }
+    }
+
     this.logger.log(
       `📦 [COMMANDE] Début création commande - user: ${firebaseUid}, payload: ${JSON.stringify({ adresseId: dto.adresseId, paymentMethod: dto.paymentMethod, isDelivery: dto.isDelivery })}`,
     );
@@ -280,10 +298,15 @@ export class OrdersService {
       this.logger.error(`Erreur récompense parrainage: ${err}`),
     );
 
-    return {
-      message: 'Commande créée avec succès.',
-      data: order,
-    };
+    const result = { message: 'Commande créée avec succès.', data: order };
+
+    // Cache idempotency result — TTL 1h
+    if (idempotencyKey && this.redis) {
+      const cacheKey = `idempotency:${firebaseUid}:${idempotencyKey}`;
+      await this.redis.setex(cacheKey, 3600, JSON.stringify(result)).catch(() => {});
+    }
+
+    return result;
   }
 
   /**
@@ -356,11 +379,10 @@ export class OrdersService {
    * Récupère les commandes d'un restaurant spécifique.
    * ADMIN voit toutes les commandes de tous les restaurants.
    */
-  async findRestaurantOrders(firebaseUid: string) {
+  async findRestaurantOrders(firebaseUid: string, page = 1, limit = 20) {
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
     if (!user) throw new NotFoundException('Utilisateur non trouvé.');
 
-    // Include commun pour les données utilisateur et items
     const include = {
       items: {
         include: { product: { select: { nom: true, imageUrl: true } } },
@@ -378,33 +400,44 @@ export class OrdersService {
     };
 
     if (user.role === 'ADMIN') {
-      // ADMIN : retourner toutes les commandes de tous les restaurants
-      const orders = await this.prisma.order.findMany({
-        include: include,
-        orderBy: { createdAt: 'desc' },
-      });
-      return { data: orders };
+      const [orders, total] = await Promise.all([
+        this.prisma.order.findMany({
+          include,
+          orderBy: { createdAt: 'desc' },
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+        this.prisma.order.count(),
+      ]);
+      return {
+        data: orders,
+        meta: this.pagination.getPaginationMeta(page, limit, total),
+      };
     }
 
-    // RESTAURATEUR : comportement actuel
+    // RESTAURATEUR : ses commandes uniquement
     const restaurant = await this.prisma.restaurant.findFirst({
       where: { owner: { firebaseUid } },
     });
 
     if (!restaurant) {
-      throw new NotFoundException(
-        'Restaurant non trouvé pour cet utilisateur.',
-      );
+      throw new NotFoundException('Restaurant non trouvé pour cet utilisateur.');
     }
 
-    const orders = await this.prisma.order.findMany({
-      where: { restaurantId: restaurant.id },
-      include,
-      orderBy: { createdAt: 'desc' },
-    });
+    const [orders, total] = await Promise.all([
+      this.prisma.order.findMany({
+        where: { restaurantId: restaurant.id },
+        include,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.order.count({ where: { restaurantId: restaurant.id } }),
+    ]);
 
     return {
       data: orders,
+      meta: this.pagination.getPaginationMeta(page, limit, total),
     };
   }
 

@@ -14,6 +14,7 @@ import { DecodedIdToken } from 'firebase-admin/auth';
 
 import { DeliveriesService } from './deliveries.service';
 import { AssignDeliveryDto, DeliveryStatus, UpdateDeliveryStatusDto } from './dto/update-delivery.dto';
+import { UpdateLocationDto } from './dto/update-location.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { DriverStatus } from '@prisma/client';
@@ -72,6 +73,34 @@ export class DeliveriesController {
     return this.deliveriesService.getAvailableDeliverers();
   }
 
+  @Get('my-missions')
+  @Roles('LIVREUR')
+  getMyMissions(@FirebaseUser() fbUser: DecodedIdToken) {
+    return this.deliveriesService.getMyAssignedDeliveries(fbUser.uid);
+  }
+
+  @Patch('driver-status')
+  @Roles('LIVREUR')
+  @HttpCode(HttpStatus.OK)
+  setStatus(
+    @FirebaseUser() fbUser: DecodedIdToken,
+    @Body('status') status: DriverStatus,
+  ) {
+    return this.deliveriesService.setDriverStatus(fbUser.uid, status);
+  }
+
+  /**
+   * GET /deliveries/by-order/:orderId
+   * Récupère la livraison et la position du livreur pour une commande (côté client)
+   */
+  @Get('by-order/:orderId')
+  @Roles('CLIENT', 'RESTAURATEUR', 'ADMIN', 'LIVREUR')
+  @ApiOperation({ summary: 'Position du livreur pour une commande' })
+  @ApiParam({ name: 'orderId' })
+  findByOrderId(@Param('orderId') orderId: string) {
+    return this.deliveriesService.findByOrderId(orderId);
+  }
+
   /**
    * GET /deliveries/:id
    * Récupère une livraison par son ID
@@ -126,19 +155,19 @@ export class DeliveriesController {
     return this.deliveriesService.acceptDelivery(id, fbUser.uid);
   }
 
-  @Get('my-missions')
-  @Roles('LIVREUR')
-  getMyMissions(@FirebaseUser() fbUser: DecodedIdToken) {
-    return this.deliveriesService.getMyAssignedDeliveries(fbUser.uid);
-  }
-
-  @Patch('driver-status')
+  /**
+   * PATCH /deliveries/:id/location
+   * Le livreur met à jour sa position GPS (uniquement EN_TRANSIT)
+   */
+  @Patch(':id/location')
   @Roles('LIVREUR')
   @HttpCode(HttpStatus.OK)
-  setStatus(
+  @ApiOperation({ summary: 'Mettre à jour la position GPS du livreur' })
+  updateLocation(
+    @Param('id') id: string,
+    @Body() dto: UpdateLocationDto,
     @FirebaseUser() fbUser: DecodedIdToken,
-    @Body('status') status: DriverStatus,
   ) {
-    return this.deliveriesService.setDriverStatus(fbUser.uid, status);
+    return this.deliveriesService.updateLocation(id, dto.latitude, dto.longitude, dto.accuracy, fbUser.uid);
   }
 }
