@@ -244,19 +244,13 @@ export class DeliveriesService {
   }
 
   /**
-   * Assigne un livreur à une livraison
+   * Assigne un livreur via l'ID de livraison (doit déjà exister)
    */
   async assignDeliverer(id: string, delivererId: string, firebaseUid: string) {
     const delivery = await this.prisma.delivery.findUnique({
       where: { id },
       include: {
-        order: {
-          include: {
-            restaurant: {
-              include: { owner: true },
-            },
-          },
-        },
+        order: { include: { restaurant: { include: { owner: true } } } },
       },
     });
 
@@ -264,69 +258,81 @@ export class DeliveriesService {
       throw new NotFoundException(`Livraison avec l'ID "${id}" non trouvée.`);
     }
 
-    // Vérifier que l'utilisateur est le propriétaire du restaurant ou admin
-    const user = await this.prisma.user.findUnique({
-      where: { firebaseUid },
+    return this._doAssign(delivery, delivererId, firebaseUid);
+  }
+
+  /**
+   * Assigne un livreur via l'ID de commande (crée la livraison si elle n'existe pas)
+   */
+  async assignDelivererToOrder(orderId: string, delivererId: string, firebaseUid: string) {
+    const user = await this.getUserOrThrow(firebaseUid);
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { restaurant: { include: { owner: true } } },
     });
 
-    if (!user) {
-      throw new NotFoundException('Utilisateur non trouvé.');
+    if (!order) throw new NotFoundException('Commande non trouvée.');
+
+    const isRestaurantOwner = order.restaurant.owner.firebaseUid === firebaseUid;
+    const isAdmin = user.role === 'ADMIN';
+    if (!isRestaurantOwner && !isAdmin) {
+      throw new ForbiddenException("Vous n'êtes pas autorisé à assigner un livreur à cette commande.");
     }
 
+    // Trouver ou créer l'enregistrement Delivery
+    let delivery = await this.prisma.delivery.findUnique({ where: { orderId } });
+    if (!delivery) {
+      delivery = await this.prisma.delivery.create({
+        data: { orderId, status: 'EN_ATTENTE' },
+      });
+    }
+
+    // Recharger avec les relations nécessaires à _doAssign
+    const deliveryFull = await this.prisma.delivery.findUnique({
+      where: { id: delivery.id },
+      include: { order: { include: { restaurant: { include: { owner: true } } } } },
+    });
+
+    return this._doAssign(deliveryFull!, delivererId, firebaseUid);
+  }
+
+  private async _doAssign(
+    delivery: any,
+    delivererId: string,
+    firebaseUid: string,
+  ) {
+    const user = await this.getUserOrThrow(firebaseUid);
     const isRestaurantOwner = delivery.order.restaurant.owner.firebaseUid === firebaseUid;
     const isAdmin = user.role === 'ADMIN';
 
     if (!isRestaurantOwner && !isAdmin) {
-      throw new ForbiddenException('Vous n\'êtes pas autorisé à assigner un livreur à cette livraison.');
+      throw new ForbiddenException("Vous n'êtes pas autorisé à assigner un livreur à cette livraison.");
     }
 
-    // Vérifier que le livreur existe et a le rôle LIVREUR
-    const deliverer = await this.prisma.user.findUnique({
-      where: { id: delivererId },
-    });
-
-    if (!deliverer) {
-      throw new NotFoundException('Livreur non trouvé.');
-    }
-
+    const deliverer = await this.prisma.user.findUnique({ where: { id: delivererId } });
+    if (!deliverer) throw new NotFoundException('Livreur non trouvé.');
     if (deliverer.role !== 'LIVREUR') {
-      throw new ForbiddenException('L\'utilisateur sélectionné n\'est pas un livreur.');
+      throw new ForbiddenException("L'utilisateur sélectionné n'est pas un livreur.");
     }
 
     const updated = await this.prisma.delivery.update({
-      where: { id },
-      data: {
-        delivererId,
-        status: DeliveryStatus.ASSIGNER,
-      },
+      where: { id: delivery.id },
+      data: { delivererId, status: DeliveryStatus.ASSIGNER },
       include: {
-        deliverer: {
-          select: {
-            id: true,
-            nom: true,
-            phone: true,
-            imageUrl: true,
-          },
-        },
+        deliverer: { select: { id: true, nom: true, phone: true, imageUrl: true } },
         order: true,
       },
     });
 
     await this.notificationsService.sendPushNotification(
       deliverer.id,
-      'Nouvelle livraison',
+      'Nouvelle mission',
       `Commande à récupérer chez ${delivery.order.restaurant.nom}`,
-      {
-        type: 'delivery_assigned',
-        deliveryId: id,
-        orderId: delivery.orderId,
-      },
+      { type: 'delivery_assigned', deliveryId: updated.id, orderId: delivery.orderId },
     );
 
-    return {
-      data: updated,
-      message: 'Livreur assigné avec succès',
-    };
+    return { data: updated, message: 'Livreur assigné avec succès' };
   }
 
   /**
