@@ -9,6 +9,7 @@ import {
   HttpCode,
   Query,
   HttpStatus,
+  Headers,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -56,11 +57,13 @@ export class OrdersController {
   @ApiResponse({ status: 400, description: 'Panier vide ou restaurant fermé' })
   createOrder(
     @FirebaseUser() firebaseUser: DecodedIdToken,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Body() createOrderDto: CreateOrderDto,
   ) {
     return this.ordersService.createOrderFromCart(
       firebaseUser.uid,
       createOrderDto,
+      idempotencyKey,
     );
   }
   // ─── LECTURE ───────────────────────────────────────────────────────────────
@@ -90,8 +93,16 @@ export class OrdersController {
   @Get('restaurant')
   @Roles('RESTAURATEUR', 'ADMIN')
   @ApiOperation({ summary: 'Commandes reçues (restaurateur / admin)' })
-  getRestaurantOrders(@FirebaseUser() fbUser: DecodedIdToken) {
-    return this.ordersService.findRestaurantOrders(fbUser.uid);
+  getRestaurantOrders(
+    @FirebaseUser() fbUser: DecodedIdToken,
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+  ) {
+    return this.ordersService.findRestaurantOrders(
+      fbUser.uid,
+      parseInt(page, 10),
+      parseInt(limit, 10),
+    );
   }
   /**
    * Commandes d'un utilisateur spécifique — ADMIN uniquement.
