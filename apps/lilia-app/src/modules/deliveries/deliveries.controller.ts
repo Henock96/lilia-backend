@@ -102,6 +102,23 @@ export class DeliveriesController {
   }
 
   /**
+   * PATCH /deliveries/by-order/:orderId/assign
+   * Assigne un livreur à une commande (crée la livraison si elle n'existe pas)
+   */
+  @Patch('by-order/:orderId/assign')
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Assigner un livreur via l\'ID commande' })
+  @ApiParam({ name: 'orderId' })
+  assignDelivererToOrder(
+    @Param('orderId') orderId: string,
+    @Body() dto: AssignDeliveryDto,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return this.deliveriesService.assignDelivererToOrder(orderId, dto.delivererId, fbUser.uid);
+  }
+
+  /**
    * GET /deliveries/:id
    * Récupère une livraison par son ID
    */
