@@ -1,11 +1,11 @@
-import { IsString, IsNotEmpty, IsEnum, IsOptional, IsBoolean } from 'class-validator';
+import { IsString, IsNotEmpty, IsEnum, IsOptional, IsBoolean, IsNumber } from 'class-validator';
 import { PaymentMethod } from '@prisma/client';
 import { Transform } from 'class-transformer';
 
 export class CreateOrderDto {
   @IsString()
   @IsOptional()
-  adresseId?: string; // Optionnel car pas nécessaire pour le retrait
+  adresseId?: string;
 
   @IsEnum(PaymentMethod)
   @IsNotEmpty()
@@ -17,13 +17,13 @@ export class CreateOrderDto {
 
   @IsBoolean()
   @IsOptional()
-  @Transform(({ value }) => value ?? true) // Par défaut: livraison
+  @Transform(({ value }) => value ?? true)
   isDelivery?: boolean = true;
 
   @IsString()
   @IsOptional()
   contactPhone?: string;
-  
+
   @IsOptional()
   @IsString()
   promoCode?: string;
@@ -31,4 +31,12 @@ export class CreateOrderDto {
   @IsBoolean()
   @IsOptional()
   useLoyaltyPoints?: boolean;
+
+  @IsNumber()
+  @IsOptional()
+  deliveryLatitude?: number;
+
+  @IsNumber()
+  @IsOptional()
+  deliveryLongitude?: number;
 }

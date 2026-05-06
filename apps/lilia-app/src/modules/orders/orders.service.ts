@@ -116,6 +116,8 @@ export class OrdersService {
       contactPhone,
       promoCode,
       useLoyaltyPoints,
+      deliveryLatitude,
+      deliveryLongitude,
     } = dto;
     // Idempotency check — évite les doublons sur double-tap ou retry réseau
     if (idempotencyKey && this.redis) {
@@ -217,6 +219,8 @@ export class OrdersService {
           notes,
           contactPhone,
           deliveryAddress,
+          deliveryLatitude: deliveryLatitude ?? null,
+          deliveryLongitude: deliveryLongitude ?? null,
           paymentMethod,
           status: 'EN_ATTENTE',
           items: {
