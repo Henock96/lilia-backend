@@ -440,7 +440,7 @@ export class DeliveriesService {
       include: {
         order: {
           include: {
-            restaurant: { select: { nom: true, adresse: true, phone: true } },
+            restaurant: { select: { id: true, nom: true, adresse: true, phone: true } },
             items: { include: { product: { select: { nom: true } } } },
           },
         },
