@@ -106,6 +106,9 @@ export class DeliveriesService {
       include: {
         order: {
           include: {
+            user: {
+              select: { nom: true, phone: true },
+            },
             restaurant: {
               select: {
                 id: true,
@@ -140,6 +143,9 @@ export class DeliveriesService {
       include: {
         order: {
           include: {
+            user: {
+              select: { nom: true, phone: true },
+            },
             restaurant: {
               select: {
                 id: true,
@@ -440,6 +446,7 @@ export class DeliveriesService {
       include: {
         order: {
           include: {
+            user: { select: { nom: true, phone: true } },
             restaurant: { select: { id: true, nom: true, adresse: true, phone: true } },
             items: { include: { product: { select: { nom: true } } } },
           },
