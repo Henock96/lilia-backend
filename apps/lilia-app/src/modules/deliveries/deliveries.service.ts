@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -10,13 +11,55 @@ import { DeliveryStatus } from './dto/update-delivery.dto';
 import { DriverStatus, OrderStatus } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { NotificationsService } from '../notifications/notifications.service';
+import { OrderStateMachine } from '../orders/order-state.machine';
+import { OrderStatusUpdatedEvent } from '../events/order-events';
+
+type ActorRole = 'CLIENT' | 'RESTAURATEUR' | 'ADMIN' | 'LIVREUR';
 
 @Injectable()
 export class DeliveriesService {
-  constructor(private prisma: PrismaService,
+  private readonly logger = new Logger(DeliveriesService.name);
+
+  // 1 pt par 100 FCFA — doit rester aligné avec OrdersService
+  private static readonly POINTS_PER_100_FCFA = 1;
+
+  constructor(
+    private prisma: PrismaService,
     private readonly notificationsService: NotificationsService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly stateMachine: OrderStateMachine,
   ) {}
+
+  private resolveActor(role: string): ActorRole | null {
+    const map: Record<string, ActorRole> = {
+      CLIENT: 'CLIENT',
+      RESTAURATEUR: 'RESTAURATEUR',
+      ADMIN: 'ADMIN',
+      LIVREUR: 'LIVREUR',
+    };
+    return map[role] ?? null;
+  }
+
+  /**
+   * Crédite +1pt par 100 FCFA de subTotal à la livraison.
+   * Aligné avec OrdersService.awardLoyaltyPoints (non-bloquant).
+   */
+  private async awardLoyaltyPoints(userId: string, orderId: string, subTotal: number): Promise<void> {
+    const points = Math.floor(subTotal / 100) * DeliveriesService.POINTS_PER_100_FCFA;
+    if (points <= 0) return;
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { loyaltyPoints: { increment: points } },
+      }),
+      this.prisma.loyaltyTransaction.create({
+        data: { userId, orderId, points, reason: `+${points} pts — commande livrée` },
+      }),
+    ]);
+
+    this.logger.log(`⭐ +${points} points fidélité user ${userId} (commande ${orderId})`);
+  }
 
   /**
    * Récupère toutes les livraisons pour un restaurant
@@ -182,7 +225,17 @@ export class DeliveriesService {
   }
 
   /**
-   * Met à jour le statut d'une livraison
+   * Met à jour le statut d'une livraison.
+   *
+   * Quand status = LIVRER :
+   *  - Vérifie la transition Order EN_ROUTE → LIVRER via state machine
+   *  - Met à jour Order.status, Delivery.deliveredAt, User.driverStatus = AVAILABLE
+   *  - Émet `order.status.updated` → FCM client + broadcast WebSocket
+   *  - Crédite les points fidélité (1pt/100 FCFA subTotal)
+   *
+   * Quand status = ECHEC :
+   *  - Marque la livraison en échec, libère le livreur (DriverStatus = AVAILABLE)
+   *  - La commande n'est PAS auto-annulée — l'admin/restaurateur doit décider
    */
   async updateStatus(id: string, status: DeliveryStatus, firebaseUid: string) {
     const delivery = await this.prisma.delivery.findUnique({
@@ -190,9 +243,7 @@ export class DeliveriesService {
       include: {
         order: {
           include: {
-            restaurant: {
-              include: { owner: true },
-            },
+            restaurant: { include: { owner: true } },
           },
         },
         deliverer: true,
@@ -203,50 +254,92 @@ export class DeliveriesService {
       throw new NotFoundException(`Livraison avec l'ID "${id}" non trouvée.`);
     }
 
-    const user = await this.prisma.user.findUnique({
-      where: { firebaseUid },
-    });
+    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    if (!user) throw new NotFoundException('Utilisateur non trouvé.');
 
-    if (!user) {
-      throw new NotFoundException('Utilisateur non trouvé.');
-    }
-
-    // Vérifier les permissions: le propriétaire du restaurant ou le livreur assigné peut modifier le statut
     const isRestaurantOwner = delivery.order.restaurant.owner.firebaseUid === firebaseUid;
     const isAssignedDeliverer = delivery.delivererId === user.id;
     const isAdmin = user.role === 'ADMIN';
 
     if (!isRestaurantOwner && !isAssignedDeliverer && !isAdmin) {
-      throw new ForbiddenException('Vous n\'êtes pas autorisé à modifier cette livraison.');
+      throw new ForbiddenException("Vous n'êtes pas autorisé à modifier cette livraison.");
     }
 
-    const updated = await this.prisma.delivery.update({
+    // Si LIVRER : valide la transition Order via state machine
+    if (status === DeliveryStatus.LIVRER) {
+      const actor = this.resolveActor(user.role);
+      if (!actor) throw new ForbiddenException('Acteur invalide pour cette transition.');
+      this.stateMachine.assertTransition(delivery.order.status, OrderStatus.LIVRER, actor);
+    }
+
+    const now = new Date();
+    const previousOrderStatus = delivery.order.status;
+
+    // Update atomique : Delivery + Order + DriverStatus
+    const operations: any[] = [
+      this.prisma.delivery.update({
+        where: { id },
+        data: {
+          status,
+          ...(status === DeliveryStatus.LIVRER ? { deliveredAt: now } : {}),
+        },
+      }),
+    ];
+
+    if (status === DeliveryStatus.LIVRER) {
+      operations.push(
+        this.prisma.order.update({
+          where: { id: delivery.orderId },
+          data: { status: OrderStatus.LIVRER },
+        }),
+      );
+    }
+
+    // Libère le livreur dans les 2 cas (LIVRER ou ECHEC)
+    if ((status === DeliveryStatus.LIVRER || status === DeliveryStatus.ECHEC) && delivery.delivererId) {
+      operations.push(
+        this.prisma.user.update({
+          where: { id: delivery.delivererId },
+          data: { driverStatus: DriverStatus.AVAILABLE },
+        }),
+      );
+    }
+
+    await this.prisma.$transaction(operations);
+
+    const updated = await this.prisma.delivery.findUnique({
       where: { id },
-      data: { status },
       include: {
         order: true,
-        deliverer: {
-          select: {
-            id: true,
-            nom: true,
-            phone: true,
-          },
-        },
+        deliverer: { select: { id: true, nom: true, phone: true } },
       },
     });
 
-    // Si la livraison est marquée comme livrée, mettre à jour le statut de la commande
+    // Émet l'event order.status.updated → OrdersListener notifie le client + WS
     if (status === DeliveryStatus.LIVRER) {
-      await this.prisma.order.update({
-        where: { id: delivery.orderId },
-        data: { status: 'LIVRER' },
-      });
+      const statusEvent = new OrderStatusUpdatedEvent(
+        delivery.orderId,
+        delivery.order.userId,
+        delivery.order.restaurantId,
+        previousOrderStatus,
+        OrderStatus.LIVRER,
+        user.id,
+        {
+          restaurantName: delivery.order.restaurant.nom,
+          totalAmount: delivery.order.total,
+        },
+      );
+      this.eventEmitter.emit('order.status.updated', statusEvent);
+
+      // Crédite les points fidélité (non-bloquant)
+      this.awardLoyaltyPoints(
+        delivery.order.userId,
+        delivery.orderId,
+        delivery.order.subTotal,
+      ).catch((err) => this.logger.error(`Erreur points fidélité: ${err}`));
     }
 
-    return {
-      data: updated,
-      message: 'Statut de livraison mis à jour',
-    };
+    return { data: updated, message: 'Statut de livraison mis à jour' };
   }
 
   /**
@@ -378,9 +471,12 @@ export class DeliveriesService {
     const user = await this.getUserOrThrow(firebaseUid);
     const delivery = await this.prisma.delivery.findUnique({
       where: { id: deliveryId },
-      include: { order: true },
+      include: {
+        order: { include: { restaurant: { select: { nom: true } } } },
+      },
     });
 
+    if (!delivery) throw new NotFoundException('Livraison introuvable.');
     if (delivery.delivererId !== user.id) {
       throw new ForbiddenException('Cette livraison ne vous est pas assignée');
     }
@@ -388,29 +484,46 @@ export class DeliveriesService {
       throw new BadRequestException('Livraison déjà acceptée ou non assignée');
     }
 
-    // Met à jour livraison + statut livreur en transaction
+    // Valide la transition Order PRET → EN_ROUTE via state machine
+    this.stateMachine.assertTransition(
+      delivery.order.status,
+      OrderStatus.EN_ROUTE,
+      'LIVREUR',
+    );
+
+    const previousOrderStatus = delivery.order.status;
+    const now = new Date();
+
+    // Met à jour livraison + statut livreur + commande en transaction
     const [updated] = await this.prisma.$transaction([
       this.prisma.delivery.update({
         where: { id: deliveryId },
-        data: { status: 'EN_TRANSIT' },
+        data: { status: 'EN_TRANSIT', pickedUpAt: now },
       }),
       this.prisma.user.update({
         where: { id: user.id },
         data: { driverStatus: 'ON_DELIVERY' },
       }),
-      // Passe la commande en EN_LIVRAISON via state machine
       this.prisma.order.update({
         where: { id: delivery.orderId },
         data: { status: OrderStatus.EN_ROUTE },
       }),
     ]);
 
-    // Notifie le client que le livreur est en route
-    this.eventEmitter.emit('order.status.updated', {
-      orderId: delivery.orderId,
-      newStatus: OrderStatus.EN_ROUTE,
-      ...delivery.order,
-    });
+    // Notifie le client que le livreur est en route — payload structuré
+    const statusEvent = new OrderStatusUpdatedEvent(
+      delivery.orderId,
+      delivery.order.userId,
+      delivery.order.restaurantId,
+      previousOrderStatus,
+      OrderStatus.EN_ROUTE,
+      user.id,
+      {
+        restaurantName: delivery.order.restaurant.nom,
+        totalAmount: delivery.order.total,
+      },
+    );
+    this.eventEmitter.emit('order.status.updated', statusEvent);
 
     return updated;
   }
@@ -456,7 +569,10 @@ export class DeliveriesService {
   }
 
   /**
-   * Met à jour la position GPS du livreur pour une livraison EN_TRANSIT
+   * Met à jour la position GPS du livreur pour une livraison EN_TRANSIT.
+   * Fallback HTTP — préférer le WebSocket /tracking pour réduire le lag.
+   * NOTE : ce path écrit directement en DB (pas via TrackingService).
+   * Pour ajouter Redis GEO + broadcast WS, utiliser POST /tracking/position.
    */
   async updateLocation(
     deliveryId: string,

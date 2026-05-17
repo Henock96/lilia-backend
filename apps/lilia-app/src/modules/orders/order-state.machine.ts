@@ -22,6 +22,7 @@ export const TRANSITION_PERMISSIONS: Partial<
   PAYER: [ 'ADMIN'], // déclenché par le webhook paiement
   EN_PREPARATION: ['RESTAURATEUR', 'ADMIN'],
   PRET: ['RESTAURATEUR', 'ADMIN'],
+  EN_ROUTE: ['RESTAURATEUR', 'ADMIN', 'LIVREUR'],
   LIVRER: ['LIVREUR', 'ADMIN'],
 };
 

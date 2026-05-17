@@ -533,23 +533,9 @@ export class OrdersService {
       );
     }
 
-    // Liste des statuts que le restaurateur peut utiliser
-    const allowedStatusUpdates: OrderStatus[] = [
-      'PAYER',
-      'EN_PREPARATION',
-      'PRET',
-      'EN_ROUTE',
-      'LIVRER',
-      'ANNULER',
-    ];
-    if (!allowedStatusUpdates.includes(newStatus)) {
-      this.logger.warn(
-        `🔄 [STATUT] Échec: statut invalide "${newStatus}" pour commande ${orderId}`,
-      );
-      throw new BadRequestException(
-        `Statut de mise à jour invalide: ${newStatus}`,
-      );
-    }
+    const actor = this.resolveActor(user.role);
+    if (!actor) throw new ForbiddenException('Acteur invalide pour cette transition');
+    this.stateMachine.assertTransition(order.status, newStatus, actor);
 
     const updatedOrder = await this.prisma.order.update({
       where: { id: orderId },

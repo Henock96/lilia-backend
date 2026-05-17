@@ -1,9 +1,10 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Post, Body, Headers, Logger, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Body, Headers, Logger, HttpCode, HttpStatus, UnauthorizedException } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PaymentService } from '../services/payment.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { Public } from '../../auth/decorators/public.decorator';
+import { ConfigService } from '@nestjs/config';
 
 interface MtnWebhookPayload {
   referenceId: string;
@@ -16,7 +17,11 @@ interface MtnWebhookPayload {
 export class WebhookController {
   private readonly logger = new Logger(WebhookController.name);
 
-  constructor(private readonly paymentService: PaymentService, private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly paymentService: PaymentService,
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
 
   /**
    * Reçoit les callbacks MTN MoMo.
@@ -30,8 +35,10 @@ export class WebhookController {
   async handleMtnMomoWebhook(
     @Body() payload: MtnWebhookPayload,
     @Headers('x-callback-signature') signature?: string,
+    @Headers('x-webhook-secret') webhookSecret?: string,
   ) {
     this.logger.log(`Webhook MTN reçu : ${payload.referenceId} → ${payload.status}`);
+    this.validateWebhookSecret(signature, webhookSecret);
 
     try {
       if (payload.status === 'SUCCESSFUL') {
@@ -52,6 +59,19 @@ export class WebhookController {
       this.logger.error(`Webhook MTN échoué : ${error.message}`);
       // On retourne 200 quand même pour éviter que MTN retry en boucle
       return { status: 'error', message: error.message };
+    }
+  }
+
+  private validateWebhookSecret(signature?: string, webhookSecret?: string) {
+    const expected = this.config.get<string>('MTN_MOMO_WEBHOOK_SECRET');
+    if (!expected) {
+      this.logger.warn('MTN_MOMO_WEBHOOK_SECRET non défini: webhook accepté sans secret partagé');
+      return;
+    }
+
+    const received = webhookSecret || signature;
+    if (!received || received !== expected) {
+      throw new UnauthorizedException('Webhook non autorisé');
     }
   }
 }

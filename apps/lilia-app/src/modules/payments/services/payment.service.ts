@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, HttpException, HttpStatus, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MtnMomoService } from './mtn-momo.service';
@@ -20,8 +20,8 @@ export enum PaymentMode {
 }
 export interface CreatePaymentRequest {
   orderId: string;
-  amount: number;
-  currency: string;
+  amount?: number;
+  currency?: string;
   phoneNumber: string;
   payerMessage?: string;
 }
@@ -41,47 +41,37 @@ export class PaymentService {
     this.manualPaymentNumber = this.config.get<string>('LILIA_PAYMENT_PHONE', '');
   }
 
-  async createPayment(request: CreatePaymentRequest) {
+  async createPayment(request: CreatePaymentRequest, firebaseUid: string) {
     switch (this.mode) {
       case PaymentMode.MANUAL:
-        return this.createManualPayment(request);
+        return this.createManualPayment(request, firebaseUid);
       case PaymentMode.SANDBOX:
       case PaymentMode.MTN_PRODUCTION:
-        return this.createMtnPayment(request);
+        return this.createMtnPayment(request, firebaseUid);
+      default:
+        throw new BadRequestException(`Mode de paiement invalide: ${this.mode}`);
     }
   }
-  async createMtnPayment(request: CreatePaymentRequest): Promise<{ paymentId: string; referenceId: string }> {
-    this.logger.log(`💰 [PAIEMENT] Début - commande: ${request.orderId}, montant: ${request.amount} ${request.currency}, tel: ${request.phoneNumber}`);
+  async createMtnPayment(request: CreatePaymentRequest, firebaseUid: string): Promise<{ paymentId: string; referenceId: string }> {
+    const order = await this.getPayableOrder(request.orderId, firebaseUid);
+    const amount = order.total;
+    const currency = 'XAF';
+
+    this.logger.log(`💰 [PAIEMENT] Début - commande: ${request.orderId}, montant: ${amount} ${currency}, tel: ${request.phoneNumber}`);
 
     // Valider le numéro de téléphone
     if (!this.mtnMomoService.validatePhoneNumber(request.phoneNumber)) {
       this.logger.warn(`💰 [PAIEMENT] Échec: numéro invalide "${request.phoneNumber}" - commande: ${request.orderId}`);
       throw new Error('Invalid phone number format');
     }
-
-    // Récupérer la commande
-    const order = await this.prisma.order.findUnique({
-      where: { id: request.orderId },
-      include: { restaurant: true },
-    });
-
-    if (!order) {
-      this.logger.warn(`💰 [PAIEMENT] Échec: commande ${request.orderId} introuvable`);
-      throw new Error('Order not found');
-    }
-
-      const validStatuses = ['EN_ATTENTE', 'CONFIRMER'];
-      if (!validStatuses.includes(order.status)) {
-        this.logger.warn(`💰 [PAIEMENT] Échec: commande ${request.orderId} en statut "${order.status}" (attendu: ${validStatuses.join('/')})`);
-        throw new Error(`Order cannot be paid in current status: ${order.status}`);
-      }
+    await this.assertNoPendingPayment(order.id);
 
     // Créer l'enregistrement de paiement
     const payment = await this.prisma.payment.create({
       data: {
         orderId: request.orderId,
-        amount: request.amount,
-        currency: request.currency,
+        amount,
+        currency,
         phoneNumber: this.mtnMomoService.formatPhoneNumber(request.phoneNumber),
         status: PaymentStatus.PENDING,
         provider: 'MTN_MOMO',
@@ -92,8 +82,8 @@ export class PaymentService {
     try {
       // Initier le paiement avec MTN MoMo
       const referenceId = await this.mtnMomoService.requestToPay({
-        amount: request.amount.toString(),
-        currency: request.currency,
+        amount: amount.toString(),
+        currency,
         externalId: payment.id,
         payer: {
           partyIdType: 'MSISDN',
@@ -142,17 +132,18 @@ export class PaymentService {
    * Crée un enregistrement PENDING et retourne les instructions de paiement.
    * Le client paie sur le numéro Lilia Food, l'admin confirme manuellement.
    */
-  private async createManualPayment(request: CreatePaymentRequest) {
-    const order = await this.prisma.order.findUniqueOrThrow({
-      where: { id: request.orderId },
-      include: { restaurant: true },
-    });
+  private async createManualPayment(request: CreatePaymentRequest, firebaseUid: string) {
+    const order = await this.getPayableOrder(request.orderId, firebaseUid);
+    const amount = order.total;
+    const currency = 'XAF';
+
+    await this.assertNoPendingPayment(order.id);
 
     const payment = await this.prisma.payment.create({
       data: {
         orderId: request.orderId,
-        amount: request.amount,
-        currency: request.currency,
+        amount,
+        currency,
         phoneNumber: request.phoneNumber,
         status: 'PENDING',
         provider: 'MANUAL',
@@ -164,10 +155,10 @@ export class PaymentService {
       paymentId: payment.id,
       mode: 'MANUAL',
       instructions: {
-        message: `Envoyez ${request.amount} FCFA au ${this.manualPaymentNumber} (MTN MoMo)`,
+        message: `Envoyez ${amount} FCFA au ${this.manualPaymentNumber} (MTN MoMo)`,
         reference: payment.id.slice(-8).toUpperCase(),
         phone: this.manualPaymentNumber,
-        amount: request.amount,
+        amount,
         note: `Commande ${order.id.slice(-6)} - ${order.restaurant.nom}`,
       },
     };
@@ -196,7 +187,7 @@ export class PaymentService {
   }
 
 
-  async checkPaymentStatus(paymentId: string): Promise<PaymentStatus> {
+  async checkPaymentStatus(paymentId: string, firebaseUid?: string): Promise<PaymentStatus> {
     this.logger.log(`💰 [PAIEMENT] Vérification statut - payment: ${paymentId}`);
     const payment = await this.prisma.payment.findUnique({
       where: { id: paymentId },
@@ -206,6 +197,9 @@ export class PaymentService {
     if (!payment) {
       this.logger.warn(`💰 [PAIEMENT] Échec vérification: payment ${paymentId} introuvable`);
       throw new Error('Payment not found');
+    }
+    if (firebaseUid) {
+      await this.assertPaymentAccess(payment.order.userId, firebaseUid);
     }
 
     if (payment.status === PaymentStatus.SUCCESS) {
@@ -312,5 +306,40 @@ export class PaymentService {
       userId: payment.order.userId,
       paymentId: payment.id,
     });
+  }
+
+  private async getPayableOrder(orderId: string, firebaseUid: string) {
+    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    if (!user) throw new NotFoundException('Utilisateur non trouvé');
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { restaurant: true },
+    });
+    if (!order) throw new NotFoundException('Commande introuvable');
+    if (order.userId !== user.id && user.role !== 'ADMIN') {
+      throw new ForbiddenException("Vous n'êtes pas autorisé à payer cette commande");
+    }
+    if (order.status !== OrderStatus.EN_ATTENTE) {
+      throw new BadRequestException(`Commande non payable dans le statut actuel: ${order.status}`);
+    }
+    return order;
+  }
+
+  private async assertNoPendingPayment(orderId: string) {
+    const existing = await this.prisma.payment.findFirst({
+      where: { orderId, status: PaymentStatus.PENDING },
+    });
+    if (existing) {
+      throw new BadRequestException('Un paiement est déjà en attente pour cette commande');
+    }
+  }
+
+  private async assertPaymentAccess(orderUserId: string, firebaseUid: string) {
+    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    if (!user) throw new NotFoundException('Utilisateur non trouvé');
+    if (user.role !== 'ADMIN' && user.id !== orderUserId) {
+      throw new ForbiddenException('Accès au paiement refusé');
+    }
   }
 }
