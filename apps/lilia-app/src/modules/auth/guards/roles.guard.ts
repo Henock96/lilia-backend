@@ -1,15 +1,18 @@
 /* eslint-disable prettier/prettier */
 import { CanActivate, ExecutionContext,Logger, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { PrismaService } from '../../../../src/prisma/prisma.service';
 import { ROLES_KEY } from '../decorators/roles.decorator';
+import { UserCacheService } from '../services/user-cache.service';
 import { AuthenticatedRequest } from '../types/authenticated-request.interface';
 
 @Injectable()
 export class RolesGuard implements CanActivate{
   private readonly logger = new Logger(RolesGuard.name);
 
-  constructor(private reflector: Reflector, private prisma: PrismaService){}
+  constructor(
+    private reflector: Reflector,
+    private userCache: UserCacheService,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean>{
     const requiredRoles = this.reflector.getAllAndOverride<string[]>(ROLES_KEY, [
@@ -28,11 +31,10 @@ export class RolesGuard implements CanActivate{
     /**
      * On récupère le user Prisma UNE SEULE FOIS par requête,
      * même sans @Roles(), pour que @CurrentUser() fonctionne partout.
+     * UserCacheService sert un cache Redis (TTL 5min) avec fallback Prisma.
      */
     if (!request.user) {
-      const user = await this.prisma.user.findUnique({
-        where: { firebaseUid: request.firebaseUser.uid },
-      });
+      const user = await this.userCache.getByFirebaseUid(request.firebaseUser.uid);
 
       if (user) {
         request.user = user; // ← disponible dans tous les controllers via @CurrentUser()
