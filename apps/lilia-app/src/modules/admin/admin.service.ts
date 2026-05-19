@@ -8,12 +8,16 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
 import { Role } from '@prisma/client';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
+import { UserCacheService } from '../auth/services/user-cache.service';
 
 @Injectable()
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private userCache: UserCacheService,
+  ) {}
 
   // ─── DASHBOARD ─────────────────────────────────────────────────────────────
 
@@ -291,6 +295,9 @@ export class AdminService {
       select: { id: true, email: true, nom: true, role: true },
     });
 
+    // Invalider le cache : le role est lu par RolesGuard à chaque requête.
+    await this.userCache.invalidate(user.firebaseUid);
+
     this.logger.warn(`Rôle modifié : user ${userId} → ${dto.role}`);
     return { data: updated, message: `Rôle mis à jour : ${dto.role}` };
   }
@@ -309,6 +316,10 @@ export class AdminService {
     this.logger.warn(
       `User ${userId} banni — raison : ${reason ?? 'non précisée'}`,
     );
+
+    // Invalider le cache : la prochaine requête forcera un refetch et verra
+    // statusUser=BANNED (à venir) ou refusera l'accès.
+    await this.userCache.invalidate(user.firebaseUid);
 
     // Retourne le firebaseUid pour que le controller révoque les tokens Firebase
     return { firebaseUid: user.firebaseUid, userId: user.id };
