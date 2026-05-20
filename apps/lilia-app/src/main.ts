@@ -1,4 +1,8 @@
 // main.ts
+// ⚠️ DOIT rester le tout premier import — initialise Sentry avant que les
+// autres modules ne soient chargés (auto-instrumentation).
+import './instrument';
+
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe, Logger } from '@nestjs/common';
