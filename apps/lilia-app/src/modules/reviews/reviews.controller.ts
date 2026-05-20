@@ -9,6 +9,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { DecodedIdToken } from 'firebase-admin/auth';
 import { ReviewsService } from './reviews.service';
@@ -24,6 +25,8 @@ export class ReviewsController {
 
   @Post()
   @ApiBearerAuth()
+  // Anti-abus (CRIT-7) : limite la création d'avis en rafale (faux avis, spam).
+  @Throttle({ short: { limit: 2, ttl: 1000 }, long: { limit: 5, ttl: 60000 } })
   @ApiOperation({ summary: 'Créer un avis' })
   create(
     @Body() createReviewDto: CreateReviewDto,
