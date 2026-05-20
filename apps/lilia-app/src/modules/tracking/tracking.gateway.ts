@@ -51,6 +51,7 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
    */
   @SubscribeMessage('order:watch')
   async onWatchOrder(client: Socket, payload: { orderId: string }) {
+    await this.tracking.assertCanWatchOrder(payload.orderId, client.data.uid);
     await client.join(`order:${payload.orderId}`);
 
     const lastPos = await this.tracking.getLastPosition(payload.orderId);
@@ -69,6 +70,7 @@ export class TrackingGateway implements OnGatewayConnection, OnGatewayDisconnect
   ) {
     const { orderId, lat, lng, accuracy } = payload;
 
+    await this.tracking.assertCanUpdatePosition(orderId, client.data.uid);
     await this.tracking.updatePosition({
       orderId,
       driverId: client.data.uid,

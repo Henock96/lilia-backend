@@ -11,12 +11,6 @@ export class StockService {
     tx: Prisma.TransactionClient,
     cartItems: any[],
   ): Promise<void> {
-    // Déduplique pour ne décrémenter qu'une fois par produit/menu
-    const productIds = [...new Set(cartItems.map((i) => i.productId))];
-    const menuIds = [...new Set(
-      cartItems.filter((i) => i.menuId).map((i) => i.menuId),
-    )];
-
     // Quantités par produit
     const qtyByProduct = new Map<string, number>();
     const qtyByMenu = new Map<string, number>();
@@ -33,6 +27,26 @@ export class StockService {
         );
       }
     }
+
+    const [limitedProducts, limitedMenus] = await Promise.all([
+      tx.product.findMany({
+        where: {
+          id: { in: [...qtyByProduct.keys()] },
+          stockRestant: { not: null },
+        },
+        select: { id: true },
+      }),
+      tx.menuDuJour.findMany({
+        where: {
+          id: { in: [...qtyByMenu.keys()] },
+          stockRestant: { not: null },
+        },
+        select: { id: true },
+      }),
+    ]);
+
+    const productIds = limitedProducts.map((product) => product.id);
+    const menuIds = limitedMenus.map((menu) => menu.id);
 
     // UPDATE atomique avec vérification du stock dans la même requête.
     // WHERE stockRestant >= qty garantit qu'on ne vend pas ce qu'on n'a pas.

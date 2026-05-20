@@ -1,13 +1,12 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Post, Get, Body, Param, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Controller, Post, Get, Body, Param, HttpCode, HttpStatus } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { DecodedIdToken } from 'firebase-admin/auth';
 
 import { PaymentService, CreatePaymentRequest } from '../services/payment.service';
 import { FirebaseUser } from '../../auth/decorators/firebase-user.decorator';
 import { Roles } from '../../auth/decorators/roles.decorator';
 
-@Controller('payments')
 @ApiBearerAuth()
 @Controller('payments')
 export class PaymentController {
@@ -21,8 +20,11 @@ export class PaymentController {
   @Post()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Initier un paiement pour une commande' })
-  async createPayment(@Body() request: CreatePaymentRequest) {
-    return this.paymentService.createPayment(request);
+  async createPayment(
+    @Body() request: CreatePaymentRequest,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return this.paymentService.createPayment(request, fbUser.uid);
   }
 
   /**
@@ -32,8 +34,11 @@ export class PaymentController {
    */
   @Get(':paymentId/status')
   @ApiOperation({ summary: 'Statut d\'un paiement' })
-  async getPaymentStatus(@Param('paymentId') paymentId: string) {
-    const status = await this.paymentService.checkPaymentStatus(paymentId);
+  async getPaymentStatus(
+    @Param('paymentId') paymentId: string,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    const status = await this.paymentService.checkPaymentStatus(paymentId, fbUser.uid);
     return { paymentId, status };
   }
   /**
@@ -49,7 +54,6 @@ export class PaymentController {
   })
   confirmPayment(
     @Param('paymentId') paymentId: string,
-    @FirebaseUser() fbUser: DecodedIdToken,
   ) {
     return this.paymentService.confirmManualPayment(paymentId);
   }

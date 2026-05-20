@@ -9,7 +9,7 @@ export interface MtnMomoConfig {
   collectionSubscriptionKey: string;
   disbursementSubscriptionKey?: string;
   callbackUrl: string;
-  environment: 'sandbox';
+  environment: 'sandbox' | 'production';
 }
 
 export interface RequestToPayRequest {
@@ -42,6 +42,7 @@ export class MtnMomoService implements OnModuleInit {
   private readonly logger = new Logger(MtnMomoService.name);
   private readonly httpClient: AxiosInstance;
   private readonly config: MtnMomoConfig;
+  private readonly paymentMode: string;
   private apiUser: string;
   private apiKey: string;
   private accessToken: string;
@@ -49,6 +50,7 @@ export class MtnMomoService implements OnModuleInit {
   private isInitialized = false;
 
   constructor(private configService: ConfigService) {
+    this.paymentMode = this.configService.get<string>('PAYMENT_MODE', 'MANUAL');
     // Charger la configuration
     this.config = {
       baseUrl: this.configService.get<string>(
@@ -58,11 +60,13 @@ export class MtnMomoService implements OnModuleInit {
       collectionSubscriptionKey: this.configService.get<string>('MTN_MOMO_COLLECTION_SUBSCRIPTION_KEY'),
       disbursementSubscriptionKey: this.configService.get<string>('MTN_MOMO_DISBURSEMENT_SUBSCRIPTION_KEY'),
       callbackUrl: this.configService.get<string>('MTN_MOMO_CALLBACK_URL'),
-      environment:'sandbox',
+      environment: this.paymentMode === 'MTN_PRODUCTION' ? 'production' : 'sandbox',
     };
 
     // Valider la configuration
-    this.validateConfig();
+    if (this.paymentMode !== 'MANUAL') {
+      this.validateConfig();
+    }
 
     // Créer le client HTTP
     this.httpClient = axios.create({
@@ -77,6 +81,10 @@ export class MtnMomoService implements OnModuleInit {
   }
 
   async onModuleInit() {
+    if (this.paymentMode === 'MANUAL') {
+      this.logger.log('MTN MoMo en mode MANUAL: initialisation API ignorée');
+      return;
+    }
     // Initialiser automatiquement au démarrage du module
     try {
       await this.initialize();

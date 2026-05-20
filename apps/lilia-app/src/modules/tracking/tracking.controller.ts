@@ -1,5 +1,5 @@
 // tracking/tracking.controller.ts
-import { Body, Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
+import { BadRequestException, Body, Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
 import { DecodedIdToken } from 'firebase-admin/auth';
 import { TrackingService } from './tracking.service';
 import { TrackingGateway } from './tracking.gateway';
@@ -24,6 +24,9 @@ export class TrackingController {
     @FirebaseUser() fbUser: DecodedIdToken,
     @Body() body: { orderId: string; lat: number; lng: number; accuracy?: number },
   ) {
+    // Sécurité : seul le livreur assigné peut publier sa position
+    await this.trackingService.assertCanUpdatePosition(body.orderId, fbUser.uid);
+
     await this.trackingService.updatePosition({
       orderId: body.orderId,
       driverId: fbUser.uid,
@@ -42,7 +45,7 @@ export class TrackingController {
         lng: body.lng,
         eta,
         timestamp: Date.now(),
-        source: 'http', // debug : indique que c'est un fallback
+        source: 'http',
       });
 
     return { eta };
@@ -59,9 +62,15 @@ export class TrackingController {
     @FirebaseUser() fbUser: DecodedIdToken,
     @Body() body: {
       orderId: string;
-      positions: { lat: number; lng: number; timestamp: number }[];
+      positions: { lat: number; lng: number; timestamp: number; accuracy?: number }[];
     },
   ) {
+    if (!body.positions || body.positions.length === 0) {
+      throw new BadRequestException('Le tableau positions ne peut pas être vide');
+    }
+
+    await this.trackingService.assertCanUpdatePosition(body.orderId, fbUser.uid);
+
     // Enregistre seulement la dernière position pour le broadcast
     const last = body.positions[body.positions.length - 1];
 
@@ -70,8 +79,21 @@ export class TrackingController {
       driverId: fbUser.uid,
       lat: last.lat,
       lng: last.lng,
+      accuracy: last.accuracy,
     });
 
-    return { synced: body.positions.length };
+    const eta = await this.trackingService.calculateETA(body.orderId, last.lat, last.lng);
+
+    this.gateway.server
+      ?.to(`order:${body.orderId}`)
+      ?.emit('driver:position', {
+        lat: last.lat,
+        lng: last.lng,
+        eta,
+        timestamp: Date.now(),
+        source: 'http-batch',
+      });
+
+    return { synced: body.positions.length, eta };
   }
 }

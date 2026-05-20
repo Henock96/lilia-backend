@@ -55,7 +55,6 @@ export class DeliveriesController {
    */
   @Get('mine')
   @Roles('LIVREUR')
-  @Roles('LIVREUR')
   @ApiOperation({ summary: 'Mes livraisons assignées (livreur)' })
   @ApiQuery({ name: 'status', required: false, enum: DeliveryStatus })
   findMyDeliveries(@FirebaseUser() fbUser: DecodedIdToken, @Query('status') status?: DeliveryStatus) {

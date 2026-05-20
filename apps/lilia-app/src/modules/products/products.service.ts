@@ -300,7 +300,7 @@ export class ProductsService {
       }
     }
 
-    const produit = this.prisma.$transaction(async (tx) => {
+    const produit = await this.prisma.$transaction(async (tx) => {
       // 1. Créer le produit de base
       const product = await tx.product.create({
         data: {

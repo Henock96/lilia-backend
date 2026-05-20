@@ -25,7 +25,8 @@ export class PromoController {
    */
   @Post('validate')
   @Roles('CLIENT', 'RESTAURATEUR', 'ADMIN')
-  @Throttle({ long: { limit: 5, ttl: 60000 } })
+  // Anti brute-force d'enumération de codes promo (CRIT-7) : 1/s + 5/min.
+  @Throttle({ short: { limit: 1, ttl: 1000 }, long: { limit: 5, ttl: 60000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Valider un code promo au checkout' })
   validate(
