@@ -3,7 +3,10 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { SentryModule } from '@sentry/nestjs/setup';
+
+import { SentryUserInterceptor } from './common/interceptors/sentry-user.interceptor';
 
 import { PrismaModule } from './prisma/prisma.module';
 import { FirebaseModule } from './modules/firebase/firebase.module';
@@ -46,6 +49,8 @@ import { TrackingModule } from './modules/tracking/tracking.module';
 import { RedisModule } from '@nestjs-modules/ioredis';
 @Module({
   imports: [
+    // Sentry — doit être l'un des tout premiers modules importés.
+    SentryModule.forRoot(),
     ConfigModule.forRoot({ isGlobal: true }),
     ThrottlerModule.forRoot([
       { name: 'short', ttl: 1000, limit: 10 },
@@ -101,6 +106,8 @@ import { RedisModule } from '@nestjs-modules/ioredis';
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // Attache le user courant au scope Sentry de chaque requête
+    { provide: APP_INTERCEPTOR, useClass: SentryUserInterceptor },
     // Listeners globaux
     OrdersListener,
     PaymentListener,
