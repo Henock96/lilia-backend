@@ -38,7 +38,11 @@ export class UsersController {
    *   4. Backend vérifie le token, upsert en DB, retourne le profil
    */
   @Post('sync')
-  @Throttle({ short: { limit: 5, ttl: 1000 }, long: { limit: 15, ttl: 3600000 } })
+  // Anti-abus (CRIT-7) : 3/s en burst (tolère les retries de refresh token),
+  // 20/min en soutenu. Volontairement plus souple que 3/min strict : /users/sync
+  // exige déjà un token Firebase valide et les IP partagées (NAT, wifi public
+  // Brazzaville) bloqueraient des utilisateurs légitimes.
+  @Throttle({ short: { limit: 3, ttl: 1000 }, long: { limit: 20, ttl: 60000 } })
   @HttpCode(HttpStatus.OK)
   async sync(
     @FirebaseUser() fbUser: DecodedIdToken,

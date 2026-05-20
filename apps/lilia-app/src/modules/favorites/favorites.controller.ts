@@ -1,4 +1,5 @@
 ﻿import { Controller, Get, Post, Delete, Param, HttpCode, HttpStatus } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { FavoritesService } from './favorites.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from '@prisma/client';
@@ -13,6 +14,8 @@ export class FavoritesController {
   }
 
   @Post(':restaurantId')
+  // Anti-abus (CRIT-7) : 10/min suffit largement pour un usage normal.
+  @Throttle({ long: { limit: 10, ttl: 60000 } })
   addFavorite(@CurrentUser() user: User, @Param('restaurantId') restaurantId: string) {
     return this.favoritesService.addFavorite(user.id, restaurantId);
   }
