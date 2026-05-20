@@ -56,6 +56,7 @@ model LoyaltyTransaction {
   createdAt   DateTime @default(now())
 
   @@index([userId])
+  @@index([userId, createdAt(sort: Desc)]) // historique fidelite par user, plus recent en premier (LFD-9)
 }
 
 model FcmToken {
@@ -297,6 +298,7 @@ model Order {
   promoCode       PromoCode? @relation(fields: [promoCodeId], references: [id])
   discountAmount  Float      @default(0)  // montant dÃƒÆ’Ã‚Â©duit par le code promo
 
+  @@index([restaurantId, status, createdAt(sort: Desc)]) // dashboard resto: commandes par statut, plus recentes (LFD-9)
   @@index([promoCodeId])
   @@index([restaurantId])
   @@index([userId])
@@ -365,6 +367,7 @@ model Delivery {
   lastPositionAt   DateTime?
   locations        DeliveryLocation[]
 
+  @@index([delivererId, status]) // missions d'un livreur filtrees par statut (LFD-9)
   @@index([delivererId])
   @@index([status])    // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â manquait
 }
