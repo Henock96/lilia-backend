@@ -35,6 +35,8 @@ import { SmsModule } from './modules/sms/sms.module';
 import { CloudinaryModule } from './modules/cloudinary/cloudinary.module';
 import { AppScheduleModule } from './modules/schedule/schedule.module';
 import { HealthsModule } from './modules/health/health.module';
+import { IncidentsModule } from './modules/incidents/incidents.module';
+import { NotionModule } from './modules/notion/notion.module';
 
 // Listeners (providers globaux)
 import { OrdersListener } from './modules/listeners/orders.listener';
@@ -98,6 +100,8 @@ import { RedisModule } from '@nestjs-modules/ioredis';
     CloudinaryModule,
     AppScheduleModule,
     HealthsModule,
+    IncidentsModule,
+    NotionModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

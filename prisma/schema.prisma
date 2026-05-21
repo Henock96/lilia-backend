@@ -617,3 +617,62 @@ model Favorite {
   @@index([userId])
 }
 
+// ============================================================
+// Incidents — tracker opérationnel (annulations, retards, plaintes...)
+// ============================================================
+
+enum IncidentType {
+  ORDER_CANCELLED          // commande annulée
+  ORDER_DELAYED            // retard de livraison
+  PAYMENT_FAILED           // échec paiement
+  DRIVER_NO_SHOW           // livreur ne s'est pas présenté
+  DRIVER_ACCIDENT          // accident livreur
+  CUSTOMER_COMPLAINT       // plainte client
+  RESTAURANT_CLOSED        // restaurant fermé hors horaires
+  STOCK_ISSUE              // problème stock / produit indisponible
+  WRONG_DELIVERY           // mauvaise livraison
+  REFUND_REQUEST           // demande remboursement
+  OTHER
+}
+
+enum IncidentSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IncidentStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+model Incident {
+  id             String           @id @default(cuid())
+  type           IncidentType
+  severity       IncidentSeverity @default(MEDIUM)
+  status         IncidentStatus   @default(OPEN)
+  title          String
+  description    String           @db.Text
+  resolution     String?          @db.Text
+  // Liens optionnels — pas de FK car relationMode = prisma
+  orderId        String?
+  riderId        String?          // User.id avec role LIVREUR
+  restaurantId   String?
+  reportedBy     String?          // User.id de qui a remonté (admin/system)
+  resolvedBy     String?          // User.id qui a résolu
+  metadata       Json?            // contexte additionnel (montants, refs paiement, etc.)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  resolvedAt     DateTime?
+
+  @@index([status, severity])
+  @@index([type, createdAt])
+  @@index([orderId])
+  @@index([riderId])
+  @@index([restaurantId])
+}
+
+
