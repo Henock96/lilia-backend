@@ -33,6 +33,39 @@ describe('AdminService', () => {
     expect(service).toBeDefined();
   });
 
+  describe('getAllClients', () => {
+    it('filtre uniquement les CLIENT et renvoie loyaltyPoints', async () => {
+      prisma.user.findMany.mockResolvedValue([
+        { id: 'c1', nom: 'Awa', loyaltyPoints: 120 },
+      ]);
+      prisma.user.count.mockResolvedValue(1);
+
+      const result = await service.getAllClients(1, 20);
+
+      expect(result).toEqual({ data: [{ id: 'c1', nom: 'Awa', loyaltyPoints: 120 }], total: 1, page: 1, limit: 20 });
+      const args = prisma.user.findMany.mock.calls[0][0];
+      expect(args.where).toEqual({ role: 'CLIENT' });
+      expect(args.select.loyaltyPoints).toBe(true);
+    });
+
+    it('ajoute un filtre OR insensible à la casse quand search est fourni', async () => {
+      prisma.user.findMany.mockResolvedValue([]);
+      prisma.user.count.mockResolvedValue(0);
+
+      await service.getAllClients(1, 20, 'awa');
+
+      const args = prisma.user.findMany.mock.calls[0][0];
+      expect(args.where).toEqual({
+        role: 'CLIENT',
+        OR: [
+          { nom: { contains: 'awa', mode: 'insensitive' } },
+          { email: { contains: 'awa', mode: 'insensitive' } },
+          { phone: { contains: 'awa', mode: 'insensitive' } },
+        ],
+      });
+    });
+  });
+
   describe('getClientReferral', () => {
     it('lève NotFoundException si le client est introuvable', async () => {
       prisma.user.findUnique.mockResolvedValue(null);

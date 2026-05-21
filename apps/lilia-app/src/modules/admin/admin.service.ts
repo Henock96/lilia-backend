@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
-import { Role } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 
 @Injectable()
@@ -221,10 +221,21 @@ export class AdminService {
   /**
    * Récupère tous les clients de la plateforme (ADMIN uniquement)
    */
-  async getAllClients(page = 1, limit = 20) {
+  async getAllClients(page = 1, limit = 20, search?: string) {
+    const where: Prisma.UserWhereInput = {
+      role: 'CLIENT',
+      ...(search && {
+        OR: [
+          { nom: { contains: search, mode: 'insensitive' } },
+          { email: { contains: search, mode: 'insensitive' } },
+          { phone: { contains: search, mode: 'insensitive' } },
+        ],
+      }),
+    };
+
     const [clients, total] = await Promise.all([
       this.prisma.user.findMany({
-        where: { role: 'CLIENT' },
+        where,
         select: {
           id: true,
           email: true,
@@ -234,13 +245,14 @@ export class AdminService {
           role: true,
           createdAt: true,
           lastLogin: true,
+          loyaltyPoints: true,
           _count: { select: { orders: true } },
         },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
       }),
-      this.prisma.user.count({ where: { role: 'CLIENT' } }),
+      this.prisma.user.count({ where }),
     ]);
 
     return { data: clients, total, page, limit };
