@@ -399,6 +399,44 @@ export class AdminService {
   }
 
   /**
+   * Statistiques de parrainage d'un client : son code, le code de son parrain,
+   * le nombre de filleuls, ceux convertis (1ʳᵉ commande livrée → referralRewarded),
+   * et le total de points gagnés via le parrainage.
+   */
+  async getClientReferral(clientId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: clientId },
+      select: { id: true, referralCode: true, referredByCode: true },
+    });
+    if (!user) throw new NotFoundException('Client introuvable');
+
+    const [totalReferrals, convertedReferrals, bonusAgg] = await Promise.all([
+      user.referralCode
+        ? this.prisma.user.count({ where: { referredByCode: user.referralCode } })
+        : Promise.resolve(0),
+      user.referralCode
+        ? this.prisma.user.count({
+            where: { referredByCode: user.referralCode, referralRewarded: true },
+          })
+        : Promise.resolve(0),
+      this.prisma.loyaltyTransaction.aggregate({
+        where: { userId: clientId, reason: { contains: 'parrainage' } },
+        _sum: { points: true },
+      }),
+    ]);
+
+    return {
+      data: {
+        referralCode: user.referralCode,
+        referredByCode: user.referredByCode,
+        totalReferrals,
+        convertedReferrals,
+        referralBonusEarned: bonusAgg._sum.points ?? 0,
+      },
+    };
+  }
+
+  /**
    * Commandes paginées avec filtres — vue complète admin.
    */
   async getAllOrders(page = 1, limit = 20, status?: string) {

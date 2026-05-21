@@ -33,6 +33,56 @@ describe('AdminService', () => {
     expect(service).toBeDefined();
   });
 
+  describe('getClientReferral', () => {
+    it('lève NotFoundException si le client est introuvable', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+      await expect(service.getClientReferral('missing')).rejects.toThrow(NotFoundException);
+    });
+
+    it('agrège filleuls, conversions et bonus de parrainage', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'c1', referralCode: 'BRAZZA42', referredByCode: null,
+      });
+      prisma.user.count
+        .mockResolvedValueOnce(3)  // totalReferrals
+        .mockResolvedValueOnce(2); // convertedReferrals
+      prisma.loyaltyTransaction.aggregate.mockResolvedValue({ _sum: { points: 1000 } });
+
+      const result = await service.getClientReferral('c1');
+
+      expect(result).toEqual({
+        data: {
+          referralCode: 'BRAZZA42',
+          referredByCode: null,
+          totalReferrals: 3,
+          convertedReferrals: 2,
+          referralBonusEarned: 1000,
+        },
+      });
+      expect(prisma.user.count).toHaveBeenNthCalledWith(2, {
+        where: { referredByCode: 'BRAZZA42', referralRewarded: true },
+      });
+    });
+
+    it('renvoie des compteurs à zéro si le client n\'a pas de code de parrainage', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'c1', referralCode: null, referredByCode: 'OTHER123',
+      });
+      prisma.loyaltyTransaction.aggregate.mockResolvedValue({ _sum: { points: null } });
+
+      const result = await service.getClientReferral('c1');
+
+      expect(result.data).toEqual({
+        referralCode: null,
+        referredByCode: 'OTHER123',
+        totalReferrals: 0,
+        convertedReferrals: 0,
+        referralBonusEarned: 0,
+      });
+      expect(prisma.user.count).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getClientLoyalty', () => {
     it('lève NotFoundException si le client est introuvable', async () => {
       prisma.user.findUnique.mockResolvedValue(null);
