@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
-import { Role } from '@prisma/client';
+import { Prisma, Role, PaymentStatus } from '@prisma/client';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 
 @Injectable()
@@ -221,10 +221,21 @@ export class AdminService {
   /**
    * Récupère tous les clients de la plateforme (ADMIN uniquement)
    */
-  async getAllClients(page = 1, limit = 20) {
+  async getAllClients(page = 1, limit = 20, search?: string) {
+    const where: Prisma.UserWhereInput = {
+      role: 'CLIENT',
+      ...(search && {
+        OR: [
+          { nom: { contains: search, mode: 'insensitive' } },
+          { email: { contains: search, mode: 'insensitive' } },
+          { phone: { contains: search, mode: 'insensitive' } },
+        ],
+      }),
+    };
+
     const [clients, total] = await Promise.all([
       this.prisma.user.findMany({
-        where: { role: 'CLIENT' },
+        where,
         select: {
           id: true,
           email: true,
@@ -234,13 +245,14 @@ export class AdminService {
           role: true,
           createdAt: true,
           lastLogin: true,
+          loyaltyPoints: true,
           _count: { select: { orders: true } },
         },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
       }),
-      this.prisma.user.count({ where: { role: 'CLIENT' } }),
+      this.prisma.user.count({ where }),
     ]);
 
     return { data: clients, total, page, limit };
@@ -366,6 +378,78 @@ export class AdminService {
     return { data: orders, count: orders.length };
   }
 
+  // ─── FIDÉLITÉ & PARRAINAGE ─────────────────────────────────────────────────
+
+  /**
+   * Solde de points + historique paginé des transactions de fidélité d'un client.
+   * Réservé ADMIN (route protégée au niveau controller).
+   */
+  async getClientLoyalty(clientId: string, page = 1, limit = 20) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: clientId },
+      select: { id: true, loyaltyPoints: true },
+    });
+    if (!user) throw new NotFoundException('Client introuvable');
+
+    const [transactions, total] = await Promise.all([
+      this.prisma.loyaltyTransaction.findMany({
+        where: { userId: clientId },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.loyaltyTransaction.count({ where: { userId: clientId } }),
+    ]);
+
+    return {
+      data: { balance: user.loyaltyPoints, transactions },
+      total,
+      page,
+      limit,
+    };
+  }
+
+  /**
+   * Statistiques de parrainage d'un client : son code, le code de son parrain,
+   * le nombre de filleuls, ceux convertis (1ʳᵉ commande livrée → referralRewarded),
+   * et le total de points gagnés via le parrainage.
+   */
+  async getClientReferral(clientId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: clientId },
+      select: { id: true, referralCode: true, referredByCode: true },
+    });
+    if (!user) throw new NotFoundException('Client introuvable');
+
+    const [totalReferrals, convertedReferrals, bonusAgg] = await Promise.all([
+      user.referralCode
+        ? this.prisma.user.count({ where: { referredByCode: user.referralCode } })
+        : Promise.resolve(0),
+      user.referralCode
+        ? this.prisma.user.count({
+            where: { referredByCode: user.referralCode, referralRewarded: true },
+          })
+        : Promise.resolve(0),
+      this.prisma.loyaltyTransaction.aggregate({
+        where: {
+          userId: clientId,
+          reason: { contains: 'parrainage', mode: 'insensitive' },
+        },
+        _sum: { points: true },
+      }),
+    ]);
+
+    return {
+      data: {
+        referralCode: user.referralCode,
+        referredByCode: user.referredByCode,
+        totalReferrals,
+        convertedReferrals,
+        referralBonusEarned: bonusAgg._sum.points ?? 0,
+      },
+    };
+  }
+
   /**
    * Commandes paginées avec filtres — vue complète admin.
    */
@@ -388,6 +472,42 @@ export class AdminService {
     ]);
 
     return { data: orders, total, page, limit };
+  }
+
+  /**
+   * Liste paginée des paiements pour la supervision admin.
+   * Statut par défaut : PENDING (paiements à confirmer manuellement).
+   */
+  async getPendingPayments(page = 1, limit = 20, status: string = 'PENDING') {
+    const validStatuses = Object.values(PaymentStatus) as string[];
+    if (!validStatuses.includes(status)) {
+      throw new BadRequestException(
+        `Statut de paiement invalide : ${status}. Valeurs acceptées : ${validStatuses.join(', ')}`,
+      );
+    }
+    const where = { status: status as PaymentStatus };
+
+    const [payments, total] = await Promise.all([
+      this.prisma.payment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        include: {
+          order: {
+            select: {
+              id: true,
+              total: true,
+              status: true,
+              user: { select: { id: true, nom: true, phone: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.payment.count({ where }),
+    ]);
+
+    return { data: payments, total, page, limit };
   }
 
   // ─── MODÉRATION AVIS ───────────────────────────────────────────────────────

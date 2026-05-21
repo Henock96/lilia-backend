@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
@@ -437,6 +437,9 @@ export class DashboardService {
           phone: true,
           imageUrl: true,
           createdAt: true,
+          loyaltyPoints: true,
+          referralCode: true,
+          referredByCode: true,
           adresses: {
             select: { rue: true, ville: true, etat: true, isDefault: true },
             take: 5,
@@ -465,7 +468,7 @@ export class DashboardService {
       }),
     ]);
 
-    if (!client) throw new Error('Client introuvable');
+    if (!client) throw new NotFoundException('Client introuvable');
 
     const totalSpent = orders.reduce((s, o) => s + (o.total ?? 0), 0);
     const lastOrder = orders[0] ?? null;
