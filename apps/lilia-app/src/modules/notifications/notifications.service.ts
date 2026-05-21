@@ -97,8 +97,11 @@ export class NotificationsService {
             },
           },
           apns: {
+            headers: {
+              'apns-priority': '10', // livraison immédiate (par défaut iOS = 5 = différé)
+            },
             payload: {
-              aps: { contentAvailable: true, sound: 'default', badge: 1 },
+              aps: { sound: 'default', badge: 1 },
             },
           },
         }),
