@@ -437,6 +437,9 @@ export class DashboardService {
           phone: true,
           imageUrl: true,
           createdAt: true,
+          loyaltyPoints: true,
+          referralCode: true,
+          referredByCode: true,
           adresses: {
             select: { rue: true, ville: true, etat: true, isDefault: true },
             take: 5,
