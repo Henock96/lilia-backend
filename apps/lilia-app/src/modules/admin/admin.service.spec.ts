@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { PrismaService } from '../../prisma/prisma.service';
 
@@ -44,6 +44,16 @@ describe('AdminService', () => {
       const args = prisma.payment.findMany.mock.calls[0][0];
       expect(args.where).toEqual({ status: 'PENDING' });
       expect(args.orderBy).toEqual({ createdAt: 'desc' });
+      expect(args.include).toMatchObject({
+        order: {
+          select: {
+            id: true,
+            total: true,
+            status: true,
+            user: { select: { id: true, nom: true, phone: true } },
+          },
+        },
+      });
     });
 
     it('accepte un statut explicite', async () => {
@@ -53,6 +63,13 @@ describe('AdminService', () => {
       await service.getPendingPayments(1, 20, 'SUCCESS');
 
       expect(prisma.payment.findMany.mock.calls[0][0].where).toEqual({ status: 'SUCCESS' });
+    });
+
+    it('rejette un statut invalide avec BadRequestException', async () => {
+      await expect(service.getPendingPayments(1, 20, 'pending')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(prisma.payment.findMany).not.toHaveBeenCalled();
     });
   });
 
@@ -168,3 +185,4 @@ describe('AdminService', () => {
     });
   });
 });
+

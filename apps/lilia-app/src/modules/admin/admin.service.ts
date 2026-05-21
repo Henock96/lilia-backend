@@ -378,9 +378,8 @@ export class AdminService {
     return { data: orders, count: orders.length };
   }
 
-  /**
-   * Commandes paginées avec filtres — vue complète admin.
-   */
+  // ─── FIDÉLITÉ & PARRAINAGE ─────────────────────────────────────────────────
+
   /**
    * Solde de points + historique paginé des transactions de fidélité d'un client.
    * Réservé ADMIN (route protégée au niveau controller).
@@ -432,7 +431,10 @@ export class AdminService {
           })
         : Promise.resolve(0),
       this.prisma.loyaltyTransaction.aggregate({
-        where: { userId: clientId, reason: { contains: 'parrainage' } },
+        where: {
+          userId: clientId,
+          reason: { contains: 'parrainage', mode: 'insensitive' },
+        },
         _sum: { points: true },
       }),
     ]);
@@ -477,6 +479,12 @@ export class AdminService {
    * Statut par défaut : PENDING (paiements à confirmer manuellement).
    */
   async getPendingPayments(page = 1, limit = 20, status: string = 'PENDING') {
+    const validStatuses = Object.values(PaymentStatus) as string[];
+    if (!validStatuses.includes(status)) {
+      throw new BadRequestException(
+        `Statut de paiement invalide : ${status}. Valeurs acceptées : ${validStatuses.join(', ')}`,
+      );
+    }
     const where = { status: status as PaymentStatus };
 
     const [payments, total] = await Promise.all([
