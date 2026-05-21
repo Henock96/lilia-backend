@@ -369,6 +369,38 @@ export class AdminService {
   /**
    * Commandes paginées avec filtres — vue complète admin.
    */
+  /**
+   * Solde de points + historique paginé des transactions de fidélité d'un client.
+   * Réservé ADMIN (route protégée au niveau controller).
+   */
+  async getClientLoyalty(clientId: string, page = 1, limit = 20) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: clientId },
+      select: { id: true, loyaltyPoints: true },
+    });
+    if (!user) throw new NotFoundException('Client introuvable');
+
+    const [transactions, total] = await Promise.all([
+      this.prisma.loyaltyTransaction.findMany({
+        where: { userId: clientId },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.loyaltyTransaction.count({ where: { userId: clientId } }),
+    ]);
+
+    return {
+      data: { balance: user.loyaltyPoints, transactions },
+      total,
+      page,
+      limit,
+    };
+  }
+
+  /**
+   * Commandes paginées avec filtres — vue complète admin.
+   */
   async getAllOrders(page = 1, limit = 20, status?: string) {
     const where = status ? { status: status as any } : {};
 
