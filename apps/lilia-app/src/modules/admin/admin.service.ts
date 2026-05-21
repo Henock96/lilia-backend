@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
-import { Prisma, Role } from '@prisma/client';
+import { Prisma, Role, PaymentStatus } from '@prisma/client';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 
 @Injectable()
@@ -470,6 +470,36 @@ export class AdminService {
     ]);
 
     return { data: orders, total, page, limit };
+  }
+
+  /**
+   * Liste paginée des paiements pour la supervision admin.
+   * Statut par défaut : PENDING (paiements à confirmer manuellement).
+   */
+  async getPendingPayments(page = 1, limit = 20, status: string = 'PENDING') {
+    const where = { status: status as PaymentStatus };
+
+    const [payments, total] = await Promise.all([
+      this.prisma.payment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        include: {
+          order: {
+            select: {
+              id: true,
+              total: true,
+              status: true,
+              user: { select: { id: true, nom: true, phone: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.payment.count({ where }),
+    ]);
+
+    return { data: payments, total, page, limit };
   }
 
   // ─── MODÉRATION AVIS ───────────────────────────────────────────────────────

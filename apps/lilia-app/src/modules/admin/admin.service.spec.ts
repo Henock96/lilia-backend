@@ -33,6 +33,29 @@ describe('AdminService', () => {
     expect(service).toBeDefined();
   });
 
+  describe('getPendingPayments', () => {
+    it('filtre sur PENDING par défaut, avec la commande et le client liés', async () => {
+      prisma.payment.findMany.mockResolvedValue([{ id: 'p1', amount: 5000, status: 'PENDING' }]);
+      prisma.payment.count.mockResolvedValue(1);
+
+      const result = await service.getPendingPayments(1, 20);
+
+      expect(result).toEqual({ data: [{ id: 'p1', amount: 5000, status: 'PENDING' }], total: 1, page: 1, limit: 20 });
+      const args = prisma.payment.findMany.mock.calls[0][0];
+      expect(args.where).toEqual({ status: 'PENDING' });
+      expect(args.orderBy).toEqual({ createdAt: 'desc' });
+    });
+
+    it('accepte un statut explicite', async () => {
+      prisma.payment.findMany.mockResolvedValue([]);
+      prisma.payment.count.mockResolvedValue(0);
+
+      await service.getPendingPayments(1, 20, 'SUCCESS');
+
+      expect(prisma.payment.findMany.mock.calls[0][0].where).toEqual({ status: 'SUCCESS' });
+    });
+  });
+
   describe('getAllClients', () => {
     it('filtre uniquement les CLIENT et renvoie loyaltyPoints', async () => {
       prisma.user.findMany.mockResolvedValue([
