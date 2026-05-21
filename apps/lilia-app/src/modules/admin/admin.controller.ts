@@ -93,14 +93,44 @@ export class AdminController {
   }
 
   @Get('clients')
-  @ApiOperation({ summary: 'Clients uniquement (paginés)' })
+  @ApiOperation({ summary: 'Clients uniquement (paginés, recherche optionnelle)' })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
-  getAllClients(@Query('page') page = '1', @Query('limit') limit = '20') {
+  @ApiQuery({ name: 'search', required: false })
+  getAllClients(
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+    @Query('search') search?: string,
+  ) {
     return this.adminService.getAllClients(
       parseInt(page, 10),
       parseInt(limit, 10),
+      search,
     );
+  }
+
+  @Get('clients/:id/loyalty')
+  @ApiOperation({ summary: "Solde et historique de fidélité d'un client" })
+  @ApiParam({ name: 'id', description: 'ID Prisma du client' })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  getClientLoyalty(
+    @Param('id') id: string,
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+  ) {
+    return this.adminService.getClientLoyalty(
+      id,
+      parseInt(page, 10),
+      parseInt(limit, 10),
+    );
+  }
+
+  @Get('clients/:id/referral')
+  @ApiOperation({ summary: "Statistiques de parrainage d'un client" })
+  @ApiParam({ name: 'id', description: 'ID Prisma du client' })
+  getClientReferral(@Param('id') id: string) {
+    return this.adminService.getClientReferral(id);
   }
 
   @Patch('users/:id/role')
@@ -174,6 +204,25 @@ export class AdminController {
   @ApiOperation({ summary: 'Commandes en cours (supervision temps réel)' })
   getActiveOrders() {
     return this.adminService.getActiveOrders();
+  }
+
+  // ─── PAIEMENTS ─────────────────────────────────────────────────────────────
+
+  @Get('payments')
+  @ApiOperation({ summary: 'Paiements (par défaut PENDING) pour supervision' })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'status', required: false })
+  getPendingPayments(
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+    @Query('status') status?: string,
+  ) {
+    return this.adminService.getPendingPayments(
+      parseInt(page, 10),
+      parseInt(limit, 10),
+      status,
+    );
   }
 
   // ─── AVIS ──────────────────────────────────────────────────────────────────
