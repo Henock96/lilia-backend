@@ -21,6 +21,7 @@ import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
 import { PromoService, PromoValidationResult } from '../promo/promo.service';
 import { ConfigService } from '@nestjs/config';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import Redis from 'ioredis';
 
 @Injectable()
@@ -38,6 +39,7 @@ export class OrdersService {
     private readonly calculator: OrderCalculatorService,
     private readonly promoService: PromoService,
     private readonly config: ConfigService,
+    private readonly platformSettings: PlatformSettingsService,
   ) {
     const redisUrl = this.config.get<string>('REDIS_URL');
     this.redis = redisUrl ? new Redis(redisUrl) : null as any;
@@ -47,13 +49,6 @@ export class OrdersService {
    * Crée une commande à partir du panier de l'utilisateur.
    * Utilise une transaction pour garantir l'intégrité des données.
    */
-  // ─── Constantes points de fidélité ──────────────────────────────────────────
-  private static readonly POINTS_PER_100_FCFA = 1;   // 1 point par 100 FCFA livrés
-  private static readonly POINT_VALUE_FCFA = 5;       // 1 point = 5 FCFA
-  private static readonly MIN_POINTS_REDEEM = 100;    // minimum 100 points
-  private static readonly REFERRER_POINTS = 500;      // récompense parrain
-  private static readonly REFERRED_POINTS = 200;      // récompense filleul
-
   private async handleReferralReward(userId: string): Promise<void> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -70,28 +65,31 @@ export class OrdersService {
     });
     if (!referrer) return;
 
+    const settings = await this.platformSettings.getSettings();
+
     await this.prisma.$transaction([
       this.prisma.user.update({
         where: { id: referrer.id },
-        data: { loyaltyPoints: { increment: OrdersService.REFERRER_POINTS } },
+        data: { loyaltyPoints: { increment: settings.referrerBonusPoints } },
       }),
       this.prisma.loyaltyTransaction.create({
-        data: { userId: referrer.id, points: OrdersService.REFERRER_POINTS, reason: 'Récompense parrainage — filleul activé' },
+        data: { userId: referrer.id, points: settings.referrerBonusPoints, reason: 'Récompense parrainage — filleul activé' },
       }),
       this.prisma.user.update({
         where: { id: userId },
-        data: { loyaltyPoints: { increment: OrdersService.REFERRED_POINTS }, referralRewarded: true },
+        data: { loyaltyPoints: { increment: settings.referredBonusPoints }, referralRewarded: true },
       }),
       this.prisma.loyaltyTransaction.create({
-        data: { userId, points: OrdersService.REFERRED_POINTS, reason: 'Bonus bienvenue parrainage' },
+        data: { userId, points: settings.referredBonusPoints, reason: 'Bonus bienvenue parrainage' },
       }),
     ]);
 
-    this.logger.log(`🎁 Parrainage: +${OrdersService.REFERRER_POINTS}pts → parrain ${referrer.id}, +${OrdersService.REFERRED_POINTS}pts → filleul ${userId}`);
+    this.logger.log(`🎁 Parrainage: +${settings.referrerBonusPoints}pts → parrain ${referrer.id}, +${settings.referredBonusPoints}pts → filleul ${userId}`);
   }
 
   private async awardLoyaltyPoints(userId: string, orderId: string, subTotal: number): Promise<void> {
-    const points = Math.floor(subTotal / 100) * OrdersService.POINTS_PER_100_FCFA;
+    const settings = await this.platformSettings.getSettings();
+    const points = Math.floor(subTotal / 100) * settings.loyaltyPointsPer100Xaf;
     if (points <= 0) return;
 
     await this.prisma.$transaction([
@@ -162,10 +160,12 @@ export class OrdersService {
     await this.validator.validateStock(cartItems);
 
     // 2. Calcul — isolé, testable unitairement
+    const settings = await this.platformSettings.getSettings();
     const amounts = this.calculator.calculate(
       cartItems,
       restaurant.fixedDeliveryFee,
       isDelivery,
+      settings.serviceFeePercent,
     );
     this.validator.validateMinimumOrderAmount(
       amounts.subTotal,
@@ -197,8 +197,8 @@ export class OrdersService {
         select: { loyaltyPoints: true },
       });
       const pts = userPoints?.loyaltyPoints ?? 0;
-      if (pts >= OrdersService.MIN_POINTS_REDEEM) {
-        loyaltyDiscount = pts * OrdersService.POINT_VALUE_FCFA;
+      if (pts >= settings.loyaltyMinRedemption) {
+        loyaltyDiscount = pts * settings.loyaltyPointValueXaf;
       }
     }
 
@@ -253,7 +253,7 @@ export class OrdersService {
 
       // Consomme les points de fidélité dans la transaction
       if (useLoyaltyPoints && loyaltyDiscount > 0) {
-        const pointsUsed = Math.ceil(loyaltyDiscount / OrdersService.POINT_VALUE_FCFA);
+        const pointsUsed = Math.ceil(loyaltyDiscount / settings.loyaltyPointValueXaf);
         await tx.user.update({
           where: { id: user.id },
           data: { loyaltyPoints: { decrement: pointsUsed } },

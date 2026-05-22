@@ -27,6 +27,7 @@ import { AdressesModule } from './modules/adresses/adresses.module';
 import { QuartiersModule } from './modules/quartiers/quartiers.module';
 import { BannersModule } from './modules/banners/banners.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { PlatformSettingsModule } from './modules/platform-settings/platform-settings.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { PromoModule } from './modules/promo/promo.module';
 import { FavoritesModule } from './modules/favorites/favorites.module';
@@ -94,6 +95,7 @@ import { RedisModule } from '@nestjs-modules/ioredis';
     QuartiersModule,
     BannersModule,
     AdminModule,
+    PlatformSettingsModule,
     DashboardModule,
     PromoModule,
     FavoritesModule,

@@ -2,8 +2,6 @@
 // orders/order-calculator.service.ts
 import { Injectable } from '@nestjs/common';
 
-export const SERVICE_FEE_RATE = 0.08; // 8% — centralisé ici, facile à changer
-
 export interface OrderAmounts {
   subTotal: number;
   deliveryFee: number;
@@ -28,6 +26,7 @@ export class OrderCalculatorService {
     cartItems: any[],
     deliveryFee: number,
     isDelivery: boolean,
+    serviceFeePercent: number,
   ): OrderAmounts {
     const menuGroups = new Map<string, any[]>();
     const individualItems: any[] = [];
@@ -55,7 +54,7 @@ export class OrderCalculatorService {
 
     // Commission appliquée sur le subTotal uniquement
     // (pas sur les frais de livraison — c'est la pratique standard)
-    const serviceFee = Math.round(subTotal * SERVICE_FEE_RATE);
+    const serviceFee = Math.round(subTotal * serviceFeePercent / 100);
 
 
     return {

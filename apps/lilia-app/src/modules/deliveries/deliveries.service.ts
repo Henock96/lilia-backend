@@ -13,6 +13,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
 import { OrderStatusUpdatedEvent } from '../events/order-events';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 
 type ActorRole = 'CLIENT' | 'RESTAURATEUR' | 'ADMIN' | 'LIVREUR';
 
@@ -20,14 +21,12 @@ type ActorRole = 'CLIENT' | 'RESTAURATEUR' | 'ADMIN' | 'LIVREUR';
 export class DeliveriesService {
   private readonly logger = new Logger(DeliveriesService.name);
 
-  // 1 pt par 100 FCFA — doit rester aligné avec OrdersService
-  private static readonly POINTS_PER_100_FCFA = 1;
-
   constructor(
     private prisma: PrismaService,
     private readonly notificationsService: NotificationsService,
     private readonly eventEmitter: EventEmitter2,
     private readonly stateMachine: OrderStateMachine,
+    private readonly platformSettings: PlatformSettingsService,
   ) {}
 
   private resolveActor(role: string): ActorRole | null {
@@ -45,7 +44,8 @@ export class DeliveriesService {
    * Aligné avec OrdersService.awardLoyaltyPoints (non-bloquant).
    */
   private async awardLoyaltyPoints(userId: string, orderId: string, subTotal: number): Promise<void> {
-    const points = Math.floor(subTotal / 100) * DeliveriesService.POINTS_PER_100_FCFA;
+    const settings = await this.platformSettings.getSettings();
+    const points = Math.floor(subTotal / 100) * settings.loyaltyPointsPer100Xaf;
     if (points <= 0) return;
 
     await this.prisma.$transaction([

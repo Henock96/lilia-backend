@@ -10,6 +10,7 @@ import {
   Query,
   HttpStatus,
   Headers,
+  UseGuards,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -24,6 +25,7 @@ import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { DecodedIdToken } from 'firebase-admin/auth';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { MaintenanceGuard } from '../platform-settings/guards/maintenance.guard';
 
 /**
  * Guards globaux actifs sur toutes les routes (via APP_GUARD dans AuthModule) :
@@ -52,6 +54,7 @@ export class OrdersController {
    * firebaseUser.uid est la source de vérité — jamais le body.
    */
   @Post('checkout')
+  @UseGuards(MaintenanceGuard)
   @ApiOperation({ summary: 'Créer une commande depuis le panier' })
   @ApiResponse({ status: 201, description: 'Commande créée avec succès' })
   @ApiResponse({ status: 400, description: 'Panier vide ou restaurant fermé' })
