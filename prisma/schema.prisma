@@ -678,4 +678,22 @@ model Incident {
   @@index([restaurantId])
 }
 
+model PlatformSettings {
+  id                     String   @id @default("singleton")
+
+  serviceFeePercent      Float    @default(8)
+
+  loyaltyPointsPer100Xaf Int      @default(1)
+  loyaltyPointValueXaf   Int      @default(5)
+  loyaltyMinRedemption   Int      @default(100)
+
+  referrerBonusPoints    Int      @default(500)
+  referredBonusPoints    Int      @default(200)
+
+  maintenanceMode        Boolean  @default(false)
+  maintenanceMessage     String?
+
+  updatedAt              DateTime @updatedAt
+}
+
 
