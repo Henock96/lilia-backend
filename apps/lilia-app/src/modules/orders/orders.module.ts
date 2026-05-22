@@ -10,9 +10,10 @@ import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
 import { PromoService } from '../promo/promo.service';
 import { TrackingModule } from '../tracking/tracking.module';
+import { PlatformSettingsModule } from '../platform-settings/platform-settings.module';
 
 @Module({
-  imports: [PrismaModule, NotificationsModule, TrackingModule],
+  imports: [PrismaModule, NotificationsModule, TrackingModule, PlatformSettingsModule],
   controllers: [OrdersController],
   providers: [
     OrdersService,
