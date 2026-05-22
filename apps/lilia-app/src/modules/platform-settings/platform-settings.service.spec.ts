@@ -53,4 +53,9 @@ describe('PlatformSettingsService', () => {
     // 1er getSettings + updateSettings + getSettings après invalidation = 3 upserts
     expect(prisma.platformSettings.upsert).toHaveBeenCalledTimes(3);
   });
+
+  it('déduplique les cache-miss concurrents en une seule requête', async () => {
+    await Promise.all([service.getSettings(), service.getSettings(), service.getSettings()]);
+    expect(prisma.platformSettings.upsert).toHaveBeenCalledTimes(1);
+  });
 });
