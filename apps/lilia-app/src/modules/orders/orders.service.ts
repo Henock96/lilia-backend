@@ -21,6 +21,7 @@ import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
 import { PromoService, PromoValidationResult } from '../promo/promo.service';
 import { ConfigService } from '@nestjs/config';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import Redis from 'ioredis';
 
 @Injectable()
@@ -38,6 +39,7 @@ export class OrdersService {
     private readonly calculator: OrderCalculatorService,
     private readonly promoService: PromoService,
     private readonly config: ConfigService,
+    private readonly platformSettings: PlatformSettingsService,
   ) {
     const redisUrl = this.config.get<string>('REDIS_URL');
     this.redis = redisUrl ? new Redis(redisUrl) : null as any;
@@ -162,10 +164,12 @@ export class OrdersService {
     await this.validator.validateStock(cartItems);
 
     // 2. Calcul — isolé, testable unitairement
+    const settings = await this.platformSettings.getSettings();
     const amounts = this.calculator.calculate(
       cartItems,
       restaurant.fixedDeliveryFee,
       isDelivery,
+      settings.serviceFeePercent,
     );
     this.validator.validateMinimumOrderAmount(
       amounts.subTotal,
