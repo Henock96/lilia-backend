@@ -263,6 +263,76 @@
           }
         }
       ]
+    },
+    {
+      "name": "Admin - Livreur (LIL-81)",
+      "item": [
+        {
+          "name": "1. Stats Livreur",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{firebase_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/deliverers/{{deliverer_id}}/stats",
+              "host": ["{{base_url}}"],
+              "path": ["admin", "deliverers", "{{deliverer_id}}", "stats"]
+            },
+            "description": "Statistiques agrégées d'un livreur (ADMIN uniquement). Réponse : { data: { totalDeliveries, deliveredCount, failedCount, inProgressCount, successRate, totalRevenueXAF, avgDeliveryMinutes, last30dDeliveries, lastDeliveryAt } }"
+          }
+        },
+        {
+          "name": "2. Missions Livreur (tous statuts)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{firebase_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/deliverers/{{deliverer_id}}/missions?page=1&limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["admin", "deliverers", "{{deliverer_id}}", "missions"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "20" }
+              ]
+            },
+            "description": "Historique paginé des missions d'un livreur. Réponse : { data: DeliveryMissionSummary[], meta: { total, page, limit, totalPages } }"
+          }
+        },
+        {
+          "name": "3. Missions Livreur (filtre LIVRER)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{firebase_token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/deliverers/{{deliverer_id}}/missions?status=LIVRER&page=1&limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["admin", "deliverers", "{{deliverer_id}}", "missions"],
+              "query": [
+                { "key": "status", "value": "LIVRER", "description": "EN_ATTENTE | EN_TRANSIT | LIVRER | ECHEC" },
+                { "key": "page", "value": "1" },
+                { "key": "limit", "value": "20" }
+              ]
+            }
+          }
+        }
+      ]
     }
   ],
   "variable": [
@@ -298,6 +368,11 @@
     },
     {
       "key": "product_id_2",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "deliverer_id",
       "value": "",
       "type": "string"
     }

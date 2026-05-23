@@ -7,6 +7,13 @@ type PrismaMock = {
   user: { findUnique: jest.Mock; findMany: jest.Mock; count: jest.Mock };
   loyaltyTransaction: { findMany: jest.Mock; count: jest.Mock; aggregate: jest.Mock };
   payment: { findMany: jest.Mock; count: jest.Mock };
+  delivery: {
+    findFirst: jest.Mock;
+    findMany: jest.Mock;
+    count: jest.Mock;
+    groupBy: jest.Mock;
+    aggregate: jest.Mock;
+  };
 };
 
 function createPrismaMock(): PrismaMock {
@@ -14,6 +21,13 @@ function createPrismaMock(): PrismaMock {
     user: { findUnique: jest.fn(), findMany: jest.fn(), count: jest.fn() },
     loyaltyTransaction: { findMany: jest.fn(), count: jest.fn(), aggregate: jest.fn() },
     payment: { findMany: jest.fn(), count: jest.fn() },
+    delivery: {
+      findFirst: jest.fn(),
+      findMany: jest.fn(),
+      count: jest.fn(),
+      groupBy: jest.fn(),
+      aggregate: jest.fn(),
+    },
   };
 }
 
@@ -181,6 +195,214 @@ describe('AdminService', () => {
         orderBy: { createdAt: 'desc' },
         skip: 0,
         take: 20,
+      });
+    });
+  });
+
+  describe('getDelivererStats', () => {
+    const mockDeliverer = { id: 'd1', role: 'LIVREUR' };
+
+    it('lève NotFoundException si le livreur est introuvable', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+      await expect(service.getDelivererStats('missing')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('lève NotFoundException si l\'utilisateur n\'est pas un livreur', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'CLIENT' });
+      await expect(service.getDelivererStats('u1')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('calcule stats, successRate, revenu et avgDeliveryMinutes', async () => {
+      prisma.user.findUnique.mockResolvedValue(mockDeliverer);
+      prisma.delivery.groupBy.mockResolvedValue([
+        { status: 'LIVRER', _count: { _all: 7 } },
+        { status: 'EN_TRANSIT', _count: { _all: 1 } },
+        { status: 'ECHEC', _count: { _all: 2 } },
+      ]);
+      // Revenue : somme order.total des LIVRER
+      prisma.delivery.findMany.mockResolvedValueOnce([
+        { order: { total: 5000 }, pickedUpAt: new Date('2026-05-20T10:00:00Z'), deliveredAt: new Date('2026-05-20T10:30:00Z') },
+        { order: { total: 4000 }, pickedUpAt: new Date('2026-05-21T12:00:00Z'), deliveredAt: new Date('2026-05-21T12:45:00Z') },
+      ]);
+      // last30dDeliveries count
+      prisma.delivery.count.mockResolvedValueOnce(8);
+      // lastDeliveryAt
+      prisma.delivery.findFirst.mockResolvedValueOnce({
+        deliveredAt: new Date('2026-05-21T12:45:00Z'),
+      });
+
+      const result = await service.getDelivererStats('d1');
+
+      expect(result.data.totalDeliveries).toBe(10);
+      expect(result.data.deliveredCount).toBe(7);
+      expect(result.data.failedCount).toBe(2);
+      expect(result.data.inProgressCount).toBe(1);
+      // successRate = 7 / (7 + 2) = 0.7777... → 77.78
+      expect(result.data.successRate).toBeCloseTo(77.78, 2);
+      expect(result.data.totalRevenueXAF).toBe(9000);
+      // avg = ((30 + 45) / 2) = 37.5 minutes
+      expect(result.data.avgDeliveryMinutes).toBeCloseTo(37.5, 2);
+      expect(result.data.last30dDeliveries).toBe(8);
+      expect(result.data.lastDeliveryAt).toEqual(new Date('2026-05-21T12:45:00Z'));
+    });
+
+    it('renvoie des compteurs et valeurs nullables à zéro quand aucune livraison', async () => {
+      prisma.user.findUnique.mockResolvedValue(mockDeliverer);
+      prisma.delivery.groupBy.mockResolvedValue([]);
+      prisma.delivery.findMany.mockResolvedValueOnce([]);
+      prisma.delivery.count.mockResolvedValueOnce(0);
+      prisma.delivery.findFirst.mockResolvedValueOnce(null);
+
+      const result = await service.getDelivererStats('d1');
+
+      expect(result.data).toEqual({
+        totalDeliveries: 0,
+        deliveredCount: 0,
+        failedCount: 0,
+        inProgressCount: 0,
+        successRate: 0,
+        totalRevenueXAF: 0,
+        avgDeliveryMinutes: null,
+        last30dDeliveries: 0,
+        lastDeliveryAt: null,
+      });
+    });
+
+    it('successRate = 100 quand 0 échec mais des livraisons réussies', async () => {
+      prisma.user.findUnique.mockResolvedValue(mockDeliverer);
+      prisma.delivery.groupBy.mockResolvedValue([
+        { status: 'LIVRER', _count: { _all: 3 } },
+      ]);
+      prisma.delivery.findMany.mockResolvedValueOnce([
+        { order: { total: 1000 }, pickedUpAt: null, deliveredAt: new Date() },
+      ]);
+      prisma.delivery.count.mockResolvedValueOnce(3);
+      prisma.delivery.findFirst.mockResolvedValueOnce({ deliveredAt: new Date() });
+
+      const result = await service.getDelivererStats('d1');
+
+      expect(result.data.successRate).toBe(100);
+      // avg = null si on n'a aucune ligne avec pickedUpAt valide
+      expect(result.data.avgDeliveryMinutes).toBeNull();
+    });
+  });
+
+  describe('getDelivererMissions', () => {
+    const mockDeliverer = { id: 'd1', role: 'LIVREUR' };
+
+    it('lève NotFoundException si le livreur est introuvable', async () => {
+      prisma.user.findUnique.mockResolvedValue(null);
+      await expect(service.getDelivererMissions('missing')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('lève NotFoundException si l\'utilisateur n\'est pas un livreur', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'CLIENT' });
+      await expect(service.getDelivererMissions('u1')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('renvoie l\'historique paginé sous forme de DeliveryMissionSummary', async () => {
+      prisma.user.findUnique.mockResolvedValue(mockDeliverer);
+      prisma.delivery.findMany.mockResolvedValue([
+        {
+          id: 'dl1',
+          orderId: 'o1',
+          status: 'LIVRER',
+          createdAt: new Date('2026-05-20T09:00:00Z'),
+          pickedUpAt: new Date('2026-05-20T10:00:00Z'),
+          deliveredAt: new Date('2026-05-20T10:30:00Z'),
+          order: {
+            total: 9000,
+            restaurant: { nom: 'Chez Lilia' },
+            user: { nom: 'Awa Kouyaté' },
+          },
+        },
+      ]);
+      prisma.delivery.count.mockResolvedValue(1);
+
+      const result = await service.getDelivererMissions('d1');
+
+      expect(result).toEqual({
+        data: [
+          {
+            id: 'dl1',
+            orderId: 'o1',
+            status: 'LIVRER',
+            restaurantName: 'Chez Lilia',
+            clientName: 'Awa Kouyaté',
+            totalXAF: 9000,
+            acceptedAt: new Date('2026-05-20T10:00:00Z'),
+            deliveredAt: new Date('2026-05-20T10:30:00Z'),
+            createdAt: new Date('2026-05-20T09:00:00Z'),
+          },
+        ],
+        meta: { total: 1, page: 1, limit: 20, totalPages: 1 },
+      });
+      const args = prisma.delivery.findMany.mock.calls[0][0];
+      expect(args.where).toEqual({ delivererId: 'd1' });
+      expect(args.orderBy).toEqual({ createdAt: 'desc' });
+      expect(args.skip).toBe(0);
+      expect(args.take).toBe(20);
+    });
+
+    it('filtre par statut quand status est fourni', async () => {
+      prisma.user.findUnique.mockResolvedValue(mockDeliverer);
+      prisma.delivery.findMany.mockResolvedValue([]);
+      prisma.delivery.count.mockResolvedValue(0);
+
+      await service.getDelivererMissions('d1', 'LIVRER' as any);
+
+      const args = prisma.delivery.findMany.mock.calls[0][0];
+      expect(args.where).toEqual({ delivererId: 'd1', status: 'LIVRER' });
+    });
+
+    it('applique la pagination (page 2, limit 10)', async () => {
+      prisma.user.findUnique.mockResolvedValue(mockDeliverer);
+      prisma.delivery.findMany.mockResolvedValue([]);
+      prisma.delivery.count.mockResolvedValue(40);
+
+      const result = await service.getDelivererMissions('d1', undefined, 2, 10);
+
+      expect(result.meta).toEqual({ total: 40, page: 2, limit: 10, totalPages: 4 });
+      const args = prisma.delivery.findMany.mock.calls[0][0];
+      expect(args.skip).toBe(10);
+      expect(args.take).toBe(10);
+    });
+
+    it('renvoie clientName et restaurantName null si les relations manquent', async () => {
+      prisma.user.findUnique.mockResolvedValue(mockDeliverer);
+      prisma.delivery.findMany.mockResolvedValue([
+        {
+          id: 'dl2',
+          orderId: 'o2',
+          status: 'EN_ATTENTE',
+          createdAt: new Date('2026-05-22T08:00:00Z'),
+          pickedUpAt: null,
+          deliveredAt: null,
+          order: {
+            total: 4500,
+            restaurant: null,
+            user: null,
+          },
+        },
+      ]);
+      prisma.delivery.count.mockResolvedValue(1);
+
+      const result = await service.getDelivererMissions('d1');
+
+      expect(result.data[0]).toMatchObject({
+        id: 'dl2',
+        restaurantName: null,
+        clientName: null,
+        acceptedAt: null,
+        deliveredAt: null,
       });
     });
   });
