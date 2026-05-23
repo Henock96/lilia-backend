@@ -23,6 +23,7 @@ import { AdminService } from './admin.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 import { BanUserDto } from './dto/ban-user.dto';
+import { GetDelivererMissionsQueryDto } from './dto/get-deliverer-missions.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { FirebaseService } from '../firebase/firebase.service';
 
@@ -176,6 +177,37 @@ export class AdminController {
     return this.adminService.getAllDeliverers(
       parseInt(page, 10),
       parseInt(limit, 10),
+    );
+  }
+
+  @Get('deliverers/:id/stats')
+  @ApiOperation({
+    summary: 'Statistiques agrégées d\'un livreur (succès, revenu, durée moyenne)',
+  })
+  @ApiParam({ name: 'id', description: 'ID Prisma du livreur' })
+  getDelivererStats(@Param('id') id: string) {
+    return this.adminService.getDelivererStats(id);
+  }
+
+  @Get('deliverers/:id/missions')
+  @ApiOperation({ summary: 'Historique paginé des missions d\'un livreur' })
+  @ApiParam({ name: 'id', description: 'ID Prisma du livreur' })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: ['EN_ATTENTE', 'EN_TRANSIT', 'LIVRER', 'ECHEC'],
+  })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  getDelivererMissions(
+    @Param('id') id: string,
+    @Query() query: GetDelivererMissionsQueryDto,
+  ) {
+    return this.adminService.getDelivererMissions(
+      id,
+      query.status,
+      query.page ?? 1,
+      query.limit ?? 20,
     );
   }
 

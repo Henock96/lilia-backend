@@ -6,8 +6,9 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
-import { Prisma, Role, PaymentStatus } from '@prisma/client';
+import { Prisma, Role, PaymentStatus, DeliveryStatus } from '@prisma/client';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
+import { DelivererMissionStatus } from './dto/get-deliverer-missions.dto';
 
 @Injectable()
 export class AdminService {
@@ -354,6 +355,191 @@ export class AdminService {
     ]);
 
     return { data: deliverers, total, page, limit };
+  }
+
+  /**
+   * Statistiques agrégées d'un livreur :
+   * - totalDeliveries / deliveredCount / failedCount / inProgressCount
+   *   (inProgress = ASSIGNER ou EN_TRANSIT)
+   * - successRate = deliveredCount / (deliveredCount + failedCount) * 100
+   *   (0 si dénominateur nul ; arrondi à 2 décimales)
+   * - totalRevenueXAF = somme Order.total des deliveries au statut LIVRER
+   * - avgDeliveryMinutes = moyenne (deliveredAt - pickedUpAt) en minutes
+   *   sur les deliveries LIVRER qui ont un pickedUpAt non nul.
+   *   `pickedUpAt` est utilisé comme « acceptedAt » (le timestamp est posé
+   *   lors du passage ASSIGNER → EN_TRANSIT dans DeliveriesService.markPickedUp).
+   *   Renvoie null s'il n'y a aucune ligne mesurable.
+   * - last30dDeliveries = nombre de deliveries créées sur les 30 derniers jours
+   * - lastDeliveryAt = deliveredAt de la dernière livraison LIVRER
+   *
+   * 404 si l'utilisateur n'existe pas ou n'a pas le rôle LIVREUR.
+   */
+  async getDelivererStats(delivererId: string) {
+    const deliverer = await this.prisma.user.findUnique({
+      where: { id: delivererId },
+      select: { id: true, role: true },
+    });
+    if (!deliverer || deliverer.role !== 'LIVREUR') {
+      throw new NotFoundException('Livreur introuvable');
+    }
+
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const [grouped, deliveredRows, last30dDeliveries, lastDelivery] =
+      await Promise.all([
+        this.prisma.delivery.groupBy({
+          by: ['status'],
+          where: { delivererId },
+          _count: { _all: true },
+        }),
+        // Toutes les deliveries LIVRER pour calculer revenue et avg duration
+        this.prisma.delivery.findMany({
+          where: { delivererId, status: DeliveryStatus.LIVRER },
+          select: {
+            pickedUpAt: true,
+            deliveredAt: true,
+            order: { select: { total: true } },
+          },
+        }),
+        this.prisma.delivery.count({
+          where: { delivererId, createdAt: { gte: thirtyDaysAgo } },
+        }),
+        this.prisma.delivery.findFirst({
+          where: {
+            delivererId,
+            status: DeliveryStatus.LIVRER,
+            deliveredAt: { not: null },
+          },
+          orderBy: { deliveredAt: 'desc' },
+          select: { deliveredAt: true },
+        }),
+      ]);
+
+    const countOf = (status: DeliveryStatus) =>
+      grouped.find((g) => g.status === status)?._count?._all ?? 0;
+
+    const deliveredCount = countOf(DeliveryStatus.LIVRER);
+    const failedCount = countOf(DeliveryStatus.ECHEC);
+    const inProgressCount =
+      countOf(DeliveryStatus.ASSIGNER) + countOf(DeliveryStatus.EN_TRANSIT);
+    const totalDeliveries = grouped.reduce(
+      (sum, g) => sum + (g._count?._all ?? 0),
+      0,
+    );
+
+    const finished = deliveredCount + failedCount;
+    const successRate =
+      finished === 0
+        ? 0
+        : Math.round((deliveredCount / finished) * 100 * 100) / 100;
+
+    const totalRevenueXAF = deliveredRows.reduce(
+      (sum, d) => sum + (d.order?.total ?? 0),
+      0,
+    );
+
+    const durations = deliveredRows
+      .filter((d) => d.pickedUpAt && d.deliveredAt)
+      .map(
+        (d) =>
+          (d.deliveredAt!.getTime() - d.pickedUpAt!.getTime()) / 60000,
+      );
+    const avgDeliveryMinutes =
+      durations.length === 0
+        ? null
+        : Math.round(
+            (durations.reduce((s, x) => s + x, 0) / durations.length) * 100,
+          ) / 100;
+
+    return {
+      data: {
+        totalDeliveries,
+        deliveredCount,
+        failedCount,
+        inProgressCount,
+        successRate,
+        totalRevenueXAF,
+        avgDeliveryMinutes,
+        last30dDeliveries,
+        lastDeliveryAt: lastDelivery?.deliveredAt ?? null,
+      },
+    };
+  }
+
+  /**
+   * Historique paginé des missions d'un livreur, sous forme de
+   * DeliveryMissionSummary `{ id, orderId, status, restaurantName,
+   * clientName, totalXAF, acceptedAt?, deliveredAt?, createdAt }`.
+   *
+   * `acceptedAt` est mappé sur `Delivery.pickedUpAt` (le timestamp posé
+   * quand le livreur passe la mission de ASSIGNER → EN_TRANSIT).
+   *
+   * Filtres : status (EN_ATTENTE|EN_TRANSIT|LIVRER|ECHEC), page, limit.
+   * 404 si l'utilisateur n'existe pas ou n'a pas le rôle LIVREUR.
+   */
+  async getDelivererMissions(
+    delivererId: string,
+    status?: DelivererMissionStatus,
+    page = 1,
+    limit = 20,
+  ) {
+    const deliverer = await this.prisma.user.findUnique({
+      where: { id: delivererId },
+      select: { id: true, role: true },
+    });
+    if (!deliverer || deliverer.role !== 'LIVREUR') {
+      throw new NotFoundException('Livreur introuvable');
+    }
+
+    const where: Prisma.DeliveryWhereInput = {
+      delivererId,
+      ...(status ? { status } : {}),
+    };
+
+    const [deliveries, total] = await Promise.all([
+      this.prisma.delivery.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          orderId: true,
+          status: true,
+          createdAt: true,
+          pickedUpAt: true,
+          deliveredAt: true,
+          order: {
+            select: {
+              total: true,
+              restaurant: { select: { nom: true } },
+              user: { select: { nom: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.delivery.count({ where }),
+    ]);
+
+    const data = deliveries.map((d) => ({
+      id: d.id,
+      orderId: d.orderId,
+      status: d.status,
+      restaurantName: d.order?.restaurant?.nom ?? null,
+      clientName: d.order?.user?.nom ?? null,
+      totalXAF: d.order?.total ?? 0,
+      acceptedAt: d.pickedUpAt ?? null,
+      deliveredAt: d.deliveredAt ?? null,
+      createdAt: d.createdAt,
+    }));
+
+    const totalPages = limit > 0 ? Math.ceil(total / limit) : 0;
+
+    return {
+      data,
+      meta: { total, page, limit, totalPages },
+    };
   }
 
   // ─── SUPERVISION COMMANDES ─────────────────────────────────────────────────
