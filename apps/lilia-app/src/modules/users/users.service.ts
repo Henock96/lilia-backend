@@ -7,6 +7,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DecodedIdToken } from 'firebase-admin/auth';
 import { UserCreatedEvent } from '../events/user-events';
+import { UserCacheService } from '../auth/services/user-cache.service';
 
 
 @Injectable()
@@ -16,6 +17,7 @@ export class UserService {
   constructor(
     private prisma: PrismaService,
     private eventEmitter: EventEmitter2,
+    private userCache: UserCacheService,
   ) {}
 
   /**
@@ -142,6 +144,10 @@ export class UserService {
       }
     });
 
+    // Le upsert update lastLogin/email/nom à chaque sync → invalider le cache pour
+    // garantir que la prochaine requête authentifiée voit le User à jour.
+    await this.userCache.invalidate(user.firebaseUid);
+
     console.log(`✅ User synchronized: ${user.email} (${user.id})`);
 
     // Émettre l'événement uniquement pour les nouveaux utilisateurs
@@ -165,10 +171,12 @@ export class UserService {
   }
 
   async updateUser(id: string, data: UpdateUserDto): Promise<User> {
-    return this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id },
       data,
     });
+    await this.userCache.invalidate(updated.firebaseUid);
+    return updated;
   }
 
   async findUserOrders(userId: string) {
