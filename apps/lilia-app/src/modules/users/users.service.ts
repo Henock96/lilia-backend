@@ -106,6 +106,11 @@ export class UserService {
   async syncFromFirebase(decoded: DecodedIdToken, phone?: string, referralCode?: string) {
     const { uid, email, name, picture } = decoded;
 
+    // Log structuré début sync pour tracer signups manquants en BDD (LIL-XX)
+    this.logger.log(
+      `[SYNC START] firebaseUid=${uid} email=${email ?? 'unknown'} phone=${phone ?? 'none'} referralCode=${referralCode ?? 'none'}`,
+    );
+
     // Vérifier d'abord si l'utilisateur existe
     const existingUser = await this.prisma.user.findUnique({
       where: { firebaseUid: uid },
@@ -148,19 +153,19 @@ export class UserService {
     // garantir que la prochaine requête authentifiée voit le User à jour.
     await this.userCache.invalidate(user.firebaseUid);
 
-    console.log(`✅ User synchronized: ${user.email} (${user.id})`);
+    // Log structuré fin sync (succès) — utilisé pour tracer signups manquants
+    this.logger.log(
+      `[SYNC SUCCESS] userId=${user.id} firebaseUid=${user.firebaseUid} email=${user.email} isNewUser=${isNewUser}`,
+    );
 
     // Émettre l'événement uniquement pour les nouveaux utilisateurs
     if (isNewUser) {
-      this.logger.log(`Nouvel utilisateur créé : ${user.email} (${user.id})`);
       const userCreatedEvent = new UserCreatedEvent(
         user.id,
         user.nom,
         user.createdAt
       );
       this.eventEmitter.emit('user.created', userCreatedEvent);
-    }else{
-      this.logger.log(`Utilisateur existant mis à jour : ${user.email}`);
     }
 
     return { user, isNewUser };
