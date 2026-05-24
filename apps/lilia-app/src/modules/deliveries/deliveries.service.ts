@@ -616,8 +616,24 @@ export class DeliveriesService {
         lastLongitude: true,
         lastPositionAt: true,
         estimatedArrival: true,
+        pickedUpAt: true,
+        deliveredAt: true,
+        createdAt: true,
         deliverer: {
           select: { id: true, nom: true, phone: true, imageUrl: true },
+        },
+        // Coords de l'adresse client + restaurant pour permettre au client
+        // de tracking d'afficher le marker destination et le contexte
+        // commande sans appel HTTP additionnel.
+        order: {
+          select: {
+            id: true,
+            deliveryLatitude: true,
+            deliveryLongitude: true,
+            restaurant: {
+              select: { id: true, nom: true, latitude: true, longitude: true },
+            },
+          },
         },
       },
     });
