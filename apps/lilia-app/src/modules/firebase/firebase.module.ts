@@ -5,6 +5,7 @@ import { Reflector } from '@nestjs/core';
 import { FirebaseService } from './firebase.service';
 import { FirebaseAuthGuard } from '../auth/guards/firebase-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { UserCacheService } from '../auth/services/user-cache.service';
 
 @Module({
   providers: [
@@ -12,6 +13,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
     RolesGuard,
     Reflector,
     FirebaseService,
+    UserCacheService
   ],
   exports: [FirebaseAuthGuard, RolesGuard, FirebaseService],
 })
