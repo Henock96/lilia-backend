@@ -108,16 +108,23 @@ export class NotificationsService {
       ),
     );
 
-    // Nettoie les tokens invalides
+    // Nettoie les tokens invalides + loggue toute autre erreur FCM
     const tokensToDelete: string[] = [];
     results.forEach((result, idx) => {
       if (result.status === 'rejected') {
-        const code = (result.reason as any)?.code;
+        const reason = result.reason as { code?: string; message?: string };
+        const code = reason?.code;
         if (
           code === 'messaging/invalid-registration-token' ||
           code === 'messaging/registration-token-not-registered'
         ) {
           tokensToDelete.push(tokens[idx].token);
+        } else {
+          // Erreur non liée à un token périmé (credentials, mauvais projet,
+          // quota, API FCM désactivée…) — la loguer explicitement pour diagnostic.
+          this.logger.error(
+            `Échec envoi FCM — user ${userId}, code=${code ?? 'inconnu'} : ${reason?.message ?? String(reason)}`,
+          );
         }
       }
     });
