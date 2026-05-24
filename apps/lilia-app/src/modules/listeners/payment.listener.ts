@@ -1,9 +1,10 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
+import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
+import { OrderStatus } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../../prisma/prisma.service';
-import { OrderPaymentConfirmedEvent } from '../events/order-events';
+import { OrderPaymentConfirmedEvent, OrderStatusUpdatedEvent } from '../events/order-events';
 
 @Injectable()
 export class PaymentListener {
@@ -12,6 +13,7 @@ export class PaymentListener {
   constructor(
     private readonly notificationsService: NotificationsService,
     private readonly prisma: PrismaService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   @OnEvent('order.payment.confirmed')
@@ -108,7 +110,21 @@ export class PaymentListener {
 
   private async updateOrderAfterPayment(orderId: string) {
     try {
-      // Mettre à jour le statut de la commande à "EN_PREPARATION" après paiement
+      // PaymentService.handleSuccessfulPayment vient de mettre Order.status = PAYER.
+      // On enchaîne PAYER → EN_PREPARATION en émettant `order.status.updated`
+      // pour que le client reçoive la notif "👨‍🍳 En préparation" + broadcast WS.
+      const order = await this.prisma.order.findUnique({
+        where: { id: orderId },
+        select: { userId: true, restaurantId: true, status: true, restaurant: { select: { nom: true } }, total: true },
+      });
+
+      if (!order) {
+        this.logger.warn(`updateOrderAfterPayment: order ${orderId} not found`);
+        return;
+      }
+
+      const previousStatus = order.status;
+
       await this.prisma.order.update({
         where: { id: orderId },
         data: {
@@ -117,7 +133,22 @@ export class PaymentListener {
         },
       });
 
-      this.logger.log(`📝 Order ${orderId} status updated to EN_PREPARATION`);
+      // Émet l'event → OrdersListener notifie le client + broadcast WS
+      const statusEvent = new OrderStatusUpdatedEvent(
+        orderId,
+        order.userId,
+        order.restaurantId,
+        previousStatus,
+        OrderStatus.EN_PREPARATION,
+        order.userId, // pas d'acteur explicite (déclenché par PaymentListener) — on attache le user pour le contexte
+        {
+          restaurantName: order.restaurant.nom,
+          totalAmount: order.total,
+        },
+      );
+      this.eventEmitter.emit('order.status.updated', statusEvent);
+
+      this.logger.log(`📝 Order ${orderId} status updated to EN_PREPARATION (event emitted)`);
     } catch (error) {
       this.logger.error(`Failed to update order status: ${error.message}`);
     }
