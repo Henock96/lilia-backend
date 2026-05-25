@@ -241,20 +241,37 @@ export class AdminController {
   // ─── PAIEMENTS ─────────────────────────────────────────────────────────────
 
   @Get('payments')
-  @ApiOperation({ summary: 'Paiements (par défaut PENDING) pour supervision' })
+  @ApiOperation({
+    summary:
+      'Paiements pour supervision — omettre `status` pour la vue "Tous"',
+  })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
-  @ApiQuery({ name: 'status', required: false })
-  getPendingPayments(
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    description:
+      "PENDING | SUCCESS | FAILED | CANCELLED. Vide ou absent = tous statuts.",
+  })
+  listPayments(
     @Query('page') page = '1',
     @Query('limit') limit = '20',
     @Query('status') status?: string,
   ) {
-    return this.adminService.getPendingPayments(
+    return this.adminService.listPayments(
       parseInt(page, 10),
       parseInt(limit, 10),
       status,
     );
+  }
+
+  @Get('payments/stats')
+  @ApiOperation({
+    summary:
+      'KPI paiements (pending à confirmer, encaissé ce mois, 7 derniers jours)',
+  })
+  getPaymentsStats() {
+    return this.adminService.getPaymentsStats();
   }
 
   // ─── AVIS ──────────────────────────────────────────────────────────────────
