@@ -2,7 +2,7 @@
 import { Injectable, Logger, HttpException, HttpStatus, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'node:crypto';
 
 export interface MtnMomoConfig {
   baseUrl: string;
@@ -223,7 +223,7 @@ export class MtnMomoService implements OnModuleInit {
   }
 
   private async createApiUser(): Promise<void> {
-    const referenceId = uuidv4();
+    const referenceId = randomUUID();
     this.logger.log(`Creating API user with reference: ${referenceId}`);
 
     try {
@@ -333,7 +333,7 @@ export class MtnMomoService implements OnModuleInit {
       await this.initialize();
     }
 
-    const referenceId = uuidv4();
+    const referenceId = randomUUID();
 
     try {
       this.logger.log(`Initiating payment request: ${referenceId}`);
