@@ -673,16 +673,27 @@ export class AdminService {
 
   /**
    * Liste paginée des paiements pour la supervision admin.
-   * Statut par défaut : PENDING (paiements à confirmer manuellement).
+   *
+   * `status` :
+   *   - omis ou chaîne vide → tous statuts confondus (vue "Tous" admin)
+   *   - 'PENDING' / 'SUCCESS' / 'FAILED' / 'CANCELLED' → filtre par valeur
+   *
+   * Inclut `order.paymentMethod` (MTN_MOMO | AIRTEL_MONEY) — indispensable
+   * pour distinguer MTN vs Airtel quand `Payment.provider == 'MANUAL'`.
    */
-  async getPendingPayments(page = 1, limit = 20, status: string = 'PENDING') {
-    const validStatuses = Object.values(PaymentStatus) as string[];
-    if (!validStatuses.includes(status)) {
-      throw new BadRequestException(
-        `Statut de paiement invalide : ${status}. Valeurs acceptées : ${validStatuses.join(', ')}`,
-      );
+  async listPayments(page = 1, limit = 20, status?: string) {
+    const normalized = status?.trim() ? status.trim() : undefined;
+    if (normalized !== undefined) {
+      const validStatuses = Object.values(PaymentStatus) as string[];
+      if (!validStatuses.includes(normalized)) {
+        throw new BadRequestException(
+          `Statut de paiement invalide : ${normalized}. Valeurs acceptées : ${validStatuses.join(', ')}`,
+        );
+      }
     }
-    const where = { status: status as PaymentStatus };
+    const where = normalized
+      ? { status: normalized as PaymentStatus }
+      : {};
 
     const [payments, total] = await Promise.all([
       this.prisma.payment.findMany({
@@ -696,6 +707,7 @@ export class AdminService {
               id: true,
               total: true,
               status: true,
+              paymentMethod: true,
               user: { select: { id: true, nom: true, phone: true } },
             },
           },
@@ -705,6 +717,60 @@ export class AdminService {
     ]);
 
     return { data: payments, total, page, limit };
+  }
+
+  /**
+   * KPI agrégés pour la carte stats `/admin/paiements` :
+   *   - `pending` : nombre + montant total des paiements à confirmer
+   *   - `monthSuccess` : SUCCESS depuis le 1er du mois (à fuseau UTC pour
+   *     simplifier — Brazzaville = UTC+1, écart négligeable sur les bornes)
+   *   - `last7DaysSuccess` : SUCCESS sur les 7 derniers jours roulants
+   */
+  async getPaymentsStats() {
+    const now = new Date();
+    const startOfMonth = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+    );
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+    const [pending, monthSuccess, last7DaysSuccess] = await Promise.all([
+      this.prisma.payment.aggregate({
+        where: { status: PaymentStatus.PENDING },
+        _count: { _all: true },
+        _sum: { amount: true },
+      }),
+      this.prisma.payment.aggregate({
+        where: {
+          status: PaymentStatus.SUCCESS,
+          createdAt: { gte: startOfMonth },
+        },
+        _count: { _all: true },
+        _sum: { amount: true },
+      }),
+      this.prisma.payment.aggregate({
+        where: {
+          status: PaymentStatus.SUCCESS,
+          createdAt: { gte: sevenDaysAgo },
+        },
+        _count: { _all: true },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    return {
+      pending: {
+        count: pending._count._all,
+        totalXaf: pending._sum.amount ?? 0,
+      },
+      monthSuccess: {
+        count: monthSuccess._count._all,
+        totalXaf: monthSuccess._sum.amount ?? 0,
+      },
+      last7DaysSuccess: {
+        count: last7DaysSuccess._count._all,
+        totalXaf: last7DaysSuccess._sum.amount ?? 0,
+      },
+    };
   }
 
   // ─── MODÉRATION AVIS ───────────────────────────────────────────────────────

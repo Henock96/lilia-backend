@@ -2,11 +2,12 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { UserCacheService } from '../auth/services/user-cache.service';
 
 type PrismaMock = {
   user: { findUnique: jest.Mock; findMany: jest.Mock; count: jest.Mock };
   loyaltyTransaction: { findMany: jest.Mock; count: jest.Mock; aggregate: jest.Mock };
-  payment: { findMany: jest.Mock; count: jest.Mock };
+  payment: { findMany: jest.Mock; count: jest.Mock; aggregate: jest.Mock };
   delivery: {
     findFirst: jest.Mock;
     findMany: jest.Mock;
@@ -20,7 +21,7 @@ function createPrismaMock(): PrismaMock {
   return {
     user: { findUnique: jest.fn(), findMany: jest.fn(), count: jest.fn() },
     loyaltyTransaction: { findMany: jest.fn(), count: jest.fn(), aggregate: jest.fn() },
-    payment: { findMany: jest.fn(), count: jest.fn() },
+    payment: { findMany: jest.fn(), count: jest.fn(), aggregate: jest.fn() },
     delivery: {
       findFirst: jest.fn(),
       findMany: jest.fn(),
@@ -38,7 +39,14 @@ describe('AdminService', () => {
   beforeEach(async () => {
     prisma = createPrismaMock();
     const module: TestingModule = await Test.createTestingModule({
-      providers: [AdminService, { provide: PrismaService, useValue: prisma }],
+      providers: [
+        AdminService,
+        { provide: PrismaService, useValue: prisma },
+        {
+          provide: UserCacheService,
+          useValue: { invalidate: jest.fn(), get: jest.fn(), set: jest.fn() },
+        },
+      ],
     }).compile();
     service = module.get<AdminService>(AdminService);
   });
@@ -47,16 +55,16 @@ describe('AdminService', () => {
     expect(service).toBeDefined();
   });
 
-  describe('getPendingPayments', () => {
-    it('filtre sur PENDING par défaut, avec la commande et le client liés', async () => {
+  describe('listPayments', () => {
+    it('sans status (Tous) — pas de filtre sur le where, include order.paymentMethod', async () => {
       prisma.payment.findMany.mockResolvedValue([{ id: 'p1', amount: 5000, status: 'PENDING' }]);
       prisma.payment.count.mockResolvedValue(1);
 
-      const result = await service.getPendingPayments(1, 20);
+      const result = await service.listPayments(1, 20);
 
       expect(result).toEqual({ data: [{ id: 'p1', amount: 5000, status: 'PENDING' }], total: 1, page: 1, limit: 20 });
       const args = prisma.payment.findMany.mock.calls[0][0];
-      expect(args.where).toEqual({ status: 'PENDING' });
+      expect(args.where).toEqual({});
       expect(args.orderBy).toEqual({ createdAt: 'desc' });
       expect(args.include).toMatchObject({
         order: {
@@ -64,6 +72,7 @@ describe('AdminService', () => {
             id: true,
             total: true,
             status: true,
+            paymentMethod: true,
             user: { select: { id: true, nom: true, phone: true } },
           },
         },
@@ -74,16 +83,53 @@ describe('AdminService', () => {
       prisma.payment.findMany.mockResolvedValue([]);
       prisma.payment.count.mockResolvedValue(0);
 
-      await service.getPendingPayments(1, 20, 'SUCCESS');
+      await service.listPayments(1, 20, 'SUCCESS');
 
       expect(prisma.payment.findMany.mock.calls[0][0].where).toEqual({ status: 'SUCCESS' });
     });
 
+    it('chaîne vide = vue Tous (pas de filtre)', async () => {
+      prisma.payment.findMany.mockResolvedValue([]);
+      prisma.payment.count.mockResolvedValue(0);
+
+      await service.listPayments(1, 20, '');
+
+      expect(prisma.payment.findMany.mock.calls[0][0].where).toEqual({});
+    });
+
     it('rejette un statut invalide avec BadRequestException', async () => {
-      await expect(service.getPendingPayments(1, 20, 'pending')).rejects.toThrow(
+      await expect(service.listPayments(1, 20, 'pending')).rejects.toThrow(
         BadRequestException,
       );
       expect(prisma.payment.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getPaymentsStats', () => {
+    it('agrège count + sum pour pending / monthSuccess / last7DaysSuccess', async () => {
+      prisma.payment.aggregate
+        .mockResolvedValueOnce({ _count: { _all: 3 }, _sum: { amount: 15000 } })
+        .mockResolvedValueOnce({ _count: { _all: 42 }, _sum: { amount: 850000 } })
+        .mockResolvedValueOnce({ _count: { _all: 12 }, _sum: { amount: 240000 } });
+
+      const result = await service.getPaymentsStats();
+
+      expect(result).toEqual({
+        pending: { count: 3, totalXaf: 15000 },
+        monthSuccess: { count: 42, totalXaf: 850000 },
+        last7DaysSuccess: { count: 12, totalXaf: 240000 },
+      });
+      expect(prisma.payment.aggregate).toHaveBeenCalledTimes(3);
+    });
+
+    it('tolère _sum.amount null (aucune ligne sur la période)', async () => {
+      prisma.payment.aggregate
+        .mockResolvedValueOnce({ _count: { _all: 0 }, _sum: { amount: null } })
+        .mockResolvedValueOnce({ _count: { _all: 0 }, _sum: { amount: null } })
+        .mockResolvedValueOnce({ _count: { _all: 0 }, _sum: { amount: null } });
+
+      const result = await service.getPaymentsStats();
+      expect(result.pending).toEqual({ count: 0, totalXaf: 0 });
     });
   });
 
