@@ -7,7 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma, VendorType } from '@prisma/client';
+import { Prisma, User, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationService } from '../../common/pagination/pagination.service';
 import { CreateVendorDto } from './dto/create-vendor.dto';
@@ -166,17 +166,20 @@ export class VendorsService {
 
   async updateVendorProfile(
     restaurantId: string,
-    firebaseUid: string,
+    caller: User,
     dto: UpdateVendorProfileDto,
   ) {
     const restaurant = await this.prisma.restaurant.findUnique({
       where: { id: restaurantId },
-      include: { owner: { select: { firebaseUid: true, role: true } }, vendorProfile: true },
+      include: { owner: { select: { firebaseUid: true } }, vendorProfile: true },
     });
     if (!restaurant) throw new NotFoundException('Vendeur introuvable.');
 
-    const isOwner = restaurant.owner.firebaseUid === firebaseUid;
-    const isAdmin = restaurant.owner.role === 'ADMIN';
+    // L'autorisation se fait sur le rôle de l'APPELANT (caller.role), pas sur
+    // celui du propriétaire. Sinon un RESTAURATEUR pourrait modifier le profil
+    // d'un vendeur dont le owner est ADMIN (IDOR).
+    const isOwner = restaurant.owner.firebaseUid === caller.firebaseUid;
+    const isAdmin = caller.role === 'ADMIN';
     if (!isOwner && !isAdmin) {
       throw new ForbiddenException(
         "Vous ne pouvez modifier que le profil de votre propre vendeur.",

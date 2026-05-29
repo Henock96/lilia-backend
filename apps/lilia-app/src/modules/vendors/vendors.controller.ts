@@ -10,7 +10,6 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { DecodedIdToken } from 'firebase-admin/auth';
 import { User } from '@prisma/client';
 
 import { VendorsService } from './vendors.service';
@@ -20,7 +19,6 @@ import { UpdateVendorProfileDto } from './dto/update-vendor-profile.dto';
 import { Public } from '../auth/decorators/public.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 
 /**
  * Endpoints marketplace multi-vendeurs.
@@ -70,8 +68,8 @@ export class VendorsController {
   updateProfile(
     @Param('id') id: string,
     @Body() dto: UpdateVendorProfileDto,
-    @FirebaseUser() fbUser: DecodedIdToken,
+    @CurrentUser() caller: User,
   ) {
-    return this.service.updateVendorProfile(id, fbUser.uid, dto);
+    return this.service.updateVendorProfile(id, caller, dto);
   }
 }
