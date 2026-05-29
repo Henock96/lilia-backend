@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
-import { Prisma, Role, PaymentStatus, DeliveryStatus } from '@prisma/client';
+import { Prisma, Role, PaymentStatus, DeliveryStatus, VendorType } from '@prisma/client';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 import { DelivererMissionStatus } from './dto/get-deliverer-missions.dto';
 import { UserCacheService } from '../auth/services/user-cache.service';
@@ -138,7 +138,29 @@ export class AdminService {
       restaurantNom,
       restaurantAdresse,
       restaurantPhone,
+      restaurantImageUrl,
+      vendorType,
+      acceptsPreorders,
+      preorderLeadHours,
+      maxOrdersPerDay,
+      story,
+      certifications,
+      specialties,
+      productionNote,
     } = dto;
+
+    // Compat. : si pas de vendorType, on garde le flux historique (RESTAURANT
+    // auto-approuvé). Les nouveaux types passent toujours par la validation
+    // admin (adminApproved=false), même créés via cette route.
+    const effectiveType = vendorType ?? VendorType.RESTAURANT;
+    const isAutoApproved = effectiveType === VendorType.RESTAURANT;
+
+    const profileFields: Prisma.VendorProfileCreateWithoutRestaurantInput = {};
+    if (story !== undefined) profileFields.story = story;
+    if (certifications !== undefined) profileFields.certifications = certifications;
+    if (specialties !== undefined) profileFields.specialties = specialties;
+    if (productionNote !== undefined) profileFields.productionNote = productionNote;
+    const hasProfile = Object.keys(profileFields).length > 0;
 
     return this.prisma.$transaction(async (tx) => {
       // Cherche ou crée l'owner
@@ -180,15 +202,32 @@ export class AdminService {
           nom: restaurantNom,
           adresse: restaurantAdresse,
           phone: restaurantPhone,
+          imageUrl: restaurantImageUrl,
+          vendorType: effectiveType,
+          adminApproved: isAutoApproved,
+          adminApprovedAt: isAutoApproved ? new Date() : null,
+          acceptsPreorders: acceptsPreorders ?? false,
+          preorderLeadHours,
+          maxOrdersPerDay,
           owner: { connect: { id: owner.id } },
+          ...(hasProfile && {
+            vendorProfile: { create: profileFields },
+          }),
         },
-        include: { owner: { select: { id: true, email: true, role: true } } },
+        include: {
+          owner: { select: { id: true, email: true, role: true } },
+          vendorProfile: true,
+        },
       });
 
-      this.logger.log(`Restaurant créé par admin : ${restaurant.id}`);
+      this.logger.log(
+        `Vendeur ${effectiveType} créé par admin : ${restaurant.id} (adminApproved=${isAutoApproved})`,
+      );
       return {
         data: restaurant,
-        message: 'Restaurant et propriétaire créés avec succès',
+        message: isAutoApproved
+          ? 'Restaurant et propriétaire créés avec succès'
+          : `${effectiveType} créé — en attente de validation`,
       };
     });
   }
