@@ -88,11 +88,14 @@ export class RestaurantScheduleService {
     async handleDailyStockReset() {
         this.logger.log('Resetting daily stock for products and menus...');
 
+        // LIL-112 : ne pas reset les produits stockMode=PERMANENT (cavistes,
+        // épiceries — ils gèrent un stock réel, pas une capacité quotidienne).
         const productResult = await this.prisma.$executeRaw`
             UPDATE "Product" SET "stockRestant" = "stockQuotidien"
             WHERE "stockQuotidien" IS NOT NULL
+              AND "stockMode" = 'DAILY'
         `;
-        this.logger.log(`Stock reset for ${productResult} products`);
+        this.logger.log(`Stock reset for ${productResult} products (DAILY only)`);
 
         const menuResult = await this.prisma.$executeRaw`
             UPDATE "MenuDuJour" SET "stockRestant" = "stockQuotidien"
