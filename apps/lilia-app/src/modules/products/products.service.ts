@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { ProductType } from '@prisma/client';
+import { Prisma, ProductType, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
@@ -16,17 +16,28 @@ export class ProductsService {
   ) {}
 
   /**
-   * Récupère tous les produits avec filtres optionnels
+   * Récupère les produits du catalogue marketplace (route publique).
+   * Filtre toujours sur restaurant.isActive + adminApproved : on n'expose
+   * jamais le catalogue d'un vendeur en attente de validation ou suspendu.
    */
-  async findAll(restaurantId?: string, categoryId?: string, page = 1, limit = 20) {
-    const where: any = {};
-
-    if (restaurantId) {
-      where.restaurantId = restaurantId;
-    }
-    if (categoryId) {
-      where.categoryId = categoryId;
-    }
+  async findAll(
+    restaurantId?: string,
+    categoryId?: string,
+    page = 1,
+    limit = 20,
+    productType?: ProductType,
+    vendorType?: VendorType,
+  ) {
+    const where: Prisma.ProductWhereInput = {
+      restaurant: {
+        isActive: true,
+        adminApproved: true,
+        ...(vendorType && { vendorType }),
+      },
+      ...(restaurantId && { restaurantId }),
+      ...(categoryId && { categoryId }),
+      ...(productType && { productType }),
+    };
 
     const [products, total] = await Promise.all([
       this.prisma.product.findMany({
@@ -38,6 +49,7 @@ export class ProductsService {
             select: {
               id: true,
               nom: true,
+              vendorType: true,
             },
           },
         },
