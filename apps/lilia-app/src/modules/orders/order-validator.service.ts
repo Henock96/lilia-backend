@@ -66,6 +66,13 @@ export class OrderValidatorService {
       where: { id: restaurantId },
     });
     if (!restaurant) throw new NotFoundException('Restaurant non trouvé.');
+    if (!restaurant.isActive || !restaurant.adminApproved) {
+      // Défense en profondeur : le catalogue ne devrait pas exposer ces vendeurs,
+      // mais un panier obsolète peut encore les référencer.
+      throw new BadRequestException(
+        `"${restaurant.nom}" n'est plus disponible sur la plateforme.`,
+      );
+    }
     if (!restaurant.isOpen)
       throw new BadRequestException(
         `Le restaurant "${restaurant.nom}" est actuellement fermé.`,

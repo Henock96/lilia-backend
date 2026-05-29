@@ -22,6 +22,7 @@ import { OrderCalculatorService } from './order-calculator.service';
 import { PromoService, PromoValidationResult } from '../promo/promo.service';
 import { ConfigService } from '@nestjs/config';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import { PreorderValidatorService } from '../vendors/preorder-validator.service';
 import Redis from 'ioredis';
 
 @Injectable()
@@ -40,6 +41,7 @@ export class OrdersService {
     private readonly promoService: PromoService,
     private readonly config: ConfigService,
     private readonly platformSettings: PlatformSettingsService,
+    private readonly preorderValidator: PreorderValidatorService,
   ) {
     const redisUrl = this.config.get<string>('REDIS_URL');
     this.redis = redisUrl ? new Redis(redisUrl) : null as any;
@@ -116,7 +118,11 @@ export class OrdersService {
       useLoyaltyPoints,
       deliveryLatitude,
       deliveryLongitude,
+      isPreorder,
+      scheduledFor,
+      ageVerified,
     } = dto;
+    const scheduledForDate = scheduledFor ? new Date(scheduledFor) : null;
     // Idempotency check — évite les doublons sur double-tap ou retry réseau
     if (idempotencyKey && this.redis) {
       const cacheKey = `idempotency:${firebaseUid}:${idempotencyKey}`;
@@ -158,6 +164,15 @@ export class OrdersService {
     const restaurant =
       await this.validator.validateRestaurantOpen(restaurantId);
     await this.validator.validateStock(cartItems);
+
+    // Multi-vendeurs (LIL-112)
+    this.preorderValidator.validatePreorderRequest(scheduledForDate, restaurant);
+    await this.preorderValidator.validateDailyCapacity(restaurant);
+    await this.preorderValidator.validateAgeForAlcohol(
+      cartItems,
+      restaurant,
+      ageVerified ?? false,
+    );
 
     // 2. Calcul — isolé, testable unitairement
     const settings = await this.platformSettings.getSettings();
@@ -223,6 +238,10 @@ export class OrdersService {
           deliveryLongitude: deliveryLongitude ?? null,
           paymentMethod,
           status: 'EN_ATTENTE',
+          isPreorder: isPreorder ?? Boolean(scheduledForDate),
+          scheduledFor: scheduledForDate,
+          ageVerified: ageVerified ?? false,
+          ageVerifiedAt: ageVerified ? new Date() : null,
           items: {
             create: itemSnapshots.map((snap) => ({
               productId: snap.productId,
