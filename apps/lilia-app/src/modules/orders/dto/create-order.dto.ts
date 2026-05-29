@@ -48,8 +48,4 @@ export class CreateOrderDto {
   @IsDateString()
   @IsOptional()
   scheduledFor?: string; // ISO 8601
-
-  @IsBoolean()
-  @IsOptional()
-  ageVerified?: boolean;
 }

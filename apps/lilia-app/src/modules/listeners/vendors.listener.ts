@@ -1,7 +1,6 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { VendorType } from '@prisma/client';
 import {
   VendorApprovedEvent,
   VendorCreatedEvent,
@@ -25,9 +24,10 @@ export class VendorsListener {
         `(adminApproved=${event.vendor.adminApproved})`,
     );
 
-    if (event.vendorType !== VendorType.BEVERAGE_SHOP) return;
+    // Tout nouveau vendeur non auto-approuvé déclenche une alerte admin
+    // (hygiène marketplace — admin curate la liste avant exposition publique)
+    if (!event.isPendingApproval) return;
 
-    // Alerte admins pour validation manuelle (alcool = check légal)
     const admins = await this.prisma.user.findMany({
       where: { role: 'ADMIN', statusUser: 'ACTIVE' },
       select: { id: true },
@@ -36,8 +36,8 @@ export class VendorsListener {
       admins.map((admin) =>
         this.notifications.sendPushNotification(
           admin.id,
-          '⚠️ Nouveau vendeur alcool',
-          `${event.vendor.nom} attend votre validation.`,
+          '🛎️ Nouveau vendeur à valider',
+          `${event.vendor.nom} (${event.vendor.vendorType}) attend votre validation.`,
           { vendorId: event.vendor.id, type: 'vendor_pending_approval' },
         ),
       ),

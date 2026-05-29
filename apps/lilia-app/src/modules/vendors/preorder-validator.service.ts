@@ -62,24 +62,4 @@ export class PreorderValidatorService {
       );
     }
   }
-
-  async validateAgeForAlcohol(
-    cartItems: { productId: string }[],
-    vendor: Restaurant,
-    ageVerified: boolean,
-  ): Promise<void> {
-    if (!vendor.minAgeRequired) return;
-
-    const productIds = [...new Set(cartItems.map((i) => i.productId))];
-    const alcoholCount = await this.prisma.product.count({
-      where: { id: { in: productIds }, productType: 'ALCOHOL' },
-    });
-
-    if (alcoholCount > 0 && !ageVerified) {
-      throw new BadRequestException(
-        `Vous devez confirmer avoir ${vendor.minAgeRequired} ans ou plus ` +
-          `pour commander des boissons alcoolisées.`,
-      );
-    }
-  }
 }

@@ -51,8 +51,10 @@ export class VendorsService {
       );
     }
 
-    // BEVERAGE_SHOP doit passer par validation admin avant d'être visible
-    const adminApproved = dto.vendorType !== VendorType.BEVERAGE_SHOP;
+    // Tout nouveau vendeur non-RESTAURANT passe par une validation admin
+    // (hygiène marketplace). Les RESTAURANTs créés via cet endpoint sont
+    // auto-approuvés pour préserver le flux d'onboarding classique.
+    const adminApproved = dto.vendorType === VendorType.RESTAURANT;
 
     const profileFields = this.extractProfileFields(dto);
     const hasProfile = Object.keys(profileFields).length > 0;
@@ -74,7 +76,6 @@ export class VendorsService {
           adminApproved,
           adminApprovedAt: adminApproved ? new Date() : null,
           adminApprovedById: adminApproved ? adminUserId : null,
-          minAgeRequired: dto.minAgeRequired,
           acceptsPreorders: dto.acceptsPreorders ?? false,
           preorderLeadHours: dto.preorderLeadHours,
           maxOrdersPerDay: dto.maxOrdersPerDay,
@@ -201,7 +202,6 @@ export class VendorsService {
     if (dto.story !== undefined) fields.story = dto.story;
     if (dto.certifications !== undefined) fields.certifications = dto.certifications;
     if (dto.specialties !== undefined) fields.specialties = dto.specialties;
-    if (dto.licenseNumber !== undefined) fields.licenseNumber = dto.licenseNumber;
     if (dto.productionNote !== undefined) fields.productionNote = dto.productionNote;
     return fields;
   }

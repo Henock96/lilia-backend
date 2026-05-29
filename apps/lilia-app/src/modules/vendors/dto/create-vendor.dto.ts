@@ -57,13 +57,6 @@ export class CreateVendorDto {
   @Min(0)
   minimumOrderAmount?: number;
 
-  // BEVERAGE_SHOP : alcool
-  @IsInt()
-  @IsOptional()
-  @Min(18)
-  @Max(21)
-  minAgeRequired?: number;
-
   // HOME_COOK / BAKERY : précommandes
   @IsBoolean()
   @IsOptional()
@@ -95,10 +88,6 @@ export class CreateVendorDto {
   @IsString({ each: true })
   @IsOptional()
   specialties?: string[];
-
-  @IsString()
-  @IsOptional()
-  licenseNumber?: string;
 
   @IsString()
   @IsOptional()

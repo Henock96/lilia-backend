@@ -19,10 +19,6 @@ export class UpdateVendorProfileDto {
 
   @IsString()
   @IsOptional()
-  licenseNumber?: string;
-
-  @IsString()
-  @IsOptional()
   @MaxLength(500)
   productionNote?: string;
 }

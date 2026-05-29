@@ -120,7 +120,6 @@ export class OrdersService {
       deliveryLongitude,
       isPreorder,
       scheduledFor,
-      ageVerified,
     } = dto;
     const scheduledForDate = scheduledFor ? new Date(scheduledFor) : null;
     // Idempotency check — évite les doublons sur double-tap ou retry réseau
@@ -168,11 +167,6 @@ export class OrdersService {
     // Multi-vendeurs (LIL-112)
     this.preorderValidator.validatePreorderRequest(scheduledForDate, restaurant);
     await this.preorderValidator.validateDailyCapacity(restaurant);
-    await this.preorderValidator.validateAgeForAlcohol(
-      cartItems,
-      restaurant,
-      ageVerified ?? false,
-    );
 
     // 2. Calcul — isolé, testable unitairement
     const settings = await this.platformSettings.getSettings();
@@ -240,8 +234,6 @@ export class OrdersService {
           status: 'EN_ATTENTE',
           isPreorder: isPreorder ?? Boolean(scheduledForDate),
           scheduledFor: scheduledForDate,
-          ageVerified: ageVerified ?? false,
-          ageVerifiedAt: ageVerified ? new Date() : null,
           items: {
             create: itemSnapshots.map((snap) => ({
               productId: snap.productId,
