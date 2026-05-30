@@ -164,8 +164,14 @@ export class OrdersService {
       await this.validator.validateRestaurantOpen(restaurantId);
     await this.validator.validateStock(cartItems);
 
-    // Multi-vendeurs (LIL-112)
-    this.preorderValidator.validatePreorderRequest(scheduledForDate, restaurant);
+    // Multi-vendeurs (LIL-112 + LIL-121 décision 1b)
+    // Validation pilotée par les items du panier : preorder requis ssi au moins
+    // un produit a `madeToOrder=true`, et rejet du mix immédiat/sur commande.
+    this.preorderValidator.validatePreorderForCart(
+      cartItems,
+      restaurant,
+      scheduledForDate,
+    );
     await this.preorderValidator.validateDailyCapacity(restaurant);
 
     // 2. Calcul — isolé, testable unitairement
