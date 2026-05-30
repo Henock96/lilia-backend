@@ -88,4 +88,49 @@ export class FirebaseService implements OnModuleInit {
     await this.app.auth().revokeRefreshTokens(uid);
     this.logger.warn(`Tokens révoqués pour : ${uid}`);
   }
+
+  /**
+   * Crée un user Firebase Auth (LIL-118).
+   * Utilisé par AdminService.createRestaurantWithOwner pour qu'un admin
+   * puisse onboard un nouveau vendeur sans devoir aller dans la Console.
+   *
+   * Lève FirebaseAuthError (code `auth/email-already-exists`, etc.) que
+   * l'appelant doit attraper et convertir en BadRequestException claire.
+   */
+  async createUser(params: {
+    email: string;
+    password: string;
+    displayName?: string;
+    phoneNumber?: string;
+  }): Promise<string> {
+    const userRecord = await this.app.auth().createUser({
+      email: params.email,
+      password: params.password,
+      displayName: params.displayName,
+      // phoneNumber Firebase exige le format E.164 strict ; on l'omet
+      // si non fourni pour éviter les rejets sur des numéros locaux.
+      ...(params.phoneNumber && { phoneNumber: params.phoneNumber }),
+      emailVerified: false,
+      disabled: false,
+    });
+    this.logger.log(`User Firebase créé : ${userRecord.uid} (${params.email})`);
+    return userRecord.uid;
+  }
+
+  /**
+   * Supprime un user Firebase Auth — utilisé pour rollback en cas d'échec
+   * de la transaction Prisma post-création (LIL-118). Best effort : on log
+   * l'erreur mais on ne la propage pas pour ne pas masquer l'erreur d'origine.
+   */
+  async deleteUserSafe(uid: string): Promise<void> {
+    try {
+      await this.app.auth().deleteUser(uid);
+      this.logger.warn(`User Firebase rollback supprimé : ${uid}`);
+    } catch (err) {
+      this.logger.error(
+        `Échec rollback Firebase user ${uid} — à nettoyer manuellement`,
+        err,
+      );
+    }
+  }
 }
