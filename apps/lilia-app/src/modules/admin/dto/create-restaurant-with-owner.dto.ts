@@ -15,9 +15,8 @@ import {
 import { VendorType } from '@prisma/client';
 
 export class CreateRestaurantWithOwnerDto {
-  // User fields
-  @IsNotEmpty()
-  ownerFirebaseUid: string;
+  // User fields — LIL-118 : Firebase Auth user créé par le backend.
+  // `ownerFirebaseUid` retiré du DTO (générée côté Firebase via email/password).
 
   @IsEmail()
   @IsNotEmpty()

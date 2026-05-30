@@ -12,6 +12,7 @@ import { DelivererMissionStatus } from './dto/get-deliverer-missions.dto';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import { VendorsService } from '../vendors/vendors.service';
 import { AdminVendorFilterDto } from './dto/admin-vendor-filter.dto';
+import { FirebaseService } from '../firebase/firebase.service';
 
 @Injectable()
 export class AdminService {
@@ -21,6 +22,7 @@ export class AdminService {
     private prisma: PrismaService,
     private userCache: UserCacheService,
     private readonly vendorsService: VendorsService,
+    private readonly firebaseService: FirebaseService,
   ) {}
 
   // ─── DASHBOARD ─────────────────────────────────────────────────────────────
@@ -134,7 +136,9 @@ export class AdminService {
   async createRestaurantWithOwner(dto: CreateRestaurantWithOwnerDto) {
     const {
       email,
-      ownerFirebaseUid,
+      password,
+      nom,
+      phone,
       restaurantNom,
       restaurantAdresse,
       restaurantPhone,
@@ -162,74 +166,114 @@ export class AdminService {
     if (productionNote !== undefined) profileFields.productionNote = productionNote;
     const hasProfile = Object.keys(profileFields).length > 0;
 
-    return this.prisma.$transaction(async (tx) => {
-      // Cherche ou crée l'owner
-      let owner = await tx.user.findUnique({
-        where: { firebaseUid: ownerFirebaseUid },
+    // LIL-118 : on crée le user Firebase Auth AVANT la transaction Prisma.
+    // Avant : l'admin devait créer l'user dans la Console et coller l'UID — UX
+    // catastrophique, password DTO ignoré. Maintenant l'admin remplit juste
+    // email + password et on bootstrap tout côté Firebase.
+    let firebaseUid: string;
+    try {
+      firebaseUid = await this.firebaseService.createUser({
+        email,
+        password,
+        displayName: nom,
       });
-
-      if (!owner) {
-        owner = await tx.user.create({
-          data: {
-            firebaseUid: ownerFirebaseUid,
-            email: email,
-            nom: email.split('@')[0],
-            phone: '',
-            role: 'RESTAURATEUR',
-          },
-        });
-        this.logger.log(`Owner créé : ${owner.id}`);
-      } else if (owner.role !== 'RESTAURATEUR' && owner.role !== 'ADMIN') {
-        // Upgrade le rôle si nécessaire
-        owner = await tx.user.update({
-          where: { id: owner.id },
-          data: { role: 'RESTAURATEUR' },
-        });
-      }
-
-      // Vérifie qu'il n'a pas déjà un restaurant
-      const existing = await tx.restaurant.findUnique({
-        where: { ownerId: owner.id },
-      });
-      if (existing) {
+    } catch (err: unknown) {
+      const code = (err as { code?: string }).code;
+      const message = (err as { message?: string }).message;
+      if (code === 'auth/email-already-exists') {
         throw new BadRequestException(
-          'Cet utilisateur possède déjà un restaurant.',
+          `Un compte Firebase existe déjà pour ${email}.`,
         );
       }
-
-      const restaurant = await tx.restaurant.create({
-        data: {
-          nom: restaurantNom,
-          adresse: restaurantAdresse,
-          phone: restaurantPhone,
-          imageUrl: restaurantImageUrl,
-          vendorType: effectiveType,
-          adminApproved: isAutoApproved,
-          adminApprovedAt: isAutoApproved ? new Date() : null,
-          acceptsPreorders: acceptsPreorders ?? false,
-          preorderLeadHours,
-          maxOrdersPerDay,
-          owner: { connect: { id: owner.id } },
-          ...(hasProfile && {
-            vendorProfile: { create: profileFields },
-          }),
-        },
-        include: {
-          owner: { select: { id: true, email: true, role: true } },
-          vendorProfile: true,
-        },
-      });
-
-      this.logger.log(
-        `Vendeur ${effectiveType} créé par admin : ${restaurant.id} (adminApproved=${isAutoApproved})`,
+      if (code === 'auth/invalid-password' || code === 'auth/weak-password') {
+        throw new BadRequestException(
+          'Mot de passe invalide (min 6 caractères).',
+        );
+      }
+      throw new BadRequestException(
+        message ?? 'Échec de la création du compte Firebase.',
       );
-      return {
-        data: restaurant,
-        message: isAutoApproved
-          ? 'Restaurant et propriétaire créés avec succès'
-          : `${effectiveType} créé — en attente de validation`,
-      };
-    });
+    }
+
+    // Si la transaction Prisma échoue, on supprime le user Firebase qu'on
+    // vient de créer pour ne pas laisser de zombie côté Firebase Console.
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // L'user Firebase étant tout neuf, il ne devrait JAMAIS exister
+        // déjà en DB. On garde quand même le findUnique par sécurité
+        // (concurrent webhook /users/sync, par ex.).
+        let owner = await tx.user.findUnique({
+          where: { firebaseUid },
+        });
+
+        if (!owner) {
+          owner = await tx.user.create({
+            data: {
+              firebaseUid,
+              email,
+              nom: nom || email.split('@')[0],
+              phone: phone ?? '',
+              role: 'RESTAURATEUR',
+            },
+          });
+          this.logger.log(`Owner créé : ${owner.id}`);
+        } else if (owner.role !== 'RESTAURATEUR' && owner.role !== 'ADMIN') {
+          owner = await tx.user.update({
+            where: { id: owner.id },
+            data: { role: 'RESTAURATEUR' },
+          });
+        }
+
+        // Vérifie qu'il n'a pas déjà un restaurant
+        const existing = await tx.restaurant.findUnique({
+          where: { ownerId: owner.id },
+        });
+        if (existing) {
+          throw new BadRequestException(
+            'Cet utilisateur possède déjà un restaurant.',
+          );
+        }
+
+        const restaurant = await tx.restaurant.create({
+          data: {
+            nom: restaurantNom,
+            adresse: restaurantAdresse,
+            phone: restaurantPhone,
+            imageUrl: restaurantImageUrl,
+            vendorType: effectiveType,
+            adminApproved: isAutoApproved,
+            adminApprovedAt: isAutoApproved ? new Date() : null,
+            acceptsPreorders: acceptsPreorders ?? false,
+            preorderLeadHours,
+            maxOrdersPerDay,
+            owner: { connect: { id: owner.id } },
+            ...(hasProfile && {
+              vendorProfile: { create: profileFields },
+            }),
+          },
+          include: {
+            owner: { select: { id: true, email: true, role: true } },
+            vendorProfile: true,
+          },
+        });
+
+        this.logger.log(
+          `Vendeur ${effectiveType} créé par admin : ${restaurant.id} (adminApproved=${isAutoApproved})`,
+        );
+        return {
+          data: restaurant,
+          message: isAutoApproved
+            ? 'Restaurant et propriétaire créés avec succès'
+            : `${effectiveType} créé — en attente de validation`,
+        };
+      });
+    } catch (err) {
+      // Rollback Firebase user : la transaction Prisma a échoué, on ne
+      // laisse pas un compte Firebase orphelin sans entrée DB associée.
+      // deleteUserSafe absorbe ses propres erreurs.
+      await this.firebaseService.deleteUserSafe(firebaseUid);
+      throw err;
+    }
   }
 
   async getAllRestaurants() {
