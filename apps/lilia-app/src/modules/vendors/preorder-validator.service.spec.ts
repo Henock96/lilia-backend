@@ -77,6 +77,87 @@ describe('PreorderValidatorService', () => {
     });
   });
 
+  describe('validatePreorderForCart (LIL-121, decision 1b)', () => {
+    let service: PreorderValidatorService;
+
+    beforeEach(() => {
+      service = new PreorderValidatorService({} as PrismaService);
+    });
+
+    const immediateItem = { product: { madeToOrder: false, nom: 'Croissant' } };
+    const preorderItem = { product: { madeToOrder: true, nom: 'Gâteau' } };
+
+    it('panier vide : accepte sans scheduledFor', () => {
+      expect(() =>
+        service.validatePreorderForCart([], baseVendor, null),
+      ).not.toThrow();
+    });
+
+    it('panier 100% immédiat : rejet si scheduledFor fourni', () => {
+      const tomorrow = new Date(Date.now() + 25 * 3600 * 1000);
+      expect(() =>
+        service.validatePreorderForCart(
+          [immediateItem, immediateItem],
+          baseVendor,
+          tomorrow,
+        ),
+      ).toThrow(/ne contient pas de produits sur commande/i);
+    });
+
+    it('panier 100% immédiat : OK sans scheduledFor', () => {
+      expect(() =>
+        service.validatePreorderForCart(
+          [immediateItem, immediateItem],
+          baseVendor,
+          null,
+        ),
+      ).not.toThrow();
+    });
+
+    it('panier 100% madeToOrder : rejet si scheduledFor absent', () => {
+      expect(() =>
+        service.validatePreorderForCart(
+          [preorderItem],
+          baseVendor,
+          null,
+        ),
+      ).toThrow(/indiquer la date/i);
+    });
+
+    it('panier 100% madeToOrder : OK avec scheduledFor valide', () => {
+      const validSlot = new Date(Date.now() + 25 * 3600 * 1000);
+      expect(() =>
+        service.validatePreorderForCart(
+          [preorderItem, preorderItem],
+          baseVendor,
+          validSlot,
+        ),
+      ).not.toThrow();
+    });
+
+    it('panier 100% madeToOrder : rejet si scheduledFor < leadHours', () => {
+      const tooSoon = new Date(Date.now() + 1 * 3600 * 1000);
+      expect(() =>
+        service.validatePreorderForCart(
+          [preorderItem],
+          baseVendor,
+          tooSoon,
+        ),
+      ).toThrow(/au moins 24h/i);
+    });
+
+    it('panier mixte : rejet defense-in-depth (2a)', () => {
+      const validSlot = new Date(Date.now() + 25 * 3600 * 1000);
+      expect(() =>
+        service.validatePreorderForCart(
+          [immediateItem, preorderItem],
+          baseVendor,
+          validSlot,
+        ),
+      ).toThrow(/mélange/i);
+    });
+  });
+
   describe('validateDailyCapacity', () => {
     it('no-op si maxOrdersPerDay est null (illimité)', async () => {
       const prismaMock = { order: { count: jest.fn() } } as unknown as PrismaService;
