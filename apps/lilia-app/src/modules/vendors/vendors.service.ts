@@ -24,7 +24,14 @@ const VENDOR_PUBLIC_INCLUDE = {
 const VENDOR_DETAIL_INCLUDE = {
   ...VENDOR_PUBLIC_INCLUDE,
   products: {
-    where: { stockRestant: { not: 0 } },
+    // Convention stock : null = illimité, 0 = épuisé, > 0 = quantité réelle.
+    // `{ not: 0 }` exclut aussi les NULL (sémantique SQL : NULL != 0 →
+    // UNKNOWN, pas TRUE). Sans cette branche OR, les produits HOME_COOK /
+    // BAKERY créés sans stockQuotidien (= illimité) n'apparaissaient jamais
+    // sur le détail vendeur (LIL-120).
+    where: {
+      OR: [{ stockRestant: null }, { stockRestant: { gt: 0 } }],
+    },
     include: { category: true, variants: true },
   },
 } satisfies Prisma.RestaurantInclude;
