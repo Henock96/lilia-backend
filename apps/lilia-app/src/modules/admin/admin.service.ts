@@ -795,6 +795,11 @@ export class AdminService {
               status: true,
               paymentMethod: true,
               user: { select: { id: true, nom: true, phone: true } },
+              // LIL-132 : nom + type du vendeur pour distinguer rapidement
+              // les paiements dans la queue admin (boulangerie X vs resto Y).
+              restaurant: {
+                select: { id: true, nom: true, vendorType: true },
+              },
             },
           },
         },
