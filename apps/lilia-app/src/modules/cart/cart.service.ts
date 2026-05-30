@@ -12,7 +12,16 @@ import { AddMenuToCartDto } from './dto/add-menu-to-cart.dto';
 const CART_INCLUDE = {
   items: {
     include: {
-      product: { select: { nom: true, imageUrl: true, restaurantId: true } },
+      // `madeToOrder` exposé pour que le client puisse afficher la modal
+      // de conflit (LIL-122 décision 2a) avant d'appeler addItem.
+      product: {
+        select: {
+          nom: true,
+          imageUrl: true,
+          restaurantId: true,
+          madeToOrder: true,
+        },
+      },
       variant: { select: { label: true, prix: true } },
       menu: { select: { id: true, nom: true, prix: true, imageUrl: true } },
     },
