@@ -6,10 +6,12 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
-import { Prisma, Role, PaymentStatus, DeliveryStatus } from '@prisma/client';
+import { Prisma, Role, PaymentStatus, DeliveryStatus, VendorType } from '@prisma/client';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 import { DelivererMissionStatus } from './dto/get-deliverer-missions.dto';
 import { UserCacheService } from '../auth/services/user-cache.service';
+import { VendorsService } from '../vendors/vendors.service';
+import { AdminVendorFilterDto } from './dto/admin-vendor-filter.dto';
 
 @Injectable()
 export class AdminService {
@@ -18,6 +20,7 @@ export class AdminService {
   constructor(
     private prisma: PrismaService,
     private userCache: UserCacheService,
+    private readonly vendorsService: VendorsService,
   ) {}
 
   // ─── DASHBOARD ─────────────────────────────────────────────────────────────
@@ -135,7 +138,29 @@ export class AdminService {
       restaurantNom,
       restaurantAdresse,
       restaurantPhone,
+      restaurantImageUrl,
+      vendorType,
+      acceptsPreorders,
+      preorderLeadHours,
+      maxOrdersPerDay,
+      story,
+      certifications,
+      specialties,
+      productionNote,
     } = dto;
+
+    // Compat. : si pas de vendorType, on garde le flux historique (RESTAURANT
+    // auto-approuvé). Les nouveaux types passent toujours par la validation
+    // admin (adminApproved=false), même créés via cette route.
+    const effectiveType = vendorType ?? VendorType.RESTAURANT;
+    const isAutoApproved = effectiveType === VendorType.RESTAURANT;
+
+    const profileFields: Prisma.VendorProfileCreateWithoutRestaurantInput = {};
+    if (story !== undefined) profileFields.story = story;
+    if (certifications !== undefined) profileFields.certifications = certifications;
+    if (specialties !== undefined) profileFields.specialties = specialties;
+    if (productionNote !== undefined) profileFields.productionNote = productionNote;
+    const hasProfile = Object.keys(profileFields).length > 0;
 
     return this.prisma.$transaction(async (tx) => {
       // Cherche ou crée l'owner
@@ -177,15 +202,32 @@ export class AdminService {
           nom: restaurantNom,
           adresse: restaurantAdresse,
           phone: restaurantPhone,
+          imageUrl: restaurantImageUrl,
+          vendorType: effectiveType,
+          adminApproved: isAutoApproved,
+          adminApprovedAt: isAutoApproved ? new Date() : null,
+          acceptsPreorders: acceptsPreorders ?? false,
+          preorderLeadHours,
+          maxOrdersPerDay,
           owner: { connect: { id: owner.id } },
+          ...(hasProfile && {
+            vendorProfile: { create: profileFields },
+          }),
         },
-        include: { owner: { select: { id: true, email: true, role: true } } },
+        include: {
+          owner: { select: { id: true, email: true, role: true } },
+          vendorProfile: true,
+        },
       });
 
-      this.logger.log(`Restaurant créé par admin : ${restaurant.id}`);
+      this.logger.log(
+        `Vendeur ${effectiveType} créé par admin : ${restaurant.id} (adminApproved=${isAutoApproved})`,
+      );
       return {
         data: restaurant,
-        message: 'Restaurant et propriétaire créés avec succès',
+        message: isAutoApproved
+          ? 'Restaurant et propriétaire créés avec succès'
+          : `${effectiveType} créé — en attente de validation`,
       };
     });
   }
@@ -802,5 +844,98 @@ export class AdminService {
     this.logger.warn(`Avis ${reviewId} supprimé par admin`);
 
     return { message: 'Avis supprimé' };
+  }
+
+  // ─── VENDORS (marketplace multi-vendeurs) ──────────────────────────────────
+
+  /**
+   * Liste paginée de tous les vendeurs (Restaurant) avec filtres admin.
+   * Contrairement à `GET /vendors` (marketplace public) qui filtre sur
+   * adminApproved=true + isActive=true, ici l'admin voit TOUT.
+   */
+  async getAllVendors(dto: AdminVendorFilterDto) {
+    const where: Prisma.RestaurantWhereInput = {
+      ...(dto.vendorType && { vendorType: dto.vendorType }),
+      ...(dto.adminApproved !== undefined && { adminApproved: dto.adminApproved }),
+      ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+    };
+
+    const page = dto.page ?? 1;
+    const limit = dto.limit ?? 20;
+
+    const [vendors, total] = await Promise.all([
+      this.prisma.restaurant.findMany({
+        where,
+        include: {
+          owner: { select: { id: true, email: true, nom: true, phone: true } },
+          vendorProfile: true,
+          _count: { select: { products: true, orders: true } },
+        },
+        orderBy: [{ adminApproved: 'asc' }, { createdAt: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.restaurant.count({ where }),
+    ]);
+
+    return {
+      data: vendors,
+      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  /**
+   * Vendeurs en attente de validation (adminApproved=false).
+   * Raccourci pratique pour le badge "À valider" sur l'admin dashboard.
+   */
+  async getPendingVendors() {
+    const vendors = await this.prisma.restaurant.findMany({
+      where: { adminApproved: false },
+      include: {
+        owner: { select: { id: true, email: true, nom: true, phone: true } },
+        vendorProfile: true,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    return { data: vendors, total: vendors.length };
+  }
+
+  /**
+   * Approuve un vendeur — délègue à VendorsService pour garder la logique
+   * (event vendor.approved, audit trail) en un seul endroit.
+   */
+  async approveVendor(restaurantId: string, adminUserId: string) {
+    return this.vendorsService.approveVendor(restaurantId, adminUserId);
+  }
+
+  /**
+   * Suspend un vendeur : désactive (isActive=false) + ferme (isOpen=false).
+   * Réversible via toggleRestaurantActive(id, true).
+   *
+   * On NE touche PAS à adminApproved — un vendeur peut être suspendu
+   * temporairement sans repasser par toute la validation initiale.
+   */
+  async suspendVendor(restaurantId: string, reason: string, adminUserId: string) {
+    const vendor = await this.prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+    });
+    if (!vendor) throw new NotFoundException('Vendeur introuvable.');
+    if (!vendor.isActive) {
+      throw new BadRequestException('Ce vendeur est déjà suspendu.');
+    }
+
+    const updated = await this.prisma.restaurant.update({
+      where: { id: restaurantId },
+      data: { isActive: false, isOpen: false },
+    });
+
+    this.logger.warn(
+      `Vendeur ${vendor.nom} (${restaurantId}) suspendu par admin ${adminUserId} — raison: ${reason}`,
+    );
+
+    return {
+      data: updated,
+      message: 'Vendeur suspendu',
+    };
   }
 }

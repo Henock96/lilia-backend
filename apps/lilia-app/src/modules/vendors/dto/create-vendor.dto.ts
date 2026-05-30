@@ -1,63 +1,61 @@
+/* eslint-disable prettier/prettier */
 import {
   IsArray,
   IsBoolean,
-  IsEmail,
   IsEnum,
   IsInt,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   Max,
   MaxLength,
   Min,
-  MinLength,
 } from 'class-validator';
-import { VendorType } from '@prisma/client';
+import { DeliveryPriceMode, VendorType } from '@prisma/client';
 
-export class CreateRestaurantWithOwnerDto {
-  // User fields
-  @IsNotEmpty()
-  ownerFirebaseUid: string;
-
-  @IsEmail()
-  @IsNotEmpty()
-  email: string;
-
-  @IsString()
-  @IsNotEmpty()
-  @MinLength(6)
-  password: string;
+export class CreateVendorDto {
+  @IsEnum(VendorType)
+  vendorType: VendorType;
 
   @IsString()
   @IsNotEmpty()
   nom: string;
 
   @IsString()
-  @IsOptional()
-  phone?: string;
-
-  // Restaurant fields
-  @IsString()
   @IsNotEmpty()
-  restaurantNom: string;
+  adresse: string;
 
   @IsString()
   @IsNotEmpty()
-  restaurantAdresse: string;
+  phone: string;
 
-  @IsString()
-  @IsNotEmpty()
-  restaurantPhone: string;
+  @IsNumber()
+  @IsOptional()
+  latitude?: number;
+
+  @IsNumber()
+  @IsOptional()
+  longitude?: number;
 
   @IsString()
   @IsOptional()
-  restaurantImageUrl?: string;
+  imageUrl?: string;
 
-  // Type de vendeur — défaut RESTAURANT pour préserver le flux existant.
-  // Tout type non-RESTAURANT crée le vendeur avec adminApproved=false.
-  @IsEnum(VendorType)
+  // Livraison
+  @IsEnum(DeliveryPriceMode)
   @IsOptional()
-  vendorType?: VendorType;
+  deliveryPriceMode?: DeliveryPriceMode;
+
+  @IsNumber()
+  @IsOptional()
+  @Min(0)
+  fixedDeliveryFee?: number;
+
+  @IsNumber()
+  @IsOptional()
+  @Min(0)
+  minimumOrderAmount?: number;
 
   // HOME_COOK / BAKERY : précommandes
   @IsBoolean()
@@ -67,7 +65,7 @@ export class CreateRestaurantWithOwnerDto {
   @IsInt()
   @IsOptional()
   @Min(1)
-  @Max(168)
+  @Max(168) // 1h à 7 jours
   preorderLeadHours?: number;
 
   @IsInt()
@@ -95,4 +93,9 @@ export class CreateRestaurantWithOwnerDto {
   @IsOptional()
   @MaxLength(500)
   productionNote?: string;
+
+  // Le owner (User.id) est requis : un vendeur appartient à un user RESTAURATEUR
+  @IsString()
+  @IsNotEmpty()
+  ownerId: string;
 }

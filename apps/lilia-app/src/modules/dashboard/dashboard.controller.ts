@@ -116,4 +116,17 @@ export class DashboardController {
   getRestaurantRanking(@Query('period') period?: string) {
     return this.dashboardService.getRestaurantRanking(period);
   }
+
+  /**
+   * GET /dashboard/vendors
+   * Statistiques marketplace (ADMIN) : total, en attente, par type.
+   */
+  @Get('vendors')
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: 'Stats vendeurs : total, en attente de validation, par type',
+  })
+  getVendorStats() {
+    return this.dashboardService.getVendorStats();
+  }
 }

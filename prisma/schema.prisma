@@ -125,8 +125,41 @@ model Restaurant {
   estimatedDeliveryTimeMax Int              @default(30)    // Temps de livraison max (minutes)
   minimumOrderAmount      Float             @default(0)     // Montant minimum de commande
 
+  // Multi-vendeurs (Sprint A — LIL-111)
+  vendorType              VendorType        @default(RESTAURANT)
+  adminApproved           Boolean           @default(true)   // false par défaut pour BEVERAGE_SHOP via service
+  adminApprovedAt         DateTime?
+  adminApprovedById       String?                            // User.id de l'admin qui a approuvé (pas de FK)
+  acceptsPreorders        Boolean           @default(false)
+  preorderLeadHours       Int?                               // délai minimum en heures (ex: 24)
+  minAgeRequired          Int?                               // Réservé futur — désactivé côté code (LIL-112)
+  maxOrdersPerDay         Int?                               // null = illimité
+  vendorProfile           VendorProfile?
+
   createdAt               DateTime          @default(now())
   updatedAt               DateTime          @updatedAt
+
+  @@index([vendorType, isActive, adminApproved])             // marketplace filtering
+  @@index([vendorType, isOpen])                              // vendeurs ouverts par type
+}
+
+// Profil enrichi pour les vendeurs non-restaurant (Sprint A — LIL-111)
+model VendorProfile {
+  id                String     @id @default(cuid())
+  restaurantId      String     @unique
+  restaurant        Restaurant @relation(fields: [restaurantId], references: [id])
+
+  story             String?    // Récit du vendeur affiché sur sa page
+  certifications    String[]   // ["Fait maison", "Bio", "Importé direct"]
+  specialties       String[]   // ["Vins de Bordeaux", "Whisky écossais"]
+
+  licenseNumber     String?    // BEVERAGE_SHOP : numéro de licence alcool
+
+  nextAvailableSlot DateTime?  // HOME_COOK / BAKERY
+  productionNote    String?    // "Commandez 24h à l'avance"
+
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
 }
 
 // SpÃƒÆ’Ã‚Â©cialitÃƒÆ’Ã‚Â©s d'un restaurant (ex: "Pizza", "Sushi", "Burgers", "Africain")
@@ -203,11 +236,33 @@ model Product {
   menus          MenuProduct[]    // Relation many-to-many avec MenuDuJour
   orderItems     OrderItem[]
   cartItems      CartItem[]
+
+  // Multi-vendeurs (Sprint A — LIL-111)
+  productType    ProductType      @default(FOOD)
+  stockMode      StockMode        @default(DAILY)            // PERMANENT n'est pas reset par le cron
+
+  // Métadonnées alcool (productType = ALCOHOL)
+  alcoholContent Float?                                      // % vol, ex: 40.0
+  vintage        Int?                                        // millésime, ex: 2019
+  origin         String?                                     // "Bordeaux, France"
+  volumeMl       Int?                                        // volume en ml, ex: 750
+
+  // Métadonnées fait maison / pâtisserie
+  ingredients    String?                                     // liste pour info allergènes
+  shelfLifeDays  Int?                                        // durée conservation en jours
+  madeToOrder    Boolean          @default(false)
+
+  // Disponibilité horaire (BAKERY surtout)
+  availableFrom  String?                                     // "HH:mm"
+  availableUntil String?                                     // "HH:mm"
+
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
   @@index([restaurantId])
   @@index([categoryId])
+  @@index([restaurantId, productType])                       // catalogue par type
+  @@index([productType, stockMode])                          // cron reset DAILY uniquement
 }
 
 model ProductVariant {
@@ -297,6 +352,15 @@ model Order {
   promoCodeId     String?
   promoCode       PromoCode? @relation(fields: [promoCodeId], references: [id])
   discountAmount  Float      @default(0)  // montant dÃƒÆ’Ã‚Â©duit par le code promo
+
+  // Précommandes (Sprint A — LIL-111)
+  isPreorder          Boolean   @default(false)
+  scheduledFor        DateTime?               // date/heure de livraison souhaitée
+  preorderConfirmedAt DateTime?               // confirmé par le vendeur
+
+  // Vérification d'âge (alcool — Sprint A — LIL-111)
+  ageVerified         Boolean   @default(false)
+  ageVerifiedAt       DateTime?
 
   @@index([restaurantId, status, createdAt(sort: Desc)]) // dashboard resto: commandes par statut, plus recentes (LFD-9)
   @@index([promoCodeId])
@@ -436,6 +500,7 @@ model Payment {
 
   @@map("payments")
   @@index([orderId])
+  @@index([status])                             // dashboard paiements filtrés par statut
 }
 
 enum PaymentStatus {
@@ -464,6 +529,28 @@ enum DeliveryPriceMode {
 enum MenuType {
   COMBO          // Menu compose de plusieurs produits existants
   PLAT_SPECIAL   // Plat special du jour (produit auto-cree)
+}
+
+// Multi-vendeurs (Sprint A — LIL-111)
+enum VendorType {
+  RESTAURANT      // Existant — comportement inchangé
+  HOME_COOK       // Pâtissiers, vendeurs maison, traiteurs
+  BEVERAGE_SHOP   // Sodas, jus, eaux, boissons importées non-alcoolisées
+  BAKERY          // Boulangeries, viennoiseries
+  GROCERY         // Réservé pour usage futur
+}
+
+enum ProductType {
+  FOOD            // Défaut — plats et repas (existant)
+  BEVERAGE        // Boissons (sodas, jus, eaux)
+  ALCOHOL         // Réservé futur — désactivé côté code (LIL-112)
+  PASTRY          // Pâtisseries, viennoiseries
+  GROCERY         // Épicerie sèche
+}
+
+enum StockMode {
+  DAILY           // Reset chaque nuit via cron (comportement actuel)
+  PERMANENT       // Stock réel, décrémentation pure, pas de reset
 }
 
 // ModÃƒÆ’Ã‚Â¨le pour les avis et notes des clients
