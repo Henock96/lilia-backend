@@ -83,7 +83,7 @@ export class RestaurantsService {
 
     async findAll() {
         const restaurants = await this.prisma.restaurant.findMany({
-            where: { isActive: true },
+            where: { isActive: true, adminApproved: true },
             include: RESTAURANT_INCLUDE,
             orderBy: { createdAt: 'desc' },
         });

@@ -1,28 +1,43 @@
 /* eslint-disable prettier/prettier */
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma, ProductType, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { PaginationService } from '../../common/pagination/pagination.service';
+import { ProductValidatorService } from './product-validator.service';
 
 @Injectable()
 export class ProductsService {
-  constructor(private prisma: PrismaService,
-    private readonly paginationService: PaginationService
+  constructor(
+    private prisma: PrismaService,
+    private readonly paginationService: PaginationService,
+    private readonly productValidator: ProductValidatorService,
   ) {}
 
   /**
-   * Récupère tous les produits avec filtres optionnels
+   * Récupère les produits du catalogue marketplace (route publique).
+   * Filtre toujours sur restaurant.isActive + adminApproved : on n'expose
+   * jamais le catalogue d'un vendeur en attente de validation ou suspendu.
    */
-  async findAll(restaurantId?: string, categoryId?: string, page = 1, limit = 20) {
-    const where: any = {};
-
-    if (restaurantId) {
-      where.restaurantId = restaurantId;
-    }
-    if (categoryId) {
-      where.categoryId = categoryId;
-    }
+  async findAll(
+    restaurantId?: string,
+    categoryId?: string,
+    page = 1,
+    limit = 20,
+    productType?: ProductType,
+    vendorType?: VendorType,
+  ) {
+    const where: Prisma.ProductWhereInput = {
+      restaurant: {
+        isActive: true,
+        adminApproved: true,
+        ...(vendorType && { vendorType }),
+      },
+      ...(restaurantId && { restaurantId }),
+      ...(categoryId && { categoryId }),
+      ...(productType && { productType }),
+    };
 
     const [products, total] = await Promise.all([
       this.prisma.product.findMany({
@@ -34,6 +49,7 @@ export class ProductsService {
             select: {
               id: true,
               nom: true,
+              vendorType: true,
             },
           },
         },
@@ -113,6 +129,21 @@ export class ProductsService {
       if (!categoryExists) {
         throw new NotFoundException("La catégorie spécifiée n'existe pas.");
       }
+    }
+
+    // Multi-vendeurs : si changement de productType, revalider la compat.
+    if (dto.productType && dto.productType !== product.productType) {
+      this.productValidator.assertProductTypeAllowed(
+        product.restaurant.vendorType,
+        dto.productType,
+      );
+    }
+    // Si une seule borne horaire est touchée, valider la fenêtre finale.
+    if (dto.availableFrom !== undefined || dto.availableUntil !== undefined) {
+      this.productValidator.assertAvailabilityWindow(
+        dto.availableFrom ?? product.availableFrom ?? undefined,
+        dto.availableUntil ?? product.availableUntil ?? undefined,
+      );
     }
 
     const { variants, ...productData } = dto;
@@ -300,6 +331,18 @@ export class ProductsService {
       }
     }
 
+    // Multi-vendeurs : valider que le vendorType accepte ce productType.
+    // FOOD est le défaut historique et reste compatible avec RESTAURANT.
+    const productType = dto.productType ?? ProductType.FOOD;
+    this.productValidator.assertProductTypeAllowed(
+      restaurant.vendorType,
+      productType,
+    );
+    this.productValidator.assertAvailabilityWindow(
+      dto.availableFrom,
+      dto.availableUntil,
+    );
+
     const produit = await this.prisma.$transaction(async (tx) => {
       // 1. Créer le produit de base
       const product = await tx.product.create({
@@ -310,6 +353,15 @@ export class ProductsService {
           prixOriginal: dto.prixOriginal,
           restaurantId: restaurant.id,
           categoryId: dto.categoryId,
+          productType,
+          stockMode: dto.stockMode,
+          stockQuotidien: dto.stockQuotidien,
+          stockRestant: dto.stockQuotidien,
+          ingredients: dto.ingredients,
+          shelfLifeDays: dto.shelfLifeDays,
+          madeToOrder: dto.madeToOrder ?? false,
+          availableFrom: dto.availableFrom,
+          availableUntil: dto.availableUntil,
         },
       });
 

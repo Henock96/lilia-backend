@@ -31,6 +31,7 @@ import { PlatformSettingsModule } from './modules/platform-settings/platform-set
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { PromoModule } from './modules/promo/promo.module';
 import { FavoritesModule } from './modules/favorites/favorites.module';
+import { VendorsModule } from './modules/vendors/vendors.module';
 
 // Infrastructure
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -46,6 +47,7 @@ import { OrdersListener } from './modules/listeners/orders.listener';
 import { PaymentListener } from './modules/listeners/payment.listener';
 import { MenusListener } from './modules/listeners/menus.listener';
 import { UserListener } from './modules/listeners/user.listener';
+import { VendorsListener } from './modules/listeners/vendors.listener';
 import { TrackingModule } from './modules/tracking/tracking.module';
 // EmailListener supprimÃ© â€” logique dÃ©placÃ©e dans UserListener
 import { RedisModule } from '@nestjs-modules/ioredis';
@@ -98,6 +100,7 @@ import { RedisModule } from '@nestjs-modules/ioredis';
     DashboardModule,
     PromoModule,
     FavoritesModule,
+    VendorsModule,
 
     // Infrastructure
     NotificationsModule,
@@ -117,6 +120,7 @@ import { RedisModule } from '@nestjs-modules/ioredis';
     PaymentListener,
     MenusListener,
     UserListener,
+    VendorsListener,
   ],
 })
 export class AppModule {}

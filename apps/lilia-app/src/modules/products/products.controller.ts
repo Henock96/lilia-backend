@@ -17,6 +17,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { DecodedIdToken } from 'firebase-admin/auth';
+import { ProductType, VendorType } from '@prisma/client';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
@@ -39,9 +40,11 @@ export class ProductsController {
 
   @Public()
   @Get()
-  @ApiOperation({ summary: 'Tous les produits avec filtres' })
+  @ApiOperation({ summary: 'Catalogue marketplace (vendeurs approuvés + actifs)' })
   @ApiQuery({ name: 'restaurantId', required: false })
   @ApiQuery({ name: 'categoryId', required: false })
+  @ApiQuery({ name: 'productType', required: false, enum: ProductType })
+  @ApiQuery({ name: 'vendorType', required: false, enum: VendorType })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   findAll(
@@ -49,12 +52,16 @@ export class ProductsController {
     @Query('categoryId') categoryId?: string,
     @Query('page') page = '1',
     @Query('limit') limit = '20',
+    @Query('productType') productType?: ProductType,
+    @Query('vendorType') vendorType?: VendorType,
   ) {
     return this.productsService.findAll(
       restaurantId,
       categoryId,
       parseInt(page, 10),
       parseInt(limit, 10),
+      productType,
+      vendorType,
     );
   }
 

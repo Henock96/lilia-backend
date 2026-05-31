@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsEnum, IsOptional, IsBoolean, IsNumber } from 'class-validator';
+import { IsString, IsNotEmpty, IsEnum, IsOptional, IsBoolean, IsNumber, IsDateString } from 'class-validator';
 import { PaymentMethod } from '@prisma/client';
 import { Transform } from 'class-transformer';
 
@@ -39,4 +39,13 @@ export class CreateOrderDto {
   @IsNumber()
   @IsOptional()
   deliveryLongitude?: number;
+
+  // Multi-vendeurs (LIL-112)
+  @IsBoolean()
+  @IsOptional()
+  isPreorder?: boolean;
+
+  @IsDateString()
+  @IsOptional()
+  scheduledFor?: string; // ISO 8601
 }

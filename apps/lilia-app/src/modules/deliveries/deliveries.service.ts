@@ -158,6 +158,9 @@ export class DeliveriesService {
                 nom: true,
                 adresse: true,
                 phone: true,
+                vendorType: true,
+                acceptsPreorders: true,
+                preorderLeadHours: true,
               },
             },
             items: {
@@ -195,6 +198,9 @@ export class DeliveriesService {
                 nom: true,
                 adresse: true,
                 phone: true,
+                vendorType: true,
+                acceptsPreorders: true,
+                preorderLeadHours: true,
               },
             },
             items: {
@@ -424,11 +430,22 @@ export class DeliveriesService {
       },
     });
 
+    const isPreorder = delivery.order.isPreorder ?? false;
+    const scheduledFor = delivery.order.scheduledFor;
+
     await this.notificationsService.sendPushNotification(
       deliverer.id,
-      'Nouvelle mission',
+      isPreorder && scheduledFor
+        ? '📅 Pré-commande à récupérer le ' + this.formatScheduledForFr(scheduledFor)
+        : '🚚 Nouvelle mission',
       `Commande à récupérer chez ${delivery.order.restaurant.nom}`,
-      { type: 'delivery_assigned', deliveryId: updated.id, orderId: delivery.orderId },
+      {
+        type: 'delivery_assigned',
+        deliveryId: updated.id,
+        orderId: delivery.orderId,
+        isPreorder: String(isPreorder),
+        scheduledFor: scheduledFor?.toISOString() ?? '',
+      },
     );
 
     return { data: updated, message: 'Livreur assigné avec succès' };
@@ -560,7 +577,7 @@ export class DeliveriesService {
         order: {
           include: {
             user: { select: { nom: true, phone: true } },
-            restaurant: { select: { id: true, nom: true, adresse: true, phone: true } },
+            restaurant: { select: { id: true, nom: true, adresse: true, phone: true, vendorType: true, acceptsPreorders: true, preorderLeadHours: true } },
             items: { include: { product: { select: { nom: true } } } },
           },
         },
@@ -640,5 +657,15 @@ export class DeliveriesService {
 
     if (!delivery) throw new NotFoundException('Aucune livraison trouvée pour cette commande.');
     return { data: delivery };
+  }
+
+  private formatScheduledForFr(d: Date): string {
+    const days = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
+    const months = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+                    'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
+    const dayName = days[d.getDay()].charAt(0).toUpperCase() + days[d.getDay()].slice(1);
+    const hh = d.getHours().toString().padStart(2, '0');
+    const mm = d.getMinutes().toString().padStart(2, '0');
+    return `${dayName} ${d.getDate()} ${months[d.getMonth()]} à ${hh}:${mm}`;
   }
 }

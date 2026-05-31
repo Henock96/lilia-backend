@@ -17,14 +17,17 @@ import {
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
-import { Role } from '@prisma/client';
+import { Role, User } from '@prisma/client';
 
 import { AdminService } from './admin.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 import { BanUserDto } from './dto/ban-user.dto';
 import { GetDelivererMissionsQueryDto } from './dto/get-deliverer-missions.dto';
+import { AdminVendorFilterDto } from './dto/admin-vendor-filter.dto';
+import { SuspendVendorDto } from './dto/suspend-vendor.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { FirebaseService } from '../firebase/firebase.service';
 
 /**
@@ -74,6 +77,52 @@ export class AdminController {
   ) {
     return this.adminService.toggleRestaurantActive(id, isActive);
   }
+
+  // ─── VENDORS (marketplace multi-vendeurs) ──────────────────────────────────
+  // Vue admin complète : inclut les vendeurs non approuvés et désactivés
+  // (la route publique /vendors filtre uniquement les approuvés actifs).
+
+  @Get('vendors')
+  @ApiOperation({
+    summary: 'Tous les vendeurs (admin), filtrables par type / statut',
+  })
+  @ApiQuery({ name: 'vendorType', required: false })
+  @ApiQuery({ name: 'adminApproved', required: false, type: Boolean })
+  @ApiQuery({ name: 'isActive', required: false, type: Boolean })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  getAllVendors(@Query() dto: AdminVendorFilterDto) {
+    return this.adminService.getAllVendors(dto);
+  }
+
+  @Get('vendors/pending')
+  @ApiOperation({ summary: 'Vendeurs en attente de validation' })
+  getPendingVendors() {
+    return this.adminService.getPendingVendors();
+  }
+
+  @Patch('vendors/:id/approve')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Approuver un vendeur en attente' })
+  @ApiParam({ name: 'id', description: 'ID du vendeur (Restaurant)' })
+  approveVendor(@Param('id') id: string, @CurrentUser() admin: User) {
+    return this.adminService.approveVendor(id, admin.id);
+  }
+
+  @Patch('vendors/:id/suspend')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Suspendre un vendeur (isActive=false, raison obligatoire)',
+  })
+  @ApiParam({ name: 'id', description: 'ID du vendeur (Restaurant)' })
+  suspendVendor(
+    @Param('id') id: string,
+    @Body() dto: SuspendVendorDto,
+    @CurrentUser() admin: User,
+  ) {
+    return this.adminService.suspendVendor(id, dto.reason, admin.id);
+  }
+
   // ─── UTILISATEURS ──────────────────────────────────────────────────────────
 
   @Get('users')

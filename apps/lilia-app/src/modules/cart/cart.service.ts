@@ -12,7 +12,16 @@ import { AddMenuToCartDto } from './dto/add-menu-to-cart.dto';
 const CART_INCLUDE = {
   items: {
     include: {
-      product: { select: { nom: true, imageUrl: true, restaurantId: true } },
+      // `madeToOrder` exposé pour que le client puisse afficher la modal
+      // de conflit (LIL-122 décision 2a) avant d'appeler addItem.
+      product: {
+        select: {
+          nom: true,
+          imageUrl: true,
+          restaurantId: true,
+          madeToOrder: true,
+        },
+      },
       variant: { select: { label: true, prix: true } },
       menu: { select: { id: true, nom: true, prix: true, imageUrl: true } },
     },
@@ -58,6 +67,30 @@ export class CartService {
       );
     }
   }
+
+  /**
+   * LIL-121 (décision 2a) : un panier = un slot. On interdit de mélanger des
+   * produits immédiats (`madeToOrder=false`) et des produits sur commande
+   * (`madeToOrder=true`) dans le même panier — sinon le checkout devrait
+   * gérer un slot/un timing par item, ce qu'on n'a pas voulu pour le MVP.
+   *
+   * Defense in depth : le frontend doit bloquer aussi côté UX (modal), mais
+   * on protège ici contre n'importe quel client API qui contournerait.
+   */
+  private assertSameMadeToOrderMode(
+    cartItems: { product: { madeToOrder: boolean } }[],
+    incomingMadeToOrder: boolean,
+  ) {
+    if (cartItems.length === 0) return;
+    const existingMadeToOrder = cartItems[0].product.madeToOrder;
+    if (existingMadeToOrder !== incomingMadeToOrder) {
+      throw new BadRequestException(
+        incomingMadeToOrder
+          ? 'Votre panier contient déjà des produits immédiats. Pour ajouter ce produit sur commande, terminez la commande en cours ou videz votre panier.'
+          : 'Votre panier contient déjà des produits sur commande. Pour ajouter ce produit immédiat, terminez la commande en cours ou videz votre panier.',
+      );
+    }
+  }
   /**
    * Ajoute un article individuel au panier ou met à jour sa quantité.
    * Vérifie que tous les articles du panier proviennent du même restaurant.
@@ -79,6 +112,7 @@ export class CartService {
     });
 
     this.assertSameRestaurant(cartItems, variant.product.restaurantId);
+    this.assertSameMadeToOrderMode(cartItems, variant.product.madeToOrder);
 
     // Chercher un item individuel existant (menuId = null)
     const existingItem = await this.prisma.cartItem.findFirst({
@@ -164,6 +198,13 @@ export class CartService {
     });
 
     this.assertSameRestaurant(cartItems, menu.restaurantId);
+    // Un menu est composé de produits — si l'un d'eux est madeToOrder, on
+    // refuse de mélanger avec un panier d'immédiats. En pratique les menus
+    // sont des combos restaurant (immédiats), mais on protège quand même.
+    const menuHasMadeToOrder = menu.products.some(
+      (mp) => mp.product.madeToOrder,
+    );
+    this.assertSameMadeToOrderMode(cartItems, menuHasMadeToOrder);
 
     // Vérifier si le menu est déjà dans le panier
     const existingMenuItems = await this.prisma.cartItem.findMany({

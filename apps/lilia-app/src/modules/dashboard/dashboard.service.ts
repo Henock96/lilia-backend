@@ -588,4 +588,32 @@ export class DashboardService {
         return null;
     }
   }
+
+  /**
+   * Statistiques vendeurs pour le dashboard admin (LIL-113).
+   * Retourne le total, les vendeurs en attente de validation,
+   * et la répartition par VendorType et par statut.
+   */
+  async getVendorStats() {
+    const [total, pendingApproval, suspended, byType] = await Promise.all([
+      this.prisma.restaurant.count(),
+      this.prisma.restaurant.count({ where: { adminApproved: false } }),
+      this.prisma.restaurant.count({
+        where: { adminApproved: true, isActive: false },
+      }),
+      this.prisma.restaurant.groupBy({
+        by: ['vendorType'],
+        _count: { vendorType: true },
+      }),
+    ]);
+
+    return {
+      total,
+      pendingApproval,
+      suspended,
+      byType: Object.fromEntries(
+        byType.map((row) => [row.vendorType, row._count.vendorType]),
+      ),
+    };
+  }
 }
