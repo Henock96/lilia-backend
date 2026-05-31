@@ -430,6 +430,8 @@ export class DeliveriesService {
       },
     });
 
+    // Note: dépend de Prisma include sur order (cf. assignDeliverer / assignDelivererToOrder)
+    // pour que isPreorder/scheduledFor arrivent. Ne pas narrow avec un select sans les ajouter.
     const isPreorder = delivery.order.isPreorder ?? false;
     const scheduledFor = delivery.order.scheduledFor;
 
@@ -578,7 +580,7 @@ export class DeliveriesService {
           include: {
             user: { select: { nom: true, phone: true } },
             restaurant: { select: { id: true, nom: true, adresse: true, phone: true, vendorType: true, acceptsPreorders: true, preorderLeadHours: true } },
-            items: { include: { product: { select: { nom: true } } } },
+            items: { include: { product: { select: { nom: true, madeToOrder: true } } } },
           },
         },
       },
@@ -660,12 +662,16 @@ export class DeliveriesService {
   }
 
   private formatScheduledForFr(d: Date): string {
+    // scheduledFor est stocké en UTC. Le serveur Render tourne en UTC.
+    // Brazzaville = WAT = UTC+1. On décale explicitement puis on lit
+    // les composantes UTC pour avoir l'heure locale Congo.
+    const wat = new Date(d.getTime() + 60 * 60 * 1000);
     const days = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
     const months = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin',
                     'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
-    const dayName = days[d.getDay()].charAt(0).toUpperCase() + days[d.getDay()].slice(1);
-    const hh = d.getHours().toString().padStart(2, '0');
-    const mm = d.getMinutes().toString().padStart(2, '0');
-    return `${dayName} ${d.getDate()} ${months[d.getMonth()]} à ${hh}:${mm}`;
+    const dayName = days[wat.getUTCDay()].charAt(0).toUpperCase() + days[wat.getUTCDay()].slice(1);
+    const hh = wat.getUTCHours().toString().padStart(2, '0');
+    const mm = wat.getUTCMinutes().toString().padStart(2, '0');
+    return `${dayName} ${wat.getUTCDate()} ${months[wat.getUTCMonth()]} à ${hh}:${mm}`;
   }
 }
