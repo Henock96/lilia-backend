@@ -32,6 +32,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { PromoModule } from './modules/promo/promo.module';
 import { FavoritesModule } from './modules/favorites/favorites.module';
 import { VendorsModule } from './modules/vendors/vendors.module';
+import { VendorPhotosModule } from './modules/vendor-photos/vendor-photos.module';
 
 // Infrastructure
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -101,6 +102,7 @@ import { RedisModule } from '@nestjs-modules/ioredis';
     PromoModule,
     FavoritesModule,
     VendorsModule,
+    VendorPhotosModule,
 
     // Infrastructure
     NotificationsModule,
