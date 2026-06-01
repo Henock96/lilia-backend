@@ -6,54 +6,55 @@ generator client {
   previewFeatures = ["postgresqlExtensions"]
   binaryTargets   = ["native", "debian-openssl-3.0.x"]
 }
+
 datasource db {
   provider     = "postgresql"
   relationMode = "prisma"
 }
 
 model User {
-  id          String   @id @default(cuid())
-  firebaseUid String   @unique
-  email       String   @unique
-  nom        String?
-  phone       String?
-  imageUrl    String?
-  role        Role     @default(CLIENT)
+  id           String        @id @default(cuid())
+  firebaseUid  String        @unique
+  email        String        @unique
+  nom          String?
+  phone        String?
+  imageUrl     String?
+  role         Role          @default(CLIENT)
   driverStatus DriverStatus? // Statut du livreur, null pour les non-livreurs
-  lastLogin   DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  restaurant  Restaurant?
-  deliveries  Delivery[]
-  cart        Cart?
-  adresses   Adresses[] // Ajout de la relation aux adresses
-  fcmTokens   FcmToken[]
-  reviews     Review[]
-  orders      Order[]    // Commandes passÃƒÆ’Ã‚Â©es par l'utilisateur
-  promoUsages     PromoUsage[] @relation("UserPromoUsages")
+  lastLogin    DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  restaurant   Restaurant?
+  deliveries   Delivery[]
+  cart         Cart?
+  adresses     Adresses[] // Ajout de la relation aux adresses
+  fcmTokens    FcmToken[]
+  reviews      Review[]
+  orders       Order[] // Commandes passÃƒÆ’Ã‚Â©es par l'utilisateur
+  promoUsages  PromoUsage[]  @relation("UserPromoUsages")
 
   // Ajout recent 04/04/2026
-  statusUser StatusUser   @default(ACTIVE)
+  statusUser StatusUser @default(ACTIVE)
 
   // Parrainage
-  referralCode     String?  @unique          // code unique ÃƒÆ’Ã‚Â  partager
-  referredByCode   String?                   // code du parrain utilisÃƒÆ’Ã‚Â© ÃƒÆ’Ã‚Â  l'inscription
-  referralRewarded Boolean  @default(false)  // vrai quand la rÃƒÆ’Ã‚Â©compense a ÃƒÆ’Ã‚Â©tÃƒÆ’Ã‚Â© ÃƒÆ’Ã‚Â©mise
+  referralCode     String? @unique // code unique ÃƒÆ’Ã‚Â  partager
+  referredByCode   String? // code du parrain utilisÃƒÆ’Ã‚Â© ÃƒÆ’Ã‚Â  l'inscription
+  referralRewarded Boolean @default(false) // vrai quand la rÃƒÆ’Ã‚Â©compense a ÃƒÆ’Ã‚Â©tÃƒÆ’Ã‚Â© ÃƒÆ’Ã‚Â©mise
 
   // Points de fidÃƒÆ’Ã‚Â©litÃƒÆ’Ã‚Â©
-  loyaltyPoints    Int      @default(0)
+  loyaltyPoints       Int                  @default(0)
   loyaltyTransactions LoyaltyTransaction[]
-  favorites        Favorite[]
+  favorites           Favorite[]
 }
 
 model LoyaltyTransaction {
-  id          String   @id @default(cuid())
-  userId      String
-  user        User     @relation(fields: [userId], references: [id])
-  points      Int                           // positif = gain, nÃƒÆ’Ã‚Â©gatif = dÃƒÆ’Ã‚Â©pense
-  reason      String                        // ex: "Commande #ABC123", "RÃƒÆ’Ã‚Â©compense parrainage"
-  orderId     String?                       // lien optionnel ÃƒÆ’Ã‚Â  la commande
-  createdAt   DateTime @default(now())
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  points    Int // positif = gain, nÃƒÆ’Ã‚Â©gatif = dÃƒÆ’Ã‚Â©pense
+  reason    String // ex: "Commande #ABC123", "RÃƒÆ’Ã‚Â©compense parrainage"
+  orderId   String? // lien optionnel ÃƒÆ’Ã‚Â  la commande
+  createdAt DateTime @default(now())
 
   @@index([userId])
   @@index([userId, createdAt(sort: Desc)]) // historique fidelite par user, plus recent en premier (LFD-9)
@@ -73,13 +74,13 @@ model Adresses {
   id         String    @id @default(cuid())
   rue        String
   ville      String
-  etat       String?   // RÃƒÆ’Ã‚Â©gion/ÃƒÆ’Ã¢â‚¬Â°tat
+  etat       String? // RÃƒÆ’Ã‚Â©gion/ÃƒÆ’Ã¢â‚¬Â°tat
   country    String
   user       User      @relation(fields: [userId], references: [id])
   userId     String
-  isDefault Boolean @default(false)
+  isDefault  Boolean   @default(false)
   quartier   Quartier? @relation(fields: [quartierId], references: [id])
-  quartierId String?   // RÃƒÆ’Ã‚Â©fÃƒÆ’Ã‚Â©rence au quartier pour le calcul des frais
+  quartierId String? // RÃƒÆ’Ã‚Â©fÃƒÆ’Ã‚Â©rence au quartier pour le calcul des frais
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
@@ -88,78 +89,79 @@ model Adresses {
 }
 
 model Restaurant {
-  id                      String            @id @default(cuid())
-  nom                     String
-  adresse                 String
-  phone                   String
-  imageUrl                String?
+  id       String  @id @default(cuid())
+  nom      String
+  adresse  String
+  phone    String
+  imageUrl String?
 
   //Ajout 04/04
-  latitude                Float?
-  longitude               Float?
+  latitude  Float?
+  longitude Float?
 
-  owner                   User              @relation(fields: [ownerId], references: [id])
-  ownerId                 String            @unique
-  products                Product[]
-  menuDuJour              MenuDuJour[]
-  orders                  Order[]
-  reviews                 Review[]
-  favorites               Favorite[]
-  specialties             Specialty[]       // SpÃƒÆ’Ã‚Â©cialitÃƒÆ’Ã‚Â©s du restaurant
-  banners                 Banner[]          // BanniÃƒÆ’Ã‚Â¨res du restaurant
+  owner       User          @relation(fields: [ownerId], references: [id])
+  ownerId     String        @unique
+  products    Product[]
+  menuDuJour  MenuDuJour[]
+  orders      Order[]
+  reviews     Review[]
+  favorites   Favorite[]
+  specialties Specialty[] // SpÃƒÆ’Ã‚Â©cialitÃƒÆ’Ã‚Â©s du restaurant
+  banners     Banner[] // BanniÃƒÆ’Ã‚Â¨res du restaurant
+  photos      VendorPhoto[] // Galerie photos vendeur
 
   // Statut d'activitÃƒÆ’Ã‚Â© (contrÃƒÆ’Ã‚Â´lÃƒÆ’Ã‚Â© par l'admin)
-  isActive                Boolean           @default(true)  // Restaurant actif/dÃƒÆ’Ã‚Â©sactivÃƒÆ’Ã‚Â© par l'admin
+  isActive Boolean @default(true) // Restaurant actif/dÃƒÆ’Ã‚Â©sactivÃƒÆ’Ã‚Â© par l'admin
 
   // Statut d'ouverture
-  isOpen                  Boolean           @default(true)  // Restaurant ouvert/fermÃƒÆ’Ã‚Â©
-  manualOverride          Boolean           @default(false) // Si true, le cron ne modifie pas isOpen
-  operatingHours          OperatingHours[]
-  promoCodes      PromoCode[]  @relation("RestaurantPromoCodes")
+  isOpen         Boolean          @default(true) // Restaurant ouvert/fermÃƒÆ’Ã‚Â©
+  manualOverride Boolean          @default(false) // Si true, le cron ne modifie pas isOpen
+  operatingHours OperatingHours[]
+  promoCodes     PromoCode[]      @relation("RestaurantPromoCodes")
 
   // Configuration de la livraison
-  deliveryPriceMode       DeliveryPriceMode @default(FIXED)
-  fixedDeliveryFee        Float             @default(1000)   // Prix fixe si mode FIXED
-  deliveryZones           DeliveryZone[]    // Zones de livraison si mode ZONE_BASED
-  estimatedDeliveryTimeMin Int              @default(15)    // Temps de livraison min (minutes)
-  estimatedDeliveryTimeMax Int              @default(30)    // Temps de livraison max (minutes)
-  minimumOrderAmount      Float             @default(0)     // Montant minimum de commande
+  deliveryPriceMode        DeliveryPriceMode @default(FIXED)
+  fixedDeliveryFee         Float             @default(1000) // Prix fixe si mode FIXED
+  deliveryZones            DeliveryZone[] // Zones de livraison si mode ZONE_BASED
+  estimatedDeliveryTimeMin Int               @default(15) // Temps de livraison min (minutes)
+  estimatedDeliveryTimeMax Int               @default(30) // Temps de livraison max (minutes)
+  minimumOrderAmount       Float             @default(0) // Montant minimum de commande
 
   // Multi-vendeurs (Sprint A — LIL-111)
-  vendorType              VendorType        @default(RESTAURANT)
-  adminApproved           Boolean           @default(true)   // false par défaut pour BEVERAGE_SHOP via service
-  adminApprovedAt         DateTime?
-  adminApprovedById       String?                            // User.id de l'admin qui a approuvé (pas de FK)
-  acceptsPreorders        Boolean           @default(false)
-  preorderLeadHours       Int?                               // délai minimum en heures (ex: 24)
-  minAgeRequired          Int?                               // Réservé futur — désactivé côté code (LIL-112)
-  maxOrdersPerDay         Int?                               // null = illimité
-  vendorProfile           VendorProfile?
+  vendorType        VendorType     @default(RESTAURANT)
+  adminApproved     Boolean        @default(true) // false par défaut pour BEVERAGE_SHOP via service
+  adminApprovedAt   DateTime?
+  adminApprovedById String? // User.id de l'admin qui a approuvé (pas de FK)
+  acceptsPreorders  Boolean        @default(false)
+  preorderLeadHours Int? // délai minimum en heures (ex: 24)
+  minAgeRequired    Int? // Réservé futur — désactivé côté code (LIL-112)
+  maxOrdersPerDay   Int? // null = illimité
+  vendorProfile     VendorProfile?
 
-  createdAt               DateTime          @default(now())
-  updatedAt               DateTime          @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  @@index([vendorType, isActive, adminApproved])             // marketplace filtering
-  @@index([vendorType, isOpen])                              // vendeurs ouverts par type
+  @@index([vendorType, isActive, adminApproved]) // marketplace filtering
+  @@index([vendorType, isOpen]) // vendeurs ouverts par type
 }
 
 // Profil enrichi pour les vendeurs non-restaurant (Sprint A — LIL-111)
 model VendorProfile {
-  id                String     @id @default(cuid())
-  restaurantId      String     @unique
-  restaurant        Restaurant @relation(fields: [restaurantId], references: [id])
+  id           String     @id @default(cuid())
+  restaurantId String     @unique
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
 
-  story             String?    // Récit du vendeur affiché sur sa page
-  certifications    String[]   // ["Fait maison", "Bio", "Importé direct"]
-  specialties       String[]   // ["Vins de Bordeaux", "Whisky écossais"]
+  story          String? // Récit du vendeur affiché sur sa page
+  certifications String[] // ["Fait maison", "Bio", "Importé direct"]
+  specialties    String[] // ["Vins de Bordeaux", "Whisky écossais"]
 
-  licenseNumber     String?    // BEVERAGE_SHOP : numéro de licence alcool
+  licenseNumber String? // BEVERAGE_SHOP : numéro de licence alcool
 
-  nextAvailableSlot DateTime?  // HOME_COOK / BAKERY
-  productionNote    String?    // "Commandez 24h à l'avance"
+  nextAvailableSlot DateTime? // HOME_COOK / BAKERY
+  productionNote    String? // "Commandez 24h à l'avance"
 
-  createdAt         DateTime   @default(now())
-  updatedAt         DateTime   @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // SpÃƒÆ’Ã‚Â©cialitÃƒÆ’Ã‚Â©s d'un restaurant (ex: "Pizza", "Sushi", "Burgers", "Africain")
@@ -176,31 +178,33 @@ model Specialty {
 
 model Category {
   id        String    @id @default(cuid())
-  nom      String    @unique
+  nom       String    @unique
   products  Product[]
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 }
+
 model MenuDuJour {
-  id             String         @id @default(cuid())
+  id             String        @id @default(cuid())
   nom            String
   description    String?
   imageUrl       String?
   prix           Float
-  type           MenuType       @default(COMBO) // COMBO = multi-produits, PLAT_SPECIAL = plat unique
-  ingredients    String?        // Composition du plat special (texte libre, ex: "Riz, poulet, legumes")
-  stockQuotidien Int?           // Quantite disponible par jour (null = illimite)
-  stockRestant   Int?           // Quantite restante aujourd'hui (null = illimite)
-  dateDebut      DateTime       // Date et heure de dÃƒÆ’Ã‚Â©but de validitÃƒÆ’Ã‚Â© du menu
-  dateFin        DateTime       // Date et heure de fin de validitÃƒÆ’Ã‚Â© du menu
-  isActive       Boolean        @default(true) // Permet de dÃƒÆ’Ã‚Â©sactiver manuellement un menu
-  restaurant     Restaurant     @relation(fields: [restaurantId], references: [id])
+  type           MenuType      @default(COMBO) // COMBO = multi-produits, PLAT_SPECIAL = plat unique
+  ingredients    String? // Composition du plat special (texte libre, ex: "Riz, poulet, legumes")
+  stockQuotidien Int? // Quantite disponible par jour (null = illimite)
+  stockRestant   Int? // Quantite restante aujourd'hui (null = illimite)
+  dateDebut      DateTime // Date et heure de dÃƒÆ’Ã‚Â©but de validitÃƒÆ’Ã‚Â© du menu
+  dateFin        DateTime // Date et heure de fin de validitÃƒÆ’Ã‚Â© du menu
+  isActive       Boolean       @default(true) // Permet de dÃƒÆ’Ã‚Â©sactiver manuellement un menu
+  restaurant     Restaurant    @relation(fields: [restaurantId], references: [id])
   restaurantId   String
-  products       MenuProduct[]  // Relation many-to-many avec Product
+  products       MenuProduct[] // Relation many-to-many avec Product
   orderItems     OrderItem[]
   cartItems      CartItem[]
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  images         MenuImage[] // Galerie photos menu
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 
   @@index([restaurantId])
   @@index([dateDebut, dateFin]) // Index pour les requÃƒÆ’Ã‚Âªtes par date
@@ -208,72 +212,74 @@ model MenuDuJour {
 
 // Table de liaison pour la relation many-to-many entre Menu et Product
 model MenuProduct {
-  id           String      @id @default(cuid())
-  menu         MenuDuJour  @relation(fields: [menuId], references: [id], onDelete: Cascade)
-  menuId       String
-  product      Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
-  productId    String
-  ordre        Int         @default(0) // Ordre d'affichage dans le menu
-  createdAt    DateTime    @default(now())
+  id        String     @id @default(cuid())
+  menu      MenuDuJour @relation(fields: [menuId], references: [id], onDelete: Cascade)
+  menuId    String
+  product   Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId String
+  ordre     Int        @default(0) // Ordre d'affichage dans le menu
+  createdAt DateTime   @default(now())
 
   @@unique([menuId, productId]) // Un produit ne peut ÃƒÆ’Ã‚Âªtre ajoutÃƒÆ’Ã‚Â© qu'une seule fois dans un menu
   @@index([menuId])
   @@index([productId])
 }
+
 model Product {
   id             String           @id @default(cuid())
   nom            String
   description    String?
   imageUrl       String?
   prixOriginal   Float
-  stockQuotidien Int?             // Quantite disponible par jour (null = illimite)
-  stockRestant   Int?             // Quantite restante aujourd'hui (null = illimite)
+  stockQuotidien Int? // Quantite disponible par jour (null = illimite)
+  stockRestant   Int? // Quantite restante aujourd'hui (null = illimite)
   restaurant     Restaurant       @relation(fields: [restaurantId], references: [id])
   restaurantId   String
   category       Category?        @relation(fields: [categoryId], references: [id])
   categoryId     String?
   variants       ProductVariant[]
-  menus          MenuProduct[]    // Relation many-to-many avec MenuDuJour
+  menus          MenuProduct[] // Relation many-to-many avec MenuDuJour
   orderItems     OrderItem[]
   cartItems      CartItem[]
+  images         ProductImage[] // Galerie photos produit
 
   // Multi-vendeurs (Sprint A — LIL-111)
-  productType    ProductType      @default(FOOD)
-  stockMode      StockMode        @default(DAILY)            // PERMANENT n'est pas reset par le cron
+  productType ProductType @default(FOOD)
+  stockMode   StockMode   @default(DAILY) // PERMANENT n'est pas reset par le cron
 
   // Métadonnées alcool (productType = ALCOHOL)
-  alcoholContent Float?                                      // % vol, ex: 40.0
-  vintage        Int?                                        // millésime, ex: 2019
-  origin         String?                                     // "Bordeaux, France"
-  volumeMl       Int?                                        // volume en ml, ex: 750
+  alcoholContent Float? // % vol, ex: 40.0
+  vintage        Int? // millésime, ex: 2019
+  origin         String? // "Bordeaux, France"
+  volumeMl       Int? // volume en ml, ex: 750
 
   // Métadonnées fait maison / pâtisserie
-  ingredients    String?                                     // liste pour info allergènes
-  shelfLifeDays  Int?                                        // durée conservation en jours
-  madeToOrder    Boolean          @default(false)
+  ingredients   String? // liste pour info allergènes
+  shelfLifeDays Int? // durée conservation en jours
+  madeToOrder   Boolean @default(false)
 
   // Disponibilité horaire (BAKERY surtout)
-  availableFrom  String?                                     // "HH:mm"
-  availableUntil String?                                     // "HH:mm"
+  availableFrom  String? // "HH:mm"
+  availableUntil String? // "HH:mm"
 
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([restaurantId])
   @@index([categoryId])
-  @@index([restaurantId, productType])                       // catalogue par type
-  @@index([productType, stockMode])                          // cron reset DAILY uniquement
+  @@index([restaurantId, productType]) // catalogue par type
+  @@index([productType, stockMode]) // cron reset DAILY uniquement
 }
 
 model ProductVariant {
-  id        String   @id @default(cuid())
-  label      String?  // e.g., "30cl", "1.5L", "Normal", "Grand"
-  prix     Float
-  product   Product  @relation(fields: [productId], references: [id])
+  id        String     @id @default(cuid())
+  label     String? // e.g., "30cl", "1.5L", "Normal", "Grand"
+  prix      Float
+  product   Product    @relation(fields: [productId], references: [id])
   productId String
-  cartItems   CartItem[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  cartItems CartItem[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
 
   @@index([productId])
 }
@@ -286,21 +292,22 @@ model Cart {
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 }
+
 model CartItem {
-  id        String   @id @default(cuid())
-  cart      Cart     @relation(fields: [cartId], references: [id])
+  id        String         @id @default(cuid())
+  cart      Cart           @relation(fields: [cartId], references: [id])
   cartId    String
-  product   Product  @relation(fields: [productId], references: [id])
+  product   Product        @relation(fields: [productId], references: [id])
   productId String
-  menu      MenuDuJour?  @relation(fields: [menuId], references: [id])
+  menu      MenuDuJour?    @relation(fields: [menuId], references: [id])
   menuId    String?
   variant   ProductVariant @relation(fields: [variantId], references: [id])
   variantId String
   quantite  Int
-  createdAt DateTime @default(now())
+  createdAt DateTime       @default(now())
   //04/04/2026 Nouveau champ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â nullable au dÃƒÆ’Ã‚Â©but pour ne pas casser l'existant
-  itemKey String? // "productId:variantId:menuId|none"
-  
+  itemKey   String? // "productId:variantId:menuId|none"
+
   @@unique([cartId, variantId, menuId]) // Permet un mÃƒÆ’Ã‚Âªme variant comme produit individuel ET dans un menu
   @@index([variantId])
   @@index([productId])
@@ -310,98 +317,99 @@ model CartItem {
 
 // 04/04/2026 ÃƒÆ’Ã¢â‚¬Â°TAPE 1 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Ajouter les nouveaux enums (non-breaking)
 enum OrderLifecycleStatus {
-  DRAFT           // Panier validÃƒÆ’Ã‚Â©, pas encore payÃƒÆ’Ã‚Â©
-  CONFIRMED       // Paiement confirmÃƒÆ’Ã‚Â©
-  IN_PREPARATION  // Restaurant prÃƒÆ’Ã‚Â©pare
-  READY           // PrÃƒÆ’Ã‚Âªt pour livraison/retrait
-  COMPLETED       // LivrÃƒÆ’Ã‚Â© ou retirÃƒÆ’Ã‚Â©
-  CANCELLED       // AnnulÃƒÆ’Ã‚Â©
+  DRAFT // Panier validÃƒÆ’Ã‚Â©, pas encore payÃƒÆ’Ã‚Â©
+  CONFIRMED // Paiement confirmÃƒÆ’Ã‚Â©
+  IN_PREPARATION // Restaurant prÃƒÆ’Ã‚Â©pare
+  READY // PrÃƒÆ’Ã‚Âªt pour livraison/retrait
+  COMPLETED // LivrÃƒÆ’Ã‚Â© ou retirÃƒÆ’Ã‚Â©
+  CANCELLED // AnnulÃƒÆ’Ã‚Â©
 }
 
 model Order {
-  id              String        @id @default(cuid())
-  restaurant      Restaurant    @relation(fields: [restaurantId], references: [id])
-  restaurantId    String
-  user            User          @relation(fields: [userId], references: [id])
-  userId          String
-  subTotal        Float         // Sous-total des articles
-  deliveryFee     Float         // Frais de livraison (0 si retrait)
-  serviceFee      Float   @default(0)   // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â nouveau : commission 10%
-  total           Float                 // subTotal + deliveryFee + serviceFee        // Montant total (subTotal + deliveryFee)
-  isDelivery      Boolean       @default(true)  // true = livraison, false = retrait au restaurant
-  deliveryAddress String?       // Adresse de livraison (null si retrait)
+  id                 String                @id @default(cuid())
+  restaurant         Restaurant            @relation(fields: [restaurantId], references: [id])
+  restaurantId       String
+  user               User                  @relation(fields: [userId], references: [id])
+  userId             String
+  subTotal           Float // Sous-total des articles
+  deliveryFee        Float // Frais de livraison (0 si retrait)
+  serviceFee         Float                 @default(0) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â nouveau : commission 10%
+  total              Float // subTotal + deliveryFee + serviceFee        // Montant total (subTotal + deliveryFee)
+  isDelivery         Boolean               @default(true) // true = livraison, false = retrait au restaurant
+  deliveryAddress    String? // Adresse de livraison (null si retrait)
   // 04/04/2026
-  orderHistory      OrderHistory[] // Historique des changements de statut
-  deliveryLatitude    Float?   // nouveau
-  deliveryLongitude   Float?   // nouveau  
-  deliveryQuartierId  String?  // nouveau ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â pour les frais de zone
-  deleteCommande  Boolean       @default(false)
-  paymentMethod   PaymentMethod // MÃƒÆ’Ã‚Â©thode de paiement
-  status          OrderStatus   @default(EN_ATTENTE)
-  lifecycleStatus OrderLifecycleStatus? // nouveau, nullable
-  paidAt          DateTime?     // Date de paiement
-  notes           String?       // Notes optionnelles du client pour le restaurant
-  contactPhone    String?       // NumÃƒÆ’Ã‚Â©ro de tÃƒÆ’Ã‚Â©lÃƒÆ’Ã‚Â©phone saisi lors de la commande
-  items           OrderItem[]
-  reviews         Review[]
-  delivery        Delivery?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  orderHistory       OrderHistory[] // Historique des changements de statut
+  deliveryLatitude   Float? // nouveau
+  deliveryLongitude  Float? // nouveau  
+  deliveryQuartierId String? // nouveau ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â pour les frais de zone
+  deleteCommande     Boolean               @default(false)
+  paymentMethod      PaymentMethod // MÃƒÆ’Ã‚Â©thode de paiement
+  status             OrderStatus           @default(EN_ATTENTE)
+  lifecycleStatus    OrderLifecycleStatus? // nouveau, nullable
+  paidAt             DateTime? // Date de paiement
+  notes              String? // Notes optionnelles du client pour le restaurant
+  contactPhone       String? // NumÃƒÆ’Ã‚Â©ro de tÃƒÆ’Ã‚Â©lÃƒÆ’Ã‚Â©phone saisi lors de la commande
+  items              OrderItem[]
+  reviews            Review[]
+  delivery           Delivery?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
 
-  Payment Payment[]
-  promoCodeId     String?
-  promoCode       PromoCode? @relation(fields: [promoCodeId], references: [id])
-  discountAmount  Float      @default(0)  // montant dÃƒÆ’Ã‚Â©duit par le code promo
+  Payment        Payment[]
+  promoCodeId    String?
+  promoCode      PromoCode? @relation(fields: [promoCodeId], references: [id])
+  discountAmount Float      @default(0) // montant dÃƒÆ’Ã‚Â©duit par le code promo
 
   // Précommandes (Sprint A — LIL-111)
   isPreorder          Boolean   @default(false)
-  scheduledFor        DateTime?               // date/heure de livraison souhaitée
-  preorderConfirmedAt DateTime?               // confirmé par le vendeur
+  scheduledFor        DateTime? // date/heure de livraison souhaitée
+  preorderConfirmedAt DateTime? // confirmé par le vendeur
 
   // Vérification d'âge (alcool — Sprint A — LIL-111)
-  ageVerified         Boolean   @default(false)
-  ageVerifiedAt       DateTime?
+  ageVerified   Boolean   @default(false)
+  ageVerifiedAt DateTime?
 
   @@index([restaurantId, status, createdAt(sort: Desc)]) // dashboard resto: commandes par statut, plus recentes (LFD-9)
   @@index([promoCodeId])
   @@index([restaurantId])
   @@index([userId])
-  @@index([status])           // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â manquait
-  @@index([lifecycleStatus])  // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â nouveau
-  @@index([createdAt])        // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â manquait
+  @@index([status]) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â manquait
+  @@index([lifecycleStatus]) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â nouveau
+  @@index([createdAt]) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â manquait
 }
 
 model OrderItem {
-  id         String   @id @default(cuid())
-  order      Order    @relation(fields: [orderId], references: [id])
-  orderId    String
-  product    Product  @relation(fields: [productId], references: [id])
-  productId  String
-  menu       MenuDuJour?  @relation(fields: [menuId], references: [id])
-  menuId     String?
-  variant    String   // e.g., "1.5L"
-  quantite   Int
+  id        String      @id @default(cuid())
+  order     Order       @relation(fields: [orderId], references: [id])
+  orderId   String
+  product   Product     @relation(fields: [productId], references: [id])
+  productId String
+  menu      MenuDuJour? @relation(fields: [menuId], references: [id])
+  menuId    String?
+  variant   String // e.g., "1.5L"
+  quantite  Int
   prix      Float
-  createdAt  DateTime @default(now())
+  createdAt DateTime    @default(now())
 
   // 04/04/2026
-  variantId      String?  // nullable pour les commandes existantes
-  variantLabel   String?  // snapshot du label au moment de la commande
-  snapshotPrice  Float?   // snapshot du prix au moment de la commande
+  variantId     String? // nullable pour les commandes existantes
+  variantLabel  String? // snapshot du label au moment de la commande
+  snapshotPrice Float? // snapshot du prix au moment de la commande
 
   @@index([orderId])
   @@index([productId])
   @@index([menuId])
 }
+
 model OrderHistory {
-  id         String   @id @default(cuid())
-  order      Order    @relation(fields: [orderId], references: [id])
+  id         String      @id @default(cuid())
+  order      Order       @relation(fields: [orderId], references: [id])
   orderId    String
   fromStatus OrderStatus
   toStatus   OrderStatus
-  actionId    String  // "CLIENT", "RESTAURATEUR", "LIVREUR", "SYSTEM"
-  reason      String? // Raison de l'annulation ou du changement de statut
-  createdAt   DateTime @default(now())
+  actionId   String // "CLIENT", "RESTAURATEUR", "LIVREUR", "SYSTEM"
+  reason     String? // Raison de l'annulation ou du changement de statut
+  createdAt  DateTime    @default(now())
 
   @@index([orderId])
 }
@@ -411,6 +419,7 @@ enum DriverStatus {
   ON_DELIVERY
   OFFLINE
 }
+
 model Delivery {
   id          String         @id @default(cuid())
   order       Order          @relation(fields: [orderId], references: [id])
@@ -421,32 +430,34 @@ model Delivery {
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 
-  estimatedArrival DateTime?   // ETA calculÃƒÆ’Ã‚Â©
-  pickedUpAt       DateTime?   // quand le livreur a pris la commande
-  deliveredAt      DateTime?   // timestamp rÃƒÆ’Ã‚Â©el de livraison
-  
+  estimatedArrival DateTime? // ETA calculÃƒÆ’Ã‚Â©
+  pickedUpAt       DateTime? // quand le livreur a pris la commande
+  deliveredAt      DateTime? // timestamp rÃƒÆ’Ã‚Â©el de livraison
+
   // Position derniÃƒÆ’Ã‚Â¨re connue du livreur
-  lastLatitude     Float?
-  lastLongitude    Float?
-  lastPositionAt   DateTime?
-  locations        DeliveryLocation[]
+  lastLatitude   Float?
+  lastLongitude  Float?
+  lastPositionAt DateTime?
+  locations      DeliveryLocation[]
 
   @@index([delivererId, status]) // missions d'un livreur filtrees par statut (LFD-9)
   @@index([delivererId])
-  @@index([status])    // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â manquait
+  @@index([status]) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â manquait
 }
+
 // Nouvelle table ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â n'affecte pas l'existant
 model DeliveryLocation {
-  id          String   @id @default(cuid())
-  deliveryId  String
-  delivery    Delivery @relation(fields: [deliveryId], references: [id])
-  latitude    Float
-  longitude   Float
-  accuracy    Float?   // prÃƒÆ’Ã‚Â©cision GPS en mÃƒÆ’Ã‚Â¨tres
-  recordedAt  DateTime @default(now())
-  
+  id         String   @id @default(cuid())
+  deliveryId String
+  delivery   Delivery @relation(fields: [deliveryId], references: [id])
+  latitude   Float
+  longitude  Float
+  accuracy   Float? // prÃƒÆ’Ã‚Â©cision GPS en mÃƒÆ’Ã‚Â¨tres
+  recordedAt DateTime @default(now())
+
   @@index([deliveryId, recordedAt])
 }
+
 enum Role {
   ADMIN
   RESTAURATEUR
@@ -484,23 +495,23 @@ enum DeliveryStatus {
 }
 
 model Payment {
-  id                     String        @id @default(cuid())
-  orderId                String
-  amount                 Float
-  currency               String        @default("XAF")
-  phoneNumber            String
-  status                 PaymentStatus @default(PENDING)
-  provider               String        @default("MTN_MOMO")
-  providerTransactionId  String?
-  metadata               Json          @default("{}")
-  createdAt              DateTime      @default(now())
-  updatedAt              DateTime      @updatedAt
+  id                    String        @id @default(cuid())
+  orderId               String
+  amount                Float
+  currency              String        @default("XAF")
+  phoneNumber           String
+  status                PaymentStatus @default(PENDING)
+  provider              String        @default("MTN_MOMO")
+  providerTransactionId String?
+  metadata              Json          @default("{}")
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
 
-  order                  Order         @relation(fields: [orderId], references: [id])
+  order Order @relation(fields: [orderId], references: [id])
 
-  @@map("payments")
   @@index([orderId])
-  @@index([status])                             // dashboard paiements filtrés par statut
+  @@index([status]) // dashboard paiements filtrés par statut
+  @@map("payments")
 }
 
 enum PaymentStatus {
@@ -522,42 +533,42 @@ enum DayOfWeek {
 
 // Mode de tarification de la livraison pour chaque restaurant
 enum DeliveryPriceMode {
-  FIXED       // Prix fixe pour toutes les livraisons
-  ZONE_BASED  // Prix selon le quartier/zone
+  FIXED // Prix fixe pour toutes les livraisons
+  ZONE_BASED // Prix selon le quartier/zone
 }
 
 enum MenuType {
-  COMBO          // Menu compose de plusieurs produits existants
-  PLAT_SPECIAL   // Plat special du jour (produit auto-cree)
+  COMBO // Menu compose de plusieurs produits existants
+  PLAT_SPECIAL // Plat special du jour (produit auto-cree)
 }
 
 // Multi-vendeurs (Sprint A — LIL-111)
 enum VendorType {
-  RESTAURANT      // Existant — comportement inchangé
-  HOME_COOK       // Pâtissiers, vendeurs maison, traiteurs
-  BEVERAGE_SHOP   // Sodas, jus, eaux, boissons importées non-alcoolisées
-  BAKERY          // Boulangeries, viennoiseries
-  GROCERY         // Réservé pour usage futur
+  RESTAURANT // Existant — comportement inchangé
+  HOME_COOK // Pâtissiers, vendeurs maison, traiteurs
+  BEVERAGE_SHOP // Sodas, jus, eaux, boissons importées non-alcoolisées
+  BAKERY // Boulangeries, viennoiseries
+  GROCERY // Réservé pour usage futur
 }
 
 enum ProductType {
-  FOOD            // Défaut — plats et repas (existant)
-  BEVERAGE        // Boissons (sodas, jus, eaux)
-  ALCOHOL         // Réservé futur — désactivé côté code (LIL-112)
-  PASTRY          // Pâtisseries, viennoiseries
-  GROCERY         // Épicerie sèche
+  FOOD // Défaut — plats et repas (existant)
+  BEVERAGE // Boissons (sodas, jus, eaux)
+  ALCOHOL // Réservé futur — désactivé côté code (LIL-112)
+  PASTRY // Pâtisseries, viennoiseries
+  GROCERY // Épicerie sèche
 }
 
 enum StockMode {
-  DAILY           // Reset chaque nuit via cron (comportement actuel)
-  PERMANENT       // Stock réel, décrémentation pure, pas de reset
+  DAILY // Reset chaque nuit via cron (comportement actuel)
+  PERMANENT // Stock réel, décrémentation pure, pas de reset
 }
 
 // ModÃƒÆ’Ã‚Â¨le pour les avis et notes des clients
 model Review {
   id           String     @id @default(cuid())
-  rating       Int        // Note de 1 ÃƒÆ’Ã‚Â  5
-  comment      String?    // Commentaire optionnel
+  rating       Int // Note de 1 ÃƒÆ’Ã‚Â  5
+  comment      String? // Commentaire optionnel
   user         User       @relation(fields: [userId], references: [id])
   userId       String
   restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
@@ -574,14 +585,14 @@ model Review {
 
 // Zones de livraison avec prix personnalisÃƒÆ’Ã‚Â© par restaurant
 model DeliveryZone {
-  id           String     @id @default(cuid())
-  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  id           String         @id @default(cuid())
+  restaurant   Restaurant     @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
   restaurantId String
-  zoneName     String     // Ex: "Zone 1", "Centre-ville", etc.
-  fee          Float      // Prix de livraison pour cette zone
+  zoneName     String // Ex: "Zone 1", "Centre-ville", etc.
+  fee          Float // Prix de livraison pour cette zone
   quartiers    QuartierZone[] // Quartiers inclus dans cette zone
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 
   @@index([restaurantId])
 }
@@ -589,7 +600,7 @@ model DeliveryZone {
 // Liste des quartiers de Brazzaville
 model Quartier {
   id        String         @id @default(cuid())
-  nom       String         @unique  // Ex: "Bacongo", "Poto-Poto", "TalangaÃƒÆ’Ã‚Â¯"
+  nom       String         @unique // Ex: "Bacongo", "Poto-Poto", "TalangaÃƒÆ’Ã‚Â¯"
   ville     String         @default("Brazzaville")
   zones     QuartierZone[]
   adresses  Adresses[]
@@ -626,13 +637,61 @@ model Banner {
   @@index([isActive])
 }
 
+model VendorPhoto {
+  id           String     @id @default(cuid())
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  restaurantId String
+  url          String
+  publicId     String? // Cloudinary public_id pour cleanup à la suppression
+  alt          String? // Texte alternatif (a11y + SEO)
+  displayOrder Int        @default(0)
+  isCover      Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([restaurantId])
+  @@index([restaurantId, isCover])
+}
+
+model ProductImage {
+  id           String   @id @default(cuid())
+  product      Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId    String
+  url          String
+  publicId     String?
+  alt          String?
+  displayOrder Int      @default(0)
+  isCover      Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([productId])
+  @@index([productId, isCover])
+}
+
+model MenuImage {
+  id           String     @id @default(cuid())
+  menuDuJour   MenuDuJour @relation(fields: [menuDuJourId], references: [id], onDelete: Cascade)
+  menuDuJourId String
+  url          String
+  publicId     String?
+  alt          String?
+  displayOrder Int        @default(0)
+  isCover      Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([menuDuJourId])
+  @@index([menuDuJourId, isCover])
+}
+
 model OperatingHours {
   id           String     @id @default(cuid())
   restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
   restaurantId String
   dayOfWeek    DayOfWeek
-  openTime     String     // "HH:mm"
-  closeTime    String     // "HH:mm"
+  openTime     String // "HH:mm"
+  closeTime    String // "HH:mm"
   isClosed     Boolean    @default(false)
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
@@ -643,38 +702,38 @@ model OperatingHours {
 }
 
 enum DiscountType {
-  FIXED           // montant fixe : -500 FCFA
-  PERCENT         // pourcentage : -10%
-  FREE_DELIVERY   // livraison gratuite
+  FIXED // montant fixe : -500 FCFA
+  PERCENT // pourcentage : -10%
+  FREE_DELIVERY // livraison gratuite
 }
 
 model PromoCode {
-  id              String       @id @default(cuid())
-  code            String       @unique  // "BIENVENUE500" ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â toujours uppercase
-  description     String?      // affichÃƒÆ’Ã‚Â© dans l'app : "500 FCFA offerts sur ta 1ÃƒÆ’Ã‚Â¨re commande"
+  id          String  @id @default(cuid())
+  code        String  @unique // "BIENVENUE500" ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â toujours uppercase
+  description String? // affichÃƒÆ’Ã‚Â© dans l'app : "500 FCFA offerts sur ta 1ÃƒÆ’Ã‚Â¨re commande"
 
-  discountType    DiscountType
-  discountValue   Float        // 500 si FIXED, 10 si PERCENT (= 10%), 0 si FREE_DELIVERY
-  maxDiscount     Float?       // plafond si PERCENT : max 2000 FCFA de rÃƒÆ’Ã‚Â©duction
+  discountType  DiscountType
+  discountValue Float // 500 si FIXED, 10 si PERCENT (= 10%), 0 si FREE_DELIVERY
+  maxDiscount   Float? // plafond si PERCENT : max 2000 FCFA de rÃƒÆ’Ã‚Â©duction
 
-  minOrderAmount  Float        @default(0)    // montant minimum pour activer le code
-  maxUsageTotal   Int?         // null = illimitÃƒÆ’Ã‚Â© ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ex: 100 pour une campagne limitÃƒÆ’Ã‚Â©e
-  maxUsagePerUser Int          @default(1)    // 1 = 1 fois par utilisateur
+  minOrderAmount  Float @default(0) // montant minimum pour activer le code
+  maxUsageTotal   Int? // null = illimitÃƒÆ’Ã‚Â© ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ex: 100 pour une campagne limitÃƒÆ’Ã‚Â©e
+  maxUsagePerUser Int   @default(1) // 1 = 1 fois par utilisateur
 
-  firstOrderOnly  Boolean      @default(false) // rÃƒÆ’Ã‚Â©servÃƒÆ’Ã‚Â© aux nouveaux clients
-  isActive        Boolean      @default(true)
+  firstOrderOnly Boolean @default(false) // rÃƒÆ’Ã‚Â©servÃƒÆ’Ã‚Â© aux nouveaux clients
+  isActive       Boolean @default(true)
 
   // Restriction par restaurant (null = toute la plateforme)
-  restaurantId    String?
-  restaurant      Restaurant?  @relation("RestaurantPromoCodes", fields: [restaurantId], references: [id])
-  discountAmount  Float      @default(0)  // montant dÃƒÆ’Ã‚Â©duit par le code promo
-  startsAt        DateTime     @default(now())
-  expiresAt       DateTime?    // null = pas d'expiration
+  restaurantId   String?
+  restaurant     Restaurant? @relation("RestaurantPromoCodes", fields: [restaurantId], references: [id])
+  discountAmount Float       @default(0) // montant dÃƒÆ’Ã‚Â©duit par le code promo
+  startsAt       DateTime    @default(now())
+  expiresAt      DateTime? // null = pas d'expiration
 
-  usages          PromoUsage[]
-  orders          Order[]
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  usages    PromoUsage[]
+  orders    Order[]
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
 
   @@index([code])
   @@index([isActive, startsAt, expiresAt])
@@ -682,14 +741,14 @@ model PromoCode {
 }
 
 model PromoUsage {
-  id          String     @id @default(cuid())
-  promoCode   PromoCode  @relation(fields: [promoCodeId], references: [id])
-  promoCodeId String
-  userId      String
-  user            User       @relation("UserPromoUsages", fields: [userId], references: [id])
-  orderId     String     @unique  // 1 promo max par commande
-  discountApplied Float           // montant rÃƒÆ’Ã‚Â©ellement dÃƒÆ’Ã‚Â©duit (snapshot)
-  usedAt      DateTime   @default(now())
+  id              String    @id @default(cuid())
+  promoCode       PromoCode @relation(fields: [promoCodeId], references: [id])
+  promoCodeId     String
+  userId          String
+  user            User      @relation("UserPromoUsages", fields: [userId], references: [id])
+  orderId         String    @unique // 1 promo max par commande
+  discountApplied Float // montant rÃƒÆ’Ã‚Â©ellement dÃƒÆ’Ã‚Â©duit (snapshot)
+  usedAt          DateTime  @default(now())
 
   @@index([promoCodeId])
   @@index([userId])
@@ -712,16 +771,16 @@ model Favorite {
 // ============================================================
 
 enum IncidentType {
-  ORDER_CANCELLED          // commande annulée
-  ORDER_DELAYED            // retard de livraison
-  PAYMENT_FAILED           // échec paiement
-  DRIVER_NO_SHOW           // livreur ne s'est pas présenté
-  DRIVER_ACCIDENT          // accident livreur
-  CUSTOMER_COMPLAINT       // plainte client
-  RESTAURANT_CLOSED        // restaurant fermé hors horaires
-  STOCK_ISSUE              // problème stock / produit indisponible
-  WRONG_DELIVERY           // mauvaise livraison
-  REFUND_REQUEST           // demande remboursement
+  ORDER_CANCELLED // commande annulée
+  ORDER_DELAYED // retard de livraison
+  PAYMENT_FAILED // échec paiement
+  DRIVER_NO_SHOW // livreur ne s'est pas présenté
+  DRIVER_ACCIDENT // accident livreur
+  CUSTOMER_COMPLAINT // plainte client
+  RESTAURANT_CLOSED // restaurant fermé hors horaires
+  STOCK_ISSUE // problème stock / produit indisponible
+  WRONG_DELIVERY // mauvaise livraison
+  REFUND_REQUEST // demande remboursement
   OTHER
 }
 
@@ -740,23 +799,23 @@ enum IncidentStatus {
 }
 
 model Incident {
-  id             String           @id @default(cuid())
-  type           IncidentType
-  severity       IncidentSeverity @default(MEDIUM)
-  status         IncidentStatus   @default(OPEN)
-  title          String
-  description    String           @db.Text
-  resolution     String?          @db.Text
+  id           String           @id @default(cuid())
+  type         IncidentType
+  severity     IncidentSeverity @default(MEDIUM)
+  status       IncidentStatus   @default(OPEN)
+  title        String
+  description  String           @db.Text
+  resolution   String?          @db.Text
   // Liens optionnels — pas de FK car relationMode = prisma
-  orderId        String?
-  riderId        String?          // User.id avec role LIVREUR
-  restaurantId   String?
-  reportedBy     String?          // User.id de qui a remonté (admin/system)
-  resolvedBy     String?          // User.id qui a résolu
-  metadata       Json?            // contexte additionnel (montants, refs paiement, etc.)
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
-  resolvedAt     DateTime?
+  orderId      String?
+  riderId      String? // User.id avec role LIVREUR
+  restaurantId String?
+  reportedBy   String? // User.id de qui a remonté (admin/system)
+  resolvedBy   String? // User.id qui a résolu
+  metadata     Json? // contexte additionnel (montants, refs paiement, etc.)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  resolvedAt   DateTime?
 
   @@index([status, severity])
   @@index([type, createdAt])
@@ -766,21 +825,19 @@ model Incident {
 }
 
 model PlatformSettings {
-  id                     String   @id @default("singleton")
+  id String @id @default("singleton")
 
-  serviceFeePercent      Float    @default(8)
+  serviceFeePercent Float @default(8)
 
-  loyaltyPointsPer100Xaf Int      @default(1)
-  loyaltyPointValueXaf   Int      @default(5)
-  loyaltyMinRedemption   Int      @default(100)
+  loyaltyPointsPer100Xaf Int @default(1)
+  loyaltyPointValueXaf   Int @default(5)
+  loyaltyMinRedemption   Int @default(100)
 
-  referrerBonusPoints    Int      @default(500)
-  referredBonusPoints    Int      @default(200)
+  referrerBonusPoints Int @default(500)
+  referredBonusPoints Int @default(200)
 
-  maintenanceMode        Boolean  @default(false)
-  maintenanceMessage     String?
+  maintenanceMode    Boolean @default(false)
+  maintenanceMessage String?
 
-  updatedAt              DateTime @updatedAt
+  updatedAt DateTime @updatedAt
 }
-
-
