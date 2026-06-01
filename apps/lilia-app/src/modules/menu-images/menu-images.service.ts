@@ -47,10 +47,12 @@ export class MenuImagesService {
 
     return this.prisma.$transaction(async (tx) => {
       if (dto.isCover) {
-        await tx.menuImage.updateMany({
-          where: { menuDuJourId: dto.menuDuJourId, isCover: true },
-          data: { isCover: false },
-        });
+        await this.common.demoteOtherCovers(
+          'menuImage',
+          { menuDuJourId: dto.menuDuJourId },
+          null,
+          tx,
+        );
       }
       return tx.menuImage.create({
         data: {
@@ -75,10 +77,12 @@ export class MenuImagesService {
 
     return this.prisma.$transaction(async (tx) => {
       if (dto.isCover === true) {
-        await tx.menuImage.updateMany({
-          where: { menuDuJourId: image.menuDuJourId, NOT: { id }, isCover: true },
-          data: { isCover: false },
-        });
+        await this.common.demoteOtherCovers(
+          'menuImage',
+          { menuDuJourId: image.menuDuJourId },
+          id,
+          tx,
+        );
       }
       return tx.menuImage.update({
         where: { id },

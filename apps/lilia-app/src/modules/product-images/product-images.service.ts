@@ -51,10 +51,12 @@ export class ProductImagesService {
 
     return this.prisma.$transaction(async (tx) => {
       if (dto.isCover) {
-        await tx.productImage.updateMany({
-          where: { productId: dto.productId, isCover: true },
-          data: { isCover: false },
-        });
+        await this.common.demoteOtherCovers(
+          'productImage',
+          { productId: dto.productId },
+          null,
+          tx,
+        );
       }
       return tx.productImage.create({
         data: {
@@ -79,10 +81,12 @@ export class ProductImagesService {
 
     return this.prisma.$transaction(async (tx) => {
       if (dto.isCover === true) {
-        await tx.productImage.updateMany({
-          where: { productId: image.productId, NOT: { id }, isCover: true },
-          data: { isCover: false },
-        });
+        await this.common.demoteOtherCovers(
+          'productImage',
+          { productId: image.productId },
+          id,
+          tx,
+        );
       }
       return tx.productImage.update({
         where: { id },

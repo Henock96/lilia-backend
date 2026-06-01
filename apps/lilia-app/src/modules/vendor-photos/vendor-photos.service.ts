@@ -34,10 +34,12 @@ export class VendorPhotosService {
 
     return this.prisma.$transaction(async (tx) => {
       if (dto.isCover) {
-        await tx.vendorPhoto.updateMany({
-          where: { restaurantId: dto.restaurantId, isCover: true },
-          data: { isCover: false },
-        });
+        await this.common.demoteOtherCovers(
+          'vendorPhoto',
+          { restaurantId: dto.restaurantId },
+          null,
+          tx,
+        );
       }
       return tx.vendorPhoto.create({
         data: {
@@ -62,10 +64,12 @@ export class VendorPhotosService {
 
     return this.prisma.$transaction(async (tx) => {
       if (dto.isCover === true) {
-        await tx.vendorPhoto.updateMany({
-          where: { restaurantId: photo.restaurantId, NOT: { id }, isCover: true },
-          data: { isCover: false },
-        });
+        await this.common.demoteOtherCovers(
+          'vendorPhoto',
+          { restaurantId: photo.restaurantId },
+          id,
+          tx,
+        );
       }
       return tx.vendorPhoto.update({
         where: { id },

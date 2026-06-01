@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CloudinaryService } from '../cloudinary/cloudinary.service';
 
@@ -69,9 +70,11 @@ export class PhotosCommonService {
     table: PhotoTable,
     where: object,
     keepId: string | null,
+    tx?: Prisma.TransactionClient,
   ): Promise<void> {
     const filter = keepId ? { ...where, NOT: { id: keepId } } : where;
-    await (this.prisma[table] as { updateMany: Function }).updateMany({
+    const client = tx ?? this.prisma;
+    await (client[table] as { updateMany: Function }).updateMany({
       where: { ...filter, isCover: true },
       data: { isCover: false },
     });
