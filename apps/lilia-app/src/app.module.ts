@@ -33,6 +33,7 @@ import { PromoModule } from './modules/promo/promo.module';
 import { FavoritesModule } from './modules/favorites/favorites.module';
 import { VendorsModule } from './modules/vendors/vendors.module';
 import { VendorPhotosModule } from './modules/vendor-photos/vendor-photos.module';
+import { ProductImagesModule } from './modules/product-images/product-images.module';
 
 // Infrastructure
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -103,6 +104,7 @@ import { RedisModule } from '@nestjs-modules/ioredis';
     FavoritesModule,
     VendorsModule,
     VendorPhotosModule,
+    ProductImagesModule,
 
     // Infrastructure
     NotificationsModule,
