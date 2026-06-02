@@ -90,6 +90,61 @@ export class StockService {
     }
   }
 
+  /**
+   * Restaure le stock pour une liste d'OrderItem (utilisé lors de l'annulation
+   * d'une commande EN_ATTENTE qui avait décrémenté le stock au checkout).
+   *
+   * - `stockRestant IS NULL` = stock illimité → on ne touche pas
+   * - Sinon : on incrémente atomiquement de `quantite`
+   *
+   * Items attendus : `{ productId: string, menuId: string | null, quantite: number }`.
+   */
+  async restoreInTransaction(
+    tx: Prisma.TransactionClient,
+    items: Array<{ productId: string; menuId: string | null; quantite: number }>,
+  ): Promise<void> {
+    const qtyByProduct = new Map<string, number>();
+    const qtyByMenu = new Map<string, number>();
+
+    for (const item of items) {
+      if (item.productId) {
+        qtyByProduct.set(
+          item.productId,
+          (qtyByProduct.get(item.productId) ?? 0) + item.quantite,
+        );
+      }
+      if (item.menuId) {
+        qtyByMenu.set(
+          item.menuId,
+          (qtyByMenu.get(item.menuId) ?? 0) + item.quantite,
+        );
+      }
+    }
+
+    const productUpdates = [...qtyByProduct.entries()].map(([id, qty]) =>
+      tx.$executeRaw`
+        UPDATE "Product"
+        SET "stockRestant" = "stockRestant" + ${qty}
+        WHERE id = ${id}
+          AND "stockRestant" IS NOT NULL
+      `,
+    );
+
+    const menuUpdates = [...qtyByMenu.entries()].map(([id, qty]) =>
+      tx.$executeRaw`
+        UPDATE "MenuDuJour"
+        SET "stockRestant" = "stockRestant" + ${qty}
+        WHERE id = ${id}
+          AND "stockRestant" IS NOT NULL
+      `,
+    );
+
+    await Promise.all([
+      Promise.all(productUpdates),
+      Promise.all(menuUpdates),
+    ]);
+  }
+
   // Reset quotidien (appelé par le scheduler à minuit)
   async resetDailyStock(tx: Prisma.TransactionClient): Promise<void> {
     await Promise.all([

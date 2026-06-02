@@ -115,9 +115,13 @@ export class OrdersController {
   @Roles('ADMIN')
   @ApiOperation({ summary: "Commandes d'un utilisateur (admin)" })
   @ApiParam({ name: 'userId', description: "ID Prisma de l'utilisateur" })
-  getUserOrders(@Param('userId') userId: string) {
+  getUserOrders(
+    @Param('userId') userId: string,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
     // findOrdersClient attend un firebaseUid — on ajoute une méthode par ID Prisma
-    return this.ordersService.findOrdersByUserId(userId);
+    // Le service re-vérifie le rôle ADMIN en defense-in-depth (B3).
+    return this.ordersService.findOrdersByUserId(userId, fbUser.uid);
   }
 
   /**

@@ -205,6 +205,13 @@ export class OrdersService {
     const discountAmount = promoResult?.discountAmount ?? 0;
 
     // Réduction points de fidélité
+    //
+    // SÉCURITÉ (fix B4) : on plafonne `loyaltyDiscount` au montant restant
+    // à payer après promo. Sans ce cap, un client pouvait consommer
+    // 10 000 pts (= 50 000 FCFA de valeur) sur une commande de 500 FCFA :
+    // l'ordre tombait à 0 mais les points étaient brûlés en totalité.
+    // `pointsUsed` est recalculé en conséquence (Math.ceil pour ne pas
+    // créditer une fraction de point gratuite).
     let loyaltyDiscount = 0;
     if (useLoyaltyPoints) {
       const userPoints = await this.prisma.user.findUnique({
@@ -213,7 +220,12 @@ export class OrdersService {
       });
       const pts = userPoints?.loyaltyPoints ?? 0;
       if (pts >= settings.loyaltyMinRedemption) {
-        loyaltyDiscount = pts * settings.loyaltyPointValueXaf;
+        const requested = pts * settings.loyaltyPointValueXaf;
+        const totalBeforeLoyalty = Math.max(
+          0,
+          amounts.subTotal + finalDeliveryFee + amounts.serviceFee - discountAmount,
+        );
+        loyaltyDiscount = Math.min(requested, totalBeforeLoyalty);
       }
     }
 
@@ -473,7 +485,7 @@ export class OrdersService {
 
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
-      include: { restaurant: true },
+      include: { restaurant: true, items: true },
     });
 
     if (!order) {
@@ -486,16 +498,31 @@ export class OrdersService {
       );
     }
 
-    // Passe par la state machine — le CLIENT ne peut annuler que depuis EN_ATTENTE
+    // Passe par la state machine — CLIENT peut annuler depuis EN_ATTENTE ou PAYER
     this.stateMachine.assertTransition(order.status, 'ANNULER', 'CLIENT');
 
-    const updatedOrder = await this.prisma.order.update({
-      where: { id: orderId },
-      data: { status: 'ANNULER' },
-      include: {
-        restaurant: true,
-        items: true, // Correction: Toujours inclure les items
-      },
+    // SÉCURITÉ (fix B9) : on restaure le stock décrémenté au checkout.
+    // Stock illimité (stockRestant === null) → laissé tel quel par
+    // StockService.restoreInTransaction. Order.status est mis à jour
+    // dans la même transaction pour garantir l'atomicité — pas de
+    // double-restock possible si on retente.
+    const updatedOrder = await this.prisma.$transaction(async (tx) => {
+      await this.stockService.restoreInTransaction(
+        tx,
+        order.items.map((item) => ({
+          productId: item.productId,
+          menuId: item.menuId,
+          quantite: item.quantite,
+        })),
+      );
+      return tx.order.update({
+        where: { id: orderId },
+        data: { status: 'ANNULER' },
+        include: {
+          restaurant: true,
+          items: true,
+        },
+      });
     });
     const orderCancelledEvent = new OrderCancelledEvent(
       order.id,
@@ -855,8 +882,23 @@ export class OrdersService {
   }
 
   // orders/orders.service.ts — à ajouter
-  async findOrdersByUserId(userId: string) {
-    // Méthode admin uniquement — pas de vérification d'appartenance
+  /**
+   * Liste les commandes d'un user — réservé ADMIN.
+   *
+   * SÉCURITÉ (fix B3) : defense-in-depth — on revérifie le rôle ADMIN
+   * de l'appelant DANS le service, même si le controller a déjà
+   * `@Roles('ADMIN')`. Évite qu'une future modification du controller
+   * (ou un appel inter-service) ne bypasse le contrôle d'accès.
+   */
+  async findOrdersByUserId(userId: string, callerFirebaseUid: string) {
+    const caller = await this.prisma.user.findUnique({
+      where: { firebaseUid: callerFirebaseUid },
+      select: { role: true },
+    });
+    if (!caller || caller.role !== 'ADMIN') {
+      throw new ForbiddenException('Accès réservé aux administrateurs.');
+    }
+
     const orders = await this.prisma.order.findMany({
       where: { userId, deleteCommande: false },
       include: {
