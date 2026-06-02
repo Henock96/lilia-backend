@@ -4,6 +4,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PaymentService } from '../services/payment.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { Public } from '../../auth/decorators/public.decorator';
+import { SkipResponseWrap } from '../../../common/interceptors/api-response.interceptor';
 import { ConfigService } from '@nestjs/config';
 
 interface MtnWebhookPayload {
@@ -14,6 +15,10 @@ interface MtnWebhookPayload {
 
 @ApiTags('Webhooks')
 @Controller('webhooks')
+// Les webhooks externes (MTN MoMo, Airtel…) doivent recevoir une réponse JSON
+// brute exactement comme avant — pas d'enveloppe `{ data, ... }`. Voir
+// `docs/api/2026-06-02-J2-api-contract-v2.md`.
+@SkipResponseWrap()
 export class WebhookController {
   private readonly logger = new Logger(WebhookController.name);
 

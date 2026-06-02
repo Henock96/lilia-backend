@@ -7,6 +7,7 @@ import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { SentryModule } from '@sentry/nestjs/setup';
 
 import { SentryUserInterceptor } from './common/interceptors/sentry-user.interceptor';
+import { ApiResponseInterceptor } from './common/interceptors/api-response.interceptor';
 
 import { PrismaModule } from './prisma/prisma.module';
 import { FirebaseModule } from './modules/firebase/firebase.module';
@@ -119,6 +120,12 @@ import { RedisModule } from '@nestjs-modules/ioredis';
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // ⚠️ Ordre des intercepteurs : NestJS exécute les intercepteurs APP_INTERCEPTOR
+    // dans l'ordre de déclaration sur le chemin entrant, et en sens inverse sur
+    // le chemin sortant (réponse). ApiResponseInterceptor doit être le DERNIER
+    // à voir la réponse (donc le PREMIER à être déclaré) pour wrapper le payload
+    // final, après que SentryUserInterceptor a fait son boulot côté request.
+    { provide: APP_INTERCEPTOR, useClass: ApiResponseInterceptor },
     // Attache le user courant au scope Sentry de chaque requête
     { provide: APP_INTERCEPTOR, useClass: SentryUserInterceptor },
     // Listeners globaux
