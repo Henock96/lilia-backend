@@ -469,22 +469,31 @@ export class RestaurantsService {
    
    /**
    * Vérifie que l'utilisateur est propriétaire du restaurant (ou ADMIN).
-   * Optimisé : 1 seule requête avec include au lieu de 2 séquentielles.
+   *
+   * SÉCURITÉ (fix B1) : l'autorisation se base sur le rôle de l'APPELANT
+   * (caller.role), PAS sur celui du propriétaire du restaurant. Sinon un
+   * RESTAURATEUR pourrait modifier le restaurant d'un autre dont le owner
+   * est ADMIN — IDOR. Voir vendors.service.ts:186-195 pour le même pattern.
    */
     private async verifyOwnership(restaurantId: string, firebaseUid: string) {
-        const restaurant = await this.prisma.restaurant.findUnique({
-        where: { id: restaurantId },
-        include: { owner: true }, // on récupère le owner en même temps
-        });
+        const [restaurant, caller] = await Promise.all([
+            this.prisma.restaurant.findUnique({
+                where: { id: restaurantId },
+                include: { owner: { select: { id: true, firebaseUid: true } } },
+            }),
+            this.prisma.user.findUnique({
+                where: { firebaseUid },
+                select: { id: true, role: true },
+            }),
+        ]);
 
         if (!restaurant) throw new NotFoundException('Restaurant non trouvé');
+        if (!caller) throw new ForbiddenException("Utilisateur introuvable");
 
-        // owner.firebaseUid correspond directement — pas besoin de chercher le user séparément
-        if (
-        restaurant.owner.firebaseUid !== firebaseUid &&
-        restaurant.owner.role !== 'ADMIN'
-        ) {
-        throw new ForbiddenException("Vous n'êtes pas autorisé à modifier ce restaurant");
+        const isOwner = restaurant.ownerId === caller.id;
+        const isAdmin = caller.role === 'ADMIN';
+        if (!isOwner && !isAdmin) {
+            throw new ForbiddenException("Vous n'êtes pas autorisé à modifier ce restaurant");
         }
 
         return restaurant;

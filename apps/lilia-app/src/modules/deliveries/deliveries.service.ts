@@ -385,6 +385,17 @@ export class DeliveriesService {
       throw new ForbiddenException("Vous n'êtes pas autorisé à assigner un livreur à cette commande.");
     }
 
+    // SÉCURITÉ (fix B10) : on n'assigne un livreur que sur une commande
+    // PRET (idéal) ou EN_PREPARATION (UX : le restaurateur prévoit pendant
+    // la prépa). Toute commande en EN_ATTENTE/PAYER/EN_ROUTE/LIVRER/ANNULER
+    // est rejetée — éviter de pousser des missions sur commande non payée
+    // ou déjà en route / annulée.
+    if (order.status !== 'PRET' && order.status !== 'EN_PREPARATION') {
+      throw new BadRequestException(
+        "La commande n'est pas prête à être assignée à un livreur.",
+      );
+    }
+
     // Trouver ou créer l'enregistrement Delivery
     let delivery = await this.prisma.delivery.findUnique({ where: { orderId } });
     if (!delivery) {
@@ -501,6 +512,18 @@ export class DeliveriesService {
     }
     if (delivery.status !== 'ASSIGNER') {
       throw new BadRequestException('Livraison déjà acceptée ou non assignée');
+    }
+
+    // SÉCURITÉ (fix B5) : un livreur ne peut accepter une nouvelle livraison
+    // que s'il est AVAILABLE. ON_DELIVERY = course en cours, OFFLINE = pas
+    // en service. Sans ce check, un livreur pouvait tenir deux missions
+    // simultanées et bloquer le tracking côté client.
+    if (user.driverStatus !== 'AVAILABLE') {
+      throw new BadRequestException(
+        user.driverStatus === 'ON_DELIVERY'
+          ? 'Vous avez déjà une livraison en cours.'
+          : 'Vous devez être disponible pour accepter une livraison.',
+      );
     }
 
     // Valide la transition Order PRET → EN_ROUTE via state machine
