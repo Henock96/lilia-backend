@@ -987,4 +987,33 @@ export class AdminService {
       message: 'Vendeur suspendu',
     };
   }
+
+  /**
+   * Réactive un vendeur suspendu : isActive=true. On NE rouvre PAS
+   * automatiquement (isOpen) — c'est au restaurateur de rouvrir selon ses
+   * horaires. Inverse réversible de `suspendVendor`.
+   */
+  async activateVendor(restaurantId: string, adminUserId: string) {
+    const vendor = await this.prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+    });
+    if (!vendor) throw new NotFoundException('Vendeur introuvable.');
+    if (vendor.isActive) {
+      throw new BadRequestException('Ce vendeur est déjà actif.');
+    }
+
+    const updated = await this.prisma.restaurant.update({
+      where: { id: restaurantId },
+      data: { isActive: true },
+    });
+
+    this.logger.log(
+      `Vendeur ${vendor.nom} (${restaurantId}) réactivé par admin ${adminUserId}`,
+    );
+
+    return {
+      data: updated,
+      message: 'Vendeur réactivé',
+    };
+  }
 }
