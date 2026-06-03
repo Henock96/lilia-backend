@@ -13,11 +13,10 @@ import { ApiBearerAuth, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestj
 import { DecodedIdToken } from 'firebase-admin/auth';
 
 import { DeliveriesService } from './deliveries.service';
-import { AssignDeliveryDto, DeliveryStatus, UpdateDeliveryStatusDto } from './dto/update-delivery.dto';
+import { AssignDeliveryDto, DeliveryStatus, SetDriverStatusDto, UpdateDeliveryStatusDto } from './dto/update-delivery.dto';
 import { UpdateLocationDto } from './dto/update-location.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { DriverStatus } from '@prisma/client';
 
 @ApiTags('Deliveries')
 @ApiBearerAuth()
@@ -83,9 +82,9 @@ export class DeliveriesController {
   @HttpCode(HttpStatus.OK)
   setStatus(
     @FirebaseUser() fbUser: DecodedIdToken,
-    @Body('status') status: DriverStatus,
+    @Body() dto: SetDriverStatusDto,
   ) {
-    return this.deliveriesService.setDriverStatus(fbUser.uid, status);
+    return this.deliveriesService.setDriverStatus(fbUser.uid, dto.status);
   }
 
   /**
@@ -96,8 +95,11 @@ export class DeliveriesController {
   @Roles('CLIENT', 'RESTAURATEUR', 'ADMIN', 'LIVREUR')
   @ApiOperation({ summary: 'Position du livreur pour une commande' })
   @ApiParam({ name: 'orderId' })
-  findByOrderId(@Param('orderId') orderId: string) {
-    return this.deliveriesService.findByOrderId(orderId);
+  findByOrderId(
+    @Param('orderId') orderId: string,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return this.deliveriesService.findByOrderId(orderId, fbUser.uid);
   }
 
   /**
@@ -125,8 +127,8 @@ export class DeliveriesController {
   @Roles('RESTAURATEUR', 'ADMIN', 'LIVREUR')
   @ApiOperation({ summary: 'Détail d\'une livraison' })
   @ApiParam({ name: 'id' })
-  findOne(@Param('id') id: string) {
-    return this.deliveriesService.findOne(id);
+  findOne(@Param('id') id: string, @FirebaseUser() fbUser: DecodedIdToken) {
+    return this.deliveriesService.findOne(id, fbUser.uid);
   }
 
   /**

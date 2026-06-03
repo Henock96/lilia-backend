@@ -7,6 +7,14 @@ import { OrderStatus } from '@prisma/client';
 import { OrderPaymentConfirmedEvent } from '../../events/order-events';
 import { ConfigService } from '@nestjs/config';
 
+/** Masque un numéro de téléphone pour les logs : garde les 2 derniers chiffres. */
+function maskPhone(phone?: string): string {
+  if (!phone) return 'n/a';
+  const trimmed = phone.trim();
+  if (trimmed.length <= 2) return '***';
+  return `***${trimmed.slice(-2)}`;
+}
+
 export enum PaymentStatus {
   PENDING = 'PENDING',
   SUCCESS = 'SUCCESS',
@@ -57,11 +65,11 @@ export class PaymentService {
     const amount = order.total;
     const currency = 'XAF';
 
-    this.logger.log(`💰 [PAIEMENT] Début - commande: ${request.orderId}, montant: ${amount} ${currency}, tel: ${request.phoneNumber}`);
+    this.logger.log(`💰 [PAIEMENT] Début - commande: ${request.orderId}, montant: ${amount} ${currency}, tel: ${maskPhone(request.phoneNumber)}`);
 
     // Valider le numéro de téléphone
     if (!this.mtnMomoService.validatePhoneNumber(request.phoneNumber)) {
-      this.logger.warn(`💰 [PAIEMENT] Échec: numéro invalide "${request.phoneNumber}" - commande: ${request.orderId}`);
+      this.logger.warn(`💰 [PAIEMENT] Échec: numéro invalide ${maskPhone(request.phoneNumber)} - commande: ${request.orderId}`);
       throw new Error('Invalid phone number format');
     }
     await this.assertNoPendingPayment(order.id);
@@ -109,13 +117,12 @@ export class PaymentService {
         referenceId,
       };
     } catch (error) {
-        // ⚠️ LOG DÉTAILLÉ DE L'ERREUR
-      this.logger.error('❌ Payment request failed');
-      this.logger.error('Status:', error.response?.status);
-      this.logger.error('Status Text:', error.response?.statusText);
-      this.logger.error('Error Data:', JSON.stringify(error.response?.data, null, 2));
-      this.logger.error('Request Headers:', JSON.stringify(error.config?.headers, null, 2));
-      this.logger.error('Request Body:', JSON.stringify(error.config?.data, null, 2));
+      // On NE logge PAS les headers/body de la requête : ils contiennent les
+      // identifiants d'API MTN (Authorization, subscription key) et le numéro
+      // du payeur. On garde uniquement le statut + le code d'erreur côté provider.
+      this.logger.error(
+        `❌ Payment request failed — status: ${error.response?.status ?? 'n/a'}, code: ${error.response?.data?.code ?? error.code ?? 'n/a'}`,
+      );
       throw new HttpException(
       {
         message: 'Payment request failed',
@@ -259,11 +266,21 @@ export class PaymentService {
   }
 
   private async handleSuccessfulPayment(payment: any) {
-    // Mettre à jour le statut de la commande
-    await this.prisma.order.update({
-      where: { id: payment.orderId },
-      data: { status: OrderStatus.PAYER, paidAt: new Date(), },
+    // Idempotence : le webhook MTN et le polling `checkPaymentStatus` peuvent
+    // arriver en parallèle. Le `updateMany` conditionnel (status != PAYER)
+    // garantit qu'UN SEUL appel effectue réellement la transition et émet
+    // l'événement — évite les doubles notifications / doubles crédits.
+    const result = await this.prisma.order.updateMany({
+      where: { id: payment.orderId, status: { not: OrderStatus.PAYER } },
+      data: { status: OrderStatus.PAYER, paidAt: new Date() },
     });
+
+    if (result.count === 0) {
+      this.logger.log(
+        `Paiement déjà traité pour la commande ${payment.orderId} — événement ignoré`,
+      );
+      return;
+    }
 
     // Émettre l'événement de paiement confirmé
     const event = new OrderPaymentConfirmedEvent(
@@ -275,7 +292,7 @@ export class PaymentService {
     );
 
     this.eventEmitter.emit('order.payment.confirmed', event);
-    
+
     this.logger.log(`Payment confirmed for order: ${payment.orderId}`);
   }
 

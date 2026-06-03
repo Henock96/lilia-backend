@@ -142,7 +142,7 @@ export class RestaurantsService {
     const countMap = new Map(topIds.map((r) => [r.restaurantId, r._count.restaurantId]));
 
     const restaurants = await this.prisma.restaurant.findMany({
-      where: { id: { in: ids }, isActive: true },
+      where: { id: { in: ids }, isActive: true, adminApproved: true },
       include: RESTAURANT_WITH_REVIEWS,
     });
 
@@ -276,7 +276,7 @@ export class RestaurantsService {
 
     async findRestaurant(){
         const resto =  await this.prisma.restaurant.findMany({
-            where: { isActive: true },
+            where: { isActive: true, adminApproved: true },
             include: {
                 specialties: true,
                 operatingHours: true,
@@ -474,20 +474,25 @@ export class RestaurantsService {
     private async verifyOwnership(restaurantId: string, firebaseUid: string) {
         const restaurant = await this.prisma.restaurant.findUnique({
         where: { id: restaurantId },
-        include: { owner: true }, // on récupère le owner en même temps
+        include: { owner: { select: { firebaseUid: true } } },
         });
 
         if (!restaurant) throw new NotFoundException('Restaurant non trouvé');
 
-        // owner.firebaseUid correspond directement — pas besoin de chercher le user séparément
-        if (
-        restaurant.owner.firebaseUid !== firebaseUid &&
-        restaurant.owner.role !== 'ADMIN'
-        ) {
-        throw new ForbiddenException("Vous n'êtes pas autorisé à modifier ce restaurant");
-        }
+        // L'autorisation se fait sur le rôle de l'APPELANT, pas sur celui du
+        // propriétaire (sinon IDOR : si owner.role === ADMIN, n'importe qui
+        // pourrait modifier le restaurant — et un vrai ADMIN appelant serait
+        // refusé sur les restos d'autrui).
+        const isOwner = restaurant.owner.firebaseUid === firebaseUid;
+        if (isOwner) return restaurant;
 
-        return restaurant;
+        const caller = await this.prisma.user.findUnique({
+            where: { firebaseUid },
+            select: { role: true },
+        });
+        if (caller?.role === 'ADMIN') return restaurant;
+
+        throw new ForbiddenException("Vous n'êtes pas autorisé à modifier ce restaurant");
     }
      /**
    * Calcule et attache les stats de notation sur un restaurant.

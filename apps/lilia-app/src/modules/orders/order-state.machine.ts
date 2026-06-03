@@ -23,7 +23,9 @@ export const TRANSITION_PERMISSIONS: Partial<
   EN_PREPARATION: ['RESTAURATEUR', 'ADMIN'],
   PRET: ['RESTAURATEUR', 'ADMIN'],
   EN_ROUTE: ['RESTAURATEUR', 'ADMIN', 'LIVREUR'],
-  LIVRER: ['LIVREUR', 'ADMIN'],
+  // RESTAURATEUR autorisé pour clôturer les commandes en retrait (sans livreur)
+  // et pour rester cohérent avec le rôle accepté par le controller (B25).
+  LIVRER: ['LIVREUR', 'RESTAURATEUR', 'ADMIN'],
 };
 
 @Injectable()

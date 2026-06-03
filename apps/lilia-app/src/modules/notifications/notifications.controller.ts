@@ -11,6 +11,7 @@ import { NotificationsService } from './notifications.service';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DecodedIdToken } from 'firebase-admin/auth';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
+import { FcmTokenDto } from './dto/fcm-token.dto';
 
 @ApiTags('Notifications')
 @ApiBearerAuth()
@@ -28,9 +29,9 @@ export class NotificationsController {
   @ApiOperation({ summary: 'Enregistrer un token FCM (login device)' })
   async registerToken(
     @FirebaseUser() fbUser: DecodedIdToken,
-    @Body('token') token: string,
+    @Body() dto: FcmTokenDto,
   ) {
-    return this.notificationsService.registerToken(fbUser.uid, token);
+    return this.notificationsService.registerToken(fbUser.uid, dto.token);
   }
   /**
    * Supprime le token FCM au logout.
@@ -41,8 +42,8 @@ export class NotificationsController {
   @ApiOperation({ summary: 'Supprimer le token FCM (logout device)' })
   removeToken(
     @FirebaseUser() fbUser: DecodedIdToken,
-    @Body('token') token: string,
+    @Body() dto: FcmTokenDto,
   ) {
-    return this.notificationsService.removeToken(fbUser.uid, token);
+    return this.notificationsService.removeToken(fbUser.uid, dto.token);
   }
 }

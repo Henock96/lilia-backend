@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { SentryModule } from '@sentry/nestjs/setup';
 
@@ -60,10 +61,24 @@ import { RedisModule } from '@nestjs-modules/ioredis';
     // Sentry — doit être l'un des tout premiers modules importés.
     SentryModule.forRoot(),
     ConfigModule.forRoot({ isGlobal: true }),
-    ThrottlerModule.forRoot([
-      { name: 'short', ttl: 1000, limit: 10 },
-      { name: 'long', ttl: 60000, limit: 100 },
-    ]),
+    // Throttler avec storage Redis si REDIS_URL est défini → limites PARTAGÉES
+    // entre les instances Render (sinon chaque instance a son propre compteur et
+    // la limite effective = limit × nbInstances). Fallback mémoire en local.
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const redisUrl = config.get<string>('REDIS_URL');
+        return {
+          throttlers: [
+            { name: 'short', ttl: 1000, limit: 10 },
+            { name: 'long', ttl: 60000, limit: 100 },
+          ],
+          storage: redisUrl
+            ? new ThrottlerStorageRedisService(redisUrl)
+            : undefined,
+        };
+      },
+    }),
     // app.module.ts â€” ajouter
     RedisModule.forRootAsync({
       useFactory: (config: ConfigService) => ({

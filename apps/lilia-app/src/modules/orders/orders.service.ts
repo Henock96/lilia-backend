@@ -23,6 +23,7 @@ import { PromoService, PromoValidationResult } from '../promo/promo.service';
 import { ConfigService } from '@nestjs/config';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { PreorderValidatorService } from '../vendors/preorder-validator.service';
+import { QuartiersService } from '../quartiers/quartiers.service';
 import Redis from 'ioredis';
 
 @Injectable()
@@ -42,6 +43,7 @@ export class OrdersService {
     private readonly config: ConfigService,
     private readonly platformSettings: PlatformSettingsService,
     private readonly preorderValidator: PreorderValidatorService,
+    private readonly quartiersService: QuartiersService,
   ) {
     const redisUrl = this.config.get<string>('REDIS_URL');
     this.redis = redisUrl ? new Redis(redisUrl) : null as any;
@@ -174,11 +176,30 @@ export class OrdersService {
     );
     await this.preorderValidator.validateDailyCapacity(restaurant);
 
+    // Frais de livraison : FIXED par défaut, ZONE_BASED selon le quartier de
+    // l'adresse de livraison (le mode ZONE_BASED n'était jamais appliqué — B11).
+    let effectiveDeliveryFee = restaurant.fixedDeliveryFee;
+    let deliveryQuartierId: string | null = null;
+    if (isDelivery && restaurant.deliveryPriceMode === 'ZONE_BASED' && adresseId) {
+      const addr = await this.prisma.adresses.findUnique({
+        where: { id: adresseId },
+        select: { quartierId: true },
+      });
+      if (addr?.quartierId) {
+        deliveryQuartierId = addr.quartierId;
+        const zoneFee = await this.quartiersService.calculateDeliveryFee(
+          restaurantId,
+          addr.quartierId,
+        );
+        effectiveDeliveryFee = zoneFee.fee;
+      }
+    }
+
     // 2. Calcul — isolé, testable unitairement
     const settings = await this.platformSettings.getSettings();
     const amounts = this.calculator.calculate(
       cartItems,
-      restaurant.fixedDeliveryFee,
+      effectiveDeliveryFee,
       isDelivery,
       settings.serviceFeePercent,
     );
@@ -204,8 +225,11 @@ export class OrdersService {
     const finalDeliveryFee = promoResult?.newDeliveryFee ?? amounts.deliveryFee;
     const discountAmount = promoResult?.discountAmount ?? 0;
 
-    // Réduction points de fidélité
+    // Réduction points de fidélité — plafonnée au montant encore dû après promo.
+    // On ne consomme JAMAIS plus de points que nécessaire (évite la perte de
+    // valeur sur une petite commande payée avec un gros solde de points).
     let loyaltyDiscount = 0;
+    let loyaltyPointsUsed = 0;
     if (useLoyaltyPoints) {
       const userPoints = await this.prisma.user.findUnique({
         where: { id: user.id },
@@ -213,7 +237,18 @@ export class OrdersService {
       });
       const pts = userPoints?.loyaltyPoints ?? 0;
       if (pts >= settings.loyaltyMinRedemption) {
-        loyaltyDiscount = pts * settings.loyaltyPointValueXaf;
+        // Montant restant à payer une fois la promo appliquée
+        const remaining = Math.max(
+          0,
+          amounts.subTotal + finalDeliveryFee + amounts.serviceFee - discountAmount,
+        );
+        // Nombre de points effectivement utilisables (entier, plafonné au solde
+        // ET au montant dû)
+        loyaltyPointsUsed = Math.min(
+          pts,
+          Math.floor(remaining / settings.loyaltyPointValueXaf),
+        );
+        loyaltyDiscount = loyaltyPointsUsed * settings.loyaltyPointValueXaf;
       }
     }
 
@@ -236,6 +271,7 @@ export class OrdersService {
           deliveryAddress,
           deliveryLatitude: deliveryLatitude ?? null,
           deliveryLongitude: deliveryLongitude ?? null,
+          deliveryQuartierId,
           paymentMethod,
           status: 'EN_ATTENTE',
           isPreorder: isPreorder ?? Boolean(scheduledForDate),
@@ -268,19 +304,19 @@ export class OrdersService {
         );
       }
 
-      // Consomme les points de fidélité dans la transaction
-      if (useLoyaltyPoints && loyaltyDiscount > 0) {
-        const pointsUsed = Math.ceil(loyaltyDiscount / settings.loyaltyPointValueXaf);
+      // Consomme les points de fidélité dans la transaction — uniquement le
+      // nombre réellement utilisé (calculé et plafonné plus haut).
+      if (loyaltyPointsUsed > 0) {
         await tx.user.update({
           where: { id: user.id },
-          data: { loyaltyPoints: { decrement: pointsUsed } },
+          data: { loyaltyPoints: { decrement: loyaltyPointsUsed } },
         });
         await tx.loyaltyTransaction.create({
           data: {
             userId: user.id,
             orderId: newOrder.id,
-            points: -pointsUsed,
-            reason: `${pointsUsed} pts utilisés — réduction ${loyaltyDiscount} FCFA`,
+            points: -loyaltyPointsUsed,
+            reason: `${loyaltyPointsUsed} pts utilisés — réduction ${loyaltyDiscount} FCFA`,
           },
         });
       }
@@ -473,7 +509,7 @@ export class OrdersService {
 
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
-      include: { restaurant: true },
+      include: { restaurant: true, items: true },
     });
 
     if (!order) {
@@ -489,13 +525,19 @@ export class OrdersService {
     // Passe par la state machine — le CLIENT ne peut annuler que depuis EN_ATTENTE
     this.stateMachine.assertTransition(order.status, 'ANNULER', 'CLIENT');
 
-    const updatedOrder = await this.prisma.order.update({
-      where: { id: orderId },
-      data: { status: 'ANNULER' },
-      include: {
-        restaurant: true,
-        items: true, // Correction: Toujours inclure les items
-      },
+    // Annulation + restauration du stock réservé au checkout, en une transaction
+    // (sinon le stock décrémenté à la commande est perdu = stock fantôme).
+    const updatedOrder = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.order.update({
+        where: { id: orderId },
+        data: { status: 'ANNULER' },
+        include: {
+          restaurant: true,
+          items: true, // Correction: Toujours inclure les items
+        },
+      });
+      await this.stockService.restoreInTransaction(tx, order.items);
+      return updated;
     });
     const orderCancelledEvent = new OrderCancelledEvent(
       order.id,
@@ -709,7 +751,7 @@ export class OrdersService {
 
       if (currentRestaurantId !== order.restaurantId) {
         throw new BadRequestException(
-          `Votre panier contient déjà des articles de ${currentCartItems[0].product.restaurantId}. Veuillez vider votre panier pour commander de ${order.restaurant.nom}.`,
+          `Votre panier contient déjà des articles d'un autre restaurant. Veuillez le vider pour commander de ${order.restaurant.nom}.`,
         );
       }
     }
@@ -855,8 +897,13 @@ export class OrdersService {
   }
 
   // orders/orders.service.ts — à ajouter
-  async findOrdersByUserId(userId: string) {
-    // Méthode admin uniquement — pas de vérification d'appartenance
+  async findOrdersByUserId(userId: string, caller?: { role: string }) {
+    // Defense-in-depth : méthode admin uniquement. Le controller la garde déjà
+    // via @Roles('ADMIN') mais on revérifie ici pour ne pas dépendre d'une seule
+    // couche (une future route oubliant le guard ne fuiterait pas les commandes).
+    if (caller && caller.role !== 'ADMIN') {
+      throw new ForbiddenException('Accès réservé aux administrateurs.');
+    }
     const orders = await this.prisma.order.findMany({
       where: { userId, deleteCommande: false },
       include: {

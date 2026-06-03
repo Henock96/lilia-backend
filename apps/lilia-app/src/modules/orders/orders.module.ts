@@ -12,9 +12,10 @@ import { PromoService } from '../promo/promo.service';
 import { TrackingModule } from '../tracking/tracking.module';
 import { PlatformSettingsModule } from '../platform-settings/platform-settings.module';
 import { VendorsModule } from '../vendors/vendors.module';
+import { QuartiersModule } from '../quartiers/quartiers.module';
 
 @Module({
-  imports: [PrismaModule, NotificationsModule, TrackingModule, PlatformSettingsModule, VendorsModule],
+  imports: [PrismaModule, NotificationsModule, TrackingModule, PlatformSettingsModule, VendorsModule, QuartiersModule],
   controllers: [OrdersController],
   providers: [
     OrdersService,

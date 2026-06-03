@@ -90,6 +90,50 @@ export class StockService {
     }
   }
 
+  // Restaure le stock réservé au checkout (annulation de commande).
+  // Symétrique de decrementInTransaction : ré-incrémente Product ET MenuDuJour
+  // pour les lignes à stock limité (stockRestant non null).
+  async restoreInTransaction(
+    tx: Prisma.TransactionClient,
+    items: { productId: string; menuId?: string | null; quantite: number }[],
+  ): Promise<void> {
+    const qtyByProduct = new Map<string, number>();
+    const qtyByMenu = new Map<string, number>();
+
+    for (const item of items) {
+      if (item.productId) {
+        qtyByProduct.set(
+          item.productId,
+          (qtyByProduct.get(item.productId) ?? 0) + item.quantite,
+        );
+      }
+      if (item.menuId) {
+        qtyByMenu.set(
+          item.menuId,
+          (qtyByMenu.get(item.menuId) ?? 0) + item.quantite,
+        );
+      }
+    }
+
+    const ops: Prisma.PrismaPromise<number>[] = [];
+    for (const [id, qty] of qtyByProduct) {
+      ops.push(tx.$executeRaw`
+        UPDATE "Product"
+        SET "stockRestant" = "stockRestant" + ${qty}
+        WHERE id = ${id} AND "stockRestant" IS NOT NULL
+      `);
+    }
+    for (const [id, qty] of qtyByMenu) {
+      ops.push(tx.$executeRaw`
+        UPDATE "MenuDuJour"
+        SET "stockRestant" = "stockRestant" + ${qty}
+        WHERE id = ${id} AND "stockRestant" IS NOT NULL
+      `);
+    }
+
+    await Promise.all(ops);
+  }
+
   // Reset quotidien (appelé par le scheduler à minuit)
   async resetDailyStock(tx: Prisma.TransactionClient): Promise<void> {
     await Promise.all([
