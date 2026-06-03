@@ -90,18 +90,12 @@ export class StockService {
     }
   }
 
-  /**
-   * Restaure le stock pour une liste d'OrderItem (utilisé lors de l'annulation
-   * d'une commande EN_ATTENTE qui avait décrémenté le stock au checkout).
-   *
-   * - `stockRestant IS NULL` = stock illimité → on ne touche pas
-   * - Sinon : on incrémente atomiquement de `quantite`
-   *
-   * Items attendus : `{ productId: string, menuId: string | null, quantite: number }`.
-   */
+  // Restaure le stock réservé au checkout (annulation de commande).
+  // Symétrique de decrementInTransaction : ré-incrémente Product ET MenuDuJour
+  // pour les lignes à stock limité (stockRestant non null).
   async restoreInTransaction(
     tx: Prisma.TransactionClient,
-    items: Array<{ productId: string; menuId: string | null; quantite: number }>,
+    items: { productId: string; menuId?: string | null; quantite: number }[],
   ): Promise<void> {
     const qtyByProduct = new Map<string, number>();
     const qtyByMenu = new Map<string, number>();
@@ -121,28 +115,23 @@ export class StockService {
       }
     }
 
-    const productUpdates = [...qtyByProduct.entries()].map(([id, qty]) =>
-      tx.$executeRaw`
+    const ops: Prisma.PrismaPromise<number>[] = [];
+    for (const [id, qty] of qtyByProduct) {
+      ops.push(tx.$executeRaw`
         UPDATE "Product"
         SET "stockRestant" = "stockRestant" + ${qty}
-        WHERE id = ${id}
-          AND "stockRestant" IS NOT NULL
-      `,
-    );
-
-    const menuUpdates = [...qtyByMenu.entries()].map(([id, qty]) =>
-      tx.$executeRaw`
+        WHERE id = ${id} AND "stockRestant" IS NOT NULL
+      `);
+    }
+    for (const [id, qty] of qtyByMenu) {
+      ops.push(tx.$executeRaw`
         UPDATE "MenuDuJour"
         SET "stockRestant" = "stockRestant" + ${qty}
-        WHERE id = ${id}
-          AND "stockRestant" IS NOT NULL
-      `,
-    );
+        WHERE id = ${id} AND "stockRestant" IS NOT NULL
+      `);
+    }
 
-    await Promise.all([
-      Promise.all(productUpdates),
-      Promise.all(menuUpdates),
-    ]);
+    await Promise.all(ops);
   }
 
   // Reset quotidien (appelé par le scheduler à minuit)

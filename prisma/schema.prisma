@@ -316,14 +316,6 @@ model CartItem {
 }
 
 // 04/04/2026 ÃƒÆ’Ã¢â‚¬Â°TAPE 1 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Ajouter les nouveaux enums (non-breaking)
-enum OrderLifecycleStatus {
-  DRAFT // Panier validÃƒÆ’Ã‚Â©, pas encore payÃƒÆ’Ã‚Â©
-  CONFIRMED // Paiement confirmÃƒÆ’Ã‚Â©
-  IN_PREPARATION // Restaurant prÃƒÆ’Ã‚Â©pare
-  READY // PrÃƒÆ’Ã‚Âªt pour livraison/retrait
-  COMPLETED // LivrÃƒÆ’Ã‚Â© ou retirÃƒÆ’Ã‚Â©
-  CANCELLED // AnnulÃƒÆ’Ã‚Â©
-}
 
 model Order {
   id                 String                @id @default(cuid())
@@ -345,7 +337,6 @@ model Order {
   deleteCommande     Boolean               @default(false)
   paymentMethod      PaymentMethod // MÃƒÆ’Ã‚Â©thode de paiement
   status             OrderStatus           @default(EN_ATTENTE)
-  lifecycleStatus    OrderLifecycleStatus? // nouveau, nullable
   paidAt             DateTime? // Date de paiement
   notes              String? // Notes optionnelles du client pour le restaurant
   contactPhone       String? // NumÃƒÆ’Ã‚Â©ro de tÃƒÆ’Ã‚Â©lÃƒÆ’Ã‚Â©phone saisi lors de la commande
@@ -374,7 +365,6 @@ model Order {
   @@index([restaurantId])
   @@index([userId])
   @@index([status]) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â manquait
-  @@index([lifecycleStatus]) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â nouveau
   @@index([createdAt]) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â manquait
 }
 

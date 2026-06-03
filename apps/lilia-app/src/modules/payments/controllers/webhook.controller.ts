@@ -1,15 +1,6 @@
 /* eslint-disable prettier/prettier */
-import {
-  Controller,
-  Post,
-  Body,
-  Headers,
-  Logger,
-  HttpCode,
-  HttpStatus,
-  InternalServerErrorException,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { Controller, Post, Body, Headers, Logger, HttpCode, HttpStatus, UnauthorizedException } from '@nestjs/common';
+import { timingSafeEqual } from 'crypto';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import * as crypto from 'crypto';
 import { PaymentService } from '../services/payment.service';
@@ -22,6 +13,12 @@ interface MtnWebhookPayload {
   referenceId: string;
   status: 'SUCCESSFUL' | 'FAILED' | 'PENDING';
   financialTransactionId?: string;
+}
+
+/** Masque une référence de transaction pour les logs : garde les 4 derniers. */
+function maskRef(ref?: string): string {
+  if (!ref) return 'n/a';
+  return ref.length <= 4 ? '****' : `****${ref.slice(-4)}`;
 }
 
 @ApiTags('Webhooks')
@@ -53,8 +50,8 @@ export class WebhookController {
     @Headers('x-callback-signature') signature?: string,
     @Headers('x-webhook-secret') webhookSecret?: string,
   ) {
-    this.logger.log(`Webhook MTN reçu : ${payload.referenceId} → ${payload.status}`);
-    this.validateWebhookSecret(signature, webhookSecret, payload);
+    this.logger.log(`Webhook MTN reçu : ref ${maskRef(payload.referenceId)} → ${payload.status}`);
+    this.validateWebhookSecret(signature, webhookSecret);
 
     try {
       if (payload.status === 'SUCCESSFUL') {
@@ -66,7 +63,7 @@ export class WebhookController {
           await this.paymentService.checkPaymentStatus(payment.id);
           this.logger.log(`Paiement ${payment.id} traité via webhook`);
         } else {
-          this.logger.warn(`Webhook : aucun paiement trouvé pour ref ${payload.referenceId}`);
+          this.logger.warn(`Webhook : aucun paiement trouvé pour ref ${maskRef(payload.referenceId)}`);
         }
       }
 
@@ -103,32 +100,15 @@ export class WebhookController {
   ) {
     const expected = this.config.get<string>('MTN_MOMO_WEBHOOK_SECRET');
     if (!expected) {
-      if (process.env.NODE_ENV === 'production') {
-        this.logger.error(
-          'MTN_MOMO_WEBHOOK_SECRET manquant en production — webhook rejeté (fail-closed)',
-        );
-        throw new InternalServerErrorException(
-          'Webhook configuration manquante',
-        );
-      }
-      this.logger.warn(
-        'MTN_MOMO_WEBHOOK_SECRET non défini (dev/staging) : webhook accepté sans secret partagé',
-      );
-      return;
+      // Fail-CLOSED : sans secret configuré, on refuse. Ce endpoint est @Public()
+      // et mute Payment + Order — l'accepter sans secret laisserait n'importe qui
+      // confirmer un paiement arbitraire.
+      this.logger.error('MTN_MOMO_WEBHOOK_SECRET non défini — webhook rejeté');
+      throw new UnauthorizedException('Webhook non configuré');
     }
 
-    // 1) HMAC signature si fournie (hypothèse : HMAC-SHA256 hex du raw body)
-    if (signature && payload !== undefined) {
-      const computed = crypto
-        .createHmac('sha256', expected)
-        .update(JSON.stringify(payload))
-        .digest('hex');
-      if (this.safeEqual(signature, computed)) {
-        return;
-      }
-      // signature fournie mais invalide → on n'autorise PAS de fallback sur
-      // le secret partagé pour éviter de masquer une vraie attaque.
-      this.logger.warn('Webhook MTN : signature HMAC invalide');
+    const received = webhookSecret || signature;
+    if (!received || !this.safeEqual(received, expected)) {
       throw new UnauthorizedException('Webhook non autorisé');
     }
 
@@ -152,5 +132,14 @@ export class WebhookController {
       return false;
     }
     return crypto.timingSafeEqual(aBuf, bBuf);
+  }
+
+  /** Comparaison à temps constant (anti timing-attack). */
+  private safeEqual(a: string, b: string): boolean {
+    const ab = Buffer.from(a);
+    const bb = Buffer.from(b);
+    // timingSafeEqual exige des buffers de même longueur.
+    if (ab.length !== bb.length) return false;
+    return timingSafeEqual(ab, bb);
   }
 }

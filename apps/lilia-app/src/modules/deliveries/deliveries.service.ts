@@ -14,8 +14,21 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
 import { OrderStatusUpdatedEvent } from '../events/order-events';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import { TrackingGateway } from '../tracking/tracking.gateway';
+import { TrackingService } from '../tracking/tracking.service';
 
 type ActorRole = 'CLIENT' | 'RESTAURATEUR' | 'ADMIN' | 'LIVREUR';
+
+// Cycle de vie d'une livraison — transitions autorisées via PATCH /:id/status.
+// EN_TRANSIT n'est PAS atteignable ici : il passe par /accept (effets de bord
+// sur Order.status + DriverStatus). LIVRER et ECHEC sont des états terminaux.
+const DELIVERY_STATUS_TRANSITIONS: Record<string, DeliveryStatus[]> = {
+  [DeliveryStatus.EN_ATTENTE]: [DeliveryStatus.ECHEC],
+  [DeliveryStatus.ASSIGNER]: [DeliveryStatus.ECHEC],
+  [DeliveryStatus.EN_TRANSIT]: [DeliveryStatus.LIVRER, DeliveryStatus.ECHEC],
+  [DeliveryStatus.LIVRER]: [],
+  [DeliveryStatus.ECHEC]: [],
+};
 
 @Injectable()
 export class DeliveriesService {
@@ -27,6 +40,8 @@ export class DeliveriesService {
     private readonly eventEmitter: EventEmitter2,
     private readonly stateMachine: OrderStateMachine,
     private readonly platformSettings: PlatformSettingsService,
+    private readonly trackingGateway: TrackingGateway,
+    private readonly trackingService: TrackingService,
   ) {}
 
   private resolveActor(role: string): ActorRole | null {
@@ -37,6 +52,35 @@ export class DeliveriesService {
       LIVREUR: 'LIVREUR',
     };
     return map[role] ?? null;
+  }
+
+  /**
+   * Contrôle de propriété pour la consultation d'une livraison (anti-IDOR).
+   * Autorisé : ADMIN, le restaurateur propriétaire du resto, le client
+   * propriétaire de la commande, ou le livreur assigné. Sinon ForbiddenException.
+   */
+  private async assertCanViewDelivery(ctx: {
+    orderUserId: string;
+    ownerFirebaseUid: string | null;
+    delivererId: string | null;
+    requesterFirebaseUid: string;
+  }): Promise<void> {
+    // Restaurateur propriétaire du restaurant
+    if (ctx.ownerFirebaseUid && ctx.ownerFirebaseUid === ctx.requesterFirebaseUid) {
+      return;
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { firebaseUid: ctx.requesterFirebaseUid },
+      select: { id: true, role: true },
+    });
+    if (!user) throw new NotFoundException('Utilisateur non trouvé.');
+
+    if (user.role === 'ADMIN') return;
+    if (user.id === ctx.orderUserId) return; // client propriétaire de la commande
+    if (ctx.delivererId && user.id === ctx.delivererId) return; // livreur assigné
+
+    throw new ForbiddenException("Vous n'êtes pas autorisé à consulter cette livraison.");
   }
 
   /**
@@ -92,7 +136,7 @@ export class DeliveriesService {
             include: {
               items: {
                 include: {
-                  product: true,
+                  product: { select: { nom: true, imageUrl: true } },
                 },
               },
             },
@@ -165,7 +209,7 @@ export class DeliveriesService {
             },
             items: {
               include: {
-                product: true,
+                product: { select: { nom: true, imageUrl: true } },
               },
             },
           },
@@ -183,7 +227,7 @@ export class DeliveriesService {
   /**
    * Récupère une livraison par son ID
    */
-  async findOne(id: string) {
+  async findOne(id: string, firebaseUid: string) {
     const delivery = await this.prisma.delivery.findUnique({
       where: { id },
       include: {
@@ -201,11 +245,12 @@ export class DeliveriesService {
                 vendorType: true,
                 acceptsPreorders: true,
                 preorderLeadHours: true,
+                owner: { select: { firebaseUid: true } },
               },
             },
             items: {
               include: {
-                product: true,
+                product: { select: { nom: true, imageUrl: true } },
               },
             },
           },
@@ -225,8 +270,21 @@ export class DeliveriesService {
       throw new NotFoundException(`Livraison avec l'ID "${id}" non trouvée.`);
     }
 
+    // Anti-IDOR : seuls les acteurs liés à cette livraison peuvent la consulter
+    await this.assertCanViewDelivery({
+      orderUserId: delivery.order.userId,
+      ownerFirebaseUid: delivery.order.restaurant.owner?.firebaseUid ?? null,
+      delivererId: delivery.delivererId,
+      requesterFirebaseUid: firebaseUid,
+    });
+
+    // On retire le firebaseUid du propriétaire avant de répondre (champ interne)
+    const { owner: _owner, ...restaurant } = delivery.order.restaurant;
     return {
-      data: delivery,
+      data: {
+        ...delivery,
+        order: { ...delivery.order, restaurant },
+      },
     };
   }
 
@@ -269,6 +327,19 @@ export class DeliveriesService {
 
     if (!isRestaurantOwner && !isAssignedDeliverer && !isAdmin) {
       throw new ForbiddenException("Vous n'êtes pas autorisé à modifier cette livraison.");
+    }
+
+    // Valide la transition du cycle de vie de la livraison (anti-incohérence) :
+    // empêche les sauts arbitraires (LIVRER↔ECHEC, re-livraison d'un état
+    // terminal, passage direct à EN_TRANSIT qui doit passer par /accept).
+    const allowedNext = DELIVERY_STATUS_TRANSITIONS[delivery.status] ?? [];
+    if (!allowedNext.includes(status)) {
+      throw new BadRequestException(
+        `Transition de livraison invalide : ${delivery.status} → ${status}. ` +
+          (status === DeliveryStatus.EN_TRANSIT
+            ? 'Utilisez l\'acceptation de mission (/accept) pour démarrer le trajet.'
+            : `Transitions possibles : [${allowedNext.join(', ') || 'aucune'}].`),
+      );
     }
 
     // Si LIVRER : valide la transition Order via state machine
@@ -385,14 +456,17 @@ export class DeliveriesService {
       throw new ForbiddenException("Vous n'êtes pas autorisé à assigner un livreur à cette commande.");
     }
 
-    // SÉCURITÉ (fix B10) : on n'assigne un livreur que sur une commande
-    // PRET (idéal) ou EN_PREPARATION (UX : le restaurateur prévoit pendant
-    // la prépa). Toute commande en EN_ATTENTE/PAYER/EN_ROUTE/LIVRER/ANNULER
-    // est rejetée — éviter de pousser des missions sur commande non payée
-    // ou déjà en route / annulée.
-    if (order.status !== 'PRET' && order.status !== 'EN_PREPARATION') {
+    // Un livreur ne peut être assigné que sur une commande payée et en cours de
+    // traitement — pas sur EN_ATTENTE (non payée) ni sur une commande terminée.
+    const assignableStatuses: OrderStatus[] = [
+      OrderStatus.PAYER,
+      OrderStatus.EN_PREPARATION,
+      OrderStatus.PRET,
+      OrderStatus.EN_ROUTE,
+    ];
+    if (!assignableStatuses.includes(order.status)) {
       throw new BadRequestException(
-        "La commande n'est pas prête à être assignée à un livreur.",
+        `Impossible d'assigner un livreur à une commande au statut « ${order.status} ».`,
       );
     }
 
@@ -513,6 +587,13 @@ export class DeliveriesService {
     if (delivery.status !== 'ASSIGNER') {
       throw new BadRequestException('Livraison déjà acceptée ou non assignée');
     }
+    // Un livreur déjà en course ne peut pas en accepter une 2e (sinon les
+    // positions de tracking des deux commandes seraient confondues).
+    if (user.driverStatus === DriverStatus.ON_DELIVERY) {
+      throw new BadRequestException(
+        'Vous avez déjà une livraison en cours. Terminez-la avant d\'en accepter une autre.',
+      );
+    }
 
     // SÉCURITÉ (fix B5) : un livreur ne peut accepter une nouvelle livraison
     // que s'il est AVAILABLE. ON_DELIVERY = course en cours, OFFLINE = pas
@@ -582,7 +663,7 @@ export class DeliveriesService {
   }
 
   async setDriverStatus(firebaseUid: string, status: DriverStatus) {
-    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    const user = await this.getUserOrThrow(firebaseUid); // 404 si introuvable (plus de TypeError 500)
     if (user.role !== 'LIVREUR') throw new ForbiddenException();
 
     return this.prisma.user.update({
@@ -642,13 +723,36 @@ export class DeliveriesService {
       }),
     ]);
 
+    // Convergence avec le path WebSocket (/tracking/position) : on broadcast
+    // aussi la position aux clients qui suivent la commande, pour que le fallback
+    // HTTP soit équivalent au WS (sinon désync jusqu'au prochain poll 30s — B13).
+    // Best-effort : n'échoue jamais la mise à jour de position.
+    try {
+      const eta = await this.trackingService.calculateETA(
+        delivery.orderId,
+        latitude,
+        longitude,
+      );
+      this.trackingGateway.server
+        ?.to(`order:${delivery.orderId}`)
+        ?.emit('driver:position', {
+          lat: latitude,
+          lng: longitude,
+          eta,
+          timestamp: now.getTime(),
+          source: 'http-delivery',
+        });
+    } catch (err) {
+      this.logger.warn(`Broadcast position fallback échoué: ${(err as Error).message}`);
+    }
+
     return { message: 'Position mise à jour', latitude, longitude };
   }
 
   /**
    * Récupère la livraison associée à une commande (pour le client qui veut tracker)
    */
-  async findByOrderId(orderId: string) {
+  async findByOrderId(orderId: string, firebaseUid: string) {
     const delivery = await this.prisma.delivery.findUnique({
       where: { orderId },
       select: {
@@ -661,6 +765,9 @@ export class DeliveriesService {
         pickedUpAt: true,
         deliveredAt: true,
         createdAt: true,
+        // Champs internes utilisés uniquement pour le contrôle d'accès (retirés
+        // de la réponse plus bas).
+        delivererId: true,
         deliverer: {
           select: { id: true, nom: true, phone: true, imageUrl: true },
         },
@@ -670,10 +777,17 @@ export class DeliveriesService {
         order: {
           select: {
             id: true,
+            userId: true,
             deliveryLatitude: true,
             deliveryLongitude: true,
             restaurant: {
-              select: { id: true, nom: true, latitude: true, longitude: true },
+              select: {
+                id: true,
+                nom: true,
+                latitude: true,
+                longitude: true,
+                owner: { select: { firebaseUid: true } },
+              },
             },
           },
         },
@@ -681,7 +795,27 @@ export class DeliveriesService {
     });
 
     if (!delivery) throw new NotFoundException('Aucune livraison trouvée pour cette commande.');
-    return { data: delivery };
+
+    // Anti-IDOR : la position GPS du livreur et les coordonnées du client ne
+    // doivent être visibles que par les parties liées à la commande.
+    await this.assertCanViewDelivery({
+      orderUserId: delivery.order.userId,
+      ownerFirebaseUid: delivery.order.restaurant.owner?.firebaseUid ?? null,
+      delivererId: delivery.delivererId,
+      requesterFirebaseUid: firebaseUid,
+    });
+
+    // Retire les champs internes (delivererId, userId, owner.firebaseUid)
+    const { delivererId: _delivererId, order, ...rest } = delivery;
+    const { userId: _userId, restaurant, ...orderRest } = order;
+    const { owner: _owner, ...publicRestaurant } = restaurant;
+
+    return {
+      data: {
+        ...rest,
+        order: { ...orderRest, restaurant: publicRestaurant },
+      },
+    };
   }
 
   private formatScheduledForFr(d: Date): string {

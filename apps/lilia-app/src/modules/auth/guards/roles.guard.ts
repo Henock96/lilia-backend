@@ -41,6 +41,14 @@ export class RolesGuard implements CanActivate{
       }
     }
 
+    // Compte banni : verrouillage global, quelle que soit la route authentifiée.
+    // (Note : à cause du cache user 5 min, un ban peut mettre jusqu'à 5 min à
+    //  s'appliquer — penser à invalider le cache à la modification du statut.)
+    if (request.user && request.user.statusUser === 'BLOCKED') {
+      this.logger.warn(`Accès refusé : compte bloqué ${request.firebaseUser.uid}`);
+      throw new ForbiddenException('Votre compte a été suspendu.');
+    }
+
     // Pas de @Roles() sur cette route → authentifié suffit, pas de check rôle
     if (!requiredRoles?.length) return true;
 

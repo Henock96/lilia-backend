@@ -16,6 +16,7 @@ import { DecodedIdToken } from 'firebase-admin/auth';
 import { BannersService } from './banners.service';
 import { CreateBannerDto } from './dto/create-banner.dto';
 import { UpdateBannerDto } from './dto/update-banner.dto';
+import { ReorderBannerDto } from './dto/reorder-banner.dto';
 import { Public } from '../auth/decorators/public.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
@@ -78,9 +79,9 @@ export class BannersController {
   @Roles('ADMIN')
   reorder(
     @Param('id') id: string,
-    @Body('displayOrder') displayOrder: number,
+    @Body() dto: ReorderBannerDto,
     @FirebaseUser() fbUser: DecodedIdToken,
   ) {
-    return this.bannersService.reorder(id, displayOrder, fbUser.uid);
+    return this.bannersService.reorder(id, dto.displayOrder, fbUser.uid);
   }
 }

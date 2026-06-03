@@ -10,7 +10,14 @@ import { FirebaseService } from '../firebase/firebase.service';
 
 @WebSocketGateway({
   namespace: '/tracking',
-  cors: { origin: '*' },
+  // Aligné sur la liste blanche HTTP. Les apps mobiles (Socket.io natif)
+  // n'envoient pas d'Origin → non bloquées ; seuls les navigateurs sont filtrés.
+  cors: {
+    origin: process.env.ALLOWED_ORIGINS
+      ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
+      : true,
+    credentials: true,
+  },
   transports: ['websocket', 'polling'], // polling = fallback réseau faible Congo
   pingInterval: 10000,
   pingTimeout: 5000,

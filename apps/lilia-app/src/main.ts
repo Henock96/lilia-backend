@@ -52,13 +52,25 @@ async function bootstrap() {
   app.useGlobalFilters(new HttpExceptionFilter());
 
   // ─── CORS ───────────────────────────────────────────────────────────────────
-  const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') ?? [];
+  const isProduction = process.env.NODE_ENV === 'production';
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  // En production, refléter TOUTE origine avec `credentials: true` est une faille
+  // (CSRF / exfiltration cross-site). On exige une liste blanche explicite et on
+  // échoue au démarrage si elle est absente plutôt que de basculer en `true`.
+  if (isProduction && allowedOrigins.length === 0) {
+    throw new Error(
+      'ALLOWED_ORIGINS doit être défini en production (liste blanche CORS). ' +
+        'Ex: ALLOWED_ORIGINS=https://lilia-food.com,https://admin.lilia-food.com',
+    );
+  }
+
   app.enableCors({
-    // En dev : tout autoriser. En prod : liste blanche.
-    origin:
-      process.env.NODE_ENV === 'production' && allowedOrigins.length > 0
-        ? allowedOrigins
-        : true,
+    // Prod : liste blanche stricte. Dev : tout autoriser pour le confort local.
+    origin: isProduction ? allowedOrigins : true,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     allowedHeaders: 'Content-Type,Authorization,Idempotency-Key',
     credentials: true,

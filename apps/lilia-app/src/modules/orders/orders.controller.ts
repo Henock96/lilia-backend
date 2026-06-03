@@ -23,7 +23,9 @@ import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { DecodedIdToken } from 'firebase-admin/auth';
+import { User } from '@prisma/client';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { MaintenanceGuard } from '../platform-settings/guards/maintenance.guard';
 
@@ -115,13 +117,9 @@ export class OrdersController {
   @Roles('ADMIN')
   @ApiOperation({ summary: "Commandes d'un utilisateur (admin)" })
   @ApiParam({ name: 'userId', description: "ID Prisma de l'utilisateur" })
-  getUserOrders(
-    @Param('userId') userId: string,
-    @FirebaseUser() fbUser: DecodedIdToken,
-  ) {
+  getUserOrders(@Param('userId') userId: string, @CurrentUser() caller: User) {
     // findOrdersClient attend un firebaseUid — on ajoute une méthode par ID Prisma
-    // Le service re-vérifie le rôle ADMIN en defense-in-depth (B3).
-    return this.ordersService.findOrdersByUserId(userId, fbUser.uid);
+    return this.ordersService.findOrdersByUserId(userId, caller);
   }
 
   /**

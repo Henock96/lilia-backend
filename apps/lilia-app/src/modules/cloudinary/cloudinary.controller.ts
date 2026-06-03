@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 // cloudinary/cloudinary.controller.ts
 import {
-  Controller, MaxFileSizeValidator, ParseFilePipe,
+  Controller, FileTypeValidator, MaxFileSizeValidator, ParseFilePipe,
   Post, UploadedFile, UseInterceptors, Query,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -38,7 +38,12 @@ export class CloudinaryController {
   async uploadImage(
     @UploadedFile(
       new ParseFilePipe({
-        validators: [new MaxFileSizeValidator({ maxSize: 5 * 1024 * 1024 })], // 5 MB
+        validators: [
+          new MaxFileSizeValidator({ maxSize: 5 * 1024 * 1024 }), // 5 MB
+          // N'accepte que des images — empêche l'hébergement de fichiers
+          // arbitraires (HTML/SVG/binaires) sur le compte Cloudinary.
+          new FileTypeValidator({ fileType: /^image\/(jpeg|jpg|png|webp)$/ }),
+        ],
       }),
     )
     file: Express.Multer.File,

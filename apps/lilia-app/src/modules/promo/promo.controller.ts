@@ -8,6 +8,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DecodedIdToken } from 'firebase-admin/auth';
 import { PromoService } from './promo.service';
 import { CreatePromoCodeDto } from './dto/create-promo-code.dto';
+import { ValidatePromoDto } from './dto/validate-promo.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -31,12 +32,7 @@ export class PromoController {
   @ApiOperation({ summary: 'Valider un code promo au checkout' })
   validate(
     @CurrentUser() user: User,
-    @Body() body: {
-      code: string;
-      restaurantId: string;
-      subTotal: number;
-      deliveryFee: number;
-    },
+    @Body() body: ValidatePromoDto,
   ) {
     return this.promoService.validateCode(
       body.code,

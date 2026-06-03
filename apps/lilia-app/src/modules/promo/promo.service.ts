@@ -138,6 +138,42 @@ export class PromoService {
     orderId: string,
     discountAmount: number,
   ): Promise<void> {
+    // Verrou pessimiste sur la ligne PromoCode : sérialise les utilisations
+    // concurrentes du MÊME code (double-tap, retry réseau, scripts). Sans ce
+    // verrou, deux checkouts simultanés passent tous deux la validation lue en
+    // amont et consomment le code deux fois (faille de double-spend).
+    const locked = await tx.$queryRaw<
+      { id: string; maxUsageTotal: number | null; maxUsagePerUser: number }[]
+    >`
+      SELECT id, "maxUsageTotal", "maxUsagePerUser"
+      FROM "PromoCode"
+      WHERE id = ${promoCodeId}
+      FOR UPDATE
+    `;
+
+    if (!locked || locked.length === 0) {
+      throw new NotFoundException('Code promo introuvable.');
+    }
+    const promo = locked[0];
+
+    // Re-vérification des quotas SOUS verrou — les count() voient désormais les
+    // usages déjà committés par une transaction concurrente terminée avant nous.
+    if (promo.maxUsageTotal !== null) {
+      const totalUsages = await tx.promoUsage.count({ where: { promoCodeId } });
+      if (totalUsages >= promo.maxUsageTotal) {
+        throw new BadRequestException(
+          'Ce code promo a atteint son nombre maximal d\'utilisations.',
+        );
+      }
+    }
+
+    const userUsages = await tx.promoUsage.count({
+      where: { promoCodeId, userId },
+    });
+    if (userUsages >= promo.maxUsagePerUser) {
+      throw new BadRequestException('Vous avez déjà utilisé ce code promo.');
+    }
+
     await tx.promoUsage.create({
       data: {
         promoCodeId,

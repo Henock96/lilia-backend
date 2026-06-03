@@ -142,7 +142,7 @@ export class RestaurantsService {
     const countMap = new Map(topIds.map((r) => [r.restaurantId, r._count.restaurantId]));
 
     const restaurants = await this.prisma.restaurant.findMany({
-      where: { id: { in: ids }, isActive: true },
+      where: { id: { in: ids }, isActive: true, adminApproved: true },
       include: RESTAURANT_WITH_REVIEWS,
     });
 
@@ -276,7 +276,7 @@ export class RestaurantsService {
 
     async findRestaurant(){
         const resto =  await this.prisma.restaurant.findMany({
-            where: { isActive: true },
+            where: { isActive: true, adminApproved: true },
             include: {
                 specialties: true,
                 operatingHours: true,
@@ -476,27 +476,28 @@ export class RestaurantsService {
    * est ADMIN — IDOR. Voir vendors.service.ts:186-195 pour le même pattern.
    */
     private async verifyOwnership(restaurantId: string, firebaseUid: string) {
-        const [restaurant, caller] = await Promise.all([
-            this.prisma.restaurant.findUnique({
-                where: { id: restaurantId },
-                include: { owner: { select: { id: true, firebaseUid: true } } },
-            }),
-            this.prisma.user.findUnique({
-                where: { firebaseUid },
-                select: { id: true, role: true },
-            }),
-        ]);
+        const restaurant = await this.prisma.restaurant.findUnique({
+        where: { id: restaurantId },
+        include: { owner: { select: { firebaseUid: true } } },
+        });
 
         if (!restaurant) throw new NotFoundException('Restaurant non trouvé');
         if (!caller) throw new ForbiddenException("Utilisateur introuvable");
 
-        const isOwner = restaurant.ownerId === caller.id;
-        const isAdmin = caller.role === 'ADMIN';
-        if (!isOwner && !isAdmin) {
-            throw new ForbiddenException("Vous n'êtes pas autorisé à modifier ce restaurant");
-        }
+        // L'autorisation se fait sur le rôle de l'APPELANT, pas sur celui du
+        // propriétaire (sinon IDOR : si owner.role === ADMIN, n'importe qui
+        // pourrait modifier le restaurant — et un vrai ADMIN appelant serait
+        // refusé sur les restos d'autrui).
+        const isOwner = restaurant.owner.firebaseUid === firebaseUid;
+        if (isOwner) return restaurant;
 
-        return restaurant;
+        const caller = await this.prisma.user.findUnique({
+            where: { firebaseUid },
+            select: { role: true },
+        });
+        if (caller?.role === 'ADMIN') return restaurant;
+
+        throw new ForbiddenException("Vous n'êtes pas autorisé à modifier ce restaurant");
     }
      /**
    * Calcule et attache les stats de notation sur un restaurant.

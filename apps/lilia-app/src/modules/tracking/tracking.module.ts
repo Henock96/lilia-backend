@@ -7,7 +7,6 @@ import { FirebaseService } from '../firebase/firebase.service';
 @Module({
   providers: [TrackingService, TrackingGateway, FirebaseService],
   controllers: [TrackingController],
-  exports: [TrackingGateway], // exporté pour que OrdersListener puisse notifier
-
+  exports: [TrackingGateway, TrackingService], // Gateway: OrdersListener/Deliveries ; Service: ETA fallback HTTP
 })
 export class TrackingModule {}
