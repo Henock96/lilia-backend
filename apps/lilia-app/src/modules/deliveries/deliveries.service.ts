@@ -589,20 +589,14 @@ export class DeliveriesService {
     }
     // Un livreur déjà en course ne peut pas en accepter une 2e (sinon les
     // positions de tracking des deux commandes seraient confondues).
-    if (user.driverStatus === DriverStatus.ON_DELIVERY) {
-      throw new BadRequestException(
-        'Vous avez déjà une livraison en cours. Terminez-la avant d\'en accepter une autre.',
-      );
-    }
-
     // SÉCURITÉ (fix B5) : un livreur ne peut accepter une nouvelle livraison
     // que s'il est AVAILABLE. ON_DELIVERY = course en cours, OFFLINE = pas
     // en service. Sans ce check, un livreur pouvait tenir deux missions
     // simultanées et bloquer le tracking côté client.
-    if (user.driverStatus !== 'AVAILABLE') {
+    if (user.driverStatus !== DriverStatus.AVAILABLE) {
       throw new BadRequestException(
-        user.driverStatus === 'ON_DELIVERY'
-          ? 'Vous avez déjà une livraison en cours.'
+        user.driverStatus === DriverStatus.ON_DELIVERY
+          ? 'Vous avez déjà une livraison en cours. Terminez-la avant d\'en accepter une autre.'
           : 'Vous devez être disponible pour accepter une livraison.',
       );
     }

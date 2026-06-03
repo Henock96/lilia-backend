@@ -2,7 +2,6 @@
 import { Controller, Post, Body, Headers, Logger, HttpCode, HttpStatus, UnauthorizedException } from '@nestjs/common';
 import { timingSafeEqual } from 'crypto';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import * as crypto from 'crypto';
 import { PaymentService } from '../services/payment.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { Public } from '../../auth/decorators/public.decorator';
@@ -39,7 +38,6 @@ export class WebhookController {
   /**
    * Reçoit les callbacks MTN MoMo.
    * @Public() — pas d'auth Firebase (MTN appelle directement ce endpoint).
-   * En production, valider la signature dans les headers.
    */
   @Public()
   @Post('mtn-momo')
@@ -77,32 +75,12 @@ export class WebhookController {
 
   /**
    * Validation du webhook MTN MoMo (fix B2).
-   *
-   * SÉCURITÉ :
-   * 1. Fail-closed en production : si MTN_MOMO_WEBHOOK_SECRET est absent en
-   *    NODE_ENV=production, on lève une 500 (et on log) au lieu d'accepter
-   *    aveuglément. En dev/staging on garde l'ancien comportement (warn).
-   * 2. Comparaison avec crypto.timingSafeEqual pour éviter les timing
-   *    attacks (l'ancien `received !== expected` était vulnérable).
-   * 3. Si l'en-tête `x-callback-signature` est présent, on tente une
-   *    vérification HMAC SHA-256 du body. Hypothèse conservatrice : on
-   *    n'a pas trouvé de doc officielle MTN décrivant le format de la
-   *    signature ; on supporte HMAC SHA-256 hex sur le raw body comme
-   *    fallback générique. Si MTN utilise un autre schéma, ce check
-   *    rejettera tout — mais c'est volontaire (fail-closed). Tant que la
-   *    sig n'est pas certaine, l'opérateur peut ne PAS l'envoyer côté MTN
-   *    et s'appuyer uniquement sur `x-webhook-secret`.
+   * Fail-CLOSED : sans secret configuré, on refuse (ce endpoint est @Public()
+   * et mute Payment + Order). Comparaison à temps constant (timingSafeEqual).
    */
-  private validateWebhookSecret(
-    signature: string | undefined,
-    webhookSecret: string | undefined,
-    payload?: unknown,
-  ) {
+  private validateWebhookSecret(signature?: string, webhookSecret?: string) {
     const expected = this.config.get<string>('MTN_MOMO_WEBHOOK_SECRET');
     if (!expected) {
-      // Fail-CLOSED : sans secret configuré, on refuse. Ce endpoint est @Public()
-      // et mute Payment + Order — l'accepter sans secret laisserait n'importe qui
-      // confirmer un paiement arbitraire.
       this.logger.error('MTN_MOMO_WEBHOOK_SECRET non défini — webhook rejeté');
       throw new UnauthorizedException('Webhook non configuré');
     }
@@ -111,34 +89,12 @@ export class WebhookController {
     if (!received || !this.safeEqual(received, expected)) {
       throw new UnauthorizedException('Webhook non autorisé');
     }
-
-    // 2) Fallback secret partagé (x-webhook-secret) — timingSafeEqual
-    const received = webhookSecret;
-    if (!received || !this.safeEqual(received, expected)) {
-      throw new UnauthorizedException('Webhook non autorisé');
-    }
   }
 
-  /** Compare deux strings en temps constant. Renvoie false si longueurs diffèrent. */
-  private safeEqual(a: string, b: string): boolean {
-    const aBuf = Buffer.from(a);
-    const bBuf = Buffer.from(b);
-    if (aBuf.length !== bBuf.length) {
-      // timingSafeEqual exige des buffers de même longueur. On renvoie false
-      // sans court-circuit visible côté attaquant : on fait quand même un
-      // compare de même longueur pour normaliser le timing.
-      const dummy = Buffer.alloc(aBuf.length);
-      crypto.timingSafeEqual(aBuf, dummy);
-      return false;
-    }
-    return crypto.timingSafeEqual(aBuf, bBuf);
-  }
-
-  /** Comparaison à temps constant (anti timing-attack). */
+  /** Comparaison à temps constant (anti timing-attack). False si longueurs diffèrent. */
   private safeEqual(a: string, b: string): boolean {
     const ab = Buffer.from(a);
     const bb = Buffer.from(b);
-    // timingSafeEqual exige des buffers de même longueur.
     if (ab.length !== bb.length) return false;
     return timingSafeEqual(ab, bb);
   }

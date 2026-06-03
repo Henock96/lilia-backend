@@ -482,7 +482,6 @@ export class RestaurantsService {
         });
 
         if (!restaurant) throw new NotFoundException('Restaurant non trouvé');
-        if (!caller) throw new ForbiddenException("Utilisateur introuvable");
 
         // L'autorisation se fait sur le rôle de l'APPELANT, pas sur celui du
         // propriétaire (sinon IDOR : si owner.role === ADMIN, n'importe qui
