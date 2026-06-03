@@ -522,7 +522,7 @@ export class OrdersService {
       );
     }
 
-    // Passe par la state machine — le CLIENT ne peut annuler que depuis EN_ATTENTE
+    // Passe par la state machine — CLIENT peut annuler depuis EN_ATTENTE ou PAYER
     this.stateMachine.assertTransition(order.status, 'ANNULER', 'CLIENT');
 
     // Annulation + restauration du stock réservé au checkout, en une transaction

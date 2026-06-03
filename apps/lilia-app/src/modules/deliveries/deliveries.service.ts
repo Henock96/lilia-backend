@@ -595,6 +595,18 @@ export class DeliveriesService {
       );
     }
 
+    // SÉCURITÉ (fix B5) : un livreur ne peut accepter une nouvelle livraison
+    // que s'il est AVAILABLE. ON_DELIVERY = course en cours, OFFLINE = pas
+    // en service. Sans ce check, un livreur pouvait tenir deux missions
+    // simultanées et bloquer le tracking côté client.
+    if (user.driverStatus !== 'AVAILABLE') {
+      throw new BadRequestException(
+        user.driverStatus === 'ON_DELIVERY'
+          ? 'Vous avez déjà une livraison en cours.'
+          : 'Vous devez être disponible pour accepter une livraison.',
+      );
+    }
+
     // Valide la transition Order PRET → EN_ROUTE via state machine
     this.stateMachine.assertTransition(
       delivery.order.status,
