@@ -92,14 +92,33 @@ describe('ApiResponseInterceptor', () => {
     await expect(firstValueFrom(res$)).resolves.toEqual(payload);
   });
 
-  it('re-wraps { data, count } because `count` is not whitelisted', async () => {
-    // Comportement attendu : on force la migration des endpoints qui exposaient
-    // des clés ad-hoc à côté de `data`. Documenté dans la migration doc.
+  it('normalise { data, count } en { data, meta: { count } } (règle 3b)', async () => {
     const interceptor = makeInterceptor();
     const payload = { data: [1, 2], count: 2 };
     const res$ = interceptor.intercept(makeContext(), makeHandler(payload));
     await expect(firstValueFrom(res$)).resolves.toEqual({
-      data: { data: [1, 2], count: 2 },
+      data: [1, 2],
+      meta: { count: 2 },
+    });
+  });
+
+  it('normalise { data, total, page, limit } en { data, meta } + totalPages dérivé', async () => {
+    const interceptor = makeInterceptor();
+    const payload = { data: [1, 2], total: 25, page: 1, limit: 10 };
+    const res$ = interceptor.intercept(makeContext(), makeHandler(payload));
+    await expect(firstValueFrom(res$)).resolves.toEqual({
+      data: [1, 2],
+      meta: { total: 25, page: 1, limit: 10, totalPages: 3 },
+    });
+  });
+
+  it('ne replie pas un objet métier { data, restaurantId } (clé non-pagination)', async () => {
+    const interceptor = makeInterceptor();
+    const payload = { data: [1, 2], restaurantId: 'r1' };
+    const res$ = interceptor.intercept(makeContext(), makeHandler(payload));
+    // Clé hors allowlist pagination → wrap normal (double-wrap conservé).
+    await expect(firstValueFrom(res$)).resolves.toEqual({
+      data: { data: [1, 2], restaurantId: 'r1' },
     });
   });
 
