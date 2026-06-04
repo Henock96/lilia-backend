@@ -18,6 +18,21 @@ import { map } from 'rxjs/operators';
 export const SKIP_RESPONSE_WRAP_KEY = 'skipResponseWrap';
 
 /**
+ * Clés de pagination « legacy » repliées automatiquement sous `meta` par
+ * l'intercepteur (règle 3b) afin de produire le contrat conforme
+ * `{ data, meta }` plutôt qu'un double-wrap `{ data: { data, total, ... } }`.
+ */
+const PAGINATION_KEYS = [
+  'total',
+  'page',
+  'limit',
+  'count',
+  'totalPages',
+  'offset',
+  'hasMore',
+];
+
+/**
  * Décorateur permettant à un endpoint (ou un controller entier) de bypasser
  * l'enveloppe `{ data, message?, meta? }` ajoutée par `ApiResponseInterceptor`.
  *
@@ -58,10 +73,10 @@ export const SkipResponseWrap = () => SetMetadata(SKIP_RESPONSE_WRAP_KEY, true);
  * produit déjà le shape `APIResponse` legacy `{ success, data, error, message,
  * statusCode }`. L'intercepteur n'est jamais déclenché sur le chemin d'erreur.
  *
- * Migration : les anciens endpoints renvoyant `{ data, count }` ou
- * `{ data, total, page, limit }` seront enveloppés en `{ data: { data, count } }`.
- * Cela casse le contrat existant ; les clients (Flutter / Next.js) intègrent un
- * helper tolérant qui sait gérer les deux formes le temps de la transition.
+ * Pagination (règle 3b) : les endpoints renvoyant `{ data, total, page, limit }`
+ * ou `{ data, count }` sont normalisés en `{ data, meta: { total, page, limit,
+ * totalPages } }` (contrat conforme), au lieu d'être double-wrappés. Les clients
+ * (Flutter ×2 / Next.js) lisent la liste dans `data` et la pagination dans `meta`.
  */
 @Injectable()
 export class ApiResponseInterceptor implements NestInterceptor {
@@ -103,6 +118,48 @@ export class ApiResponseInterceptor implements NestInterceptor {
           )
         ) {
           return response;
+        }
+
+        // 3b. Réponse paginée « legacy » `{ data, total?, page?, limit?, count? }` :
+        // on replie les clés de pagination sous `meta` pour produire le contrat
+        // conforme `{ data, meta }` (API Contract v2) — au lieu d'un double-wrap.
+        // Ne s'applique que si TOUTES les clés hors data/message/meta sont des
+        // clés de pagination connues (sinon c'est un objet métier → wrap normal).
+        if (
+          typeof response === 'object' &&
+          !Array.isArray(response) &&
+          'data' in response
+        ) {
+          const rec = response as Record<string, unknown>;
+          const extraKeys = Object.keys(rec).filter(
+            (k) => k !== 'data' && k !== 'message' && k !== 'meta',
+          );
+          if (
+            extraKeys.length > 0 &&
+            extraKeys.every((k) => PAGINATION_KEYS.includes(k))
+          ) {
+            const meta: Record<string, unknown> = {
+              ...(rec.meta && typeof rec.meta === 'object'
+                ? (rec.meta as Record<string, unknown>)
+                : {}),
+            };
+            for (const k of extraKeys) meta[k] = rec[k];
+            // `totalPages` dérivé si absent et calculable.
+            if (
+              meta.totalPages === undefined &&
+              typeof meta.total === 'number' &&
+              typeof meta.limit === 'number' &&
+              meta.limit > 0
+            ) {
+              meta.totalPages = Math.max(
+                1,
+                Math.ceil(meta.total / meta.limit),
+              );
+            }
+            const out: Record<string, unknown> = { data: rec.data, meta };
+            if (typeof rec.message === 'string') out.message = rec.message;
+            return out;
+          }
         }
 
         // 4. Fallback : on enveloppe
