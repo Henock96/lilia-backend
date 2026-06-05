@@ -74,6 +74,7 @@ export class MenusService {
           imageUrl: true,
         },
       },
+      images: { orderBy: [{ isCover: 'desc' as const }, { displayOrder: 'asc' as const }] },
     };
 
     let menu;
@@ -248,6 +249,7 @@ export class MenusService {
             imageUrl: true,
           },
         },
+        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
       },
       orderBy: {
         dateDebut: 'desc',
@@ -299,6 +301,7 @@ export class MenusService {
             imageUrl: true,
           },
         },
+        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
       },
       orderBy: {
         dateDebut: 'desc',
@@ -341,6 +344,7 @@ export class MenusService {
             imageUrl: true,
           },
         },
+        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
       },
     });
 
@@ -387,6 +391,7 @@ export class MenusService {
             ordre: 'asc',
           },
         },
+        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
       },
       orderBy: {
         createdAt: 'desc',
@@ -537,6 +542,7 @@ export class MenusService {
             imageUrl: true,
           },
         },
+        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
       },
     });
 

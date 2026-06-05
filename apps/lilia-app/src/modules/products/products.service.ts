@@ -52,6 +52,7 @@ export class ProductsService {
               vendorType: true,
             },
           },
+          images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
         },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
@@ -86,6 +87,7 @@ export class ProductsService {
             nom: true,
           },
         },
+        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
       },
     });
 
@@ -428,6 +430,7 @@ export class ProductsService {
         restaurant: {
           select: { id: true, nom: true, imageUrl: true, isOpen: true },
         },
+        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
       },
     });
 
@@ -461,6 +464,7 @@ export class ProductsService {
         include: {
           specialties: true,
           operatingHours: true,
+          photos: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
         },
         take: limit,
       }),
@@ -479,6 +483,7 @@ export class ProductsService {
           restaurant: {
             select: { id: true, nom: true, imageUrl: true, isOpen: true },
           },
+          images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
         },
         take: limit,
       }),
@@ -536,6 +541,7 @@ export class ProductsService {
         restaurant: {
           select: { id: true, nom: true, imageUrl: true, isOpen: true },
         },
+        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
       },
       take: limit,
       orderBy: { createdAt: 'desc' },
