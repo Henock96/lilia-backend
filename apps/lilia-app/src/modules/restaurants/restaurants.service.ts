@@ -17,17 +17,23 @@ import {
 } from './dto/create-restaurant.dto';
 import { DayOfWeek, SetOperatingHoursDto, UpdateOperatingHourDto } from './dto/operating-hours.dto';
 
+/** Tri galerie : image de couverture d'abord, puis ordre d'affichage. */
+const PHOTOS_GALLERY = {
+  orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }],
+} satisfies Prisma.Restaurant$photosArgs;
+
 /** Include standard pour les réponses restaurant */
 const RESTAURANT_INCLUDE = {
   specialties: true,
   operatingHours: true,
-} as const;
+  photos: PHOTOS_GALLERY,
+} satisfies Prisma.RestaurantInclude;
 
 /** Include avec reviews pour le calcul de note */
 const RESTAURANT_WITH_REVIEWS = {
   ...RESTAURANT_INCLUDE,
   reviews: { select: { rating: true } },
-} as const;
+} satisfies Prisma.RestaurantInclude;
 
 @Injectable()
 export class RestaurantsService {
@@ -94,7 +100,13 @@ export class RestaurantsService {
     const restaurant = await this.prisma.restaurant.findUnique({
       where: { id },
       include: {
-        products: { include: { category: true, variants: true } },
+        products: {
+          include: {
+            category: true,
+            variants: true,
+            images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
+          },
+        },
         ...RESTAURANT_WITH_REVIEWS,
       },
     });
@@ -280,6 +292,7 @@ export class RestaurantsService {
             include: {
                 specialties: true,
                 operatingHours: true,
+                photos: PHOTOS_GALLERY,
             },
             orderBy: { createdAt: 'desc' },
         });
