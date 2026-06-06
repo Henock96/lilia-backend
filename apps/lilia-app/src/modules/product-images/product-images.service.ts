@@ -58,7 +58,7 @@ export class ProductImagesService {
           tx,
         );
       }
-      return tx.productImage.create({
+      const image = await tx.productImage.create({
         data: {
           productId: dto.productId,
           url: dto.url,
@@ -67,6 +67,14 @@ export class ProductImagesService {
           isCover: dto.isCover ?? false,
         },
       });
+      // Rétrocompat : la couverture pilote Product.imageUrl (lu par les cartes).
+      if (image.isCover) {
+        await tx.product.update({
+          where: { id: dto.productId },
+          data: { imageUrl: image.url },
+        });
+      }
+      return image;
     });
   }
 
@@ -88,7 +96,7 @@ export class ProductImagesService {
           tx,
         );
       }
-      return tx.productImage.update({
+      const updated = await tx.productImage.update({
         where: { id },
         data: {
           ...(dto.alt !== undefined && { alt: dto.alt }),
@@ -96,6 +104,13 @@ export class ProductImagesService {
           ...(dto.isCover !== undefined && { isCover: dto.isCover }),
         },
       });
+      if (dto.isCover === true) {
+        await tx.product.update({
+          where: { id: image.productId },
+          data: { imageUrl: updated.url },
+        });
+      }
+      return updated;
     });
   }
 
@@ -104,7 +119,32 @@ export class ProductImagesService {
     if (!image) throw new NotFoundException('Image introuvable');
     await this.assertProductOwnership(image.productId, user);
 
-    await this.prisma.productImage.delete({ where: { id } });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.productImage.delete({ where: { id } });
+      if (image.isCover) {
+        // Repromotion : la première image restante (ordre d'affichage) devient
+        // la nouvelle couverture et pilote Product.imageUrl.
+        const next = await tx.productImage.findFirst({
+          where: { productId: image.productId },
+          orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+        });
+        if (next) {
+          await tx.productImage.update({
+            where: { id: next.id },
+            data: { isCover: true },
+          });
+          await tx.product.update({
+            where: { id: image.productId },
+            data: { imageUrl: next.url },
+          });
+        } else {
+          await tx.product.update({
+            where: { id: image.productId },
+            data: { imageUrl: null },
+          });
+        }
+      }
+    });
     await this.common.cleanupCloudinary(image.publicId);
     return { success: true };
   }
