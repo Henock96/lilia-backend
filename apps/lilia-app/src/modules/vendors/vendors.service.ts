@@ -19,6 +19,8 @@ const VENDOR_PUBLIC_INCLUDE = {
   vendorProfile: true,
   operatingHours: true,
   specialties: true,
+  // Galerie photos vendeur (VendorPhoto), cover d'abord puis displayOrder.
+  photos: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
 } satisfies Prisma.RestaurantInclude;
 
 const VENDOR_DETAIL_INCLUDE = {
@@ -32,7 +34,12 @@ const VENDOR_DETAIL_INCLUDE = {
     where: {
       OR: [{ stockRestant: null }, { stockRestant: { gt: 0 } }],
     },
-    include: { category: true, variants: true },
+    include: {
+      category: true,
+      variants: true,
+      // Galerie produit pour le carrousel ouvert depuis le détail vendeur.
+      images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
+    },
   },
 } satisfies Prisma.RestaurantInclude;
 
