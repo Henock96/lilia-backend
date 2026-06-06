@@ -10,7 +10,10 @@ export class FavoritesService {
       where: { userId },
       include: {
         restaurant: {
-          include: { specialties: true },
+          include: {
+            specialties: true,
+            photos: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
+          },
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -56,6 +59,7 @@ export class FavoritesService {
       fixedDeliveryFee: r.fixedDeliveryFee ?? 500,
       minimumOrderAmount: r.minimumOrderAmount ?? 0,
       specialties: r.specialties ?? [],
+      photos: r.photos ?? [],
     };
   }
 }
