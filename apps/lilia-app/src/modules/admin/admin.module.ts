@@ -4,6 +4,9 @@ import { AdminService } from './admin.service';
 import { AdminDeliverersService } from './admin-deliverers.service';
 import { AdminPaymentsService } from './admin-payments.service';
 import { AdminVendorsService } from './admin-vendors.service';
+import { AdminClientsService } from './admin-clients.service';
+import { AdminUsersService } from './admin-users.service';
+import { AdminReviewsService } from './admin-reviews.service';
 import { FirebaseModule } from '../firebase/firebase.module';
 import { AuthModule } from '../auth/auth.module';
 import { VendorsModule } from '../vendors/vendors.module';
@@ -16,6 +19,9 @@ import { VendorsModule } from '../vendors/vendors.module';
     AdminDeliverersService,
     AdminPaymentsService,
     AdminVendorsService,
+    AdminClientsService,
+    AdminUsersService,
+    AdminReviewsService,
   ],
 })
 export class AdminModule {}

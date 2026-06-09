@@ -16,6 +16,9 @@ import { FirebaseService } from '../firebase/firebase.service';
 import { AdminDeliverersService } from './admin-deliverers.service';
 import { AdminPaymentsService } from './admin-payments.service';
 import { AdminVendorsService } from './admin-vendors.service';
+import { AdminClientsService } from './admin-clients.service';
+import { AdminUsersService } from './admin-users.service';
+import { AdminReviewsService } from './admin-reviews.service';
 
 @Injectable()
 export class AdminService {
@@ -29,6 +32,9 @@ export class AdminService {
     private readonly adminDeliverersService: AdminDeliverersService,
     private readonly adminPaymentsService: AdminPaymentsService,
     private readonly adminVendorsService: AdminVendorsService,
+    private readonly adminClientsService: AdminClientsService,
+    private readonly adminUsersService: AdminUsersService,
+    private readonly adminReviewsService: AdminReviewsService,
   ) {}
 
   // ─── DASHBOARD ─────────────────────────────────────────────────────────────
@@ -319,92 +325,18 @@ export class AdminService {
    * Récupère tous les clients de la plateforme (ADMIN uniquement)
    */
   async getAllClients(page = 1, limit = 20, search?: string) {
-    const where: Prisma.UserWhereInput = {
-      role: 'CLIENT',
-      ...(search && {
-        OR: [
-          { nom: { contains: search, mode: 'insensitive' } },
-          { email: { contains: search, mode: 'insensitive' } },
-          { phone: { contains: search, mode: 'insensitive' } },
-        ],
-      }),
-    };
-
-    const [clients, total] = await Promise.all([
-      this.prisma.user.findMany({
-        where,
-        select: {
-          id: true,
-          email: true,
-          nom: true,
-          phone: true,
-          imageUrl: true,
-          role: true,
-          createdAt: true,
-          lastLogin: true,
-          loyaltyPoints: true,
-          _count: { select: { orders: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      this.prisma.user.count({ where }),
-    ]);
-
-    return { data: clients, total, page, limit };
+    return this.adminClientsService.getAllClients(page, limit, search);
   }
 
   async getAllUsers(page = 1, limit = 20, role?: Role) {
-    const where = role ? { role } : {};
-
-    const [users, total] = await Promise.all([
-      this.prisma.user.findMany({
-        where,
-        select: {
-          id: true,
-          email: true,
-          nom: true,
-          phone: true,
-          role: true,
-          createdAt: true,
-          lastLogin: true,
-          _count: { select: { orders: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      this.prisma.user.count({ where }),
-    ]);
-
-    return { data: users, total, page, limit };
+    return this.adminUsersService.getAllUsers(page, limit, role);
   }
   /**
    * Change le rôle d'un utilisateur.
    * Protège contre la rétrogradation d'un ADMIN.
    */
   async updateUserRole(userId: string, dto: UpdateUserRoleDto) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new NotFoundException('Utilisateur non trouvé');
-
-    if (user.role === 'ADMIN' && dto.role !== 'ADMIN') {
-      throw new BadRequestException(
-        "Impossible de rétrograder un compte ADMIN via l'API.",
-      );
-    }
-
-    const updated = await this.prisma.user.update({
-      where: { id: userId },
-      data: { role: dto.role },
-      select: { id: true, email: true, nom: true, role: true },
-    });
-
-    // Invalider le cache : le role est lu par RolesGuard à chaque requête.
-    await this.userCache.invalidate(user.firebaseUid);
-
-    this.logger.warn(`Rôle modifié : user ${userId} → ${dto.role}`);
-    return { data: updated, message: `Rôle mis à jour : ${dto.role}` };
+    return this.adminUsersService.updateUserRole(userId, dto);
   }
 
   /**
@@ -412,22 +344,7 @@ export class AdminService {
    * À coupler avec FirebaseService.revokeUserTokens() dans le controller.
    */
   async banUser(userId: string, reason?: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new NotFoundException('Utilisateur non trouvé');
-    if (user.role === 'ADMIN')
-      throw new BadRequestException('Impossible de bannir un ADMIN.');
-
-    // On stocke la raison dans les métadonnées — à adapter si tu ajoutes un champ bannedAt
-    this.logger.warn(
-      `User ${userId} banni — raison : ${reason ?? 'non précisée'}`,
-    );
-
-    // Invalider le cache : la prochaine requête forcera un refetch et verra
-    // statusUser=BANNED (à venir) ou refusera l'accès.
-    await this.userCache.invalidate(user.firebaseUid);
-
-    // Retourne le firebaseUid pour que le controller révoque les tokens Firebase
-    return { firebaseUid: user.firebaseUid, userId: user.id };
+    return this.adminUsersService.banUser(userId, reason);
   }
 
   // ─── GESTION LIVREURS ──────────────────────────────────────────────────────
@@ -506,28 +423,7 @@ export class AdminService {
    * Réservé ADMIN (route protégée au niveau controller).
    */
   async getClientLoyalty(clientId: string, page = 1, limit = 20) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: clientId },
-      select: { id: true, loyaltyPoints: true },
-    });
-    if (!user) throw new NotFoundException('Client introuvable');
-
-    const [transactions, total] = await Promise.all([
-      this.prisma.loyaltyTransaction.findMany({
-        where: { userId: clientId },
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      this.prisma.loyaltyTransaction.count({ where: { userId: clientId } }),
-    ]);
-
-    return {
-      data: { balance: user.loyaltyPoints, transactions },
-      total,
-      page,
-      limit,
-    };
+    return this.adminClientsService.getClientLoyalty(clientId, page, limit);
   }
 
   /**
@@ -536,39 +432,7 @@ export class AdminService {
    * et le total de points gagnés via le parrainage.
    */
   async getClientReferral(clientId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: clientId },
-      select: { id: true, referralCode: true, referredByCode: true },
-    });
-    if (!user) throw new NotFoundException('Client introuvable');
-
-    const [totalReferrals, convertedReferrals, bonusAgg] = await Promise.all([
-      user.referralCode
-        ? this.prisma.user.count({ where: { referredByCode: user.referralCode } })
-        : Promise.resolve(0),
-      user.referralCode
-        ? this.prisma.user.count({
-            where: { referredByCode: user.referralCode, referralRewarded: true },
-          })
-        : Promise.resolve(0),
-      this.prisma.loyaltyTransaction.aggregate({
-        where: {
-          userId: clientId,
-          reason: { contains: 'parrainage', mode: 'insensitive' },
-        },
-        _sum: { points: true },
-      }),
-    ]);
-
-    return {
-      data: {
-        referralCode: user.referralCode,
-        referredByCode: user.referredByCode,
-        totalReferrals,
-        convertedReferrals,
-        referralBonusEarned: bonusAgg._sum.points ?? 0,
-      },
-    };
+    return this.adminClientsService.getClientReferral(clientId);
   }
 
   /**
@@ -623,32 +487,11 @@ export class AdminService {
   // ─── MODÉRATION AVIS ───────────────────────────────────────────────────────
 
   async getAllReviews(page = 1, limit = 20) {
-    const [reviews, total] = await Promise.all([
-      this.prisma.review.findMany({
-        include: {
-          user: { select: { nom: true, email: true } },
-          restaurant: { select: { nom: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      this.prisma.review.count(),
-    ]);
-
-    return { data: reviews, total, page, limit };
+    return this.adminReviewsService.getAllReviews(page, limit);
   }
 
   async deleteReview(reviewId: string) {
-    const review = await this.prisma.review.findUnique({
-      where: { id: reviewId },
-    });
-    if (!review) throw new NotFoundException('Avis non trouvé');
-
-    await this.prisma.review.delete({ where: { id: reviewId } });
-    this.logger.warn(`Avis ${reviewId} supprimé par admin`);
-
-    return { message: 'Avis supprimé' };
+    return this.adminReviewsService.deleteReview(reviewId);
   }
 
   // ─── VENDORS (marketplace multi-vendeurs) ──────────────────────────────────

@@ -5,6 +5,9 @@ import { AdminService } from './admin.service';
 import { AdminDeliverersService } from './admin-deliverers.service';
 import { AdminPaymentsService } from './admin-payments.service';
 import { AdminVendorsService } from './admin-vendors.service';
+import { AdminClientsService } from './admin-clients.service';
+import { AdminUsersService } from './admin-users.service';
+import { AdminReviewsService } from './admin-reviews.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import { VendorsService } from '../vendors/vendors.service';
@@ -45,6 +48,10 @@ describe('AdminService (caractérisation — deliverers/payments/vendors)', () =
         AdminDeliverersService, // services réels : AdminService y délègue
         AdminPaymentsService,
         AdminVendorsService,
+        // extraits dans un autre lot — non sollicités ici
+        { provide: AdminClientsService, useValue: {} },
+        { provide: AdminUsersService, useValue: {} },
+        { provide: AdminReviewsService, useValue: {} },
         { provide: PrismaService, useValue: prisma },
         { provide: UserCacheService, useValue: {} },
         { provide: VendorsService, useValue: vendorsService },
