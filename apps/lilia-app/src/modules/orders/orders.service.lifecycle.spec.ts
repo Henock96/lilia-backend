@@ -11,6 +11,7 @@ import { OrdersService } from './orders.service';
 import { OrderQueryService } from './order-query.service';
 import { OrderCheckoutService } from './order-checkout.service';
 import { OrderLifecycleService } from './order-lifecycle.service';
+import { OrderReorderService } from './order-reorder.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationService } from '../../common/pagination/pagination.service';
 import { OrderStateMachine } from './order-state.machine';
@@ -64,6 +65,7 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
         OrderQueryService,
         OrderCheckoutService,
         OrderLifecycleService, // service réel : OrdersService y délègue le cycle de vie
+        OrderReorderService, // service réel : OrdersService y délègue le reorder
         { provide: PrismaService, useValue: prisma },
         { provide: OrderStateMachine, useValue: stateMachine },
         { provide: StockService, useValue: stockService },

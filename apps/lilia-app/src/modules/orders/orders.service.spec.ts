@@ -7,6 +7,7 @@ import { OrdersService } from './orders.service';
 import { OrderQueryService } from './order-query.service';
 import { OrderCheckoutService } from './order-checkout.service';
 import { OrderLifecycleService } from './order-lifecycle.service';
+import { OrderReorderService } from './order-reorder.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationService } from '../../common/pagination/pagination.service';
 import { OrderStateMachine } from './order-state.machine';
@@ -56,6 +57,7 @@ describe('OrdersService (caractérisation — lectures)', () => {
         OrderQueryService, // service réel : OrdersService y délègue les lectures
         OrderCheckoutService, // requis par OrdersService — non sollicité par les lectures
         OrderLifecycleService, // requis par OrdersService — non sollicité par les lectures
+        OrderReorderService, // requis par OrdersService — non sollicité par les lectures
         { provide: PrismaService, useValue: prisma },
         { provide: PaginationService, useValue: pagination },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },

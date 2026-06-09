@@ -7,6 +7,7 @@ import { OrdersService } from './orders.service';
 import { OrderQueryService } from './order-query.service';
 import { OrderCheckoutService } from './order-checkout.service';
 import { OrderLifecycleService } from './order-lifecycle.service';
+import { OrderReorderService } from './order-reorder.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationService } from '../../common/pagination/pagination.service';
 import { OrderStateMachine } from './order-state.machine';
@@ -124,6 +125,7 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
         OrderCheckoutService, // service réel : OrdersService y délègue le checkout
         OrderQueryService, // requis par OrdersService (lectures) — non sollicité ici
         OrderLifecycleService, // requis par OrdersService — non sollicité ici
+        OrderReorderService, // requis par OrdersService — non sollicité ici
         { provide: PrismaService, useValue: prisma },
         { provide: OrderValidatorService, useValue: validator },
         { provide: PreorderValidatorService, useValue: preorderValidator },

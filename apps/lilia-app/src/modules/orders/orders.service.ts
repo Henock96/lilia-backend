@@ -4,6 +4,7 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderQueryService } from './order-query.service';
 import { OrderCheckoutService } from './order-checkout.service';
 import { OrderLifecycleService } from './order-lifecycle.service';
+import { OrderReorderService } from './order-reorder.service';
 
 /**
  * Façade du domaine commandes. Délègue aux services dédiés (LIL-134) :
@@ -19,6 +20,7 @@ export class OrdersService {
     private readonly queryService: OrderQueryService,
     private readonly checkoutService: OrderCheckoutService,
     private readonly lifecycleService: OrderLifecycleService,
+    private readonly reorderService: OrderReorderService,
   ) {}
 
   async createOrderFromCart(firebaseUid: string, dto: CreateOrderDto, idempotencyKey?: string) {
@@ -80,7 +82,7 @@ export class OrdersService {
    * Ajoute tous les produits de la commande au panier actuel.
    */
   async reorderFromPreviousOrder(orderId: string, firebaseUid: string) {
-    return this.lifecycleService.reorderFromPreviousOrder(orderId, firebaseUid);
+    return this.reorderService.reorderFromPreviousOrder(orderId, firebaseUid);
   }
 
   // orders/orders.service.ts — à ajouter
