@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 import { OrderQueryService } from './order-query.service';
+import { OrderCheckoutService } from './order-checkout.service';
 import { OrdersController } from './orders.controller';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { NotificationsModule } from '../notifications/notifications.module';
@@ -21,6 +22,7 @@ import { QuartiersModule } from '../quartiers/quartiers.module';
   providers: [
     OrdersService,
     OrderQueryService,
+    OrderCheckoutService,
     PaginationService,
     OrderStateMachine,
     StockService,
