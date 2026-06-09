@@ -13,6 +13,9 @@ import { UserCacheService } from '../auth/services/user-cache.service';
 import { VendorsService } from '../vendors/vendors.service';
 import { AdminVendorFilterDto } from './dto/admin-vendor-filter.dto';
 import { FirebaseService } from '../firebase/firebase.service';
+import { AdminDeliverersService } from './admin-deliverers.service';
+import { AdminPaymentsService } from './admin-payments.service';
+import { AdminVendorsService } from './admin-vendors.service';
 
 @Injectable()
 export class AdminService {
@@ -23,6 +26,9 @@ export class AdminService {
     private userCache: UserCacheService,
     private readonly vendorsService: VendorsService,
     private readonly firebaseService: FirebaseService,
+    private readonly adminDeliverersService: AdminDeliverersService,
+    private readonly adminPaymentsService: AdminPaymentsService,
+    private readonly adminVendorsService: AdminVendorsService,
   ) {}
 
   // ─── DASHBOARD ─────────────────────────────────────────────────────────────
@@ -427,31 +433,7 @@ export class AdminService {
   // ─── GESTION LIVREURS ──────────────────────────────────────────────────────
 
   async getAllDeliverers(page = 1, limit = 20) {
-    const [deliverers, total] = await Promise.all([
-      this.prisma.user.findMany({
-        where: { role: 'LIVREUR' },
-        select: {
-          id: true,
-          email: true,
-          nom: true,
-          phone: true,
-          imageUrl: true,
-          createdAt: true,
-          deliveries: {
-            select: { id: true, status: true, createdAt: true },
-            orderBy: { createdAt: 'desc' },
-            take: 5, // 5 dernières livraisons
-          },
-          _count: { select: { deliveries: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      this.prisma.user.count({ where: { role: 'LIVREUR' } }),
-    ]);
-
-    return { data: deliverers, total, page, limit };
+    return this.adminDeliverersService.getAllDeliverers(page, limit);
   }
 
   /**
@@ -472,96 +454,7 @@ export class AdminService {
    * 404 si l'utilisateur n'existe pas ou n'a pas le rôle LIVREUR.
    */
   async getDelivererStats(delivererId: string) {
-    const deliverer = await this.prisma.user.findUnique({
-      where: { id: delivererId },
-      select: { id: true, role: true },
-    });
-    if (!deliverer || deliverer.role !== 'LIVREUR') {
-      throw new NotFoundException('Livreur introuvable');
-    }
-
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-    const [grouped, deliveredRows, last30dDeliveries, lastDelivery] =
-      await Promise.all([
-        this.prisma.delivery.groupBy({
-          by: ['status'],
-          where: { delivererId },
-          _count: { _all: true },
-        }),
-        // Toutes les deliveries LIVRER pour calculer revenue et avg duration
-        this.prisma.delivery.findMany({
-          where: { delivererId, status: DeliveryStatus.LIVRER },
-          select: {
-            pickedUpAt: true,
-            deliveredAt: true,
-            order: { select: { total: true } },
-          },
-        }),
-        this.prisma.delivery.count({
-          where: { delivererId, createdAt: { gte: thirtyDaysAgo } },
-        }),
-        this.prisma.delivery.findFirst({
-          where: {
-            delivererId,
-            status: DeliveryStatus.LIVRER,
-            deliveredAt: { not: null },
-          },
-          orderBy: { deliveredAt: 'desc' },
-          select: { deliveredAt: true },
-        }),
-      ]);
-
-    const countOf = (status: DeliveryStatus) =>
-      grouped.find((g) => g.status === status)?._count?._all ?? 0;
-
-    const deliveredCount = countOf(DeliveryStatus.LIVRER);
-    const failedCount = countOf(DeliveryStatus.ECHEC);
-    const inProgressCount =
-      countOf(DeliveryStatus.ASSIGNER) + countOf(DeliveryStatus.EN_TRANSIT);
-    const totalDeliveries = grouped.reduce(
-      (sum, g) => sum + (g._count?._all ?? 0),
-      0,
-    );
-
-    const finished = deliveredCount + failedCount;
-    const successRate =
-      finished === 0
-        ? 0
-        : Math.round((deliveredCount / finished) * 100 * 100) / 100;
-
-    const totalRevenueXAF = deliveredRows.reduce(
-      (sum, d) => sum + (d.order?.total ?? 0),
-      0,
-    );
-
-    const durations = deliveredRows
-      .filter((d) => d.pickedUpAt && d.deliveredAt)
-      .map(
-        (d) =>
-          (d.deliveredAt!.getTime() - d.pickedUpAt!.getTime()) / 60000,
-      );
-    const avgDeliveryMinutes =
-      durations.length === 0
-        ? null
-        : Math.round(
-            (durations.reduce((s, x) => s + x, 0) / durations.length) * 100,
-          ) / 100;
-
-    return {
-      data: {
-        totalDeliveries,
-        deliveredCount,
-        failedCount,
-        inProgressCount,
-        successRate,
-        totalRevenueXAF,
-        avgDeliveryMinutes,
-        last30dDeliveries,
-        lastDeliveryAt: lastDelivery?.deliveredAt ?? null,
-      },
-    };
+    return this.adminDeliverersService.getDelivererStats(delivererId);
   }
 
   /**
@@ -581,62 +474,7 @@ export class AdminService {
     page = 1,
     limit = 20,
   ) {
-    const deliverer = await this.prisma.user.findUnique({
-      where: { id: delivererId },
-      select: { id: true, role: true },
-    });
-    if (!deliverer || deliverer.role !== 'LIVREUR') {
-      throw new NotFoundException('Livreur introuvable');
-    }
-
-    const where: Prisma.DeliveryWhereInput = {
-      delivererId,
-      ...(status ? { status } : {}),
-    };
-
-    const [deliveries, total] = await Promise.all([
-      this.prisma.delivery.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-        select: {
-          id: true,
-          orderId: true,
-          status: true,
-          createdAt: true,
-          pickedUpAt: true,
-          deliveredAt: true,
-          order: {
-            select: {
-              total: true,
-              restaurant: { select: { nom: true } },
-              user: { select: { nom: true } },
-            },
-          },
-        },
-      }),
-      this.prisma.delivery.count({ where }),
-    ]);
-
-    const data = deliveries.map((d) => ({
-      id: d.id,
-      orderId: d.orderId,
-      status: d.status,
-      restaurantName: d.order?.restaurant?.nom ?? null,
-      clientName: d.order?.user?.nom ?? null,
-      totalXAF: d.order?.total ?? 0,
-      acceptedAt: d.pickedUpAt ?? null,
-      deliveredAt: d.deliveredAt ?? null,
-      createdAt: d.createdAt,
-    }));
-
-    const totalPages = limit > 0 ? Math.ceil(total / limit) : 0;
-
-    return {
-      data,
-      meta: { total, page, limit, totalPages },
-    };
+    return this.adminDeliverersService.getDelivererMissions(delivererId, status, page, limit);
   }
 
   // ─── SUPERVISION COMMANDES ─────────────────────────────────────────────────
@@ -768,46 +606,7 @@ export class AdminService {
    * pour distinguer MTN vs Airtel quand `Payment.provider == 'MANUAL'`.
    */
   async listPayments(page = 1, limit = 20, status?: string) {
-    const normalized = status?.trim() ? status.trim() : undefined;
-    if (normalized !== undefined) {
-      const validStatuses = Object.values(PaymentStatus) as string[];
-      if (!validStatuses.includes(normalized)) {
-        throw new BadRequestException(
-          `Statut de paiement invalide : ${normalized}. Valeurs acceptées : ${validStatuses.join(', ')}`,
-        );
-      }
-    }
-    const where = normalized
-      ? { status: normalized as PaymentStatus }
-      : {};
-
-    const [payments, total] = await Promise.all([
-      this.prisma.payment.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-        include: {
-          order: {
-            select: {
-              id: true,
-              total: true,
-              status: true,
-              paymentMethod: true,
-              user: { select: { id: true, nom: true, phone: true } },
-              // LIL-132 : nom + type du vendeur pour distinguer rapidement
-              // les paiements dans la queue admin (boulangerie X vs resto Y).
-              restaurant: {
-                select: { id: true, nom: true, vendorType: true },
-              },
-            },
-          },
-        },
-      }),
-      this.prisma.payment.count({ where }),
-    ]);
-
-    return { data: payments, total, page, limit };
+    return this.adminPaymentsService.listPayments(page, limit, status);
   }
 
   /**
@@ -818,50 +617,7 @@ export class AdminService {
    *   - `last7DaysSuccess` : SUCCESS sur les 7 derniers jours roulants
    */
   async getPaymentsStats() {
-    const now = new Date();
-    const startOfMonth = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
-    );
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-
-    const [pending, monthSuccess, last7DaysSuccess] = await Promise.all([
-      this.prisma.payment.aggregate({
-        where: { status: PaymentStatus.PENDING },
-        _count: { _all: true },
-        _sum: { amount: true },
-      }),
-      this.prisma.payment.aggregate({
-        where: {
-          status: PaymentStatus.SUCCESS,
-          createdAt: { gte: startOfMonth },
-        },
-        _count: { _all: true },
-        _sum: { amount: true },
-      }),
-      this.prisma.payment.aggregate({
-        where: {
-          status: PaymentStatus.SUCCESS,
-          createdAt: { gte: sevenDaysAgo },
-        },
-        _count: { _all: true },
-        _sum: { amount: true },
-      }),
-    ]);
-
-    return {
-      pending: {
-        count: pending._count._all,
-        totalXaf: pending._sum.amount ?? 0,
-      },
-      monthSuccess: {
-        count: monthSuccess._count._all,
-        totalXaf: monthSuccess._sum.amount ?? 0,
-      },
-      last7DaysSuccess: {
-        count: last7DaysSuccess._count._all,
-        totalXaf: last7DaysSuccess._sum.amount ?? 0,
-      },
-    };
+    return this.adminPaymentsService.getPaymentsStats();
   }
 
   // ─── MODÉRATION AVIS ───────────────────────────────────────────────────────
@@ -903,34 +659,7 @@ export class AdminService {
    * adminApproved=true + isActive=true, ici l'admin voit TOUT.
    */
   async getAllVendors(dto: AdminVendorFilterDto) {
-    const where: Prisma.RestaurantWhereInput = {
-      ...(dto.vendorType && { vendorType: dto.vendorType }),
-      ...(dto.adminApproved !== undefined && { adminApproved: dto.adminApproved }),
-      ...(dto.isActive !== undefined && { isActive: dto.isActive }),
-    };
-
-    const page = dto.page ?? 1;
-    const limit = dto.limit ?? 20;
-
-    const [vendors, total] = await Promise.all([
-      this.prisma.restaurant.findMany({
-        where,
-        include: {
-          owner: { select: { id: true, email: true, nom: true, phone: true } },
-          vendorProfile: true,
-          _count: { select: { products: true, orders: true } },
-        },
-        orderBy: [{ adminApproved: 'asc' }, { createdAt: 'desc' }],
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      this.prisma.restaurant.count({ where }),
-    ]);
-
-    return {
-      data: vendors,
-      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
-    };
+    return this.adminVendorsService.getAllVendors(dto);
   }
 
   /**
@@ -938,15 +667,7 @@ export class AdminService {
    * Raccourci pratique pour le badge "À valider" sur l'admin dashboard.
    */
   async getPendingVendors() {
-    const vendors = await this.prisma.restaurant.findMany({
-      where: { adminApproved: false },
-      include: {
-        owner: { select: { id: true, email: true, nom: true, phone: true } },
-        vendorProfile: true,
-      },
-      orderBy: { createdAt: 'asc' },
-    });
-    return { data: vendors, total: vendors.length };
+    return this.adminVendorsService.getPendingVendors();
   }
 
   /**
@@ -954,7 +675,7 @@ export class AdminService {
    * (event vendor.approved, audit trail) en un seul endroit.
    */
   async approveVendor(restaurantId: string, adminUserId: string) {
-    return this.vendorsService.approveVendor(restaurantId, adminUserId);
+    return this.adminVendorsService.approveVendor(restaurantId, adminUserId);
   }
 
   /**
@@ -965,27 +686,7 @@ export class AdminService {
    * temporairement sans repasser par toute la validation initiale.
    */
   async suspendVendor(restaurantId: string, reason: string, adminUserId: string) {
-    const vendor = await this.prisma.restaurant.findUnique({
-      where: { id: restaurantId },
-    });
-    if (!vendor) throw new NotFoundException('Vendeur introuvable.');
-    if (!vendor.isActive) {
-      throw new BadRequestException('Ce vendeur est déjà suspendu.');
-    }
-
-    const updated = await this.prisma.restaurant.update({
-      where: { id: restaurantId },
-      data: { isActive: false, isOpen: false },
-    });
-
-    this.logger.warn(
-      `Vendeur ${vendor.nom} (${restaurantId}) suspendu par admin ${adminUserId} — raison: ${reason}`,
-    );
-
-    return {
-      data: updated,
-      message: 'Vendeur suspendu',
-    };
+    return this.adminVendorsService.suspendVendor(restaurantId, reason, adminUserId);
   }
 
   /**
@@ -994,26 +695,6 @@ export class AdminService {
    * horaires. Inverse réversible de `suspendVendor`.
    */
   async activateVendor(restaurantId: string, adminUserId: string) {
-    const vendor = await this.prisma.restaurant.findUnique({
-      where: { id: restaurantId },
-    });
-    if (!vendor) throw new NotFoundException('Vendeur introuvable.');
-    if (vendor.isActive) {
-      throw new BadRequestException('Ce vendeur est déjà actif.');
-    }
-
-    const updated = await this.prisma.restaurant.update({
-      where: { id: restaurantId },
-      data: { isActive: true },
-    });
-
-    this.logger.log(
-      `Vendeur ${vendor.nom} (${restaurantId}) réactivé par admin ${adminUserId}`,
-    );
-
-    return {
-      data: updated,
-      message: 'Vendeur réactivé',
-    };
+    return this.adminVendorsService.activateVendor(restaurantId, adminUserId);
   }
 }
