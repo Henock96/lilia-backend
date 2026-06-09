@@ -4,6 +4,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { DeliveriesService } from './deliveries.service';
 import { DeliveryQueryService } from './delivery-query.service';
+import { DeliveryAssignmentService } from './delivery-assignment.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
@@ -33,6 +34,7 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
       providers: [
         DeliveriesService,
         DeliveryQueryService, // service réel : DeliveriesService y délègue les lectures
+        DeliveryAssignmentService, // requis par DeliveriesService — non sollicité ici
         { provide: PrismaService, useValue: prisma },
         { provide: NotificationsService, useValue: {} },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
