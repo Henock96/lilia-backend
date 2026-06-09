@@ -7,6 +7,8 @@ import { AdminVendorsService } from './admin-vendors.service';
 import { AdminClientsService } from './admin-clients.service';
 import { AdminUsersService } from './admin-users.service';
 import { AdminReviewsService } from './admin-reviews.service';
+import { AdminDashboardService } from './admin-dashboard.service';
+import { AdminRestaurantsService } from './admin-restaurants.service';
 import { FirebaseModule } from '../firebase/firebase.module';
 import { AuthModule } from '../auth/auth.module';
 import { VendorsModule } from '../vendors/vendors.module';
@@ -22,6 +24,8 @@ import { VendorsModule } from '../vendors/vendors.module';
     AdminClientsService,
     AdminUsersService,
     AdminReviewsService,
+    AdminDashboardService,
+    AdminRestaurantsService,
   ],
 })
 export class AdminModule {}
