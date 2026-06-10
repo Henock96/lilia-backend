@@ -7,6 +7,8 @@ import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import helmet from 'helmet';
+import * as compression from 'compression';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { AppModule } from './app.module';
@@ -31,6 +33,20 @@ async function bootstrap() {
   } else {
     logger.warn('REDIS_URL non défini — WebSocket en mode single-instance');
   }
+  // ─── Sécurité HTTP & compression ────────────────────────────────────────────
+  // helmet : en-têtes de sécurité (X-Content-Type-Options, HSTS, etc.).
+  // CSP désactivée : c'est une API JSON (les fronts gèrent leur propre CSP) et la
+  // CSP par défaut casse l'UI Swagger en dev. crossOriginResourcePolicy en
+  // 'cross-origin' pour autoriser la consommation cross-domain par les 3 apps.
+  app.use(
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+    }),
+  );
+  // compression gzip des réponses (gain réseau sur la 4G de Brazzaville).
+  app.use(compression());
+
   // ─── Dossier statique public (optionnel) ────────────────────────────────────
   // process.cwd() = racine du projet (fonctionne avec webpack monorepo)
   const publicDir = join(process.cwd(), 'public');

@@ -56,11 +56,16 @@ import { VendorsListener } from './modules/listeners/vendors.listener';
 import { TrackingModule } from './modules/tracking/tracking.module';
 // EmailListener supprimÃ© â€” logique dÃ©placÃ©e dans UserListener
 import { RedisModule } from '@nestjs-modules/ioredis';
+import { envValidationSchema } from './config/env.validation';
 @Module({
   imports: [
     // Sentry — doit être l'un des tout premiers modules importés.
     SentryModule.forRoot(),
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      validationSchema: envValidationSchema,
+      validationOptions: { abortEarly: false }, // remonte TOUTES les erreurs d'env d'un coup
+    }),
     // Throttler avec storage Redis si REDIS_URL est défini → limites PARTAGÉES
     // entre les instances Render (sinon chaque instance a son propre compteur et
     // la limite effective = limit × nbInstances). Fallback mémoire en local.

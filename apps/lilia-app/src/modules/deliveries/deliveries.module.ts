@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { DeliveriesService } from './deliveries.service';
+import { DeliveryQueryService } from './delivery-query.service';
+import { DeliveryAssignmentService } from './delivery-assignment.service';
 import { DeliveriesController } from './deliveries.controller';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { NotificationsModule } from '../notifications/notifications.module';
@@ -9,7 +11,7 @@ import { TrackingModule } from '../tracking/tracking.module';
 
 @Module({
   imports: [PrismaModule, NotificationsModule, PlatformSettingsModule, TrackingModule],
-  providers: [DeliveriesService, OrderStateMachine],
+  providers: [DeliveriesService, DeliveryQueryService, DeliveryAssignmentService, OrderStateMachine],
   controllers: [DeliveriesController],
   exports: [DeliveriesService],
 })

@@ -1,8 +1,18 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AdminService } from './admin.service';
+import { AdminDeliverersService } from './admin-deliverers.service';
+import { AdminPaymentsService } from './admin-payments.service';
+import { AdminVendorsService } from './admin-vendors.service';
+import { AdminClientsService } from './admin-clients.service';
+import { AdminUsersService } from './admin-users.service';
+import { AdminReviewsService } from './admin-reviews.service';
+import { AdminDashboardService } from './admin-dashboard.service';
+import { AdminRestaurantsService } from './admin-restaurants.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UserCacheService } from '../auth/services/user-cache.service';
+import { VendorsService } from '../vendors/vendors.service';
+import { FirebaseService } from '../firebase/firebase.service';
 
 type PrismaMock = {
   user: { findUnique: jest.Mock; findMany: jest.Mock; count: jest.Mock };
@@ -41,11 +51,23 @@ describe('AdminService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AdminService,
+        // Sous-services réels : AdminService délègue (LIL-134). Ils tournent sur
+        // le même mock Prisma → les méthodes testées exécutent leur vraie logique.
+        AdminDeliverersService,
+        AdminPaymentsService,
+        AdminVendorsService,
+        AdminClientsService,
+        AdminUsersService,
+        AdminReviewsService,
+        AdminDashboardService,
+        AdminRestaurantsService,
         { provide: PrismaService, useValue: prisma },
         {
           provide: UserCacheService,
           useValue: { invalidate: jest.fn(), get: jest.fn(), set: jest.fn() },
         },
+        { provide: VendorsService, useValue: {} },
+        { provide: FirebaseService, useValue: {} },
       ],
     }).compile();
     service = module.get<AdminService>(AdminService);
