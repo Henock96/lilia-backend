@@ -123,6 +123,14 @@ export class AdminController {
     return this.adminService.suspendVendor(id, dto.reason, admin.id);
   }
 
+  @Patch('vendors/:id/activate')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Réactiver un vendeur suspendu (isActive=true)' })
+  @ApiParam({ name: 'id', description: 'ID du vendeur (Restaurant)' })
+  activateVendor(@Param('id') id: string, @CurrentUser() admin: User) {
+    return this.adminService.activateVendor(id, admin.id);
+  }
+
   // ─── UTILISATEURS ──────────────────────────────────────────────────────────
 
   @Get('users')

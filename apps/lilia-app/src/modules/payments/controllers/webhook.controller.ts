@@ -1,9 +1,11 @@
 /* eslint-disable prettier/prettier */
 import { Controller, Post, Body, Headers, Logger, HttpCode, HttpStatus, UnauthorizedException } from '@nestjs/common';
+import { timingSafeEqual } from 'crypto';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PaymentService } from '../services/payment.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { Public } from '../../auth/decorators/public.decorator';
+import { SkipResponseWrap } from '../../../common/interceptors/api-response.interceptor';
 import { ConfigService } from '@nestjs/config';
 
 interface MtnWebhookPayload {
@@ -12,8 +14,18 @@ interface MtnWebhookPayload {
   financialTransactionId?: string;
 }
 
+/** Masque une référence de transaction pour les logs : garde les 4 derniers. */
+function maskRef(ref?: string): string {
+  if (!ref) return 'n/a';
+  return ref.length <= 4 ? '****' : `****${ref.slice(-4)}`;
+}
+
 @ApiTags('Webhooks')
 @Controller('webhooks')
+// Les webhooks externes (MTN MoMo, Airtel…) doivent recevoir une réponse JSON
+// brute exactement comme avant — pas d'enveloppe `{ data, ... }`. Voir
+// `docs/api/2026-06-02-J2-api-contract-v2.md`.
+@SkipResponseWrap()
 export class WebhookController {
   private readonly logger = new Logger(WebhookController.name);
 
@@ -26,7 +38,6 @@ export class WebhookController {
   /**
    * Reçoit les callbacks MTN MoMo.
    * @Public() — pas d'auth Firebase (MTN appelle directement ce endpoint).
-   * En production, valider la signature dans les headers.
    */
   @Public()
   @Post('mtn-momo')
@@ -37,7 +48,7 @@ export class WebhookController {
     @Headers('x-callback-signature') signature?: string,
     @Headers('x-webhook-secret') webhookSecret?: string,
   ) {
-    this.logger.log(`Webhook MTN reçu : ${payload.referenceId} → ${payload.status}`);
+    this.logger.log(`Webhook MTN reçu : ref ${maskRef(payload.referenceId)} → ${payload.status}`);
     this.validateWebhookSecret(signature, webhookSecret);
 
     try {
@@ -50,7 +61,7 @@ export class WebhookController {
           await this.paymentService.checkPaymentStatus(payment.id);
           this.logger.log(`Paiement ${payment.id} traité via webhook`);
         } else {
-          this.logger.warn(`Webhook : aucun paiement trouvé pour ref ${payload.referenceId}`);
+          this.logger.warn(`Webhook : aucun paiement trouvé pour ref ${maskRef(payload.referenceId)}`);
         }
       }
 
@@ -62,16 +73,29 @@ export class WebhookController {
     }
   }
 
+  /**
+   * Validation du webhook MTN MoMo (fix B2).
+   * Fail-CLOSED : sans secret configuré, on refuse (ce endpoint est @Public()
+   * et mute Payment + Order). Comparaison à temps constant (timingSafeEqual).
+   */
   private validateWebhookSecret(signature?: string, webhookSecret?: string) {
     const expected = this.config.get<string>('MTN_MOMO_WEBHOOK_SECRET');
     if (!expected) {
-      this.logger.warn('MTN_MOMO_WEBHOOK_SECRET non défini: webhook accepté sans secret partagé');
-      return;
+      this.logger.error('MTN_MOMO_WEBHOOK_SECRET non défini — webhook rejeté');
+      throw new UnauthorizedException('Webhook non configuré');
     }
 
     const received = webhookSecret || signature;
-    if (!received || received !== expected) {
+    if (!received || !this.safeEqual(received, expected)) {
       throw new UnauthorizedException('Webhook non autorisé');
     }
+  }
+
+  /** Comparaison à temps constant (anti timing-attack). False si longueurs diffèrent. */
+  private safeEqual(a: string, b: string): boolean {
+    const ab = Buffer.from(a);
+    const bb = Buffer.from(b);
+    if (ab.length !== bb.length) return false;
+    return timingSafeEqual(ab, bb);
   }
 }

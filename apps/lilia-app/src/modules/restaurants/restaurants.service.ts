@@ -17,17 +17,23 @@ import {
 } from './dto/create-restaurant.dto';
 import { DayOfWeek, SetOperatingHoursDto, UpdateOperatingHourDto } from './dto/operating-hours.dto';
 
+/** Tri galerie : image de couverture d'abord, puis ordre d'affichage. */
+const PHOTOS_GALLERY = {
+  orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }],
+} satisfies Prisma.Restaurant$photosArgs;
+
 /** Include standard pour les réponses restaurant */
 const RESTAURANT_INCLUDE = {
   specialties: true,
   operatingHours: true,
-} as const;
+  photos: PHOTOS_GALLERY,
+} satisfies Prisma.RestaurantInclude;
 
 /** Include avec reviews pour le calcul de note */
 const RESTAURANT_WITH_REVIEWS = {
   ...RESTAURANT_INCLUDE,
   reviews: { select: { rating: true } },
-} as const;
+} satisfies Prisma.RestaurantInclude;
 
 @Injectable()
 export class RestaurantsService {
@@ -94,7 +100,13 @@ export class RestaurantsService {
     const restaurant = await this.prisma.restaurant.findUnique({
       where: { id },
       include: {
-        products: { include: { category: true, variants: true } },
+        products: {
+          include: {
+            category: true,
+            variants: true,
+            images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
+          },
+        },
         ...RESTAURANT_WITH_REVIEWS,
       },
     });
@@ -142,7 +154,7 @@ export class RestaurantsService {
     const countMap = new Map(topIds.map((r) => [r.restaurantId, r._count.restaurantId]));
 
     const restaurants = await this.prisma.restaurant.findMany({
-      where: { id: { in: ids }, isActive: true },
+      where: { id: { in: ids }, isActive: true, adminApproved: true },
       include: RESTAURANT_WITH_REVIEWS,
     });
 
@@ -276,10 +288,11 @@ export class RestaurantsService {
 
     async findRestaurant(){
         const resto =  await this.prisma.restaurant.findMany({
-            where: { isActive: true },
+            where: { isActive: true, adminApproved: true },
             include: {
                 specialties: true,
                 operatingHours: true,
+                photos: PHOTOS_GALLERY,
             },
             orderBy: { createdAt: 'desc' },
         });
@@ -469,25 +482,34 @@ export class RestaurantsService {
    
    /**
    * Vérifie que l'utilisateur est propriétaire du restaurant (ou ADMIN).
-   * Optimisé : 1 seule requête avec include au lieu de 2 séquentielles.
+   *
+   * SÉCURITÉ (fix B1) : l'autorisation se base sur le rôle de l'APPELANT
+   * (caller.role), PAS sur celui du propriétaire du restaurant. Sinon un
+   * RESTAURATEUR pourrait modifier le restaurant d'un autre dont le owner
+   * est ADMIN — IDOR. Voir vendors.service.ts:186-195 pour le même pattern.
    */
     private async verifyOwnership(restaurantId: string, firebaseUid: string) {
         const restaurant = await this.prisma.restaurant.findUnique({
         where: { id: restaurantId },
-        include: { owner: true }, // on récupère le owner en même temps
+        include: { owner: { select: { firebaseUid: true } } },
         });
 
         if (!restaurant) throw new NotFoundException('Restaurant non trouvé');
 
-        // owner.firebaseUid correspond directement — pas besoin de chercher le user séparément
-        if (
-        restaurant.owner.firebaseUid !== firebaseUid &&
-        restaurant.owner.role !== 'ADMIN'
-        ) {
-        throw new ForbiddenException("Vous n'êtes pas autorisé à modifier ce restaurant");
-        }
+        // L'autorisation se fait sur le rôle de l'APPELANT, pas sur celui du
+        // propriétaire (sinon IDOR : si owner.role === ADMIN, n'importe qui
+        // pourrait modifier le restaurant — et un vrai ADMIN appelant serait
+        // refusé sur les restos d'autrui).
+        const isOwner = restaurant.owner.firebaseUid === firebaseUid;
+        if (isOwner) return restaurant;
 
-        return restaurant;
+        const caller = await this.prisma.user.findUnique({
+            where: { firebaseUid },
+            select: { role: true },
+        });
+        if (caller?.role === 'ADMIN') return restaurant;
+
+        throw new ForbiddenException("Vous n'êtes pas autorisé à modifier ce restaurant");
     }
      /**
    * Calcule et attache les stats de notation sur un restaurant.

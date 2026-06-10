@@ -52,6 +52,7 @@ export class ProductsService {
               vendorType: true,
             },
           },
+          images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
         },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
@@ -86,6 +87,7 @@ export class ProductsService {
             nom: true,
           },
         },
+        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
       },
     });
 
@@ -420,7 +422,7 @@ export class ProductsService {
     const products = await this.prisma.product.findMany({
       where: {
         id: { in: productIds },
-        restaurant: { isActive: true },
+        restaurant: { isActive: true, adminApproved: true },
       },
       include: {
         category: true,
@@ -428,6 +430,7 @@ export class ProductsService {
         restaurant: {
           select: { id: true, nom: true, imageUrl: true, isOpen: true },
         },
+        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
       },
     });
 
@@ -461,6 +464,7 @@ export class ProductsService {
         include: {
           specialties: true,
           operatingHours: true,
+          photos: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
         },
         take: limit,
       }),
@@ -471,7 +475,7 @@ export class ProductsService {
             { description: { contains: searchTerm, mode: 'insensitive' } },
             { category: { nom: { contains: searchTerm, mode: 'insensitive' } } },
           ],
-          restaurant: { isActive: true },
+          restaurant: { isActive: true, adminApproved: true },
         },
         include: {
           category: true,
@@ -479,6 +483,7 @@ export class ProductsService {
           restaurant: {
             select: { id: true, nom: true, imageUrl: true, isOpen: true },
           },
+          images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
         },
         take: limit,
       }),
@@ -524,7 +529,7 @@ export class ProductsService {
     const recommendations = await this.prisma.product.findMany({
       where: {
         id: { notIn: excludeIds },
-        restaurant: { isActive: true },
+        restaurant: { isActive: true, adminApproved: true },
         OR: [
           ...(categoryIds.length > 0 ? [{ categoryId: { in: categoryIds } }] : []),
           { restaurantId: { in: restaurantIds } },
@@ -536,6 +541,7 @@ export class ProductsService {
         restaurant: {
           select: { id: true, nom: true, imageUrl: true, isOpen: true },
         },
+        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
       },
       take: limit,
       orderBy: { createdAt: 'desc' },

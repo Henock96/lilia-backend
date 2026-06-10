@@ -1,0 +1,236 @@
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+  Logger,
+} from '@nestjs/common';
+import { OrderStatus } from '@prisma/client';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+
+import { PrismaService } from '../../prisma/prisma.service';
+import {
+  OrderCancelledEvent,
+  OrderStatusUpdatedEvent,
+} from '../events/order-events';
+import { OrderStateMachine } from './order-state.machine';
+import { StockService } from './stock.service';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+
+/**
+ * Cycle de vie d'une commande (LIL-134) : annulation, transitions de statut,
+ * suppression, recommande. Extrait de `OrdersService` (devenu façade) pour
+ * isoler les mutations post-création. API publique inchangée.
+ */
+@Injectable()
+export class OrderLifecycleService {
+  private readonly logger = new Logger(OrderLifecycleService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly eventEmitter: EventEmitter2,
+    private readonly stateMachine: OrderStateMachine,
+    private readonly stockService: StockService,
+    private readonly platformSettings: PlatformSettingsService,
+  ) {}
+
+  async cancelOrder(orderId: string, firebaseUid: string) {
+    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    if (!user) {
+      throw new NotFoundException('Utilisateur non trouvé.');
+    }
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { restaurant: true, items: true },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Commande non trouvée.');
+    }
+
+    if (order.userId !== user.id) {
+      throw new ForbiddenException(
+        "Vous n'êtes pas autorisé à annuler cette commande.",
+      );
+    }
+
+    // Passe par la state machine — CLIENT peut annuler depuis EN_ATTENTE ou PAYER
+    this.stateMachine.assertTransition(order.status, 'ANNULER', 'CLIENT');
+
+    // Annulation + restauration du stock réservé au checkout, en une transaction
+    // (sinon le stock décrémenté à la commande est perdu = stock fantôme).
+    const updatedOrder = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.order.update({
+        where: { id: orderId },
+        data: { status: 'ANNULER' },
+        include: {
+          restaurant: true,
+          items: true, // Correction: Toujours inclure les items
+        },
+      });
+      await this.stockService.restoreInTransaction(tx, order.items);
+      return updated;
+    });
+    const orderCancelledEvent = new OrderCancelledEvent(
+      order.id,
+      order.userId,
+      order.restaurantId,
+      'Client', // cancelledBy
+      null, // cancelReason
+      order.total >= 1000 ? order.total : 0, // refundAmount: rembourser si >= 1000
+    );
+
+    this.eventEmitter.emit('order.cancelled', orderCancelledEvent);
+    return updatedOrder;
+  }
+
+  /**
+   * Met à jour le statut d'une commande par un restaurateur.
+   */
+  async updateOrderStatusByRestaurateur(
+    orderId: string,
+    firebaseUid: string,
+    newStatus: OrderStatus,
+  ) {
+    this.logger.log(
+      `🔄 [STATUT] Début mise à jour - commande: ${orderId}, nouveau statut: ${newStatus}, par: ${firebaseUid}`,
+    );
+
+    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    if (!user || (user.role !== 'RESTAURATEUR' && user.role !== 'ADMIN')) {
+      this.logger.warn(
+        `🔄 [STATUT] Échec: accès refusé - user: ${firebaseUid}, rôle: ${user?.role || 'inconnu'}`,
+      );
+      throw new ForbiddenException(
+        "Vous n'êtes pas autorisé à effectuer cette action.",
+      );
+    }
+    this.logger.log(`🔄 [STATUT] Autorisé: ${user.id} (${user.role})`);
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { restaurant: true },
+    });
+
+    if (!order) {
+      this.logger.warn(`🔄 [STATUT] Échec: commande ${orderId} introuvable`);
+      throw new NotFoundException('Commande non trouvée.');
+    }
+    this.logger.log(
+      `🔄 [STATUT] Commande trouvée: ${orderId}, statut actuel: ${order.status}, client: ${order.userId}, restaurant: ${order.restaurant.nom}`,
+    );
+    if (user.role !== 'ADMIN' && order.restaurant.ownerId !== user.id) {
+      throw new ForbiddenException(
+        "Cette commande n'appartient pas à votre restaurant.",
+      );
+    }
+
+    const actor = this.resolveActor(user.role);
+    if (!actor) throw new ForbiddenException('Acteur invalide pour cette transition');
+    this.stateMachine.assertTransition(order.status, newStatus, actor);
+
+    const updatedOrder = await this.prisma.order.update({
+      where: { id: orderId },
+      data: { status: newStatus },
+      include: {
+        restaurant: true,
+        items: true, // Correction: Toujours inclure les items
+      },
+    });
+
+    // 🔥 ÉMETTRE L'ÉVÉNEMENT au lieu d'appeler directement les notifications
+    const statusUpdatedEvent = new OrderStatusUpdatedEvent(
+      updatedOrder.id,
+      updatedOrder.userId,
+      updatedOrder.restaurantId,
+      order.status, // L'ancien statut (avant la mise à jour)
+      newStatus, // Le nouveau statut
+      user.id, // updatedBy
+      {
+        restaurantName: updatedOrder.restaurant.nom,
+        totalAmount: updatedOrder.total,
+      },
+    );
+
+    this.eventEmitter.emit('order.status.updated', statusUpdatedEvent);
+    this.logger.log(
+      `🔄 [STATUT] Succès: commande ${orderId} - ${order.status} → ${newStatus} (par ${user.id}/${user.role})`,
+    );
+
+    // Points fidélité quand la commande est livrée (non-bloquant)
+    if (newStatus === 'LIVRER') {
+      this.awardLoyaltyPoints(updatedOrder.userId, orderId, updatedOrder.subTotal).catch((err) =>
+        this.logger.error(`Erreur points fidélité: ${err}`),
+      );
+    }
+
+    return updatedOrder;
+  }
+
+  /**
+   * Supprime (soft delete) une commande annulée pour un client.
+   */
+  async deleteOrder(orderId: string, firebaseUid: string) {
+    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    if (!user) {
+      throw new NotFoundException('Utilisateur non trouvé.');
+    }
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Commande non trouvée.');
+    }
+
+    if (order.userId !== user.id) {
+      throw new ForbiddenException(
+        "Vous n'êtes pas autorisé à supprimer cette commande.",
+      );
+    }
+
+    if (order.status !== 'ANNULER') {
+      throw new BadRequestException(
+        'Seules les commandes annulées peuvent être supprimées.',
+      );
+    }
+
+    await this.prisma.order.update({
+      where: { id: orderId },
+      data: { deleteCommande: true },
+    });
+
+    return { message: 'Commande supprimée avec succès.' };
+  }
+
+  private resolveActor(
+    role: string,
+  ): 'CLIENT' | 'RESTAURATEUR' | 'ADMIN' | 'LIVREUR' | null {
+    const map: Record<string, any> = {
+      CLIENT: 'CLIENT',
+      RESTAURATEUR: 'RESTAURATEUR',
+      ADMIN: 'ADMIN',
+      LIVREUR: 'LIVREUR',
+    };
+    return map[role] ?? null;
+  }
+
+  private async awardLoyaltyPoints(userId: string, orderId: string, subTotal: number): Promise<void> {
+    const settings = await this.platformSettings.getSettings();
+    const points = Math.floor(subTotal / 100) * settings.loyaltyPointsPer100Xaf;
+    if (points <= 0) return;
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: { loyaltyPoints: { increment: points } },
+      }),
+      this.prisma.loyaltyTransaction.create({
+        data: { userId, orderId, points, reason: `+${points} pts — commande livrée` },
+      }),
+    ]);
+
+    this.logger.log(`⭐ +${points} points fidélité user ${userId}`);
+  }
+}

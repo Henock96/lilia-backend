@@ -3,10 +3,12 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { SentryModule } from '@sentry/nestjs/setup';
 
 import { SentryUserInterceptor } from './common/interceptors/sentry-user.interceptor';
+import { ApiResponseInterceptor } from './common/interceptors/api-response.interceptor';
 
 import { PrismaModule } from './prisma/prisma.module';
 import { FirebaseModule } from './modules/firebase/firebase.module';
@@ -32,6 +34,9 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { PromoModule } from './modules/promo/promo.module';
 import { FavoritesModule } from './modules/favorites/favorites.module';
 import { VendorsModule } from './modules/vendors/vendors.module';
+import { VendorPhotosModule } from './modules/vendor-photos/vendor-photos.module';
+import { ProductImagesModule } from './modules/product-images/product-images.module';
+import { MenuImagesModule } from './modules/menu-images/menu-images.module';
 
 // Infrastructure
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -51,15 +56,34 @@ import { VendorsListener } from './modules/listeners/vendors.listener';
 import { TrackingModule } from './modules/tracking/tracking.module';
 // EmailListener supprimÃ© â€” logique dÃ©placÃ©e dans UserListener
 import { RedisModule } from '@nestjs-modules/ioredis';
+import { envValidationSchema } from './config/env.validation';
 @Module({
   imports: [
     // Sentry — doit être l'un des tout premiers modules importés.
     SentryModule.forRoot(),
-    ConfigModule.forRoot({ isGlobal: true }),
-    ThrottlerModule.forRoot([
-      { name: 'short', ttl: 1000, limit: 10 },
-      { name: 'long', ttl: 60000, limit: 100 },
-    ]),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      validationSchema: envValidationSchema,
+      validationOptions: { abortEarly: false }, // remonte TOUTES les erreurs d'env d'un coup
+    }),
+    // Throttler avec storage Redis si REDIS_URL est défini → limites PARTAGÉES
+    // entre les instances Render (sinon chaque instance a son propre compteur et
+    // la limite effective = limit × nbInstances). Fallback mémoire en local.
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const redisUrl = config.get<string>('REDIS_URL');
+        return {
+          throttlers: [
+            { name: 'short', ttl: 1000, limit: 10 },
+            { name: 'long', ttl: 60000, limit: 100 },
+          ],
+          storage: redisUrl
+            ? new ThrottlerStorageRedisService(redisUrl)
+            : undefined,
+        };
+      },
+    }),
     // app.module.ts â€” ajouter
     RedisModule.forRootAsync({
       useFactory: (config: ConfigService) => ({
@@ -101,6 +125,9 @@ import { RedisModule } from '@nestjs-modules/ioredis';
     PromoModule,
     FavoritesModule,
     VendorsModule,
+    VendorPhotosModule,
+    ProductImagesModule,
+    MenuImagesModule,
 
     // Infrastructure
     NotificationsModule,
@@ -113,6 +140,12 @@ import { RedisModule } from '@nestjs-modules/ioredis';
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // ⚠️ Ordre des intercepteurs : NestJS exécute les intercepteurs APP_INTERCEPTOR
+    // dans l'ordre de déclaration sur le chemin entrant, et en sens inverse sur
+    // le chemin sortant (réponse). ApiResponseInterceptor doit être le DERNIER
+    // à voir la réponse (donc le PREMIER à être déclaré) pour wrapper le payload
+    // final, après que SentryUserInterceptor a fait son boulot côté request.
+    { provide: APP_INTERCEPTOR, useClass: ApiResponseInterceptor },
     // Attache le user courant au scope Sentry de chaque requête
     { provide: APP_INTERCEPTOR, useClass: SentryUserInterceptor },
     // Listeners globaux

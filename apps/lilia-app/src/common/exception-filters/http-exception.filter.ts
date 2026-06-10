@@ -32,19 +32,33 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
+      const res = exception.getResponse();
 
-      const errorMessage = exception.getResponse()['message']
-        ? exception.getResponse()['message']
-        : exception.message || 'Erreur interne du serveur';
+      // getResponse() peut être :
+      //  - une string  → `new HttpException('msg', status)`
+      //  - un objet     → exceptions standard Nest : { message, error, statusCode }
+      // On ne MUTE jamais l'objet d'origine et on gère les deux formes.
+      let message: string | string[];
+      let error: unknown = null;
 
-      const error: any =
-        exception.getResponse() || exception.getResponse()['error'];
-
-      delete error['message'];
+      if (typeof res === 'string') {
+        message = res;
+      } else if (res && typeof res === 'object') {
+        const obj = res as Record<string, unknown>;
+        message =
+          (obj.message as string | string[]) ??
+          exception.message ??
+          'Erreur interne du serveur';
+        // `error` = le reste du payload SANS le message (déjà porté par `message`)
+        const { message: _omitted, ...rest } = obj;
+        error = Object.keys(rest).length > 0 ? rest : null;
+      } else {
+        message = exception.message || 'Erreur interne du serveur';
+      }
 
       const body: APIResponse = {
         success: false,
-        message: errorMessage,
+        message,
         data: null,
         error,
         statusCode: status,
