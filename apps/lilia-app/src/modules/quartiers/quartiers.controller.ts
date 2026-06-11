@@ -4,6 +4,7 @@ import {
   Controller, Delete, Get, Param, Patch, Post, Query,
   HttpCode, HttpStatus, } from '@nestjs/common';
 import { QuartiersService } from './quartiers.service';
+import { DeliveryZonesService } from './delivery-zones.service';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DecodedIdToken } from 'firebase-admin/auth';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
@@ -15,7 +16,10 @@ import { AddQuartiersToZoneDto, CreateDeliveryZoneDto, UpdateDeliveryZoneDto } f
 @ApiBearerAuth()
 @Controller('quartiers')
 export class QuartiersController {
-  constructor(private readonly quartiersService: QuartiersService) {}
+  constructor(
+    private readonly quartiersService: QuartiersService,
+    private readonly deliveryZonesService: DeliveryZonesService,
+  ) {}
 
   /**
    * GET /quartiers
@@ -67,7 +71,7 @@ export class QuartiersController {
   async getRestaurantDeliveryZones(
     @Query('restaurantId') restaurantId: string,
   ) {
-    return this.quartiersService.getRestaurantDeliveryZones(restaurantId);
+    return this.deliveryZonesService.getRestaurantDeliveryZones(restaurantId);
   }
 
   // ============ ENDPOINTS ZONES DE LIVRAISON ============
@@ -80,7 +84,7 @@ export class QuartiersController {
   @Roles('RESTAURATEUR', 'ADMIN')
   @ApiOperation({ summary: 'Mes zones de livraison' })
   async getMyDeliveryZones(@FirebaseUser() fbUser: DecodedIdToken) {
-    return this.quartiersService.getMyDeliveryZones(fbUser.uid);
+    return this.deliveryZonesService.getMyDeliveryZones(fbUser.uid);
   }
 
   /**
@@ -95,7 +99,7 @@ export class QuartiersController {
     @Body() dto: CreateDeliveryZoneDto,
     @FirebaseUser() fbUser: DecodedIdToken,
   ) {
-    return this.quartiersService.createDeliveryZone(restaurantId, fbUser.uid, dto);
+    return this.deliveryZonesService.createDeliveryZone(restaurantId, fbUser.uid, dto);
   }
 
   /**
@@ -111,7 +115,7 @@ export class QuartiersController {
     @Body() dto: UpdateDeliveryZoneDto,
     @FirebaseUser() fbUser: DecodedIdToken,
   ) {
-    return this.quartiersService.updateDeliveryZone(zoneId, fbUser.uid, dto);
+    return this.deliveryZonesService.updateDeliveryZone(zoneId, fbUser.uid, dto);
   }
 
   /**
@@ -126,7 +130,7 @@ export class QuartiersController {
     @Param('zoneId') zoneId: string,
     @FirebaseUser() fbUser: DecodedIdToken,
   ) {
-    return this.quartiersService.deleteDeliveryZone(zoneId, fbUser.uid);
+    return this.deliveryZonesService.deleteDeliveryZone(zoneId, fbUser.uid);
   }
 
   /**
@@ -141,7 +145,7 @@ export class QuartiersController {
     @Body() dto: AddQuartiersToZoneDto,
     @FirebaseUser() fbUser: DecodedIdToken,
   ) {
-    return this.quartiersService.addQuartiersToZone(zoneId, fbUser.uid, dto.quartierIds);
+    return this.deliveryZonesService.addQuartiersToZone(zoneId, fbUser.uid, dto.quartierIds);
   }
 
   /**
@@ -155,6 +159,6 @@ export class QuartiersController {
     @Body() dto: AddQuartiersToZoneDto,
     @FirebaseUser() fbUser: DecodedIdToken,
   ) {
-    return this.quartiersService.removeQuartiersFromZone(zoneId, fbUser.uid, dto.quartierIds);
+    return this.deliveryZonesService.removeQuartiersFromZone(zoneId, fbUser.uid, dto.quartierIds);
   }
 }
