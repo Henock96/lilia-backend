@@ -1,14 +1,18 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MenusService } from './menus.service';
-import { PrismaService } from '../../prisma/prisma.service';
+import { MenuQueryService } from './menu-query.service';
+import { MenuCommandService } from './menu-command.service';
+import { MenuLifecycleService } from './menu-lifecycle.service';
 
 /**
- * Smoke test DI MenusService (LIL-106).
+ * Smoke test DI MenusService (LIL-106, mis à jour LIL-141).
  *
- * Mocke les deux deps directes (PrismaService, EventEmitter2) — pas de bootstrap
- * du module complet pour éviter de pull `RolesGuard` / `FirebaseAuthGuard` globaux.
- * Pattern identique à `admin.service.spec.ts`.
+ * Depuis LIL-141, MenusService est une façade qui délègue à MenuQueryService
+ * (lectures), MenuCommandService (création / mise à jour) et
+ * MenuLifecycleService (suppression / stock / activation) — on mocke donc ces
+ * trois deps directes, sans bootstrap du module complet (évite de pull
+ * `RolesGuard` / `FirebaseAuthGuard` globaux). Pattern identique à
+ * `admin.service.spec.ts`.
  */
 describe('MenusService', () => {
   let service: MenusService;
@@ -17,8 +21,9 @@ describe('MenusService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         MenusService,
-        { provide: PrismaService, useValue: {} },
-        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: MenuQueryService, useValue: {} },
+        { provide: MenuCommandService, useValue: {} },
+        { provide: MenuLifecycleService, useValue: {} },
       ],
     }).compile();
 

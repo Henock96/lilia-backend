@@ -1,8 +1,8 @@
 /* eslint-disable prettier/prettier */
-import { 
-    BadRequestException, 
-    ForbiddenException, 
-    Injectable, 
+import {
+    BadRequestException,
+    ForbiddenException,
+    Injectable,
     NotFoundException,
     Logger,
 } from '@nestjs/common';
@@ -16,30 +16,32 @@ import {
     UpdateRestaurantDto
 } from './dto/create-restaurant.dto';
 import { DayOfWeek, SetOperatingHoursDto, UpdateOperatingHourDto } from './dto/operating-hours.dto';
+import { RESTAURANT_INCLUDE } from './restaurant.includes';
+import { RestaurantAccessService } from './restaurant-access.service';
+import { RestaurantQueryService } from './restaurant-query.service';
+import { RestaurantHoursService } from './restaurant-hours.service';
 
-/** Tri galerie : image de couverture d'abord, puis ordre d'affichage. */
-const PHOTOS_GALLERY = {
-  orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }],
-} satisfies Prisma.Restaurant$photosArgs;
-
-/** Include standard pour les réponses restaurant */
-const RESTAURANT_INCLUDE = {
-  specialties: true,
-  operatingHours: true,
-  photos: PHOTOS_GALLERY,
-} satisfies Prisma.RestaurantInclude;
-
-/** Include avec reviews pour le calcul de note */
-const RESTAURANT_WITH_REVIEWS = {
-  ...RESTAURANT_INCLUDE,
-  reviews: { select: { rating: true } },
-} satisfies Prisma.RestaurantInclude;
-
+/**
+ * Service restaurants (LIL-145).
+ *
+ * Conserve la création, les mutations (infos / statut / livraison) et les
+ * spécialités, et expose l'API publique historique consommée par
+ * RestaurantsController. Les lectures/scoring/analytics et la gestion des
+ * horaires sont délégués à des services dédiés :
+ *  - lectures + analytics → RestaurantQueryService
+ *  - horaires d'ouverture → RestaurantHoursService
+ *  - contrôle de propriété → RestaurantAccessService (partagé)
+ */
 @Injectable()
 export class RestaurantsService {
     private readonly logger = new Logger(RestaurantsService.name);
 
-    constructor(private prisma: PrismaService){}
+    constructor(
+        private prisma: PrismaService,
+        private readonly access: RestaurantAccessService,
+        private readonly query: RestaurantQueryService,
+        private readonly hours: RestaurantHoursService,
+    ) {}
 
     // ─── CRÉATION ──────────────────────────────────────────────────────────────
 
@@ -85,111 +87,49 @@ export class RestaurantsService {
             message: 'Création de restaurant réussie',
         }
     }
-     // ─── LECTURE ───────────────────────────────────────────────────────────────
 
-    async findAll() {
-        const restaurants = await this.prisma.restaurant.findMany({
-            where: { isActive: true, adminApproved: true },
-            include: RESTAURANT_INCLUDE,
-            orderBy: { createdAt: 'desc' },
-        });
-        return { data: restaurants };
+    // ─── LECTURE (délégué → RestaurantQueryService) ─────────────────────────────
+
+    findAll() {
+        return this.query.findAll();
     }
 
-    async findOne(id: string) {
-    const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id },
-      include: {
-        products: {
-          include: {
-            category: true,
-            variants: true,
-            images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
-          },
-        },
-        ...RESTAURANT_WITH_REVIEWS,
-      },
-    });
-
-    if (!restaurant) {
-      throw new NotFoundException(`Restaurant "${id}" non trouvé.`);
+    findOne(id: string) {
+        return this.query.findOne(id);
     }
 
-    return { data: this.attachRatingStats(restaurant) };
-   }
-  /**
-   * Restaurant du propriétaire connecté.
-   * Un user ne peut avoir qu'un seul restaurant — findFirst suffit.
-   */
-  async findMyRestaurant(firebaseUid: string) {
-    const restaurant = await this.prisma.restaurant.findFirst({
-      where: { owner: { firebaseUid } },
-      include: {
-        ...RESTAURANT_INCLUDE,
-        _count: { select: { orders: true, products: true } },
-      },
-    });
-
-    if (!restaurant) {
-      throw new NotFoundException('Aucun restaurant trouvé pour ce compte.');
+    findMyRestaurant(firebaseUid: string) {
+        return this.query.findMyRestaurant(firebaseUid);
     }
 
-    return { data: restaurant };
-   }
-   /**
-   * Restaurants populaires triés par nombre de commandes.
-   * On évite de recalculer avgRating en DB pour garder la query légère.
-   */
-  async findPopular(limit = 6) {
-    const topIds = await this.prisma.order.groupBy({
-      by: ['restaurantId'],
-      _count: { restaurantId: true },
-      orderBy: { _count: { restaurantId: 'desc' } },
-      take: limit,
-    });
+    findPopular(limit = 6) {
+        return this.query.findPopular(limit);
+    }
 
-    if (topIds.length === 0) return { data: [] };
+    findRestaurant() {
+        return this.query.findRestaurant();
+    }
 
-    const ids = topIds.map((r) => r.restaurantId);
-    const countMap = new Map(topIds.map((r) => [r.restaurantId, r._count.restaurantId]));
-
-    const restaurants = await this.prisma.restaurant.findMany({
-      where: { id: { in: ids }, isActive: true, adminApproved: true },
-      include: RESTAURANT_WITH_REVIEWS,
-    });
-
-    // Préserve le tri par popularité
-    const sorted = ids
-      .map((id) => restaurants.find((r) => r.id === id))
-      .filter(Boolean)
-      .map((r) => ({
-        ...this.attachRatingStats(r),
-        orderCount: countMap.get(r.id) ?? 0,
-      }));
-
-    return { data: sorted };
-  }
-
-  // ─── MUTATIONS ─────────────────────────────────────────────────────────────
+    // ─── MUTATIONS ─────────────────────────────────────────────────────────────
     /**
      * Met à jour les informations générales du restaurant
      */
     async updateRestaurant(restaurantId: string, firebaseUid: string, dto: UpdateRestaurantDto) {
-    const restaurant = await this.verifyOwnership(restaurantId, firebaseUid);
+        const restaurant = await this.access.verifyOwnership(restaurantId, firebaseUid);
 
-    const updated = await this.prisma.restaurant.update({
-      where: { id: restaurant.id },
-      data: dto,
-      include: RESTAURANT_INCLUDE,
-    });
+        const updated = await this.prisma.restaurant.update({
+            where: { id: restaurant.id },
+            data: dto,
+            include: RESTAURANT_INCLUDE,
+        });
 
-    return { data: updated, message: 'Restaurant mis à jour' };
-  }
+        return { data: updated, message: 'Restaurant mis à jour' };
+    }
     /**
      * Met à jour le statut d'ouverture du restaurant
      */
     async updateOpenStatus(restaurantId: string, firebaseUid: string, dto: UpdateOpenStatusDto) {
-        const restaurant = await this.verifyOwnership(restaurantId, firebaseUid);
+        const restaurant = await this.access.verifyOwnership(restaurantId, firebaseUid);
 
         const updated = await this.prisma.restaurant.update({
             where: { id: restaurant.id },
@@ -211,7 +151,7 @@ export class RestaurantsService {
         firebaseUid: string,
         dto: UpdateDeliverySettingsDto,
     ) {
-        const restaurant = await this.verifyOwnership(restaurantId, firebaseUid);
+        const restaurant = await this.access.verifyOwnership(restaurantId, firebaseUid);
 
         // Construit l'objet data uniquement avec les champs fournis
         const data: Prisma.RestaurantUpdateInput = {};
@@ -228,7 +168,7 @@ export class RestaurantsService {
         });
 
         return { data: updated, message: 'Paramètres de livraison mis à jour' };
-  }
+    }
 
     // ─── SPÉCIALITÉS ───────────────────────────────────────────────────────────
 
@@ -239,13 +179,12 @@ export class RestaurantsService {
         });
         return { data: specialties, count: specialties.length };
     }
-    
 
     /**
      * Ajoute une spécialité au restaurant
      */
     async addSpecialty(restaurantId: string, firebaseUid: string, dto: AddSpecialtyDto) {
-        const restaurant = await this.verifyOwnership(restaurantId, firebaseUid);
+        const restaurant = await this.access.verifyOwnership(restaurantId, firebaseUid);
 
         const existing = await this.prisma.specialty.findUnique({
         where: { restaurantId_name: { restaurantId: restaurant.id, name: dto.name } },
@@ -257,13 +196,13 @@ export class RestaurantsService {
         });
 
         return { data: specialty, message: 'Spécialité ajoutée' };
-  }
+    }
 
     /**
      * Supprime une spécialité du restaurant
      */
     async removeSpecialty(restaurantId: string, specialtyId: string, firebaseUid: string) {
-        const restaurant = await this.verifyOwnership(restaurantId, firebaseUid);
+        const restaurant = await this.access.verifyOwnership(restaurantId, firebaseUid);
 
         const specialty = await this.prisma.specialty.findFirst({
             where: {
@@ -285,247 +224,31 @@ export class RestaurantsService {
         };
     }
 
+    // ─── HORAIRES D'OUVERTURE (délégué → RestaurantHoursService) ────────────────
 
-    async findRestaurant(){
-        const resto =  await this.prisma.restaurant.findMany({
-            where: { isActive: true, adminApproved: true },
-            include: {
-                specialties: true,
-                operatingHours: true,
-                photos: PHOTOS_GALLERY,
-            },
-            orderBy: { createdAt: 'desc' },
-        });
-        return {
-            data: resto,
-            message: 'Restaurant récupéré avec succès'
-        }
+    setOperatingHours(restaurantId: string, firebaseUid: string, dto: SetOperatingHoursDto) {
+        return this.hours.setOperatingHours(restaurantId, firebaseUid, dto);
     }
 
-    // ============ HORAIRES D'OUVERTURE ============
-
-    /**
-   * Bulk upsert des horaires de la semaine.
-   * Fix : Promise.all au lieu d'awaits séquentiels dans la transaction.
-   */
-    async setOperatingHours(restaurantId: string, firebaseUid: string, dto: SetOperatingHoursDto) {
-        const restaurant = await this.verifyOwnership(restaurantId, firebaseUid);
-
-        const results = await this.prisma.$transaction(async (tx) => {
-            // Tous les upserts en parallèle dans la même transaction
-            const upserted = await Promise.all(
-                dto.hours.map((hour) =>
-                tx.operatingHours.upsert({
-                    where: {
-                    restaurantId_dayOfWeek: {
-                        restaurantId: restaurant.id,
-                        dayOfWeek: hour.dayOfWeek,
-                    },
-                    },
-                    update: {
-                    openTime: hour.openTime,
-                    closeTime: hour.closeTime,
-                    isClosed: hour.isClosed ?? false,
-                    },
-                    create: {
-                    restaurantId: restaurant.id,
-                    dayOfWeek: hour.dayOfWeek,
-                    openTime: hour.openTime,
-                    closeTime: hour.closeTime,
-                    isClosed: hour.isClosed ?? false,
-                    },
-                }),
-                ),
-            );
-
-            // Désactive le manualOverride — le cron reprend la main
-            await tx.restaurant.update({
-                where: { id: restaurant.id },
-                data: { manualOverride: false },
-            });
-
-            return upserted;
-        });
-
-        return {
-            data: results,
-            message: 'Horaires d\'ouverture mis à jour',
-        };
+    getOperatingHours(restaurantId: string) {
+        return this.hours.getOperatingHours(restaurantId);
     }
 
-    /**
-     * Récupère les horaires d'ouverture d'un restaurant
-     */
-    async getOperatingHours(restaurantId: string) {
-        const restaurant = await this.prisma.restaurant.findUnique({
-            where: { id: restaurantId },
-        });
-
-        if (!restaurant) {
-            throw new NotFoundException('Restaurant non trouvé');
-        }
-
-        const hours = await this.prisma.operatingHours.findMany({
-            where: { restaurantId },
-            orderBy: { dayOfWeek: 'asc' },
-        });
-
-        return {
-            data: hours,
-            count: hours.length,
-        };
+    updateOperatingHour(restaurantId: string, dayOfWeek: DayOfWeek, firebaseUid: string, dto: UpdateOperatingHourDto) {
+        return this.hours.updateOperatingHour(restaurantId, dayOfWeek, firebaseUid, dto);
     }
 
-    /**
-     * Met à jour les horaires d'un seul jour
-     */
-    async updateOperatingHour(restaurantId: string, dayOfWeek: DayOfWeek, firebaseUid: string, dto: UpdateOperatingHourDto) {
-        const restaurant = await this.verifyOwnership(restaurantId, firebaseUid);
+    // ─── ANALYTICS / CLIENTS (délégué → RestaurantQueryService) ─────────────────
 
-        const existing = await this.prisma.operatingHours.findUnique({
-            where: {
-                restaurantId_dayOfWeek: {
-                    restaurantId: restaurant.id,
-                    dayOfWeek,
-                },
-            },
-        });
-
-        if (!existing) {
-            throw new NotFoundException(`Aucun horaire défini pour ${dayOfWeek}`);
-        }
-
-        const updated = await this.prisma.operatingHours.update({
-            where: { id: existing.id },
-            data: {
-                ...(dto.openTime !== undefined && { openTime: dto.openTime }),
-                ...(dto.closeTime !== undefined && { closeTime: dto.closeTime }),
-                ...(dto.isClosed !== undefined && { isClosed: dto.isClosed }),
-            },
-        });
-
-        return {
-            data: updated,
-            message: `Horaires de ${dayOfWeek} mis à jour`,
-        };
+    countOrders(restaurantId: string) {
+        return this.query.countOrders(restaurantId);
     }
 
-    // ─── ANALYTICS RESTAURANT ─────────────────────────────────────────────────
-
-  /**
-   * Nombre total de commandes du restaurant.
-   * Fix : prisma.order.count() ne prend pas de select.
-   */
-    async countOrders(restaurantId: string) {
-        const count = await this.prisma.order.count({ where: { restaurantId } });
-        return { data: { count }, message: 'Nombre de commandes du restaurant' };
+    findClients(page = 1, limit = 10, restaurantId: string) {
+        return this.query.findClients(page, limit, restaurantId);
     }
 
-    /**
-   * Liste paginée des clients distincts du restaurant.
-   * Fix : la pagination s'applique sur les userIds dédupliqués,
-   * pas sur les orders brutes (qui peuvent être en milliers).
-   */
-    async findClients(page = 1, limit = 10, restaurantId: string) {
-        const grouped = await this.prisma.order.groupBy({
-      by: ['userId'],
-      where: { restaurantId },
-    });
-
-    if (grouped.length === 0) return { data: [], total: 0 };
-
-    const userIds = grouped.map((g) => g.userId);
-
-    const [clients, total] = await Promise.all([
-      this.prisma.user.findMany({
-        where: { id: { in: userIds } },
-        select: {
-          id: true,
-          email: true,
-          nom: true,
-          phone: true,
-          imageUrl: true,
-          role: true,
-          createdAt: true,
-        },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      Promise.resolve(userIds.length), // total déjà calculé via groupBy
-    ]);
-
-    return { data: clients, total, page, limit };
+    findClientWithOrders(restaurantId: string, userId: string) {
+        return this.query.findClientWithOrders(restaurantId, userId);
     }
-
-    async findClientWithOrders(restaurantId: string, userId: string) {
-    const orders = await this.prisma.order.findMany({
-        where: {
-            restaurantId,
-            userId,
-        },
-        orderBy: { createdAt: 'desc' },
-        // Optionnel : inclure les détails des produits/plats de la commande
-        include: {
-            items: {
-                include: {
-                    product: true,
-                },
-            },
-        },
-    });
-
-    return {
-        data: orders,
-        message : "Commandes du client pour ce restaurant"
-    };
-}
-   
-   /**
-   * Vérifie que l'utilisateur est propriétaire du restaurant (ou ADMIN).
-   *
-   * SÉCURITÉ (fix B1) : l'autorisation se base sur le rôle de l'APPELANT
-   * (caller.role), PAS sur celui du propriétaire du restaurant. Sinon un
-   * RESTAURATEUR pourrait modifier le restaurant d'un autre dont le owner
-   * est ADMIN — IDOR. Voir vendors.service.ts:186-195 pour le même pattern.
-   */
-    private async verifyOwnership(restaurantId: string, firebaseUid: string) {
-        const restaurant = await this.prisma.restaurant.findUnique({
-        where: { id: restaurantId },
-        include: { owner: { select: { firebaseUid: true } } },
-        });
-
-        if (!restaurant) throw new NotFoundException('Restaurant non trouvé');
-
-        // L'autorisation se fait sur le rôle de l'APPELANT, pas sur celui du
-        // propriétaire (sinon IDOR : si owner.role === ADMIN, n'importe qui
-        // pourrait modifier le restaurant — et un vrai ADMIN appelant serait
-        // refusé sur les restos d'autrui).
-        const isOwner = restaurant.owner.firebaseUid === firebaseUid;
-        if (isOwner) return restaurant;
-
-        const caller = await this.prisma.user.findUnique({
-            where: { firebaseUid },
-            select: { role: true },
-        });
-        if (caller?.role === 'ADMIN') return restaurant;
-
-        throw new ForbiddenException("Vous n'êtes pas autorisé à modifier ce restaurant");
-    }
-     /**
-   * Calcule et attache les stats de notation sur un restaurant.
-   * Extracted pour éviter la duplication dans findOne et findPopular.
-   */
-  private attachRatingStats<T extends { reviews: { rating: number }[] }>(restaurant: T) {
-    const { reviews, ...rest } = restaurant;
-    const avgRating =
-      reviews.length > 0
-        ? reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length
-        : null;
-
-    return {
-      ...rest,
-      averageRating: avgRating !== null ? Math.round(avgRating * 10) / 10 : null,
-      totalReviews: reviews.length,
-    };
-  }
 }
