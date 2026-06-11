@@ -4,6 +4,7 @@ import { OrderQueryService } from './order-query.service';
 import { OrderCheckoutService } from './order-checkout.service';
 import { OrderLifecycleService } from './order-lifecycle.service';
 import { OrderReorderService } from './order-reorder.service';
+import { OrderReceiptService } from './order-receipt.service';
 import { OrdersController } from './orders.controller';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { NotificationsModule } from '../notifications/notifications.module';
@@ -33,6 +34,7 @@ import { QuartiersModule } from '../quartiers/quartiers.module';
     OrderValidatorService,
     OrderCalculatorService,
     PromoService,
+    OrderReceiptService,
   ],
 })
 export class OrdersModule {}

@@ -11,6 +11,7 @@ import {
   HttpStatus,
   Headers,
   UseGuards,
+  StreamableFile,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -20,6 +21,7 @@ import {
   ApiParam,
 } from '@nestjs/swagger';
 import { OrdersService } from './orders.service';
+import { OrderReceiptService } from './order-receipt.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
@@ -47,7 +49,10 @@ import { MaintenanceGuard } from '../platform-settings/guards/maintenance.guard'
 @ApiBearerAuth()
 @Controller('orders')
 export class OrdersController {
-  constructor(private readonly ordersService: OrdersService) {}
+  constructor(
+    private readonly ordersService: OrdersService,
+    private readonly orderReceiptService: OrderReceiptService,
+  ) {}
   // ─── CRÉATION ──────────────────────────────────────────────────────────────
 
   /**
@@ -133,6 +138,31 @@ export class OrdersController {
   @ApiResponse({ status: 404, description: 'Commande introuvable' })
   getOrder(@Param('id') id: string, @FirebaseUser() fbUser: DecodedIdToken) {
     return this.ordersService.findOrderById(id, fbUser.uid);
+  }
+
+  /**
+   * Reçu PDF d'une commande payée — propriétaire ou ADMIN.
+   * StreamableFile est exclu du wrapping { data } par l'intercepteur global.
+   */
+  @Get(':id/receipt')
+  @Roles('CLIENT', 'ADMIN', 'RESTAURATEUR')
+  @ApiOperation({ summary: "Télécharger le reçu PDF d'une commande payée" })
+  @ApiParam({ name: 'id', description: 'ID de la commande' })
+  @ApiResponse({ status: 200, description: 'PDF du reçu' })
+  @ApiResponse({ status: 400, description: 'Commande non payée ou annulée' })
+  @ApiResponse({ status: 403, description: 'Accès refusé' })
+  async getReceipt(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+  ): Promise<StreamableFile> {
+    const { buffer, numero } = await this.orderReceiptService.generateReceipt(
+      id,
+      user,
+    );
+    return new StreamableFile(buffer, {
+      type: 'application/pdf',
+      disposition: `attachment; filename="recu-${numero}.pdf"`,
+    });
   }
 
   /**
