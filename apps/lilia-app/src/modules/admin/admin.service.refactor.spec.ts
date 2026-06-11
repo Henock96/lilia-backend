@@ -137,17 +137,41 @@ describe('AdminService (caractérisation — deliverers/payments/vendors)', () =
   });
 
   describe('getPaymentsStats', () => {
-    it('agrège pending / monthSuccess / last7DaysSuccess', async () => {
+    it('agrège pending / monthSuccess / last7DaysSuccess + délai moyen de validation', async () => {
       prisma.payment.aggregate
         .mockResolvedValueOnce({ _count: { _all: 2 }, _sum: { amount: 5000 } })
         .mockResolvedValueOnce({ _count: { _all: 4 }, _sum: { amount: 20000 } })
         .mockResolvedValueOnce({ _count: { _all: 1 }, _sum: { amount: 3000 } });
+      // Deux paiements confirmés : 5 min et 15 min → moyenne 10 min.
+      prisma.payment.findMany.mockResolvedValue([
+        {
+          createdAt: new Date('2026-06-01T10:00:00Z'),
+          updatedAt: new Date('2026-06-01T10:05:00Z'),
+        },
+        {
+          createdAt: new Date('2026-06-01T10:00:00Z'),
+          updatedAt: new Date('2026-06-01T10:15:00Z'),
+        },
+      ]);
 
       const res = await service.getPaymentsStats();
 
       expect(res.pending).toEqual({ count: 2, totalXaf: 5000 });
       expect(res.monthSuccess).toEqual({ count: 4, totalXaf: 20000 });
       expect(res.last7DaysSuccess).toEqual({ count: 1, totalXaf: 3000 });
+      expect(res.validationDelay).toEqual({ avgMinutes: 10, sampleCount: 2 });
+    });
+
+    it('renvoie avgMinutes null quand aucun paiement confirmé sur la fenêtre', async () => {
+      prisma.payment.aggregate
+        .mockResolvedValueOnce({ _count: { _all: 0 }, _sum: { amount: null } })
+        .mockResolvedValueOnce({ _count: { _all: 0 }, _sum: { amount: null } })
+        .mockResolvedValueOnce({ _count: { _all: 0 }, _sum: { amount: null } });
+      prisma.payment.findMany.mockResolvedValue([]);
+
+      const res = await service.getPaymentsStats();
+
+      expect(res.validationDelay).toEqual({ avgMinutes: null, sampleCount: 0 });
     });
   });
 

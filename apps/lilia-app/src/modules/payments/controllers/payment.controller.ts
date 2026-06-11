@@ -57,4 +57,23 @@ export class PaymentController {
   ) {
     return this.paymentService.confirmManualPayment(paymentId);
   }
+
+  /**
+   * Rejet manuel — ADMIN uniquement, mode MANUAL.
+   * L'admin n'a pas retrouvé le virement et rejette le paiement.
+   * La commande reste EN_ATTENTE (le client peut réessayer).
+   */
+  @Post(':paymentId/reject')
+  @Roles('ADMIN')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Rejeter un paiement manuellement (admin)',
+    description: 'Utilisé en mode MANUAL — l\'admin n\'a pas retrouvé le virement MTN.',
+  })
+  rejectPayment(
+    @Param('paymentId') paymentId: string,
+    @Body('reason') reason?: string,
+  ) {
+    return this.paymentService.rejectManualPayment(paymentId, reason);
+  }
 }

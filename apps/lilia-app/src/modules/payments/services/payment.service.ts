@@ -193,6 +193,51 @@ export class PaymentService {
     return { message: 'Paiement confirmé manuellement' };
   }
 
+  /**
+   * Rejet manuel par l'admin — mode MANUAL uniquement.
+   * Utilisé quand l'admin ne trouve pas le virement (montant erroné, virement
+   * jamais reçu, doublon…). Le paiement passe `CANCELLED` et la commande reste
+   * `EN_ATTENTE` pour que le client puisse réessayer un paiement.
+   */
+  async rejectManualPayment(paymentId: string, reason?: string) {
+    const payment = await this.prisma.payment.findUniqueOrThrow({
+      where: { id: paymentId },
+      include: { order: true },
+    });
+
+    if (payment.status !== 'PENDING') {
+      throw new BadRequestException('Paiement déjà traité');
+    }
+
+    const rejectionReason = reason?.trim() || 'Virement non retrouvé';
+
+    await this.prisma.payment.update({
+      where: { id: paymentId },
+      data: {
+        status: 'CANCELLED',
+        metadata: {
+          ...(typeof payment.metadata === 'object' && payment.metadata !== null
+            ? payment.metadata
+            : {}),
+          rejectedAt: new Date(),
+          rejectionReason,
+        },
+      },
+    });
+
+    // Réutilise le flux `order.payment.failed` → PaymentListener notifie le
+    // client (FCM "Paiement échoué"). La commande n'est pas touchée : elle reste
+    // EN_ATTENTE, donc payable à nouveau.
+    this.eventEmitter.emit('order.payment.failed', {
+      orderId: payment.orderId,
+      userId: payment.order.userId,
+      paymentId: payment.id,
+      reason: rejectionReason,
+    });
+
+    return { message: 'Paiement rejeté' };
+  }
+
 
   async checkPaymentStatus(paymentId: string, firebaseUid?: string): Promise<PaymentStatus> {
     this.logger.log(`💰 [PAIEMENT] Vérification statut - payment: ${paymentId}`);
