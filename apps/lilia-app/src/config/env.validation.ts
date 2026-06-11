@@ -18,6 +18,12 @@ export const envValidationSchema = Joi.object({
     .default('development'),
   PORT: Joi.number().port().default(8080),
 
+  // ─── Logs (nestjs-pino) ──────────────────────────────────────────────────
+  // Niveau pino. Défaut résolu au runtime (info en prod, debug sinon).
+  LOG_LEVEL: Joi.string()
+    .valid('fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent')
+    .optional(),
+
   // ─── Base de données (requis) ───────────────────────────────────────────
   DATABASE_URL: Joi.string().uri({ scheme: ['postgres', 'postgresql'] }).required(),
 

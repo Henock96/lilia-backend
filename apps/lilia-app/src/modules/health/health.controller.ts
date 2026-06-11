@@ -3,12 +3,16 @@
 import { Controller, Get } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { FirebaseService } from '../firebase/firebase.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import { Public } from '../auth/decorators/public.decorator';
 
 @ApiTags('Health')
 @Controller('health')
 export class HealthController {
-  constructor(private readonly firebase: FirebaseService) {}
+  constructor(
+    private readonly firebase: FirebaseService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   /**
    * Health check public — utilisé par Render pour les checks de liveness.
@@ -33,6 +37,41 @@ export class HealthController {
           africasTalking: !!process.env.AFRICAS_TALKING_API_KEY,
         },
       },
+    };
+  }
+
+  /**
+   * Liveness probe — ultra-léger, aucune I/O (pas d'appel Firebase/DB).
+   * Cible du monitoring externe UptimeRobot (LIL-36), pollé toutes les 30s.
+   * Exclu de l'auto-log Pino pour ne pas polluer les logs.
+   */
+  @Public()
+  @Get('live')
+  @ApiOperation({ summary: 'Liveness probe (monitoring externe)' })
+  live() {
+    return { status: 'ok', timestamp: new Date().toISOString() };
+  }
+
+  /**
+   * Readiness probe — vérifie les dépendances joignables (DB + Firebase).
+   * Distinct de /live : sert à savoir si l'instance peut servir du trafic.
+   */
+  @Public()
+  @Get('ready')
+  @ApiOperation({ summary: 'Readiness probe (DB + Firebase)' })
+  async ready() {
+    let db: 'ok' | 'error' = 'ok';
+    try {
+      await this.prisma.$queryRaw`SELECT 1`;
+    } catch {
+      db = 'error';
+    }
+    const firebase = this.firebase.isReady() ? 'ok' : 'error';
+    return {
+      status: db === 'ok' ? 'ok' : 'error',
+      db,
+      firebase,
+      timestamp: new Date().toISOString(),
     };
   }
 
