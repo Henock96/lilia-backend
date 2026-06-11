@@ -1,6 +1,8 @@
 ﻿// app.module.ts
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { LoggerModule } from 'nestjs-pino';
+import { randomUUID } from 'node:crypto';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
@@ -65,6 +67,66 @@ import { envValidationSchema } from './config/env.validation';
       isGlobal: true,
       validationSchema: envValidationSchema,
       validationOptions: { abortEarly: false }, // remonte TOUTES les erreurs d'env d'un coup
+    }),
+    // ─── Logs structurés Pino (LIL-35) ──────────────────────────────────────
+    // Prod : JSON sur stdout (ingérable Grafana/Datadog). Dev : pino-pretty.
+    // Chaque log porte un `req.id` ; chaque requête est auto-loggée avec sa
+    // durée (`responseTime`). Secrets jamais en clair (redact).
+    LoggerModule.forRoot({
+      pinoHttp: {
+        level:
+          process.env.LOG_LEVEL ??
+          (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
+        transport:
+          process.env.NODE_ENV !== 'production'
+            ? {
+                target: 'pino-pretty',
+                options: {
+                  singleLine: true,
+                  translateTime: 'SYS:HH:MM:ss',
+                  ignore: 'pid,hostname',
+                },
+              }
+            : undefined,
+        // Jamais de token Firebase / mot de passe / cookie en clair dans les logs.
+        redact: {
+          paths: [
+            'req.headers.authorization',
+            'req.headers.cookie',
+            'req.headers["x-api-key"]',
+            'req.headers["idempotency-key"]',
+            'req.body.password',
+            'req.body.token',
+            'req.body.idToken',
+            '*.password',
+            '*.token',
+            '*.authorization',
+            '*.idToken',
+            '*.accessToken',
+          ],
+          censor: '[Redacted]',
+        },
+        // `reqId` : réutilise un `X-Request-Id` entrant sinon génère un UUID,
+        // et le renvoie au client pour corréler front ↔ back.
+        genReqId: (req, res) => {
+          const incoming = req.headers['x-request-id'];
+          const id =
+            (Array.isArray(incoming) ? incoming[0] : incoming) ?? randomUUID();
+          res.setHeader('X-Request-Id', id);
+          return id;
+        },
+        // Niveau de log dérivé du statut HTTP.
+        customLogLevel: (_req, res, err) => {
+          if (res.statusCode >= 500 || err) return 'error';
+          if (res.statusCode >= 400) return 'warn';
+          return 'info';
+        },
+        // Auto-log de chaque requête (durée incluse), sauf le bruit des health
+        // checks (UptimeRobot tape /health/live toutes les 30s — LIL-36).
+        autoLogging: {
+          ignore: (req) => (req.url ?? '').startsWith('/health'),
+        },
+      },
     }),
     // Throttler avec storage Redis si REDIS_URL est défini → limites PARTAGÉES
     // entre les instances Render (sinon chaque instance a son propre compteur et

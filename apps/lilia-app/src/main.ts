@@ -6,6 +6,7 @@ import './instrument';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe, Logger } from '@nestjs/common';
+import { Logger as PinoLogger } from 'nestjs-pino';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import helmet from 'helmet';
 import * as compression from 'compression';
@@ -17,9 +18,13 @@ import { RedisIoAdapter } from './common/adapters/redis-io.adapter';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
+  // bufferLogs : on tamponne les logs internes Nest jusqu'à ce que le logger
+  // Pino soit branché via useLogger (LIL-35), pour que TOUT passe par Pino.
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
-    logger: ['error', 'warn', 'log', 'debug'],
+    bufferLogs: true,
   });
+  // Remplace le logger natif par Pino (logs structurés JSON en prod).
+  app.useLogger(app.get(PinoLogger));
   // WebSocket adapter — Redis si REDIS_URL configuré, sinon adapter par défaut
   if (process.env.REDIS_URL) {
     try {
