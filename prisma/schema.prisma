@@ -45,6 +45,10 @@ model User {
   loyaltyPoints       Int                  @default(0)
   loyaltyTransactions LoyaltyTransaction[]
   favorites           Favorite[]
+
+  // Flags d’idempotence bienvenue
+  welcomeEmailSentAt DateTime?
+  welcomeSmsSentAt   DateTime?
 }
 
 model LoyaltyTransaction {

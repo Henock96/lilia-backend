@@ -1,81 +1,74 @@
 // sms/sms.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Infobip, AuthType } from '@infobip-api/sdk';
 
 @Injectable()
 export class SmsService {
   private readonly logger = new Logger(SmsService.name);
   private readonly isEnabled: boolean;
   private readonly sender: string;
-  private client: any;
+  private client: Infobip | null = null;
 
   constructor(private readonly config: ConfigService) {
-    const apiKey = this.config.get<string>('AFRICAS_TALKING_API_KEY');
-    const username = this.config.get<string>('AFRICAS_TALKING_USERNAME');
-    this.sender = this.config.get<string>('SMS_SENDER_ID', 'LiliaFood');
-    this.isEnabled = !!(apiKey && username);
+    const apiKey = this.config.get<string>('INFOBIP_API_KEY');
+    const baseUrl = this.config.get<string>('INFOBIP_BASE_URL');
+    this.sender = this.config.get<string>('INFOBIP_SENDER', 'LiliaFood');
+    this.isEnabled = !!(apiKey && baseUrl);
 
     if (this.isEnabled) {
-      // Import dynamique pour ne pas bloquer si non installé     this.client = at.SMS;
-      this.logger.log('SMS service initialisé (Africa\'s Talking)');
+      this.client = new Infobip({
+        baseUrl: baseUrl as string,
+        apiKey: apiKey as string,
+        authType: AuthType.ApiKey,
+      });
+      this.logger.log('SMS service initialise (Infobip)');
     } else {
-      this.logger.warn('SMS service désactivé — AFRICAS_TALKING_API_KEY manquant');
+      this.logger.warn('SMS service desactive — INFOBIP_API_KEY/INFOBIP_BASE_URL manquant');
     }
   }
 
   /**
-   * Envoie un SMS.
-   * En mode dev/sans clé : log uniquement, pas d'erreur.
+   * Envoie un SMS. En mode simule (sans cles) : log uniquement, renvoie true, aucun cout.
+   * Ne jette jamais : renvoie false en cas d'echec reel.
    */
   async send(to: string, message: string): Promise<boolean> {
-    if (!this.isEnabled) {
-      this.logger.debug(`[SMS simulé] → ${to} : ${message}`);
+    if (!this.isEnabled || !this.client) {
+      this.logger.debug(`[SMS simule] -> ${to} : ${message}`);
       return true;
     }
-
     try {
       const formatted = this.formatNumber(to);
-      await this.client.send({
-        to: [formatted],
-        message,
-        from: this.sender,
+      await this.client.channels.sms.send({
+        messages: [
+          { destinations: [{ to: formatted }], from: this.sender, text: message },
+        ],
       });
-      this.logger.log(`SMS envoyé → ${formatted}`);
+      this.logger.log(`SMS envoye -> ${formatted}`);
       return true;
     } catch (error) {
-      this.logger.error(`Échec SMS → ${to}: ${error.message}`);
+      this.logger.error(`Echec SMS -> ${to}: ${(error as Error).message}`);
       return false;
     }
   }
 
-  /** Confirmation commande pour les clients sans smartphone */
-  async sendOrderConfirmation(phone: string, orderId: string, total: number): Promise<boolean> {
-    const ref = orderId.slice(-6).toUpperCase();
+  /**
+   * SMS de bienvenue. Message sans accents et < 160 caracteres => 1 segment GSM-7.
+   */
+  async sendWelcome(phone: string, nom: string): Promise<boolean> {
+    const safeName = (nom || 'client').trim().slice(0, 20);
     return this.send(
       phone,
-      `Lilia Food : Commande #${ref} confirmée. Total : ${total} FCFA. Merci !`,
-    );
-  }
-
-  /** Alerte livreur assigné */
-  async sendDeliveryAssigned(phone: string, restaurantName: string): Promise<boolean> {
-    return this.send(
-      phone,
-      `Lilia Food : Nouvelle livraison chez ${restaurantName}. Connectez-vous à l'app.`,
-    );
-  }
-
-  /** Notification livraison imminente au client */
-  async sendDeliveryIncoming(phone: string): Promise<boolean> {
-    return this.send(
-      phone,
-      `Lilia Food : Votre livreur arrive dans quelques minutes. Préparez-vous !`,
+      `Bienvenue ${safeName} sur Lilia Food ! Commandez vos plats preferes a Brazzaville. A tres vite !`,
     );
   }
 
   private formatNumber(phone: string): string {
-    let cleaned = phone.replace(/\s+/g, '').replace(/^\+/, '');
-    if (!cleaned.startsWith('242')) cleaned = `242${cleaned}`;
+    const cleaned = phone.replace(/\s+/g, '').replace(/^\+/, '');
+    // Numero local Congo (ex: 06xxxxxxx) => prefixer 242. Sinon, deja international.
+    if (!cleaned.startsWith('242') && /^\d{9}$/.test(cleaned)) {
+      return `+242${cleaned}`;
+    }
     return `+${cleaned}`;
   }
 }
