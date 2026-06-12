@@ -33,19 +33,36 @@ export class TrackingService {
     }
   }
 
-  async updatePosition(payload: PositionPayload): Promise<void> {
+  /**
+   * Écrit la position "live" dans Redis : GEO (`driver_positions`) + métadonnées
+   * TTL (`delivery:{orderId}`). C'est la SOURCE DE VÉRITÉ temps réel, partagée
+   * par les deux paths d'update :
+   *   - WS    : POST /tracking/position  → updatePosition (ci-dessous)
+   *   - HTTP  : PATCH /deliveries/:id/location → DeliveriesService.updateLocation
+   * Best-effort : no-op silencieux si Redis n'est pas configuré (cf. LIL-54,
+   * doc docs/01-architecture/delivery-tracking.md).
+   */
+  async cacheLivePosition(payload: PositionPayload): Promise<void> {
+    if (!this.redis) return;
     const { orderId, driverId, lat, lng, accuracy } = payload;
-    const redis = this.getRedis();
 
-    // 1. Redis GEO — position instantanée, lecture < 1ms
-    await redis.geoadd('driver_positions', lng, lat, driverId);
+    // GEO — position instantanée, lecture < 1ms
+    await this.redis.geoadd('driver_positions', lng, lat, driverId);
 
-    // 2. Métadonnées avec TTL — effacé si livreur déconnecté 5min
-    await redis.setex(
+    // Métadonnées avec TTL — effacé si livreur déconnecté 5min
+    await this.redis.setex(
       `delivery:${orderId}`,
       this.POSITION_TTL,
       JSON.stringify({ lat, lng, accuracy, ts: Date.now() }),
     );
+  }
+
+  async updatePosition(payload: PositionPayload): Promise<void> {
+    const { orderId, lat, lng, accuracy } = payload;
+    const redis = this.getRedis();
+
+    // 1 + 2. Cache live (GEO + métadonnées TTL) — mutualisé avec le fallback HTTP
+    await this.cacheLivePosition(payload);
 
     // 3. Persist PostgreSQL — seulement si 60s écoulées (clé NX = "si n'existe pas")
     // Redis pose un verrou de 60s → 1 seul write DB par minute max
