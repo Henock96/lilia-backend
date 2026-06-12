@@ -56,7 +56,7 @@ import { MenusListener } from './modules/listeners/menus.listener';
 import { UserListener } from './modules/listeners/user.listener';
 import { VendorsListener } from './modules/listeners/vendors.listener';
 import { TrackingModule } from './modules/tracking/tracking.module';
-// EmailListener supprimÃ© â€” logique dÃ©placÃ©e dans UserListener
+// Email + SMS de bienvenue : gérés par UserListener (modules/listeners/user.listener.ts)
 import { RedisModule } from '@nestjs-modules/ioredis';
 import { envValidationSchema } from './config/env.validation';
 @Module({

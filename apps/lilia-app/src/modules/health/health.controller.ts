@@ -34,7 +34,7 @@ export class HealthController {
           firebaseClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
           firebasePrivateKey: !!process.env.FIREBASE_PRIVATE_KEY,
           mailtrap: !!process.env.MAILTRAP_API_TOKEN,
-          africasTalking: !!process.env.AFRICAS_TALKING_API_KEY,
+          infobip: !!process.env.INFOBIP_API_KEY,
         },
       },
     };

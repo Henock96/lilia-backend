@@ -56,10 +56,10 @@ export const envValidationSchema = Joi.object({
   MTN_MOMO_API_KEY: Joi.string().optional(),
   MTN_MOMO_API_USER: Joi.string().optional(),
 
-  // ─── SMS Africa's Talking ─────────────────────────────────────────────────
-  AFRICAS_TALKING_API_KEY: Joi.string().optional(),
-  AFRICAS_TALKING_USERNAME: Joi.string().optional(),
-  SMS_SENDER_ID: Joi.string().default('LiliaFood'),
+  // ─── SMS Infobip ──────────────────────────────────────────────────────────
+  INFOBIP_API_KEY: Joi.string().optional(),
+  INFOBIP_BASE_URL: Joi.string().optional(),
+  INFOBIP_SENDER: Joi.string().default('LiliaFood'),
 
   // ─── Email Mailtrap ───────────────────────────────────────────────────────
   MAILTRAP_API_TOKEN: Joi.string().optional(),

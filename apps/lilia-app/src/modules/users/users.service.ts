@@ -6,7 +6,7 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DecodedIdToken } from 'firebase-admin/auth';
-import { UserCreatedEvent } from '../events/user-events';
+import { UserCreatedEvent, UserPhoneCompletedEvent } from '../events/user-events';
 import { UserCacheService } from '../auth/services/user-cache.service';
 
 
@@ -181,6 +181,12 @@ export class UserService {
       data,
     });
     await this.userCache.invalidate(updated.firebaseUid);
+    // Numero (re)saisi via PUT /users/me — declenche le SMS de bienvenue cote
+    // Google. Le UserListener filtre via le flag welcomeSmsSentAt + fenetre 24h,
+    // donc emettre a chaque mise a jour de numero est idempotent.
+    if (data.phone && data.phone.trim().length > 0) {
+      this.eventEmitter.emit('user.phone.completed', new UserPhoneCompletedEvent(id));
+    }
     return updated;
   }
 

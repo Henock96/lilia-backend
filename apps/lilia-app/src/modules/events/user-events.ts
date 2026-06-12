@@ -11,3 +11,8 @@ export class UserCreatedEvent extends BaseEvent {
     super(userId, nom, timestamp);
   }
 }
+
+// N'etend volontairement pas BaseEvent : seul userId est requis pour ce flux.
+export class UserPhoneCompletedEvent {
+  constructor(public readonly userId: string) {}
+}
