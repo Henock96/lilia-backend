@@ -23,25 +23,48 @@ const VENDOR_PUBLIC_INCLUDE = {
   photos: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
 } satisfies Prisma.RestaurantInclude;
 
-const VENDOR_DETAIL_INCLUDE = {
-  ...VENDOR_PUBLIC_INCLUDE,
-  products: {
-    // Convention stock : null = illimité, 0 = épuisé, > 0 = quantité réelle.
-    // `{ not: 0 }` exclut aussi les NULL (sémantique SQL : NULL != 0 →
-    // UNKNOWN, pas TRUE). Sans cette branche OR, les produits HOME_COOK /
-    // BAKERY créés sans stockQuotidien (= illimité) n'apparaissaient jamais
-    // sur le détail vendeur (LIL-120).
-    where: {
-      OR: [{ stockRestant: null }, { stockRestant: { gt: 0 } }],
+// Détail vendeur : produits + menus du jour actifs embarqués. Construit par
+// requête (pas une const) car le filtre menus dépend de `now` — une const
+// figerait la date au chargement du module. Embarquer les menus ici évite une
+// 2e requête `GET /menus/active` côté client sur l'écran de détail.
+function vendorDetailInclude(now = new Date()) {
+  return {
+    ...VENDOR_PUBLIC_INCLUDE,
+    products: {
+      // Convention stock : null = illimité, 0 = épuisé, > 0 = quantité réelle.
+      // `{ not: 0 }` exclut aussi les NULL (sémantique SQL : NULL != 0 →
+      // UNKNOWN, pas TRUE). Sans cette branche OR, les produits HOME_COOK /
+      // BAKERY créés sans stockQuotidien (= illimité) n'apparaissaient jamais
+      // sur le détail vendeur (LIL-120).
+      where: {
+        OR: [{ stockRestant: null }, { stockRestant: { gt: 0 } }],
+      },
+      include: {
+        category: true,
+        variants: true,
+        // Galerie produit pour le carrousel ouvert depuis le détail vendeur.
+        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
+      },
     },
-    include: {
-      category: true,
-      variants: true,
-      // Galerie produit pour le carrousel ouvert depuis le détail vendeur.
-      images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
+    // Menus du jour actifs — même filtre et include que
+    // `MenuQueryService.getActiveMenus` pour un parsing identique côté client.
+    menuDuJour: {
+      where: { isActive: true, dateDebut: { lte: now }, dateFin: { gte: now } },
+      include: {
+        products: {
+          include: {
+            product: { include: { category: true, variants: true } },
+          },
+          orderBy: { ordre: 'asc' },
+        },
+        // Requis par `MenuDuJour.fromJson` côté Flutter (json['restaurant']).
+        restaurant: { select: { id: true, nom: true, imageUrl: true } },
+        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
+      },
+      orderBy: { dateDebut: 'desc' },
     },
-  },
-} satisfies Prisma.RestaurantInclude;
+  } satisfies Prisma.RestaurantInclude;
+}
 
 @Injectable()
 export class VendorsService {
@@ -148,7 +171,7 @@ export class VendorsService {
   async findOne(id: string) {
     const vendor = await this.prisma.restaurant.findFirst({
       where: { id, isActive: true, adminApproved: true },
-      include: VENDOR_DETAIL_INCLUDE,
+      include: vendorDetailInclude(),
     });
     if (!vendor) throw new NotFoundException(`Vendeur "${id}" introuvable.`);
     return { data: vendor };
