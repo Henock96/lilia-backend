@@ -314,11 +314,22 @@ export class DeliveriesService {
       }),
     ]);
 
-    // Convergence avec le path WebSocket (/tracking/position) : on broadcast
-    // aussi la position aux clients qui suivent la commande, pour que le fallback
-    // HTTP soit équivalent au WS (sinon désync jusqu'au prochain poll 30s — B13).
+    // Convergence avec le path WebSocket (/tracking/position) : on alimente le
+    // cache Redis live (source de vérité temps réel) ET on broadcast la position
+    // aux clients qui suivent la commande, pour que le fallback HTTP soit
+    // équivalent au WS (sinon désync : un (re)watch lirait une position périmée,
+    // et le client attendrait le prochain poll 30s — B13 / LIL-54).
     // Best-effort : n'échoue jamais la mise à jour de position.
     try {
+      // Source de vérité temps réel : GEO + métadonnées TTL (no-op si Redis off).
+      await this.trackingService.cacheLivePosition({
+        orderId: delivery.orderId,
+        driverId: user.id,
+        lat: latitude,
+        lng: longitude,
+        accuracy,
+      });
+
       const eta = await this.trackingService.calculateETA(
         delivery.orderId,
         latitude,
