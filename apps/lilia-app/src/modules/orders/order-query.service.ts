@@ -129,7 +129,9 @@ export class OrderQueryService {
     });
 
     if (!restaurant) {
-      throw new NotFoundException('Restaurant non trouvé pour cet utilisateur.');
+      throw new NotFoundException(
+        'Restaurant non trouvé pour cet utilisateur.',
+      );
     }
 
     const [orders, total] = await Promise.all([

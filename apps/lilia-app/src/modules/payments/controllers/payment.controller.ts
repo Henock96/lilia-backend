@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Controller, Post, Get, Body, Param, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { DecodedIdToken } from 'firebase-admin/auth';
 
 import { PaymentService, CreatePaymentRequest } from '../services/payment.service';
@@ -17,6 +18,9 @@ export class PaymentController {
    * En mode MANUAL : retourne les instructions de virement.
    * En mode SANDBOX/MTN_PRODUCTION : initie le Request-to-Pay MTN.
    */
+  // Chaque appel peut déclencher un Request-to-Pay MTN facturé : on borne plus
+  // serré que le throttle global (audit 2026-08-01, F-11).
+  @Throttle({ short: { limit: 1, ttl: 1000 }, long: { limit: 10, ttl: 60000 } })
   @Post()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Initier un paiement pour une commande' })

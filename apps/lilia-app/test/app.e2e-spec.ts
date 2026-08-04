@@ -28,9 +28,7 @@ describe('AppController (e2e)', () => {
   });
 
   it('GET /health → 200 + status ok', async () => {
-    const res = await request(app.getHttpServer())
-      .get('/health')
-      .expect(200);
+    const res = await request(app.getHttpServer()).get('/health').expect(200);
 
     expect(res.body).toMatchObject({
       status: 'ok',

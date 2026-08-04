@@ -34,10 +34,7 @@ export class IncidentsService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  async create(
-    dto: CreateIncidentDto,
-    reportedBy?: string,
-  ): Promise<Incident> {
+  async create(dto: CreateIncidentDto, reportedBy?: string): Promise<Incident> {
     const incident = await this.prisma.incident.create({
       data: {
         type: dto.type,

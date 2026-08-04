@@ -4,27 +4,28 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
-import * as admin from 'firebase-admin';
-import { Auth } from 'firebase-admin/auth';
-import { Messaging } from 'firebase-admin/messaging';
+import { App, Credential, cert, getApps, initializeApp } from 'firebase-admin/app';
+import { Auth, getAuth } from 'firebase-admin/auth';
+import { Messaging, getMessaging } from 'firebase-admin/messaging';
 
 @Injectable()
 export class FirebaseService implements OnModuleInit {
   private readonly logger = new Logger(FirebaseService.name);
-  private app: admin.app.App;
+  private app: App;
 
   constructor(private readonly config: ConfigService) {}
 
   async onModuleInit(): Promise<void> {
-    if (admin.apps.length > 0) {
-      this.app = admin.apps[0]!;
+    const existing = getApps();
+    if (existing.length > 0) {
+      this.app = existing[0]!;
       this.logger.log('Firebase Admin SDK — instance existante réutilisée');
       return;
     }
 
     const credential = this.buildCredential();
 
-    this.app = admin.initializeApp({
+    this.app = initializeApp({
       credential,
       projectId: this.config.get<string>('FIREBASE_PROJECT_ID'),
     });
@@ -32,7 +33,7 @@ export class FirebaseService implements OnModuleInit {
     this.logger.log('Firebase Admin SDK initialisé');
   }
 
-  private buildCredential(): admin.credential.Credential {
+  private buildCredential(): Credential {
     const accountPath = this.config.get<string>('FIREBASE_SERVICE_ACCOUNT_PATH');
 
     if (accountPath) {
@@ -49,7 +50,7 @@ export class FirebaseService implements OnModuleInit {
       // ✅ fs.readFileSync + JSON.parse — fonctionne avec webpack
       const serviceAccount = JSON.parse(readFileSync(absolutePath, 'utf-8'));
       this.logger.log('Credential Firebase : fichier service account');
-      return admin.credential.cert(serviceAccount);
+      return cert(serviceAccount);
     }
 
     // Variables d'environnement (production Render)
@@ -65,7 +66,7 @@ export class FirebaseService implements OnModuleInit {
     }
 
     this.logger.log('Credential Firebase : variables d\'environnement');
-    return admin.credential.cert({
+    return cert({
       projectId,
       clientEmail,
       privateKey: rawKey.replace(/\\n/g, '\n'),
@@ -73,11 +74,11 @@ export class FirebaseService implements OnModuleInit {
   }
 
   getAuth(): Auth {
-    return this.app.auth();
+    return getAuth(this.app);
   }
 
   getMessaging(): Messaging {
-    return this.app.messaging();
+    return getMessaging(this.app);
   }
 
   isReady(): boolean {
@@ -85,7 +86,7 @@ export class FirebaseService implements OnModuleInit {
   }
 
   async revokeUserTokens(uid: string): Promise<void> {
-    await this.app.auth().revokeRefreshTokens(uid);
+    await getAuth(this.app).revokeRefreshTokens(uid);
     this.logger.warn(`Tokens révoqués pour : ${uid}`);
   }
 
@@ -103,7 +104,7 @@ export class FirebaseService implements OnModuleInit {
     displayName?: string;
     phoneNumber?: string;
   }): Promise<string> {
-    const userRecord = await this.app.auth().createUser({
+    const userRecord = await getAuth(this.app).createUser({
       email: params.email,
       password: params.password,
       displayName: params.displayName,
@@ -124,7 +125,7 @@ export class FirebaseService implements OnModuleInit {
    */
   async deleteUserSafe(uid: string): Promise<void> {
     try {
-      await this.app.auth().deleteUser(uid);
+      await getAuth(this.app).deleteUser(uid);
       this.logger.warn(`User Firebase rollback supprimé : ${uid}`);
     } catch (err) {
       this.logger.error(

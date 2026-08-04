@@ -15,13 +15,14 @@ export class IncidentsListener {
     try {
       await this.incidents.create({
         type: IncidentType.ORDER_CANCELLED,
-        severity: event.refundAmount && event.refundAmount > 0
-          ? IncidentSeverity.HIGH
-          : IncidentSeverity.LOW,
+        severity:
+          event.refundAmount && event.refundAmount > 0
+            ? IncidentSeverity.HIGH
+            : IncidentSeverity.LOW,
         title: `Commande annulée #${event.orderId.slice(-6)}`,
         description:
           event.cancelReason ??
-          'Commande annulée — aucune raison fournie par l\'utilisateur.',
+          "Commande annulée — aucune raison fournie par l'utilisateur.",
         orderId: event.orderId,
         restaurantId: event.restaurantId,
         metadata: {

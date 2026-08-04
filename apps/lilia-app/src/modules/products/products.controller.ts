@@ -40,7 +40,9 @@ export class ProductsController {
 
   @Public()
   @Get()
-  @ApiOperation({ summary: 'Catalogue marketplace (vendeurs approuvés + actifs)' })
+  @ApiOperation({
+    summary: 'Catalogue marketplace (vendeurs approuvés + actifs)',
+  })
   @ApiQuery({ name: 'restaurantId', required: false })
   @ApiQuery({ name: 'categoryId', required: false })
   @ApiQuery({ name: 'productType', required: false, enum: ProductType })

@@ -1,15 +1,21 @@
 // promo/promo.controller.ts
 import {
-  Body, Controller, Delete, Get, HttpCode,
-  HttpStatus, Param, Patch, Post, Query,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Patch,
+  Post,
+  Query,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { DecodedIdToken } from 'firebase-admin/auth';
 import { PromoService } from './promo.service';
 import { CreatePromoCodeDto } from './dto/create-promo-code.dto';
 import { ValidatePromoDto } from './dto/validate-promo.dto';
-import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { User } from '@prisma/client';
@@ -30,10 +36,7 @@ export class PromoController {
   @Throttle({ short: { limit: 1, ttl: 1000 }, long: { limit: 5, ttl: 60000 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Valider un code promo au checkout' })
-  validate(
-    @CurrentUser() user: User,
-    @Body() body: ValidatePromoDto,
-  ) {
+  validate(@CurrentUser() user: User, @Body() body: ValidatePromoDto) {
     return this.promoService.validateCode(
       body.code,
       user.id,
@@ -77,7 +80,7 @@ export class PromoController {
 
   @Get(':id/stats')
   @Roles('ADMIN')
-  @ApiOperation({ summary: 'Statistiques d\'utilisation d\'un code' })
+  @ApiOperation({ summary: "Statistiques d'utilisation d'un code" })
   stats(@Param('id') id: string) {
     return this.promoService.getStats(id);
   }

@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  OnModuleDestroy,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
@@ -27,7 +28,7 @@ import { QuartiersService } from '../quartiers/quartiers.service';
  * `createOrderFromCart` — l'API publique reste inchangée.
  */
 @Injectable()
-export class OrderCheckoutService {
+export class OrderCheckoutService implements OnModuleDestroy {
   private readonly logger = new Logger(OrderCheckoutService.name);
   private readonly redis: Redis;
 
@@ -45,6 +46,17 @@ export class OrderCheckoutService {
   ) {
     const redisUrl = this.config.get<string>('REDIS_URL');
     this.redis = redisUrl ? new Redis(redisUrl) : (null as any);
+    // Sans listener 'error', une coupure réseau Redis fait planter le process
+    // Node (EventEmitter). L'idempotence est best-effort : on log et on continue.
+    this.redis?.on('error', (err) =>
+      this.logger.error(
+        `Redis (idempotence checkout) indisponible: ${err.message}`,
+      ),
+    );
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.redis?.quit().catch(() => undefined);
   }
 
   async createOrderFromCart(
@@ -71,7 +83,9 @@ export class OrderCheckoutService {
       const cacheKey = `idempotency:${firebaseUid}:${idempotencyKey}`;
       const cached = await this.redis.get(cacheKey);
       if (cached) {
-        this.logger.log(`📦 [IDEMPOTENCY] Réponse cachée retournée — key: ${idempotencyKey}`);
+        this.logger.log(
+          `📦 [IDEMPOTENCY] Réponse cachée retournée — key: ${idempotencyKey}`,
+        );
         return JSON.parse(cached);
       }
     }
@@ -122,7 +136,11 @@ export class OrderCheckoutService {
     // l'adresse de livraison (le mode ZONE_BASED n'était jamais appliqué — B11).
     let effectiveDeliveryFee = restaurant.fixedDeliveryFee;
     let deliveryQuartierId: string | null = null;
-    if (isDelivery && restaurant.deliveryPriceMode === 'ZONE_BASED' && adresseId) {
+    if (
+      isDelivery &&
+      restaurant.deliveryPriceMode === 'ZONE_BASED' &&
+      adresseId
+    ) {
       const addr = await this.prisma.adresses.findUnique({
         where: { id: adresseId },
         select: { quartierId: true },
@@ -182,7 +200,10 @@ export class OrderCheckoutService {
         // Montant restant à payer une fois la promo appliquée
         const remaining = Math.max(
           0,
-          amounts.subTotal + finalDeliveryFee + amounts.serviceFee - discountAmount,
+          amounts.subTotal +
+            finalDeliveryFee +
+            amounts.serviceFee -
+            discountAmount,
         );
         // Nombre de points effectivement utilisables (entier, plafonné au solde
         // ET au montant dû)
@@ -194,7 +215,14 @@ export class OrderCheckoutService {
       }
     }
 
-    const finalTotal = Math.max(0, amounts.subTotal + finalDeliveryFee + amounts.serviceFee - discountAmount - loyaltyDiscount);
+    const finalTotal = Math.max(
+      0,
+      amounts.subTotal +
+        finalDeliveryFee +
+        amounts.serviceFee -
+        discountAmount -
+        loyaltyDiscount,
+    );
     // 5. Exécuter la création de la commande et la suppression du panier dans une transaction
     const order = await this.prisma.$transaction(async (tx) => {
       const newOrder = await tx.order.create({
@@ -248,11 +276,26 @@ export class OrderCheckoutService {
 
       // Consomme les points de fidélité dans la transaction — uniquement le
       // nombre réellement utilisé (calculé et plafonné plus haut).
+      //
+      // Le décrément est CONDITIONNEL (`WHERE "loyaltyPoints" >= n`) : le solde
+      // lu plus haut l'a été hors transaction, donc deux checkouts concurrents
+      // du même utilisateur (mobile + web, ou double device) peuvent tous deux
+      // avoir vu le même solde. Sans cette garde, le solde passerait en négatif
+      // et la réduction serait accordée deux fois. Le second checkout affecte
+      // 0 ligne → on lève, ce qui rollback toute la transaction (commande,
+      // promo, stock, panier). Même esprit que le `SELECT … FOR UPDATE` de
+      // `promo.service.applyCode`.
       if (loyaltyPointsUsed > 0) {
-        await tx.user.update({
-          where: { id: user.id },
-          data: { loyaltyPoints: { decrement: loyaltyPointsUsed } },
-        });
+        const updatedRows = await tx.$executeRaw`
+          UPDATE "User"
+          SET "loyaltyPoints" = "loyaltyPoints" - ${loyaltyPointsUsed}
+          WHERE id = ${user.id} AND "loyaltyPoints" >= ${loyaltyPointsUsed}
+        `;
+        if (updatedRows === 0) {
+          throw new BadRequestException(
+            'Solde de points de fidélité insuffisant. Votre solde a changé, merci de recommencer la commande.',
+          );
+        }
         await tx.loyaltyTransaction.create({
           data: {
             userId: user.id,
@@ -302,7 +345,9 @@ export class OrderCheckoutService {
     // Cache idempotency result — TTL 1h
     if (idempotencyKey && this.redis) {
       const cacheKey = `idempotency:${firebaseUid}:${idempotencyKey}`;
-      await this.redis.setex(cacheKey, 3600, JSON.stringify(result)).catch(() => {});
+      await this.redis
+        .setex(cacheKey, 3600, JSON.stringify(result))
+        .catch(() => {});
     }
 
     return result;
@@ -332,17 +377,30 @@ export class OrderCheckoutService {
         data: { loyaltyPoints: { increment: settings.referrerBonusPoints } },
       }),
       this.prisma.loyaltyTransaction.create({
-        data: { userId: referrer.id, points: settings.referrerBonusPoints, reason: 'Récompense parrainage — filleul activé' },
+        data: {
+          userId: referrer.id,
+          points: settings.referrerBonusPoints,
+          reason: 'Récompense parrainage — filleul activé',
+        },
       }),
       this.prisma.user.update({
         where: { id: userId },
-        data: { loyaltyPoints: { increment: settings.referredBonusPoints }, referralRewarded: true },
+        data: {
+          loyaltyPoints: { increment: settings.referredBonusPoints },
+          referralRewarded: true,
+        },
       }),
       this.prisma.loyaltyTransaction.create({
-        data: { userId, points: settings.referredBonusPoints, reason: 'Bonus bienvenue parrainage' },
+        data: {
+          userId,
+          points: settings.referredBonusPoints,
+          reason: 'Bonus bienvenue parrainage',
+        },
       }),
     ]);
 
-    this.logger.log(`🎁 Parrainage: +${settings.referrerBonusPoints}pts → parrain ${referrer.id}, +${settings.referredBonusPoints}pts → filleul ${userId}`);
+    this.logger.log(
+      `🎁 Parrainage: +${settings.referrerBonusPoints}pts → parrain ${referrer.id}, +${settings.referredBonusPoints}pts → filleul ${userId}`,
+    );
   }
 }

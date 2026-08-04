@@ -19,7 +19,8 @@ export class MaintenanceGuard implements CanActivate {
   constructor(private readonly settings: PlatformSettingsService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const { maintenanceMode, maintenanceMessage } = await this.settings.getSettings();
+    const { maintenanceMode, maintenanceMessage } =
+      await this.settings.getSettings();
     if (!maintenanceMode) return true;
 
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();

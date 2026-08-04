@@ -79,21 +79,38 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
       prisma.delivery.findUnique.mockResolvedValue({
         id: 'd1',
         orderId: 'o1',
-        order: { isPreorder: false, scheduledFor: null, restaurant: { nom: 'Resto', owner: { firebaseUid: 'uid' } } },
+        order: {
+          isPreorder: false,
+          scheduledFor: null,
+          restaurant: { nom: 'Resto', owner: { firebaseUid: 'uid' } },
+        },
       });
-      mockUsers({ id: 'u1', role: 'RESTAURATEUR' }, { id: 'liv1', role: 'LIVREUR' });
-      prisma.delivery.update.mockResolvedValue({ id: 'd1', status: 'ASSIGNER' });
+      mockUsers(
+        { id: 'u1', role: 'RESTAURATEUR' },
+        { id: 'liv1', role: 'LIVREUR' },
+      );
+      prisma.delivery.update.mockResolvedValue({
+        id: 'd1',
+        status: 'ASSIGNER',
+      });
 
       const res = await service.assignDeliverer('d1', 'liv1', 'uid');
 
-      expect(prisma.delivery.update.mock.calls[0][0].data).toEqual({ delivererId: 'liv1', status: 'ASSIGNER' });
+      expect(prisma.delivery.update.mock.calls[0][0].data).toEqual({
+        delivererId: 'liv1',
+        status: 'ASSIGNER',
+      });
       expect(notifications.sendPushNotification).toHaveBeenCalled();
-      expect(res).toEqual({ data: { id: 'd1', status: 'ASSIGNER' }, message: 'Livreur assigné avec succès' });
+      expect(res).toEqual({
+        data: { id: 'd1', status: 'ASSIGNER' },
+        message: 'Livreur assigné avec succès',
+      });
     });
 
     it('refuse une cible qui n’est pas LIVREUR', async () => {
       prisma.delivery.findUnique.mockResolvedValue({
-        id: 'd1', orderId: 'o1',
+        id: 'd1',
+        orderId: 'o1',
         order: { restaurant: { nom: 'Resto', owner: { firebaseUid: 'uid' } } },
       });
       mockUsers({ id: 'u1', role: 'ADMIN' }, { id: 'x', role: 'CLIENT' });
@@ -107,7 +124,8 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
     it('BadRequest si la commande n’est pas dans un statut assignable', async () => {
       prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'ADMIN' });
       prisma.order.findUnique.mockResolvedValue({
-        id: 'o1', status: 'EN_ATTENTE',
+        id: 'o1',
+        status: 'EN_ATTENTE',
         restaurant: { owner: { firebaseUid: 'other' } },
       });
       await expect(
@@ -119,21 +137,33 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
       // getUserOrThrow (firebaseUid) → admin ; puis lookup livreur (id)
       mockUsers({ id: 'u1', role: 'ADMIN' }, { id: 'liv1', role: 'LIVREUR' });
       prisma.order.findUnique.mockResolvedValue({
-        id: 'o1', status: 'PRET',
+        id: 'o1',
+        status: 'PRET',
         restaurant: { nom: 'Resto', owner: { firebaseUid: 'other' } },
       });
       prisma.delivery.findUnique
         .mockResolvedValueOnce(null) // pas de delivery existante
-        .mockResolvedValueOnce({ // rechargée avec relations pour _doAssign
-          id: 'd1', orderId: 'o1',
-          order: { isPreorder: false, scheduledFor: null, restaurant: { nom: 'Resto', owner: { firebaseUid: 'other' } } },
+        .mockResolvedValueOnce({
+          // rechargée avec relations pour _doAssign
+          id: 'd1',
+          orderId: 'o1',
+          order: {
+            isPreorder: false,
+            scheduledFor: null,
+            restaurant: { nom: 'Resto', owner: { firebaseUid: 'other' } },
+          },
         });
       prisma.delivery.create.mockResolvedValue({ id: 'd1' });
-      prisma.delivery.update.mockResolvedValue({ id: 'd1', status: 'ASSIGNER' });
+      prisma.delivery.update.mockResolvedValue({
+        id: 'd1',
+        status: 'ASSIGNER',
+      });
 
       const res = await service.assignDelivererToOrder('o1', 'liv1', 'uid');
 
-      expect(prisma.delivery.create).toHaveBeenCalledWith({ data: { orderId: 'o1', status: 'EN_ATTENTE' } });
+      expect(prisma.delivery.create).toHaveBeenCalledWith({
+        data: { orderId: 'o1', status: 'EN_ATTENTE' },
+      });
       expect(res.message).toBe('Livreur assigné avec succès');
     });
   });
@@ -144,11 +174,20 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
       orderId: 'o1',
       delivererId: 'liv1',
       status: 'ASSIGNER',
-      order: { status: 'PRET', userId: 'c1', restaurantId: 'r1', total: 5000, restaurant: { nom: 'Resto' } },
+      order: {
+        status: 'PRET',
+        userId: 'c1',
+        restaurantId: 'r1',
+        total: 5000,
+        restaurant: { nom: 'Resto' },
+      },
     };
 
     it('Forbidden si la livraison n’est pas assignée à ce livreur', async () => {
-      prisma.user.findUnique.mockResolvedValue({ id: 'autre', driverStatus: 'AVAILABLE' });
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'autre',
+        driverStatus: 'AVAILABLE',
+      });
       prisma.delivery.findUnique.mockResolvedValue(assigned);
       await expect(service.acceptDelivery('d1', 'uid')).rejects.toBeInstanceOf(
         ForbiddenException,
@@ -156,7 +195,10 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
     });
 
     it('BadRequest si le livreur n’est pas AVAILABLE', async () => {
-      prisma.user.findUnique.mockResolvedValue({ id: 'liv1', driverStatus: 'ON_DELIVERY' });
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'liv1',
+        driverStatus: 'ON_DELIVERY',
+      });
       prisma.delivery.findUnique.mockResolvedValue(assigned);
       await expect(service.acceptDelivery('d1', 'uid')).rejects.toBeInstanceOf(
         BadRequestException,
@@ -164,16 +206,29 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
     });
 
     it('happy : transaction (EN_TRANSIT + ON_DELIVERY + EN_ROUTE) + émet order.status.updated', async () => {
-      prisma.user.findUnique.mockResolvedValue({ id: 'liv1', driverStatus: 'AVAILABLE' });
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'liv1',
+        driverStatus: 'AVAILABLE',
+      });
       prisma.delivery.findUnique.mockResolvedValue(assigned);
-      prisma.delivery.update.mockResolvedValue({ id: 'd1', status: 'EN_TRANSIT' });
+      prisma.delivery.update.mockResolvedValue({
+        id: 'd1',
+        status: 'EN_TRANSIT',
+      });
       prisma.user.update.mockResolvedValue({});
       prisma.order.update.mockResolvedValue({});
 
       const res = await service.acceptDelivery('d1', 'uid');
 
-      expect(stateMachine.assertTransition).toHaveBeenCalledWith('PRET', 'EN_ROUTE', 'LIVREUR');
-      expect(eventEmitter.emit).toHaveBeenCalledWith('order.status.updated', expect.anything());
+      expect(stateMachine.assertTransition).toHaveBeenCalledWith(
+        'PRET',
+        'EN_ROUTE',
+        'LIVREUR',
+      );
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'order.status.updated',
+        expect.anything(),
+      );
       expect(res).toEqual({ id: 'd1', status: 'EN_TRANSIT' });
     });
   });

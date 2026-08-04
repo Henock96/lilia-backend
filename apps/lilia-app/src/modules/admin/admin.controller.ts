@@ -151,7 +151,9 @@ export class AdminController {
   }
 
   @Get('clients')
-  @ApiOperation({ summary: 'Clients uniquement (paginés, recherche optionnelle)' })
+  @ApiOperation({
+    summary: 'Clients uniquement (paginés, recherche optionnelle)',
+  })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'search', required: false })
@@ -239,7 +241,8 @@ export class AdminController {
 
   @Get('deliverers/:id/stats')
   @ApiOperation({
-    summary: 'Statistiques agrégées d\'un livreur (succès, revenu, durée moyenne)',
+    summary:
+      "Statistiques agrégées d'un livreur (succès, revenu, durée moyenne)",
   })
   @ApiParam({ name: 'id', description: 'ID Prisma du livreur' })
   getDelivererStats(@Param('id') id: string) {
@@ -247,7 +250,7 @@ export class AdminController {
   }
 
   @Get('deliverers/:id/missions')
-  @ApiOperation({ summary: 'Historique paginé des missions d\'un livreur' })
+  @ApiOperation({ summary: "Historique paginé des missions d'un livreur" })
   @ApiParam({ name: 'id', description: 'ID Prisma du livreur' })
   @ApiQuery({
     name: 'status',
@@ -299,8 +302,7 @@ export class AdminController {
 
   @Get('payments')
   @ApiOperation({
-    summary:
-      'Paiements pour supervision — omettre `status` pour la vue "Tous"',
+    summary: 'Paiements pour supervision — omettre `status` pour la vue "Tous"',
   })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
@@ -308,7 +310,7 @@ export class AdminController {
     name: 'status',
     required: false,
     description:
-      "PENDING | SUCCESS | FAILED | CANCELLED. Vide ou absent = tous statuts.",
+      'PENDING | SUCCESS | FAILED | CANCELLED. Vide ou absent = tous statuts.',
   })
   listPayments(
     @Query('page') page = '1',

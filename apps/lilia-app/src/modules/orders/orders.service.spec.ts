@@ -40,12 +40,14 @@ describe('OrdersService (caractérisation — lectures)', () => {
     restaurant: { findFirst: jest.fn() },
   };
   const pagination = {
-    getPaginationMeta: jest.fn((page: number, limit: number, total: number) => ({
-      page,
-      limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-    })),
+    getPaginationMeta: jest.fn(
+      (page: number, limit: number, total: number) => ({
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      }),
+    ),
   };
 
   beforeEach(async () => {
@@ -163,7 +165,10 @@ describe('OrdersService (caractérisation — lectures)', () => {
     });
 
     it('RESTAURATEUR : lève NotFoundException sans restaurant rattaché', async () => {
-      prisma.user.findUnique.mockResolvedValue({ id: 'r1', role: 'RESTAURATEUR' });
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'r1',
+        role: 'RESTAURATEUR',
+      });
       prisma.restaurant.findFirst.mockResolvedValue(null);
       await expect(
         service.findRestaurantOrders('uid', 1, 20),
@@ -171,7 +176,10 @@ describe('OrdersService (caractérisation — lectures)', () => {
     });
 
     it('RESTAURATEUR : retourne uniquement les commandes de son restaurant', async () => {
-      prisma.user.findUnique.mockResolvedValue({ id: 'r1', role: 'RESTAURATEUR' });
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'r1',
+        role: 'RESTAURATEUR',
+      });
       prisma.restaurant.findFirst.mockResolvedValue({ id: 'resto1' });
       prisma.order.findMany.mockResolvedValue([{ id: 'o1' }]);
       prisma.order.count.mockResolvedValue(1);

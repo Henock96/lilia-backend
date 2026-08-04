@@ -33,7 +33,9 @@ async function bootstrap() {
       app.useWebSocketAdapter(redisIoAdapter);
       logger.log('WebSocket adapter : Redis (multi-instance)');
     } catch (err) {
-      logger.warn(`Redis non disponible, adapter par défaut utilisé : ${err.message}`);
+      logger.warn(
+        `Redis non disponible, adapter par défaut utilisé : ${err.message}`,
+      );
     }
   } else {
     logger.warn('REDIS_URL non défini — WebSocket en mode single-instance');

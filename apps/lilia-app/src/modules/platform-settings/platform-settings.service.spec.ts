@@ -55,7 +55,11 @@ describe('PlatformSettingsService', () => {
   });
 
   it('déduplique les cache-miss concurrents en une seule requête', async () => {
-    await Promise.all([service.getSettings(), service.getSettings(), service.getSettings()]);
+    await Promise.all([
+      service.getSettings(),
+      service.getSettings(),
+      service.getSettings(),
+    ]);
     expect(prisma.platformSettings.upsert).toHaveBeenCalledTimes(1);
   });
 });

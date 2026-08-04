@@ -51,7 +51,9 @@ export class PlatformSettingsService {
   /**
    * Met à jour la configuration (PATCH partiel) et invalide le cache.
    */
-  async updateSettings(dto: UpdatePlatformSettingsDto): Promise<PlatformSettings> {
+  async updateSettings(
+    dto: UpdatePlatformSettingsDto,
+  ): Promise<PlatformSettings> {
     const settings = await this.prisma.platformSettings.upsert({
       where: { id: SINGLETON_ID },
       // Branche `create` : si la ligne singleton n'existe pas encore, les champs

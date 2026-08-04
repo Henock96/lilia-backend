@@ -1,4 +1,8 @@
-﻿import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+﻿import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
@@ -23,7 +27,9 @@ export class FavoritesService {
   }
 
   async addFavorite(userId: string, restaurantId: string) {
-    const restaurant = await this.prisma.restaurant.findUnique({ where: { id: restaurantId } });
+    const restaurant = await this.prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+    });
     if (!restaurant) throw new NotFoundException('Restaurant introuvable');
 
     try {

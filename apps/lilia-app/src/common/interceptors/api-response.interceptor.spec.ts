@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 import { CallHandler, ExecutionContext, StreamableFile } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { firstValueFrom, of } from 'rxjs';

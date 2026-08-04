@@ -20,6 +20,7 @@ import {
   ApiBearerAuth,
   ApiParam,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { OrdersService } from './orders.service';
 import { OrderReceiptService } from './order-receipt.service';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -60,6 +61,10 @@ export class OrdersController {
    * On utilise firebaseUid (du token) car le service le requiert pour retrouver le user.
    * firebaseUser.uid est la source de vérité — jamais le body.
    */
+  // Le throttle global (100/min) est trop large pour un endpoint qui crée des
+  // commandes et décrémente du stock. L'idempotence couvre le double-tap, pas
+  // un script qui boucle. Limites alignées sur /promo/validate et /reviews.
+  @Throttle({ short: { limit: 1, ttl: 1000 }, long: { limit: 10, ttl: 60000 } })
   @Post('checkout')
   @UseGuards(MaintenanceGuard)
   @ApiOperation({ summary: 'Créer une commande depuis le panier' })
@@ -131,7 +136,7 @@ export class OrdersController {
    * Détail d'une commande — accessible par son propriétaire ou un admin.
    */
   @Get(':id')
-  @ApiOperation({ summary: 'Détail d\'une commande' })
+  @ApiOperation({ summary: "Détail d'une commande" })
   @ApiParam({ name: 'id', description: 'ID de la commande' })
   @ApiResponse({ status: 200, description: 'Commande trouvée' })
   @ApiResponse({ status: 403, description: 'Accès refusé' })

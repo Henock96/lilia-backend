@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 // auth/types/authenticated-request.interface.ts
 import { Request } from 'express';
 import { DecodedIdToken } from 'firebase-admin/auth';

@@ -10,8 +10,18 @@ import { PlatformSettingsModule } from '../platform-settings/platform-settings.m
 import { TrackingModule } from '../tracking/tracking.module';
 
 @Module({
-  imports: [PrismaModule, NotificationsModule, PlatformSettingsModule, TrackingModule],
-  providers: [DeliveriesService, DeliveryQueryService, DeliveryAssignmentService, OrderStateMachine],
+  imports: [
+    PrismaModule,
+    NotificationsModule,
+    PlatformSettingsModule,
+    TrackingModule,
+  ],
+  providers: [
+    DeliveriesService,
+    DeliveryQueryService,
+    DeliveryAssignmentService,
+    OrderStateMachine,
+  ],
   controllers: [DeliveriesController],
   exports: [DeliveriesService],
 })

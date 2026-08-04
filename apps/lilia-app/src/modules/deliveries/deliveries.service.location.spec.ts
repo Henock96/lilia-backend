@@ -86,7 +86,11 @@ describe('DeliveriesService.updateLocation (convergence Redis — LIL-54)', () =
 
     const res = await service.updateLocation('d1', -4.2, 15.2, 8, 'uid');
 
-    expect(res).toEqual({ message: 'Position mise à jour', latitude: -4.2, longitude: 15.2 });
+    expect(res).toEqual({
+      message: 'Position mise à jour',
+      latitude: -4.2,
+      longitude: 15.2,
+    });
   });
 
   it('refuse si la livraison n’est pas assignée au livreur', async () => {

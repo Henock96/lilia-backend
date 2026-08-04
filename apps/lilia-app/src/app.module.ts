@@ -146,7 +146,7 @@ import { envValidationSchema } from './config/env.validation';
         };
       },
     }),
-    // app.module.ts â€” ajouter
+    // app.module.ts — ajouter
     RedisModule.forRootAsync({
       useFactory: (config: ConfigService) => ({
         type: 'single',
@@ -158,7 +158,7 @@ import { envValidationSchema } from './config/env.validation';
     EventEmitterModule.forRoot({
       wildcard: false,
       delimiter: '.',
-      maxListeners: 20, // augmentÃ© pour tous les listeners
+      maxListeners: 20, // augmenté pour tous les listeners
       ignoreErrors: false,
     }),
 
@@ -219,4 +219,3 @@ import { envValidationSchema } from './config/env.validation';
   ],
 })
 export class AppModule {}
-

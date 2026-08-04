@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 import { Restaurant, VendorType } from '@prisma/client';
 
 export class VendorCreatedEvent {

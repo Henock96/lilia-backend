@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 import { Type } from 'class-transformer';
 import {
   IsArray,

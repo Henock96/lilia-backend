@@ -56,9 +56,11 @@ export class AdminRestaurantsService {
 
     const profileFields: Prisma.VendorProfileCreateWithoutRestaurantInput = {};
     if (story !== undefined) profileFields.story = story;
-    if (certifications !== undefined) profileFields.certifications = certifications;
+    if (certifications !== undefined)
+      profileFields.certifications = certifications;
     if (specialties !== undefined) profileFields.specialties = specialties;
-    if (productionNote !== undefined) profileFields.productionNote = productionNote;
+    if (productionNote !== undefined)
+      profileFields.productionNote = productionNote;
     const hasProfile = Object.keys(profileFields).length > 0;
 
     // LIL-118 : on crée le user Firebase Auth AVANT la transaction Prisma.

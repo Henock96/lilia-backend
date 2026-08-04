@@ -25,7 +25,9 @@ export const envValidationSchema = Joi.object({
     .optional(),
 
   // ─── Base de données (requis) ───────────────────────────────────────────
-  DATABASE_URL: Joi.string().uri({ scheme: ['postgres', 'postgresql'] }).required(),
+  DATABASE_URL: Joi.string()
+    .uri({ scheme: ['postgres', 'postgresql'] })
+    .required(),
 
   // ─── Firebase Admin SDK (requis) ──────────────────────────────────────────
   FIREBASE_PROJECT_ID: Joi.string().required(),
@@ -41,7 +43,9 @@ export const envValidationSchema = Joi.object({
   }),
 
   // ─── Redis / WebSocket / idempotency (optionnel — dégradé si absent) ──────
-  REDIS_URL: Joi.string().uri({ scheme: ['redis', 'rediss'] }).optional(),
+  REDIS_URL: Joi.string()
+    .uri({ scheme: ['redis', 'rediss'] })
+    .optional(),
 
   // ─── Cloudinary ───────────────────────────────────────────────────────────
   CLOUDINARY_CLOUD_NAME: Joi.string().optional(),
@@ -55,6 +59,33 @@ export const envValidationSchema = Joi.object({
   LILIA_PAYMENT_PHONE: Joi.string().optional(),
   MTN_MOMO_API_KEY: Joi.string().optional(),
   MTN_MOMO_API_USER: Joi.string().optional(),
+
+  // Dès qu'on quitte le mode MANUAL, MTN émet des callbacks signés. Le webhook
+  // est fail-closed : sans secret configuré il rejette TOUT en 401, et aucun
+  // paiement ne se confirme jamais — panne silencieuse le jour du go-live.
+  // On préfère donc refuser de démarrer plutôt que de démarrer à moitié.
+  MTN_MOMO_WEBHOOK_SECRET: Joi.string().when('PAYMENT_MODE', {
+    is: Joi.valid('SANDBOX', 'MTN_PRODUCTION'),
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
+  // Attention : le code a un défaut `sandbox.momodeveloper.mtn.com`. En
+  // MTN_PRODUCTION, oublier cette variable enverrait les paiements réels vers
+  // le sandbox sans le moindre message d'erreur. D'où le `.required()`.
+  MTN_MOMO_BASE_URL: Joi.string()
+    .uri()
+    .when('PAYMENT_MODE', {
+      is: Joi.valid('SANDBOX', 'MTN_PRODUCTION'),
+      then: Joi.required(),
+      otherwise: Joi.optional(),
+    }),
+  MTN_MOMO_CALLBACK_URL: Joi.string().uri().optional(),
+  MTN_MOMO_DISBURSEMENT_SUBSCRIPTION_KEY: Joi.string().optional(),
+  MTN_MOMO_COLLECTION_SUBSCRIPTION_KEY: Joi.string().when('PAYMENT_MODE', {
+    is: Joi.valid('SANDBOX', 'MTN_PRODUCTION'),
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
 
   // ─── SMS Infobip ──────────────────────────────────────────────────────────
   INFOBIP_API_KEY: Joi.string().optional(),

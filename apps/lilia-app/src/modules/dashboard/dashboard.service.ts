@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 import { Injectable } from '@nestjs/common';
 import { DashboardSalesStatsService } from './dashboard-sales-stats.service';
 import { DashboardClientsStatsService } from './dashboard-clients-stats.service';

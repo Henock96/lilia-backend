@@ -18,7 +18,10 @@ describe('TrackingService', () => {
       providers: [
         TrackingService,
         { provide: PrismaService, useValue: {} },
-        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(undefined) } },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue(undefined) },
+        },
       ],
     }).compile();
 
@@ -62,7 +65,12 @@ describe('TrackingService', () => {
     it('no-op si Redis absent (best-effort)', async () => {
       (service as any).redis = null;
       await expect(
-        service.cacheLivePosition({ orderId: 'o1', driverId: 'd1', lat: 1, lng: 2 }),
+        service.cacheLivePosition({
+          orderId: 'o1',
+          driverId: 'd1',
+          lat: 1,
+          lng: 2,
+        }),
       ).resolves.toBeUndefined();
     });
   });
@@ -84,9 +92,24 @@ describe('TrackingService', () => {
         lng: 15.2,
       });
 
-      expect(redis.geoadd).toHaveBeenCalledWith('driver_positions', 15.2, -4.2, 'd1');
-      expect(redis.setex).toHaveBeenCalledWith('delivery:o1', 300, expect.any(String));
-      expect(redis.set).toHaveBeenCalledWith('persist_lock:o1', '1', 'EX', 60, 'NX');
+      expect(redis.geoadd).toHaveBeenCalledWith(
+        'driver_positions',
+        15.2,
+        -4.2,
+        'd1',
+      );
+      expect(redis.setex).toHaveBeenCalledWith(
+        'delivery:o1',
+        300,
+        expect.any(String),
+      );
+      expect(redis.set).toHaveBeenCalledWith(
+        'persist_lock:o1',
+        '1',
+        'EX',
+        60,
+        'NX',
+      );
     });
   });
 });

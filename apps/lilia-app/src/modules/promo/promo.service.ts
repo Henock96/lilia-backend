@@ -13,7 +13,7 @@ export interface PromoValidationResult {
   promoCodeId: string;
   code: string;
   discountType: string;
-  discountAmount: number;      // montant exact à déduire
+  discountAmount: number; // montant exact à déduire
   description: string;
   newTotal: number;
   newDeliveryFee: number;
@@ -54,21 +54,26 @@ export class PromoService {
 
     // ── Actif ──────────────────────────────────────────────────────────
     if (!promo.isActive) {
-      throw new BadRequestException('Ce code promo n\'est plus actif.');
+      throw new BadRequestException("Ce code promo n'est plus actif.");
     }
 
     // ── Dates de validité ─────────────────────────────────────────────
     const now = new Date();
     if (now < promo.startsAt) {
-      throw new BadRequestException('Ce code promo n\'est pas encore actif.');
+      throw new BadRequestException("Ce code promo n'est pas encore actif.");
     }
     if (promo.expiresAt && now > promo.expiresAt) {
       throw new BadRequestException('Ce code promo a expiré.');
     }
 
     // ── Usage total ───────────────────────────────────────────────────
-    if (promo.maxUsageTotal !== null && promo._count.usages >= promo.maxUsageTotal) {
-      throw new BadRequestException('Ce code promo a atteint son nombre maximal d\'utilisations.');
+    if (
+      promo.maxUsageTotal !== null &&
+      promo._count.usages >= promo.maxUsageTotal
+    ) {
+      throw new BadRequestException(
+        "Ce code promo a atteint son nombre maximal d'utilisations.",
+      );
     }
 
     // ── Usage par user ────────────────────────────────────────────────
@@ -85,13 +90,17 @@ export class PromoService {
         },
       });
       if (hasOrdered) {
-        throw new BadRequestException('Ce code est réservé aux nouvelles inscriptions.');
+        throw new BadRequestException(
+          'Ce code est réservé aux nouvelles inscriptions.',
+        );
       }
     }
 
     // ── Restriction restaurant ────────────────────────────────────────
     if (promo.restaurantId && promo.restaurantId !== restaurantId) {
-      throw new BadRequestException('Ce code promo n\'est pas valable pour ce restaurant.');
+      throw new BadRequestException(
+        "Ce code promo n'est pas valable pour ce restaurant.",
+      );
     }
 
     // ── Montant minimum ───────────────────────────────────────────────
@@ -162,7 +171,7 @@ export class PromoService {
       const totalUsages = await tx.promoUsage.count({ where: { promoCodeId } });
       if (totalUsages >= promo.maxUsageTotal) {
         throw new BadRequestException(
-          'Ce code promo a atteint son nombre maximal d\'utilisations.',
+          "Ce code promo a atteint son nombre maximal d'utilisations.",
         );
       }
     }
@@ -195,7 +204,10 @@ export class PromoService {
       case 'FIXED': {
         // Réduction fixe sur le subTotal
         const discount = Math.min(promo.discountValue, subTotal);
-        return { discountAmount: Math.round(discount), newDeliveryFee: deliveryFee };
+        return {
+          discountAmount: Math.round(discount),
+          newDeliveryFee: deliveryFee,
+        };
       }
 
       case 'PERCENT': {
@@ -204,7 +216,10 @@ export class PromoService {
         if (promo.maxDiscount !== null) {
           discount = Math.min(discount, promo.maxDiscount);
         }
-        return { discountAmount: Math.round(discount), newDeliveryFee: deliveryFee };
+        return {
+          discountAmount: Math.round(discount),
+          newDeliveryFee: deliveryFee,
+        };
       }
 
       case 'FREE_DELIVERY': {
@@ -223,7 +238,9 @@ export class PromoService {
     // Le code est toujours uppercase pour éviter les erreurs de casse
     const code = dto.code.toUpperCase().trim();
 
-    const existing = await this.prisma.promoCode.findUnique({ where: { code } });
+    const existing = await this.prisma.promoCode.findUnique({
+      where: { code },
+    });
     if (existing) {
       throw new BadRequestException(`Le code "${code}" existe déjà.`);
     }
@@ -257,7 +274,10 @@ export class PromoService {
       where: { id },
       data: { isActive: !promo.isActive },
     });
-    return { data: updated, message: updated.isActive ? 'Activé' : 'Désactivé' };
+    return {
+      data: updated,
+      message: updated.isActive ? 'Activé' : 'Désactivé',
+    };
   }
 
   async remove(id: string) {
@@ -280,7 +300,10 @@ export class PromoService {
     });
     if (!promo) throw new NotFoundException();
 
-    const totalDiscount = promo.usages.reduce((sum, u) => sum + u.discountApplied, 0);
+    const totalDiscount = promo.usages.reduce(
+      (sum, u) => sum + u.discountApplied,
+      0,
+    );
 
     return {
       data: {

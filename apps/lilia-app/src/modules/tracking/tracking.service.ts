@@ -1,5 +1,12 @@
 // tracking/tracking.service.ts
-import { ForbiddenException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleDestroy,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import Redis from 'ioredis';
@@ -13,7 +20,7 @@ export interface PositionPayload {
 }
 
 @Injectable()
-export class TrackingService {
+export class TrackingService implements OnModuleDestroy {
   private readonly logger = new Logger(TrackingService.name);
   private readonly redis: Redis | null;
 
@@ -29,8 +36,25 @@ export class TrackingService {
     const redisUrl = this.config.get<string>('REDIS_URL');
     this.redis = redisUrl ? new Redis(redisUrl) : null;
     if (!redisUrl) {
-      this.logger.warn('REDIS_URL non défini: tracking temps réel indisponible');
+      this.logger.warn(
+        'REDIS_URL non défini: tracking temps réel indisponible',
+      );
     }
+    // OBLIGATOIRE : ioredis étend EventEmitter et émet 'error' à chaque coupure
+    // réseau. Un 'error' sans listener fait planter le process Node — sur Render,
+    // un simple redémarrage de l'instance Redis suffirait à tuer l'API entière.
+    // ioredis se reconnecte tout seul : on log, on ne relance pas.
+    this.redis?.on('error', (err) =>
+      this.logger.error(`Redis (tracking) indisponible: ${err.message}`),
+    );
+  }
+
+  /**
+   * Ferme proprement la connexion à l'arrêt du module — sans ça, le socket reste
+   * ouvert et Render tue le process au timeout de shutdown.
+   */
+  async onModuleDestroy(): Promise<void> {
+    await this.redis?.quit().catch(() => undefined);
   }
 
   /**
@@ -69,14 +93,17 @@ export class TrackingService {
     const shouldPersist = await redis.set(
       `persist_lock:${orderId}`,
       '1',
-      'EX', this.PERSIST_INTERVAL,
+      'EX',
+      this.PERSIST_INTERVAL,
       'NX', // Only if Not eXists
     );
 
     if (shouldPersist === 'OK') {
       // Fire-and-forget — n'attend pas la DB pour répondre au livreur
       this.persistPosition(orderId, lat, lng, accuracy).catch((err) =>
-        this.logger.error(`Persist échoué livraison ${orderId} : ${err.message}`),
+        this.logger.error(
+          `Persist échoué livraison ${orderId} : ${err.message}`,
+        ),
       );
     }
   }
@@ -93,7 +120,9 @@ export class TrackingService {
     });
 
     if (!delivery) {
-      this.logger.warn(`Position ignorée: aucune livraison pour la commande ${orderId}`);
+      this.logger.warn(
+        `Position ignorée: aucune livraison pour la commande ${orderId}`,
+      );
       return;
     }
 
@@ -116,7 +145,10 @@ export class TrackingService {
     return raw ? JSON.parse(raw) : null;
   }
 
-  async assertCanWatchOrder(orderId: string, firebaseUid: string): Promise<void> {
+  async assertCanWatchOrder(
+    orderId: string,
+    firebaseUid: string,
+  ): Promise<void> {
     const { user, order } = await this.getUserAndOrder(orderId, firebaseUid);
 
     if (
@@ -131,12 +163,17 @@ export class TrackingService {
     throw new ForbiddenException('Accès tracking refusé pour cette commande');
   }
 
-  async assertCanUpdatePosition(orderId: string, firebaseUid: string): Promise<void> {
+  async assertCanUpdatePosition(
+    orderId: string,
+    firebaseUid: string,
+  ): Promise<void> {
     const { user, order } = await this.getUserAndOrder(orderId, firebaseUid);
 
     if (user.role === 'ADMIN') return;
     if (user.role !== 'LIVREUR' || order.delivery?.delivererId !== user.id) {
-      throw new ForbiddenException('Seul le livreur assigné peut publier sa position');
+      throw new ForbiddenException(
+        'Seul le livreur assigné peut publier sa position',
+      );
     }
   }
 
@@ -158,22 +195,29 @@ export class TrackingService {
     if (!order?.deliveryLatitude || !order?.deliveryLongitude) return 0;
 
     const km = this.haversine(
-      driverLat, driverLng,
-      order.deliveryLatitude, order.deliveryLongitude,
+      driverLat,
+      driverLng,
+      order.deliveryLatitude,
+      order.deliveryLongitude,
     );
 
     return Math.ceil((km / 25) * 60); // minutes
   }
 
-  private haversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  private haversine(
+    lat1: number,
+    lon1: number,
+    lat2: number,
+    lon2: number,
+  ): number {
     const R = 6371;
     const dLat = ((lat2 - lat1) * Math.PI) / 180;
     const dLon = ((lon2 - lon1) * Math.PI) / 180;
     const a =
       Math.sin(dLat / 2) ** 2 +
       Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) ** 2;
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLon / 2) ** 2;
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 

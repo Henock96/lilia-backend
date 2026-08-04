@@ -23,8 +23,16 @@ export class OrdersService {
     private readonly reorderService: OrderReorderService,
   ) {}
 
-  async createOrderFromCart(firebaseUid: string, dto: CreateOrderDto, idempotencyKey?: string) {
-    return this.checkoutService.createOrderFromCart(firebaseUid, dto, idempotencyKey);
+  async createOrderFromCart(
+    firebaseUid: string,
+    dto: CreateOrderDto,
+    idempotencyKey?: string,
+  ) {
+    return this.checkoutService.createOrderFromCart(
+      firebaseUid,
+      dto,
+      idempotencyKey,
+    );
   }
 
   /**
@@ -64,7 +72,11 @@ export class OrdersService {
     firebaseUid: string,
     newStatus: OrderStatus,
   ) {
-    return this.lifecycleService.updateOrderStatusByRestaurateur(orderId, firebaseUid, newStatus);
+    return this.lifecycleService.updateOrderStatusByRestaurateur(
+      orderId,
+      firebaseUid,
+      newStatus,
+    );
   }
 
   /**

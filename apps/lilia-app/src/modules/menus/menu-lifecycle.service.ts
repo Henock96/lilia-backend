@@ -73,7 +73,7 @@ export class MenuLifecycleService {
         this.logger.log(
           `🗑️ Produit phantom ${phantomProductId} supprime avec le menu PLAT_SPECIAL ${id}`,
         );
-      } catch (error) {
+      } catch {
         // Le produit phantom peut etre reference par des commandes passees,
         // dans ce cas on le laisse (orphelin mais necessaire pour l'historique)
       }

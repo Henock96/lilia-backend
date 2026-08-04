@@ -20,7 +20,14 @@ import { VendorsModule } from '../vendors/vendors.module';
 import { QuartiersModule } from '../quartiers/quartiers.module';
 
 @Module({
-  imports: [PrismaModule, NotificationsModule, TrackingModule, PlatformSettingsModule, VendorsModule, QuartiersModule],
+  imports: [
+    PrismaModule,
+    NotificationsModule,
+    TrackingModule,
+    PlatformSettingsModule,
+    VendorsModule,
+    QuartiersModule,
+  ],
   controllers: [OrdersController],
   providers: [
     OrdersService,

@@ -3,7 +3,6 @@ import { IoAdapter } from '@nestjs/platform-socket.io';
 import { ServerOptions } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { createClient } from 'redis';
-import { INestApplication } from '@nestjs/common';
 
 /**
  * Remplace l'adapter Socket.io par défaut par un adapter Redis.

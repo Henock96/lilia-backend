@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 // auth/decorators/public.decorator.ts
 import { SetMetadata } from '@nestjs/common';
 

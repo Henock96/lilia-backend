@@ -1,5 +1,3 @@
-/* eslint-disable prettier/prettier */
-
 // Event de base pour tous les menus
 export abstract class BaseMenuEvent {
   constructor(

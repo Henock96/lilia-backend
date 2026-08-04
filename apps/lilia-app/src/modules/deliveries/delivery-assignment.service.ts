@@ -58,7 +58,11 @@ export class DeliveryAssignmentService {
   /**
    * Assigne un livreur via l'ID de commande (crée la livraison si elle n'existe pas)
    */
-  async assignDelivererToOrder(orderId: string, delivererId: string, firebaseUid: string) {
+  async assignDelivererToOrder(
+    orderId: string,
+    delivererId: string,
+    firebaseUid: string,
+  ) {
     const user = await this.getUserOrThrow(firebaseUid);
 
     const order = await this.prisma.order.findUnique({
@@ -68,10 +72,13 @@ export class DeliveryAssignmentService {
 
     if (!order) throw new NotFoundException('Commande non trouvée.');
 
-    const isRestaurantOwner = order.restaurant.owner.firebaseUid === firebaseUid;
+    const isRestaurantOwner =
+      order.restaurant.owner.firebaseUid === firebaseUid;
     const isAdmin = user.role === 'ADMIN';
     if (!isRestaurantOwner && !isAdmin) {
-      throw new ForbiddenException("Vous n'êtes pas autorisé à assigner un livreur à cette commande.");
+      throw new ForbiddenException(
+        "Vous n'êtes pas autorisé à assigner un livreur à cette commande.",
+      );
     }
 
     // Un livreur ne peut être assigné que sur une commande payée et en cours de
@@ -89,7 +96,9 @@ export class DeliveryAssignmentService {
     }
 
     // Trouver ou créer l'enregistrement Delivery
-    let delivery = await this.prisma.delivery.findUnique({ where: { orderId } });
+    let delivery = await this.prisma.delivery.findUnique({
+      where: { orderId },
+    });
     if (!delivery) {
       delivery = await this.prisma.delivery.create({
         data: { orderId, status: 'EN_ATTENTE' },
@@ -99,7 +108,9 @@ export class DeliveryAssignmentService {
     // Recharger avec les relations nécessaires à _doAssign
     const deliveryFull = await this.prisma.delivery.findUnique({
       where: { id: delivery.id },
-      include: { order: { include: { restaurant: { include: { owner: true } } } } },
+      include: {
+        order: { include: { restaurant: { include: { owner: true } } } },
+      },
     });
 
     return this._doAssign(deliveryFull!, delivererId, firebaseUid);
@@ -111,24 +122,33 @@ export class DeliveryAssignmentService {
     firebaseUid: string,
   ) {
     const user = await this.getUserOrThrow(firebaseUid);
-    const isRestaurantOwner = delivery.order.restaurant.owner.firebaseUid === firebaseUid;
+    const isRestaurantOwner =
+      delivery.order.restaurant.owner.firebaseUid === firebaseUid;
     const isAdmin = user.role === 'ADMIN';
 
     if (!isRestaurantOwner && !isAdmin) {
-      throw new ForbiddenException("Vous n'êtes pas autorisé à assigner un livreur à cette livraison.");
+      throw new ForbiddenException(
+        "Vous n'êtes pas autorisé à assigner un livreur à cette livraison.",
+      );
     }
 
-    const deliverer = await this.prisma.user.findUnique({ where: { id: delivererId } });
+    const deliverer = await this.prisma.user.findUnique({
+      where: { id: delivererId },
+    });
     if (!deliverer) throw new NotFoundException('Livreur non trouvé.');
     if (deliverer.role !== 'LIVREUR') {
-      throw new ForbiddenException("L'utilisateur sélectionné n'est pas un livreur.");
+      throw new ForbiddenException(
+        "L'utilisateur sélectionné n'est pas un livreur.",
+      );
     }
 
     const updated = await this.prisma.delivery.update({
       where: { id: delivery.id },
       data: { delivererId, status: DeliveryStatus.ASSIGNER },
       include: {
-        deliverer: { select: { id: true, nom: true, phone: true, imageUrl: true } },
+        deliverer: {
+          select: { id: true, nom: true, phone: true, imageUrl: true },
+        },
         order: true,
       },
     });
@@ -141,7 +161,8 @@ export class DeliveryAssignmentService {
     await this.notificationsService.sendPushNotification(
       deliverer.id,
       isPreorder && scheduledFor
-        ? '📅 Pré-commande à récupérer le ' + this.formatScheduledForFr(scheduledFor)
+        ? '📅 Pré-commande à récupérer le ' +
+            this.formatScheduledForFr(scheduledFor)
         : '🚚 Nouvelle mission',
       `Commande à récupérer chez ${delivery.order.restaurant.nom}`,
       {
@@ -181,7 +202,7 @@ export class DeliveryAssignmentService {
     if (user.driverStatus !== DriverStatus.AVAILABLE) {
       throw new BadRequestException(
         user.driverStatus === DriverStatus.ON_DELIVERY
-          ? 'Vous avez déjà une livraison en cours. Terminez-la avant d\'en accepter une autre.'
+          ? "Vous avez déjà une livraison en cours. Terminez-la avant d'en accepter une autre."
           : 'Vous devez être disponible pour accepter une livraison.',
       );
     }
@@ -235,10 +256,32 @@ export class DeliveryAssignmentService {
     // Brazzaville = WAT = UTC+1. On décale explicitement puis on lit
     // les composantes UTC pour avoir l'heure locale Congo.
     const wat = new Date(d.getTime() + 60 * 60 * 1000);
-    const days = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
-    const months = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin',
-                    'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
-    const dayName = days[wat.getUTCDay()].charAt(0).toUpperCase() + days[wat.getUTCDay()].slice(1);
+    const days = [
+      'dimanche',
+      'lundi',
+      'mardi',
+      'mercredi',
+      'jeudi',
+      'vendredi',
+      'samedi',
+    ];
+    const months = [
+      'janvier',
+      'février',
+      'mars',
+      'avril',
+      'mai',
+      'juin',
+      'juillet',
+      'août',
+      'septembre',
+      'octobre',
+      'novembre',
+      'décembre',
+    ];
+    const dayName =
+      days[wat.getUTCDay()].charAt(0).toUpperCase() +
+      days[wat.getUTCDay()].slice(1);
     const hh = wat.getUTCHours().toString().padStart(2, '0');
     const mm = wat.getUTCMinutes().toString().padStart(2, '0');
     return `${dayName} ${wat.getUTCDate()} ${months[wat.getUTCMonth()]} à ${hh}:${mm}`;

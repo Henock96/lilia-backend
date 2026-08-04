@@ -57,7 +57,7 @@ export class MenuImagesController {
   @Roles('RESTAURATEUR', 'ADMIN')
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Supprime l\'image + cleanup Cloudinary' })
+  @ApiOperation({ summary: "Supprime l'image + cleanup Cloudinary" })
   remove(@Param('id') id: string, @CurrentUser() user: User) {
     return this.service.remove(id, user);
   }

@@ -1,12 +1,7 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
-import { Prisma, Role, PaymentStatus, DeliveryStatus, VendorType } from '@prisma/client';
+import { Role } from '@prisma/client';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 import { DelivererMissionStatus } from './dto/get-deliverer-missions.dto';
 import { UserCacheService } from '../auth/services/user-cache.service';
@@ -72,7 +67,10 @@ export class AdminService {
   }
 
   async toggleRestaurantActive(restaurantId: string, isActive: boolean) {
-    return this.adminRestaurantsService.toggleRestaurantActive(restaurantId, isActive);
+    return this.adminRestaurantsService.toggleRestaurantActive(
+      restaurantId,
+      isActive,
+    );
   }
   // ─── GESTION UTILISATEURS ──────────────────────────────────────────────────
 
@@ -146,7 +144,12 @@ export class AdminService {
     page = 1,
     limit = 20,
   ) {
-    return this.adminDeliverersService.getDelivererMissions(delivererId, status, page, limit);
+    return this.adminDeliverersService.getDelivererMissions(
+      delivererId,
+      status,
+      page,
+      limit,
+    );
   }
 
   // ─── SUPERVISION COMMANDES ─────────────────────────────────────────────────
@@ -283,8 +286,16 @@ export class AdminService {
    * On NE touche PAS à adminApproved — un vendeur peut être suspendu
    * temporairement sans repasser par toute la validation initiale.
    */
-  async suspendVendor(restaurantId: string, reason: string, adminUserId: string) {
-    return this.adminVendorsService.suspendVendor(restaurantId, reason, adminUserId);
+  async suspendVendor(
+    restaurantId: string,
+    reason: string,
+    adminUserId: string,
+  ) {
+    return this.adminVendorsService.suspendVendor(
+      restaurantId,
+      reason,
+      adminUserId,
+    );
   }
 
   /**

@@ -21,9 +21,7 @@ export class AdminPaymentsService {
         );
       }
     }
-    const where = normalized
-      ? { status: normalized as PaymentStatus }
-      : {};
+    const where = normalized ? { status: normalized as PaymentStatus } : {};
 
     const [payments, total] = await Promise.all([
       this.prisma.payment.findMany({

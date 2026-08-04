@@ -5,7 +5,7 @@ import {
   ForbiddenException,
   Logger,
 } from '@nestjs/common';
-import { OrderStatus } from '@prisma/client';
+import { OrderStatus, Prisma } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { PrismaService } from '../../prisma/prisma.service';
@@ -70,6 +70,7 @@ export class OrderLifecycleService {
         },
       });
       await this.stockService.restoreInTransaction(tx, order.items);
+      await this.restoreCheckoutCompensations(tx, orderId, order.userId);
       return updated;
     });
     const orderCancelledEvent = new OrderCancelledEvent(
@@ -126,17 +127,38 @@ export class OrderLifecycleService {
     }
 
     const actor = this.resolveActor(user.role);
-    if (!actor) throw new ForbiddenException('Acteur invalide pour cette transition');
+    if (!actor)
+      throw new ForbiddenException('Acteur invalide pour cette transition');
     this.stateMachine.assertTransition(order.status, newStatus, actor);
 
-    const updatedOrder = await this.prisma.order.update({
-      where: { id: orderId },
-      data: { status: newStatus },
-      include: {
-        restaurant: true,
-        items: true, // Correction: Toujours inclure les items
-      },
-    });
+    // Une annulation côté restaurateur/admin doit rendre au client exactement ce
+    // qu'une annulation côté client lui rend : stock réservé, points de fidélité
+    // consommés, usage du code promo. Sinon le client est pénalisé selon qui a
+    // annulé — et il n'a aucune main sur ce choix.
+    const updatedOrder =
+      newStatus === 'ANNULER'
+        ? await this.prisma.$transaction(async (tx) => {
+            const updated = await tx.order.update({
+              where: { id: orderId },
+              data: { status: newStatus },
+              include: { restaurant: true, items: true },
+            });
+            await this.stockService.restoreInTransaction(tx, updated.items);
+            await this.restoreCheckoutCompensations(
+              tx,
+              orderId,
+              updated.userId,
+            );
+            return updated;
+          })
+        : await this.prisma.order.update({
+            where: { id: orderId },
+            data: { status: newStatus },
+            include: {
+              restaurant: true,
+              items: true, // Correction: Toujours inclure les items
+            },
+          });
 
     // 🔥 ÉMETTRE L'ÉVÉNEMENT au lieu d'appeler directement les notifications
     const statusUpdatedEvent = new OrderStatusUpdatedEvent(
@@ -159,9 +181,11 @@ export class OrderLifecycleService {
 
     // Points fidélité quand la commande est livrée (non-bloquant)
     if (newStatus === 'LIVRER') {
-      this.awardLoyaltyPoints(updatedOrder.userId, orderId, updatedOrder.subTotal).catch((err) =>
-        this.logger.error(`Erreur points fidélité: ${err}`),
-      );
+      this.awardLoyaltyPoints(
+        updatedOrder.userId,
+        orderId,
+        updatedOrder.subTotal,
+      ).catch((err) => this.logger.error(`Erreur points fidélité: ${err}`));
     }
 
     return updatedOrder;
@@ -204,6 +228,63 @@ export class OrderLifecycleService {
     return { message: 'Commande supprimée avec succès.' };
   }
 
+  /**
+   * Rend au client ce que le checkout lui avait prélevé, hors stock :
+   * les points de fidélité consommés et l'usage du code promo.
+   *
+   * Sans ça, un client qui annule perd définitivement ses points ET son code
+   * promo (qui reste compté contre `maxUsagePerUser` / `maxUsageTotal`).
+   *
+   * **Idempotent** : on re-crédite le solde NET des `LoyaltyTransaction` liées à
+   * la commande. Une fois la compensation écrite, ce solde vaut 0 et un second
+   * appel ne fait plus rien — important, la même commande pouvant être annulée
+   * via deux chemins (client / restaurateur).
+   *
+   * À appeler DANS la transaction d'annulation : si l'annulation échoue, le
+   * remboursement ne doit pas subsister.
+   */
+  private async restoreCheckoutCompensations(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    userId: string,
+  ): Promise<void> {
+    // 1. Points de fidélité — solde net des mouvements liés à cette commande.
+    const netPoints = await tx.loyaltyTransaction.aggregate({
+      where: { orderId, userId },
+      _sum: { points: true },
+    });
+    const pointsToRefund = -(netPoints._sum.points ?? 0);
+
+    if (pointsToRefund > 0) {
+      await tx.user.update({
+        where: { id: userId },
+        data: { loyaltyPoints: { increment: pointsToRefund } },
+      });
+      await tx.loyaltyTransaction.create({
+        data: {
+          userId,
+          orderId,
+          points: pointsToRefund,
+          reason: `+${pointsToRefund} pts — annulation commande`,
+        },
+      });
+      this.logger.log(
+        `↩️ ${pointsToRefund} points fidélité restitués au user ${userId} (commande ${orderId} annulée)`,
+      );
+    }
+
+    // 2. Code promo — libère l'usage pour que le client puisse le réutiliser et
+    //    que les quotas globaux redeviennent exacts.
+    const removedUsages = await tx.promoUsage.deleteMany({
+      where: { orderId },
+    });
+    if (removedUsages.count > 0) {
+      this.logger.log(
+        `↩️ Usage du code promo libéré (commande ${orderId} annulée)`,
+      );
+    }
+  }
+
   private resolveActor(
     role: string,
   ): 'CLIENT' | 'RESTAURATEUR' | 'ADMIN' | 'LIVREUR' | null {
@@ -216,7 +297,11 @@ export class OrderLifecycleService {
     return map[role] ?? null;
   }
 
-  private async awardLoyaltyPoints(userId: string, orderId: string, subTotal: number): Promise<void> {
+  private async awardLoyaltyPoints(
+    userId: string,
+    orderId: string,
+    subTotal: number,
+  ): Promise<void> {
     const settings = await this.platformSettings.getSettings();
     const points = Math.floor(subTotal / 100) * settings.loyaltyPointsPer100Xaf;
     if (points <= 0) return;
@@ -227,7 +312,12 @@ export class OrderLifecycleService {
         data: { loyaltyPoints: { increment: points } },
       }),
       this.prisma.loyaltyTransaction.create({
-        data: { userId, orderId, points, reason: `+${points} pts — commande livrée` },
+        data: {
+          userId,
+          orderId,
+          points,
+          reason: `+${points} pts — commande livrée`,
+        },
       }),
     ]);
 

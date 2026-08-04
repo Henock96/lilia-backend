@@ -81,11 +81,21 @@ describe('AdminService (caractérisation — deliverers/payments/vendors)', () =
         { status: 'ECHEC', _count: { _all: 1 } },
       ]);
       prisma.delivery.findMany.mockResolvedValue([
-        { pickedUpAt: new Date('2026-01-01T10:00:00Z'), deliveredAt: new Date('2026-01-01T10:30:00Z'), order: { total: 1000 } },
-        { pickedUpAt: new Date('2026-01-01T11:00:00Z'), deliveredAt: new Date('2026-01-01T11:10:00Z'), order: { total: 2000 } },
+        {
+          pickedUpAt: new Date('2026-01-01T10:00:00Z'),
+          deliveredAt: new Date('2026-01-01T10:30:00Z'),
+          order: { total: 1000 },
+        },
+        {
+          pickedUpAt: new Date('2026-01-01T11:00:00Z'),
+          deliveredAt: new Date('2026-01-01T11:10:00Z'),
+          order: { total: 2000 },
+        },
       ]);
       prisma.delivery.count.mockResolvedValue(5);
-      prisma.delivery.findFirst.mockResolvedValue({ deliveredAt: new Date('2026-01-02T00:00:00Z') });
+      prisma.delivery.findFirst.mockResolvedValue({
+        deliveredAt: new Date('2026-01-02T00:00:00Z'),
+      });
 
       const { data } = await service.getDelivererStats('l1');
 
@@ -109,13 +119,31 @@ describe('AdminService (caractérisation — deliverers/payments/vendors)', () =
     it('mappe les missions + meta', async () => {
       prisma.user.findUnique.mockResolvedValue({ id: 'l1', role: 'LIVREUR' });
       prisma.delivery.findMany.mockResolvedValue([
-        { id: 'd1', orderId: 'o1', status: 'LIVRER', createdAt: new Date(), pickedUpAt: new Date(), deliveredAt: new Date(), order: { total: 1500, restaurant: { nom: 'Resto' }, user: { nom: 'Client' } } },
+        {
+          id: 'd1',
+          orderId: 'o1',
+          status: 'LIVRER',
+          createdAt: new Date(),
+          pickedUpAt: new Date(),
+          deliveredAt: new Date(),
+          order: {
+            total: 1500,
+            restaurant: { nom: 'Resto' },
+            user: { nom: 'Client' },
+          },
+        },
       ]);
       prisma.delivery.count.mockResolvedValue(1);
 
       const res = await service.getDelivererMissions('l1', undefined, 1, 20);
 
-      expect(res.data[0]).toMatchObject({ id: 'd1', orderId: 'o1', restaurantName: 'Resto', clientName: 'Client', totalXAF: 1500 });
+      expect(res.data[0]).toMatchObject({
+        id: 'd1',
+        orderId: 'o1',
+        restaurantName: 'Resto',
+        clientName: 'Client',
+        totalXAF: 1500,
+      });
       expect(res.meta).toEqual({ total: 1, page: 1, limit: 20, totalPages: 1 });
     });
   });
@@ -132,7 +160,12 @@ describe('AdminService (caractérisation — deliverers/payments/vendors)', () =
       prisma.payment.findMany.mockResolvedValue([{ id: 'p1' }]);
       prisma.payment.count.mockResolvedValue(1);
       const res = await service.listPayments(1, 20);
-      expect(res).toEqual({ data: [{ id: 'p1' }], total: 1, page: 1, limit: 20 });
+      expect(res).toEqual({
+        data: [{ id: 'p1' }],
+        total: 1,
+        page: 1,
+        limit: 20,
+      });
     });
   });
 
@@ -178,9 +211,14 @@ describe('AdminService (caractérisation — deliverers/payments/vendors)', () =
   // ─── Vendeurs ──────────────────────────────────────────────────────────
   describe('getPendingVendors', () => {
     it('retourne { data, total } des non-approuvés', async () => {
-      prisma.restaurant.findMany.mockResolvedValue([{ id: 'v1' }, { id: 'v2' }]);
+      prisma.restaurant.findMany.mockResolvedValue([
+        { id: 'v1' },
+        { id: 'v2' },
+      ]);
       const res = await service.getPendingVendors();
-      expect(prisma.restaurant.findMany.mock.calls[0][0].where).toEqual({ adminApproved: false });
+      expect(prisma.restaurant.findMany.mock.calls[0][0].where).toEqual({
+        adminApproved: false,
+      });
       expect(res).toEqual({ data: [{ id: 'v1' }, { id: 'v2' }], total: 2 });
     });
   });
@@ -197,30 +235,43 @@ describe('AdminService (caractérisation — deliverers/payments/vendors)', () =
   describe('suspendVendor', () => {
     it('404 si vendeur introuvable', async () => {
       prisma.restaurant.findUnique.mockResolvedValue(null);
-      await expect(service.suspendVendor('v1', 'raison', 'a1')).rejects.toBeInstanceOf(
-        NotFoundException,
-      );
+      await expect(
+        service.suspendVendor('v1', 'raison', 'a1'),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
 
     it('BadRequest si déjà suspendu', async () => {
-      prisma.restaurant.findUnique.mockResolvedValue({ id: 'v1', isActive: false });
-      await expect(service.suspendVendor('v1', 'raison', 'a1')).rejects.toBeInstanceOf(
-        BadRequestException,
-      );
+      prisma.restaurant.findUnique.mockResolvedValue({
+        id: 'v1',
+        isActive: false,
+      });
+      await expect(
+        service.suspendVendor('v1', 'raison', 'a1'),
+      ).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('suspend : isActive=false + isOpen=false', async () => {
-      prisma.restaurant.findUnique.mockResolvedValue({ id: 'v1', nom: 'V', isActive: true });
+      prisma.restaurant.findUnique.mockResolvedValue({
+        id: 'v1',
+        nom: 'V',
+        isActive: true,
+      });
       prisma.restaurant.update.mockResolvedValue({ id: 'v1', isActive: false });
       const res = await service.suspendVendor('v1', 'raison', 'a1');
-      expect(prisma.restaurant.update.mock.calls[0][0].data).toEqual({ isActive: false, isOpen: false });
+      expect(prisma.restaurant.update.mock.calls[0][0].data).toEqual({
+        isActive: false,
+        isOpen: false,
+      });
       expect(res.message).toBe('Vendeur suspendu');
     });
   });
 
   describe('activateVendor', () => {
     it('BadRequest si déjà actif', async () => {
-      prisma.restaurant.findUnique.mockResolvedValue({ id: 'v1', isActive: true });
+      prisma.restaurant.findUnique.mockResolvedValue({
+        id: 'v1',
+        isActive: true,
+      });
       await expect(service.activateVendor('v1', 'a1')).rejects.toBeInstanceOf(
         BadRequestException,
       );

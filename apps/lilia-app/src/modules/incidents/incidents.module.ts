@@ -9,7 +9,11 @@ import { IncidentsService } from './incidents.service';
 @Module({
   imports: [PrismaModule, NotificationsModule],
   controllers: [IncidentsController],
-  providers: [IncidentsService, IncidentsListener, IncidentsNotificationListener],
+  providers: [
+    IncidentsService,
+    IncidentsListener,
+    IncidentsNotificationListener,
+  ],
   exports: [IncidentsService],
 })
 export class IncidentsModule {}

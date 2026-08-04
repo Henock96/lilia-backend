@@ -29,7 +29,10 @@ export class DeliveryQueryService {
     requesterFirebaseUid: string;
   }): Promise<void> {
     // Restaurateur propriétaire du restaurant
-    if (ctx.ownerFirebaseUid && ctx.ownerFirebaseUid === ctx.requesterFirebaseUid) {
+    if (
+      ctx.ownerFirebaseUid &&
+      ctx.ownerFirebaseUid === ctx.requesterFirebaseUid
+    ) {
       return;
     }
 
@@ -43,13 +46,20 @@ export class DeliveryQueryService {
     if (user.id === ctx.orderUserId) return; // client propriétaire de la commande
     if (ctx.delivererId && user.id === ctx.delivererId) return; // livreur assigné
 
-    throw new ForbiddenException("Vous n'êtes pas autorisé à consulter cette livraison.");
+    throw new ForbiddenException(
+      "Vous n'êtes pas autorisé à consulter cette livraison.",
+    );
   }
 
   /**
    * Récupère toutes les livraisons pour un restaurant
    */
-  async findAllForRestaurant(firebaseUid: string, status?: DeliveryStatus, page = 1, limit = 20) {
+  async findAllForRestaurant(
+    firebaseUid: string,
+    status?: DeliveryStatus,
+    page = 1,
+    limit = 20,
+  ) {
     // Trouver le restaurant de l'utilisateur
     const restaurant = await this.prisma.restaurant.findFirst({
       where: { owner: { firebaseUid } },
@@ -270,8 +280,22 @@ export class DeliveryQueryService {
         order: {
           include: {
             user: { select: { nom: true, phone: true } },
-            restaurant: { select: { id: true, nom: true, adresse: true, phone: true, vendorType: true, acceptsPreorders: true, preorderLeadHours: true } },
-            items: { include: { product: { select: { nom: true, madeToOrder: true } } } },
+            restaurant: {
+              select: {
+                id: true,
+                nom: true,
+                adresse: true,
+                phone: true,
+                vendorType: true,
+                acceptsPreorders: true,
+                preorderLeadHours: true,
+              },
+            },
+            items: {
+              include: {
+                product: { select: { nom: true, madeToOrder: true } },
+              },
+            },
           },
         },
       },
@@ -323,7 +347,10 @@ export class DeliveryQueryService {
       },
     });
 
-    if (!delivery) throw new NotFoundException('Aucune livraison trouvée pour cette commande.');
+    if (!delivery)
+      throw new NotFoundException(
+        'Aucune livraison trouvée pour cette commande.',
+      );
 
     // Anti-IDOR : la position GPS du livreur et les coordonnées du client ne
     // doivent être visibles que par les parties liées à la commande.

@@ -60,10 +60,18 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
       prisma.delivery.findMany.mockResolvedValue([{ id: 'd1' }]);
       prisma.delivery.count.mockResolvedValue(1);
 
-      const res = await service.findAllForRestaurant('uid', 'EN_TRANSIT' as any, 2, 10);
+      const res = await service.findAllForRestaurant(
+        'uid',
+        'EN_TRANSIT' as any,
+        2,
+        10,
+      );
 
       const args = prisma.delivery.findMany.mock.calls[0][0];
-      expect(args.where).toEqual({ order: { restaurantId: 'r1' }, status: 'EN_TRANSIT' });
+      expect(args.where).toEqual({
+        order: { restaurantId: 'r1' },
+        status: 'EN_TRANSIT',
+      });
       expect(args.skip).toBe(10);
       expect(res.meta).toEqual({ total: 1, page: 2, limit: 10, totalPages: 1 });
     });
@@ -81,7 +89,9 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
       prisma.user.findUnique.mockResolvedValue({ id: 'u1' });
       prisma.delivery.findMany.mockResolvedValue([{ id: 'd1' }, { id: 'd2' }]);
       const res = await service.findAllForDeliverer('uid');
-      expect(prisma.delivery.findMany.mock.calls[0][0].where).toEqual({ delivererId: 'u1' });
+      expect(prisma.delivery.findMany.mock.calls[0][0].where).toEqual({
+        delivererId: 'u1',
+      });
       expect(res).toEqual({ data: [{ id: 'd1' }, { id: 'd2' }], count: 2 });
     });
   });
@@ -113,14 +123,20 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
 
     it('autorise le client propriétaire de la commande', async () => {
       prisma.delivery.findUnique.mockResolvedValue(baseDelivery);
-      prisma.user.findUnique.mockResolvedValue({ id: 'client1', role: 'CLIENT' });
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'client1',
+        role: 'CLIENT',
+      });
       const res = await service.findOne('d1', 'clientUid');
       expect(res.data.id).toBe('d1');
     });
 
     it('Forbidden pour un tiers non lié', async () => {
       prisma.delivery.findUnique.mockResolvedValue(baseDelivery);
-      prisma.user.findUnique.mockResolvedValue({ id: 'stranger', role: 'CLIENT' });
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'stranger',
+        role: 'CLIENT',
+      });
       await expect(service.findOne('d1', 'strangerUid')).rejects.toBeInstanceOf(
         ForbiddenException,
       );
@@ -131,7 +147,9 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
     it('retourne { data, count } des livreurs', async () => {
       prisma.user.findMany.mockResolvedValue([{ id: 'l1' }]);
       const res = await service.getAvailableDeliverers();
-      expect(prisma.user.findMany.mock.calls[0][0].where).toEqual({ role: 'LIVREUR' });
+      expect(prisma.user.findMany.mock.calls[0][0].where).toEqual({
+        role: 'LIVREUR',
+      });
       expect(res).toEqual({ data: [{ id: 'l1' }], count: 1 });
     });
   });
@@ -145,7 +163,11 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
         userId: 'client1',
         deliveryLatitude: 1,
         deliveryLongitude: 2,
-        restaurant: { id: 'r1', nom: 'Resto', owner: { firebaseUid: 'ownerUid' } },
+        restaurant: {
+          id: 'r1',
+          nom: 'Resto',
+          owner: { firebaseUid: 'ownerUid' },
+        },
       },
     };
 
@@ -158,7 +180,10 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
 
     it('client propriétaire : retourne data sans champs internes', async () => {
       prisma.delivery.findUnique.mockResolvedValue(delivery);
-      prisma.user.findUnique.mockResolvedValue({ id: 'client1', role: 'CLIENT' });
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'client1',
+        role: 'CLIENT',
+      });
       const res = await service.findByOrderId('o1', 'clientUid');
       expect(res.data).not.toHaveProperty('delivererId');
       expect(res.data.order).not.toHaveProperty('userId');

@@ -87,11 +87,16 @@ export class AdminClientsService {
 
     const [totalReferrals, convertedReferrals, bonusAgg] = await Promise.all([
       user.referralCode
-        ? this.prisma.user.count({ where: { referredByCode: user.referralCode } })
+        ? this.prisma.user.count({
+            where: { referredByCode: user.referralCode },
+          })
         : Promise.resolve(0),
       user.referralCode
         ? this.prisma.user.count({
-            where: { referredByCode: user.referralCode, referralRewarded: true },
+            where: {
+              referredByCode: user.referralCode,
+              referralRewarded: true,
+            },
           })
         : Promise.resolve(0),
       this.prisma.loyaltyTransaction.aggregate({
