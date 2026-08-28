@@ -9,6 +9,7 @@ import {
 import { SentryExceptionCaptured } from '@sentry/nestjs';
 import { Response } from 'express';
 import { APIResponse } from '../types/APIResponse';
+import { mapPrismaError } from './prisma-error.mapper';
 
 /**
  * Filtre d'exception GLOBAL (catch-all).
@@ -64,6 +65,24 @@ export class HttpExceptionFilter implements ExceptionFilter {
       };
 
       response.status(status).json(body);
+      return;
+    }
+
+    // Erreurs Prisma : une violation de contrainte est une erreur métier, pas
+    // un bug. On la traduit en 409/404/400 avec un message actionnable plutôt
+    // que de la laisser tomber dans le 500 générique ci-dessous.
+    const prismaError = mapPrismaError(exception);
+    if (prismaError) {
+      this.logger.warn(
+        `Erreur Prisma traduite (${(exception as { code?: string }).code ?? 'validation'}) : ${prismaError.message}`,
+      );
+      response.status(prismaError.status).json({
+        success: false,
+        message: prismaError.message,
+        data: null,
+        error: null,
+        statusCode: prismaError.status,
+      } satisfies APIResponse);
       return;
     }
 

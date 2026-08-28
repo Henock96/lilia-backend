@@ -72,9 +72,19 @@ export class ProductQueryService {
   /**
    * Récupère un produit par son ID
    */
+  /**
+   * Détail public d'un produit.
+   *
+   * Même frontière marketplace que `findAll` : un produit d'un vendeur
+   * suspendu ou non encore validé ne doit pas rester consultable par lien
+   * direct (partage `share_plus`, lien collé, autre consommateur de l'API).
+   */
   async findOne(id: string) {
-    const product = await this.prisma.product.findUnique({
-      where: { id },
+    const product = await this.prisma.product.findFirst({
+      where: {
+        id,
+        restaurant: { isActive: true, adminApproved: true },
+      },
       include: {
         category: true,
         variants: true,

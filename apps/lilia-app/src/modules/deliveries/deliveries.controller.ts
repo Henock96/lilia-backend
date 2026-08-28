@@ -17,6 +17,7 @@ import { AssignDeliveryDto, DeliveryStatus, SetDriverStatusDto, UpdateDeliverySt
 import { UpdateLocationDto } from './dto/update-location.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
 
 @ApiTags('Deliveries')
 @ApiBearerAuth()
@@ -36,15 +37,14 @@ export class DeliveriesController {
   @ApiQuery({ name: 'limit', required: false })
   findAllForRestaurant(
     @FirebaseUser() fbUser: DecodedIdToken,
+    @Query() query: PaginationQueryDto,
     @Query('status') status?: DeliveryStatus,
-    @Query('page') page = '1',
-    @Query('limit') limit = '20',
   ) {
     return this.deliveriesService.findAllForRestaurant(
       fbUser.uid,
       status,
-      parseInt(page, 10),
-      parseInt(limit, 10) ,
+      query.page,
+      query.limit,
     );
   }
 
@@ -144,7 +144,12 @@ export class DeliveriesController {
     @Body() dto: UpdateDeliveryStatusDto,
     @FirebaseUser() fbUser: DecodedIdToken,
   ) {
-    return this.deliveriesService.updateStatus(id, dto.status, fbUser.uid);
+    return this.deliveriesService.updateStatus(
+      id,
+      dto.status,
+      fbUser.uid,
+      dto.reason,
+    );
   }
 
   /**

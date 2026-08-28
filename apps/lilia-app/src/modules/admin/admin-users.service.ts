@@ -4,7 +4,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Role } from '@prisma/client';
+import { Role, StatusUser } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 import { UserCacheService } from '../auth/services/user-cache.service';
@@ -35,6 +35,7 @@ export class AdminUsersService {
           nom: true,
           phone: true,
           role: true,
+          statusUser: true,
           createdAt: true,
           lastLogin: true,
           _count: { select: { orders: true } },
@@ -70,15 +71,20 @@ export class AdminUsersService {
     });
 
     // Invalider le cache : le role est lu par RolesGuard à chaque requête.
-    await this.userCache.invalidate(user.firebaseUid);
+    await this.invalidateCache(user.firebaseUid);
 
     this.logger.warn(`Rôle modifié : user ${userId} → ${dto.role}`);
     return { data: updated, message: `Rôle mis à jour : ${dto.role}` };
   }
 
   /**
-   * Bannit un utilisateur : désactive son compte et révoque ses tokens.
-   * À coupler avec FirebaseService.revokeUserTokens() dans le controller.
+   * Bannit un utilisateur : passe `statusUser` à BLOCKED en base — c'est ce que
+   * lit `RolesGuard` sur chaque route authentifiée et `TrackingGateway` sur
+   * chaque message WebSocket.
+   *
+   * Le controller complète avec `FirebaseService.setUserDisabled(uid, true)` et
+   * `revokeUserTokens(uid)` : sans la désactivation du compte Firebase, un banni
+   * se reconnecte simplement et obtient un token frais.
    */
   async banUser(userId: string, reason?: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
@@ -86,16 +92,62 @@ export class AdminUsersService {
     if (user.role === 'ADMIN')
       throw new BadRequestException('Impossible de bannir un ADMIN.');
 
-    // On stocke la raison dans les métadonnées — à adapter si tu ajoutes un champ bannedAt
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { statusUser: StatusUser.BLOCKED },
+    });
+
+    // Invalider le cache : le statut est lu par RolesGuard à chaque requête et
+    // le TTL Redis est de 5 min — sans invalidation le ban traînerait d'autant.
+    const cacheInvalidated = await this.invalidateCache(user.firebaseUid);
+
     this.logger.warn(
       `User ${userId} banni — raison : ${reason ?? 'non précisée'}`,
     );
 
-    // Invalider le cache : la prochaine requête forcera un refetch et verra
-    // statusUser=BANNED (à venir) ou refusera l'accès.
-    await this.userCache.invalidate(user.firebaseUid);
+    // Retourne le firebaseUid pour que le controller agisse côté Firebase Auth
+    return { firebaseUid: user.firebaseUid, userId: user.id, cacheInvalidated };
+  }
 
-    // Retourne le firebaseUid pour que le controller révoque les tokens Firebase
-    return { firebaseUid: user.firebaseUid, userId: user.id };
+  /**
+   * Lève le bannissement : `statusUser` repasse à ACTIVE. Le controller
+   * réactive le compte Firebase en parallèle.
+   */
+  async unbanUser(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Utilisateur non trouvé');
+    if (user.statusUser !== StatusUser.BLOCKED) {
+      throw new BadRequestException("Cet utilisateur n'est pas banni.");
+    }
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { statusUser: StatusUser.ACTIVE },
+    });
+
+    const cacheInvalidated = await this.invalidateCache(user.firebaseUid);
+
+    this.logger.warn(`User ${userId} débanni`);
+    return { firebaseUid: user.firebaseUid, userId: user.id, cacheInvalidated };
+  }
+
+  /**
+   * Purge le cache user et **remonte l'échec** au lieu de l'avaler.
+   *
+   * Le ban est déjà écrit en base à ce stade : on ne veut pas faire échouer la
+   * requête (ce serait un faux négatif pour l'admin), mais on veut qu'il sache
+   * que l'application peut traîner jusqu'à 5 min si Redis est en vrac.
+   */
+  private async invalidateCache(firebaseUid: string): Promise<boolean> {
+    try {
+      await this.userCache.invalidateOrThrow(firebaseUid);
+      return true;
+    } catch (err) {
+      this.logger.error(
+        `Cache user non invalidé pour ${firebaseUid} — le changement de statut ` +
+          `mettra jusqu'à 5 min à s'appliquer : ${(err as Error).message}`,
+      );
+      return false;
+    }
   }
 }

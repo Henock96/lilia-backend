@@ -39,6 +39,7 @@ export class PaymentService {
   private readonly logger = new Logger(PaymentService.name);
   private readonly mode: PaymentMode;
   private readonly manualPaymentNumber: string;
+  private readonly airtelPaymentNumber: string;
   constructor(
     private readonly prisma: PrismaService,
     private readonly mtnMomoService: MtnMomoService,
@@ -47,6 +48,11 @@ export class PaymentService {
   ) {
     this.mode = this.config.get<PaymentMode>('PAYMENT_MODE', PaymentMode.MANUAL);
     this.manualPaymentNumber = this.config.get<string>('LILIA_PAYMENT_PHONE', '');
+    // Numéro d'encaissement Airtel. Sans valeur dédiée, on retombe sur le
+    // numéro MTN plutôt que d'afficher un numéro vide au client.
+    this.airtelPaymentNumber =
+      this.config.get<string>('LILIA_AIRTEL_PAYMENT_PHONE', '') ||
+      this.manualPaymentNumber;
   }
 
   async createPayment(request: CreatePaymentRequest, firebaseUid: string) {
@@ -144,28 +150,65 @@ export class PaymentService {
     const amount = order.total;
     const currency = 'XAF';
 
-    await this.assertNoPendingPayment(order.id);
+    // Le numéro d'encaissement dépend de l'opérateur choisi au checkout : on
+    // ne peut pas demander à un client Airtel d'envoyer sur un numéro MTN.
+    const isAirtel = order.paymentMethod === 'AIRTEL_MONEY';
+    const paymentPhone = isAirtel
+      ? this.airtelPaymentNumber
+      : this.manualPaymentNumber;
+    const methodLabel = isAirtel ? 'Airtel Money' : 'MTN MoMo';
 
-    const payment = await this.prisma.payment.create({
-      data: {
-        orderId: request.orderId,
-        amount,
-        currency,
-        phoneNumber: request.phoneNumber,
-        status: 'PENDING',
-        provider: 'MANUAL',
-        metadata: { mode: 'manual', paymentPhone: this.manualPaymentNumber },
-      },
+    if (!paymentPhone) {
+      // Mieux vaut un message clair qu'une modale affichant un numéro vide.
+      this.logger.error(
+        `LILIA_PAYMENT_PHONE non configuré — paiement ${methodLabel} impossible`,
+      );
+      throw new BadRequestException(
+        'Le paiement est temporairement indisponible. Contactez le support.',
+      );
+    }
+
+    // Idempotent : si un paiement est déjà en attente pour cette commande, on
+    // renvoie ses instructions au lieu de lever.
+    //
+    // Le client peut légitimement rejouer cet appel — timeout Render, 4G qui
+    // coupe entre la création de la commande et celle du paiement. Refuser le
+    // retry laissait le client devant des instructions de paiement sans aucune
+    // ligne `Payment` correspondante : il payait, et le virement n'était
+    // rattachable à rien.
+    const existing = await this.prisma.payment.findFirst({
+      where: { orderId: order.id, status: 'PENDING', provider: 'MANUAL' },
     });
+
+    const payment =
+      existing ??
+      (await this.prisma.payment.create({
+        data: {
+          orderId: request.orderId,
+          amount,
+          currency,
+          phoneNumber: request.phoneNumber,
+          status: 'PENDING',
+          provider: 'MANUAL',
+          metadata: {
+            mode: 'manual',
+            paymentPhone,
+            method: order.paymentMethod,
+          },
+        },
+      }));
 
     return {
       paymentId: payment.id,
       mode: 'MANUAL',
       instructions: {
-        message: `Envoyez ${amount} FCFA au ${this.manualPaymentNumber} (MTN MoMo)`,
+        message: `Envoyez ${amount} FCFA au ${paymentPhone} (${methodLabel})`,
         reference: payment.id.slice(-8).toUpperCase(),
-        phone: this.manualPaymentNumber,
+        phone: paymentPhone,
+        method: order.paymentMethod,
+        methodLabel,
         amount,
+        currency,
         note: `Commande ${order.id.slice(-6)} - ${order.restaurant.nom}`,
       },
     };

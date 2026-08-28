@@ -91,6 +91,20 @@ export class FirebaseService implements OnModuleInit {
   }
 
   /**
+   * Active / désactive un compte Firebase Auth.
+   *
+   * `revokeRefreshTokens` seul ne suffit pas à bannir : l'utilisateur peut se
+   * reconnecter et obtenir un token frais. `disabled: true` bloque aussi la
+   * ré-authentification — c'est ce qui rend le ban effectif côté Firebase.
+   */
+  async setUserDisabled(uid: string, disabled: boolean): Promise<void> {
+    await getAuth(this.app).updateUser(uid, { disabled });
+    this.logger.warn(
+      `Compte Firebase ${disabled ? 'désactivé' : 'réactivé'} : ${uid}`,
+    );
+  }
+
+  /**
    * Crée un user Firebase Auth (LIL-118).
    * Utilisé par AdminService.createRestaurantWithOwner pour qu'un admin
    * puisse onboard un nouveau vendeur sans devoir aller dans la Console.

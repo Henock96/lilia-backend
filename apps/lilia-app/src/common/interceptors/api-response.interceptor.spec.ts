@@ -51,6 +51,7 @@ describe('ApiResponseInterceptor', () => {
       makeHandler([{ id: 1 }, { id: 2 }]),
     );
     await expect(firstValueFrom(res$)).resolves.toEqual({
+      success: true,
       data: [{ id: 1 }, { id: 2 }],
     });
   });
@@ -62,25 +63,32 @@ describe('ApiResponseInterceptor', () => {
       makeHandler({ id: 1, name: 'Lilia' }),
     );
     await expect(firstValueFrom(res$)).resolves.toEqual({
+      success: true,
       data: { id: 1, name: 'Lilia' },
     });
   });
 
-  it('passes through { data } untouched', async () => {
+  it('passes through { data }, en ajoutant le discriminant success', async () => {
     const interceptor = makeInterceptor();
     const payload = { data: [{ id: 1 }] };
     const res$ = interceptor.intercept(makeContext(), makeHandler(payload));
-    await expect(firstValueFrom(res$)).resolves.toEqual(payload);
+    await expect(firstValueFrom(res$)).resolves.toEqual({
+      success: true,
+      ...payload,
+    });
   });
 
-  it('passes through { data, message } untouched', async () => {
+  it('passes through { data, message }, en ajoutant success', async () => {
     const interceptor = makeInterceptor();
     const payload = { data: { id: 1 }, message: 'Créé' };
     const res$ = interceptor.intercept(makeContext(), makeHandler(payload));
-    await expect(firstValueFrom(res$)).resolves.toEqual(payload);
+    await expect(firstValueFrom(res$)).resolves.toEqual({
+      success: true,
+      ...payload,
+    });
   });
 
-  it('passes through { data, message, meta } untouched', async () => {
+  it('passes through { data, message, meta }, en ajoutant success', async () => {
     const interceptor = makeInterceptor();
     const payload = {
       data: [{ id: 1 }],
@@ -88,7 +96,10 @@ describe('ApiResponseInterceptor', () => {
       meta: { total: 1, page: 1 },
     };
     const res$ = interceptor.intercept(makeContext(), makeHandler(payload));
-    await expect(firstValueFrom(res$)).resolves.toEqual(payload);
+    await expect(firstValueFrom(res$)).resolves.toEqual({
+      success: true,
+      ...payload,
+    });
   });
 
   it('normalise { data, count } en { data, meta: { count } } (règle 3b)', async () => {
@@ -96,6 +107,7 @@ describe('ApiResponseInterceptor', () => {
     const payload = { data: [1, 2], count: 2 };
     const res$ = interceptor.intercept(makeContext(), makeHandler(payload));
     await expect(firstValueFrom(res$)).resolves.toEqual({
+      success: true,
       data: [1, 2],
       meta: { count: 2 },
     });
@@ -106,6 +118,7 @@ describe('ApiResponseInterceptor', () => {
     const payload = { data: [1, 2], total: 25, page: 1, limit: 10 };
     const res$ = interceptor.intercept(makeContext(), makeHandler(payload));
     await expect(firstValueFrom(res$)).resolves.toEqual({
+      success: true,
       data: [1, 2],
       meta: { total: 25, page: 1, limit: 10, totalPages: 3 },
     });
@@ -117,6 +130,7 @@ describe('ApiResponseInterceptor', () => {
     const res$ = interceptor.intercept(makeContext(), makeHandler(payload));
     // Clé hors allowlist pagination → wrap normal (double-wrap conservé).
     await expect(firstValueFrom(res$)).resolves.toEqual({
+      success: true,
       data: { data: [1, 2], restaurantId: 'r1' },
     });
   });
@@ -124,25 +138,37 @@ describe('ApiResponseInterceptor', () => {
   it('wraps null as { data: null }', async () => {
     const interceptor = makeInterceptor();
     const res$ = interceptor.intercept(makeContext(), makeHandler(null));
-    await expect(firstValueFrom(res$)).resolves.toEqual({ data: null });
+    await expect(firstValueFrom(res$)).resolves.toEqual({
+      success: true,
+      data: null,
+    });
   });
 
   it('wraps undefined as { data: null }', async () => {
     const interceptor = makeInterceptor();
     const res$ = interceptor.intercept(makeContext(), makeHandler(undefined));
-    await expect(firstValueFrom(res$)).resolves.toEqual({ data: null });
+    await expect(firstValueFrom(res$)).resolves.toEqual({
+      success: true,
+      data: null,
+    });
   });
 
   it('wraps a primitive number in { data: 42 }', async () => {
     const interceptor = makeInterceptor();
     const res$ = interceptor.intercept(makeContext(), makeHandler(42));
-    await expect(firstValueFrom(res$)).resolves.toEqual({ data: 42 });
+    await expect(firstValueFrom(res$)).resolves.toEqual({
+      success: true,
+      data: 42,
+    });
   });
 
   it('wraps a primitive string in { data: "hello" }', async () => {
     const interceptor = makeInterceptor();
     const res$ = interceptor.intercept(makeContext(), makeHandler('hello'));
-    await expect(firstValueFrom(res$)).resolves.toEqual({ data: 'hello' });
+    await expect(firstValueFrom(res$)).resolves.toEqual({
+      success: true,
+      data: 'hello',
+    });
   });
 
   it('does not wrap StreamableFile responses', async () => {

@@ -93,11 +93,17 @@ export class AdminService {
   }
 
   /**
-   * Bannit un utilisateur : désactive son compte et révoque ses tokens.
-   * À coupler avec FirebaseService.revokeUserTokens() dans le controller.
+   * Bannit un utilisateur : `statusUser = BLOCKED`.
+   * À coupler avec `FirebaseService.setUserDisabled()` + `revokeUserTokens()`
+   * dans le controller.
    */
   async banUser(userId: string, reason?: string) {
     return this.adminUsersService.banUser(userId, reason);
+  }
+
+  /** Lève le bannissement : `statusUser = ACTIVE`. */
+  async unbanUser(userId: string) {
+    return this.adminUsersService.unbanUser(userId);
   }
 
   // ─── GESTION LIVREURS ──────────────────────────────────────────────────────

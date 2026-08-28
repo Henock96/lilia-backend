@@ -15,6 +15,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
 import { OrderStatusUpdatedEvent } from '../events/order-events';
+import { DeliveryFailedEvent } from '../events/delivery-events';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { TrackingService } from '../tracking/tracking.service';
@@ -114,7 +115,12 @@ export class DeliveriesService {
    *  - Marque la livraison en échec, libère le livreur (DriverStatus = AVAILABLE)
    *  - La commande n'est PAS auto-annulée — l'admin/restaurateur doit décider
    */
-  async updateStatus(id: string, status: DeliveryStatus, firebaseUid: string) {
+  async updateStatus(
+    id: string,
+    status: DeliveryStatus,
+    firebaseUid: string,
+    reason?: string,
+  ) {
     const delivery = await this.prisma.delivery.findUnique({
       where: { id },
       include: {
@@ -195,6 +201,19 @@ export class DeliveriesService {
       );
     }
 
+    // ECHEC : la commande n'est PAS annulée automatiquement — c'est le vendeur
+    // qui arbitre entre réassigner un livreur et annuler. On retire simplement
+    // le livreur de la livraison pour qu'elle redevienne assignable ; le statut
+    // de la commande reste inchangé jusqu'à sa décision.
+    if (status === DeliveryStatus.ECHEC && delivery.delivererId) {
+      operations.push(
+        this.prisma.delivery.update({
+          where: { id },
+          data: { delivererId: null },
+        }),
+      );
+    }
+
     await this.prisma.$transaction(operations);
 
     const updated = await this.prisma.delivery.findUnique({
@@ -227,6 +246,27 @@ export class DeliveriesService {
         delivery.orderId,
         delivery.order.subTotal,
       ).catch((err) => this.logger.error(`Erreur points fidélité: ${err}`));
+    }
+
+    // ECHEC était un cul-de-sac silencieux : aucun event, aucune notification,
+    // et le statut de la commande jamais touché — le client restait sur
+    // « votre livreur est en chemin » indéfiniment et le vendeur n'apprenait
+    // rien. `DeliveriesListener` prévient les trois parties et trace un
+    // incident pour qu'une commande oubliée reste visible en supervision.
+    if (status === DeliveryStatus.ECHEC) {
+      this.eventEmitter.emit(
+        'delivery.failed',
+        new DeliveryFailedEvent(
+          delivery.id,
+          delivery.orderId,
+          delivery.order.restaurantId,
+          delivery.order.userId,
+          delivery.delivererId ?? null,
+          delivery.order.restaurant.nom,
+          reason ?? null,
+          user.id,
+        ),
+      );
     }
 
     return { data: updated, message: 'Statut de livraison mis à jour' };

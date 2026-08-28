@@ -9,9 +9,9 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { DeliveryStatus } from './dto/update-delivery.dto';
-import { NotificationsService } from '../notifications/notifications.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
 import { OrderStatusUpdatedEvent } from '../events/order-events';
+import { DeliveryAssignedEvent } from '../events/delivery-events';
 
 /**
  * Assignation et acceptation de livraisons (LIL-134).
@@ -24,7 +24,6 @@ import { OrderStatusUpdatedEvent } from '../events/order-events';
 export class DeliveryAssignmentService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly notificationsService: NotificationsService,
     private readonly eventEmitter: EventEmitter2,
     private readonly stateMachine: OrderStateMachine,
   ) {}
@@ -142,6 +141,18 @@ export class DeliveryAssignmentService {
       );
     }
 
+    // Livreur qui tenait la mission avant ce changement. On le mémorise
+    // AVANT l'update : sans lui, une réassignation laissait l'ancien livreur
+    // en `ON_DELIVERY` à vie — il ne pouvait plus accepter aucune course et
+    // n'était jamais prévenu que la mission lui avait été retirée.
+    const previousDelivererId: string | null = delivery.delivererId ?? null;
+
+    if (previousDelivererId === delivererId) {
+      throw new BadRequestException(
+        'Ce livreur est déjà assigné à cette livraison.',
+      );
+    }
+
     const updated = await this.prisma.delivery.update({
       where: { id: delivery.id },
       data: { delivererId, status: DeliveryStatus.ASSIGNER },
@@ -158,23 +169,29 @@ export class DeliveryAssignmentService {
     const isPreorder = delivery.order.isPreorder ?? false;
     const scheduledFor = delivery.order.scheduledFor;
 
-    await this.notificationsService.sendPushNotification(
-      deliverer.id,
-      isPreorder && scheduledFor
-        ? '📅 Pré-commande à récupérer le ' +
-            this.formatScheduledForFr(scheduledFor)
-        : '🚚 Nouvelle mission',
-      `Commande à récupérer chez ${delivery.order.restaurant.nom}`,
-      {
-        type: 'delivery_assigned',
-        deliveryId: updated.id,
-        orderId: delivery.orderId,
-        isPreorder: String(isPreorder),
-        scheduledFor: scheduledFor?.toISOString() ?? '',
-      },
+    // Les notifications (nouveau livreur + libération de l'ancien) sont
+    // portées par `DeliveriesListener`, comme pour les commandes.
+    this.eventEmitter.emit(
+      'delivery.assigned',
+      new DeliveryAssignedEvent(
+        updated.id,
+        delivery.orderId,
+        delivery.order.restaurantId,
+        deliverer.id,
+        delivery.order.restaurant.nom,
+        delivery.order.status,
+        isPreorder,
+        scheduledFor ?? null,
+        previousDelivererId,
+      ),
     );
 
-    return { data: updated, message: 'Livreur assigné avec succès' };
+    return {
+      data: updated,
+      message: previousDelivererId
+        ? 'Livreur réassigné — le précédent a été libéré'
+        : 'Livreur assigné avec succès',
+    };
   }
 
   async acceptDelivery(deliveryId: string, firebaseUid: string) {
@@ -249,41 +266,5 @@ export class DeliveryAssignmentService {
     this.eventEmitter.emit('order.status.updated', statusEvent);
 
     return updated;
-  }
-
-  private formatScheduledForFr(d: Date): string {
-    // scheduledFor est stocké en UTC. Le serveur Render tourne en UTC.
-    // Brazzaville = WAT = UTC+1. On décale explicitement puis on lit
-    // les composantes UTC pour avoir l'heure locale Congo.
-    const wat = new Date(d.getTime() + 60 * 60 * 1000);
-    const days = [
-      'dimanche',
-      'lundi',
-      'mardi',
-      'mercredi',
-      'jeudi',
-      'vendredi',
-      'samedi',
-    ];
-    const months = [
-      'janvier',
-      'février',
-      'mars',
-      'avril',
-      'mai',
-      'juin',
-      'juillet',
-      'août',
-      'septembre',
-      'octobre',
-      'novembre',
-      'décembre',
-    ];
-    const dayName =
-      days[wat.getUTCDay()].charAt(0).toUpperCase() +
-      days[wat.getUTCDay()].slice(1);
-    const hh = wat.getUTCHours().toString().padStart(2, '0');
-    const mm = wat.getUTCMinutes().toString().padStart(2, '0');
-    return `${dayName} ${wat.getUTCDate()} ${months[wat.getUTCMonth()]} à ${hh}:${mm}`;
   }
 }

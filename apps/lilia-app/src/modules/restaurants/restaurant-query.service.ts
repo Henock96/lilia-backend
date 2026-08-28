@@ -15,6 +15,9 @@ import {
  */
 @Injectable()
 export class RestaurantQueryService {
+  /** Nombre de produits renvoyés dans le détail d'un vendeur. */
+  private static readonly PRODUCTS_PREVIEW_LIMIT = 100;
+
   constructor(private prisma: PrismaService) {}
 
   // ─── LECTURE ───────────────────────────────────────────────────────────────
@@ -28,9 +31,22 @@ export class RestaurantQueryService {
     return { data: restaurants };
   }
 
+  /**
+   * Détail public d'un vendeur.
+   *
+   * Le filtre `isActive + adminApproved` est le même que sur la liste : sans
+   * lui, un vendeur suspendu ou en attente de validation restait publiquement
+   * consultable par lien direct, catalogue complet inclus. Aligné sur
+   * `VendorsService.findOne`.
+   *
+   * Les produits sont bornés : `findOne` chargeait *tous* les produits avec
+   * toutes leurs variantes et images. Pour une épicerie de 400 références,
+   * c'était plusieurs mégaoctets sur la 4G de Brazzaville. Au-delà de
+   * `PRODUCTS_PREVIEW_LIMIT`, le client pagine via `GET /products?restaurantId=`.
+   */
   async findOne(id: string) {
-    const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id },
+    const restaurant = await this.prisma.restaurant.findFirst({
+      where: { id, isActive: true, adminApproved: true },
       include: {
         products: {
           include: {
@@ -38,7 +54,10 @@ export class RestaurantQueryService {
             variants: true,
             images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
           },
+          orderBy: { createdAt: 'desc' },
+          take: RestaurantQueryService.PRODUCTS_PREVIEW_LIMIT,
         },
+        _count: { select: { products: true } },
         ...RESTAURANT_WITH_REVIEWS,
       },
     });
@@ -47,7 +66,15 @@ export class RestaurantQueryService {
       throw new NotFoundException(`Restaurant "${id}" non trouvé.`);
     }
 
-    return { data: this.attachRatingStats(restaurant) };
+    const { _count, ...rest } = restaurant;
+    return {
+      data: {
+        ...this.attachRatingStats(rest),
+        totalProducts: _count.products,
+        hasMoreProducts:
+          _count.products > RestaurantQueryService.PRODUCTS_PREVIEW_LIMIT,
+      },
+    };
   }
 
   /**

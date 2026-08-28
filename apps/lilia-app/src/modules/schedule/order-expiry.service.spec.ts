@@ -1,0 +1,94 @@
+import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
+
+import { OrderExpiryService } from './order-expiry.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { OrderLifecycleService } from '../orders/order-lifecycle.service';
+
+/**
+ * Sans ce cron, une commande abandonnée avant paiement immobilisait son stock
+ * indéfiniment — définitivement pour les produits `stockMode = PERMANENT`.
+ */
+describe('OrderExpiryService', () => {
+  let service: OrderExpiryService;
+  const prisma = { order: { findMany: jest.fn() } };
+  const lifecycle = { expireUnpaidOrder: jest.fn() };
+
+  const build = async (env: Record<string, number> = {}) => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        OrderExpiryService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: OrderLifecycleService, useValue: lifecycle },
+        {
+          provide: ConfigService,
+          useValue: { get: (k: string) => env[k] },
+        },
+      ],
+    }).compile();
+    return module.get(OrderExpiryService);
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    prisma.order.findMany.mockResolvedValue([]);
+    lifecycle.expireUnpaidOrder.mockResolvedValue(true);
+    service = await build();
+  });
+
+  it('ne cible que les EN_ATTENTE sans paiement encaissé', async () => {
+    await service.expireUnpaidOrders();
+
+    const where = prisma.order.findMany.mock.calls[0][0].where;
+    expect(where.status).toBe('EN_ATTENTE');
+    expect(where.Payment).toEqual({ none: { status: 'SUCCESS' } });
+  });
+
+  it('applique deux délais : court sans paiement, long si paiement en attente', async () => {
+    service = await build({
+      ORDER_PAYMENT_TIMEOUT_MINUTES: 45,
+      ORDER_PENDING_PAYMENT_TIMEOUT_MINUTES: 360,
+    });
+    const before = Date.now();
+
+    await service.expireUnpaidOrders();
+
+    const branches = prisma.order.findMany.mock.calls[0][0].where.AND[1].OR;
+    const [noPayment, pendingPayment] = branches;
+
+    expect(noPayment.Payment).toEqual({ none: { status: 'PENDING' } });
+    expect(pendingPayment.Payment).toEqual({ some: { status: 'PENDING' } });
+
+    // Le paiement en attente bénéficie du délai le plus long : en mode MANUAL
+    // c'est peut-être la confirmation admin qui traîne, pas le client.
+    expect(pendingPayment.createdAt.lt.getTime()).toBeLessThan(
+      noPayment.createdAt.lt.getTime(),
+    );
+    expect(before - noPayment.createdAt.lt.getTime()).toBeGreaterThanOrEqual(
+      45 * 60_000,
+    );
+  });
+
+  it('épargne les précommandes dont l’échéance n’est pas passée', async () => {
+    await service.expireUnpaidOrders();
+
+    const scheduled = prisma.order.findMany.mock.calls[0][0].where.AND[0].OR;
+    expect(scheduled[0]).toEqual({ scheduledFor: null });
+    expect(scheduled[1].scheduledFor.lt).toBeInstanceOf(Date);
+  });
+
+  it('poursuit le lot si une commande échoue', async () => {
+    prisma.order.findMany.mockResolvedValue([
+      { id: 'o1' },
+      { id: 'o2' },
+      { id: 'o3' },
+    ]);
+    lifecycle.expireUnpaidOrder
+      .mockResolvedValueOnce(true)
+      .mockRejectedValueOnce(new Error('deadlock'))
+      .mockResolvedValueOnce(true);
+
+    await expect(service.expireUnpaidOrders()).resolves.toBeUndefined();
+    expect(lifecycle.expireUnpaidOrder).toHaveBeenCalledTimes(3);
+  });
+});

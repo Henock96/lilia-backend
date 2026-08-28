@@ -31,6 +31,7 @@ import { DecodedIdToken } from 'firebase-admin/auth';
 import { User } from '@prisma/client';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { MaintenanceGuard } from '../platform-settings/guards/maintenance.guard';
+import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
 
 /**
  * Guards globaux actifs sur toutes les routes (via APP_GUARD dans AuthModule) :
@@ -92,12 +93,11 @@ export class OrdersController {
   @ApiOperation({ summary: 'Mes commandes (client)' })
   getMyOrders(
     @FirebaseUser() fbUser: DecodedIdToken,
-    @Query('page') page = '1',
-    @Query('limit') limit = '10',
+    @Query() query: PaginationQueryDto,
   ) {
     return this.ordersService.findOrdersClient(
-      parseInt(page, 10),
-      parseInt(limit, 10),
+      query.page,
+      query.limit,
       fbUser.uid,
     );
   }
@@ -110,13 +110,12 @@ export class OrdersController {
   @ApiOperation({ summary: 'Commandes reçues (restaurateur / admin)' })
   getRestaurantOrders(
     @FirebaseUser() fbUser: DecodedIdToken,
-    @Query('page') page = '1',
-    @Query('limit') limit = '20',
+    @Query() query: PaginationQueryDto,
   ) {
     return this.ordersService.findRestaurantOrders(
       fbUser.uid,
-      parseInt(page, 10),
-      parseInt(limit, 10),
+      query.page,
+      query.limit,
     );
   }
   /**

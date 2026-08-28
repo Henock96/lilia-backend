@@ -17,6 +17,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CreateIncidentDto } from './dto/create-incident.dto';
 import { UpdateIncidentDto } from './dto/update-incident.dto';
+import { IncidentListQueryDto } from './dto/incident-list-query.dto';
 import { IncidentsService } from './incidents.service';
 
 @Controller('incidents')
@@ -33,18 +34,17 @@ export class IncidentsController {
   @Roles('ADMIN')
   @Get()
   async findAll(
+    @Query() query: IncidentListQueryDto,
     @Query('status') status?: IncidentStatus,
     @Query('severity') severity?: IncidentSeverity,
     @Query('type') type?: IncidentType,
-    @Query('limit') limit?: string,
-    @Query('offset') offset?: string,
   ) {
     return this.incidents.findAll({
       status,
       severity,
       type,
-      limit: limit ? parseInt(limit, 10) : undefined,
-      offset: offset ? parseInt(offset, 10) : undefined,
+      limit: query.limit,
+      offset: query.offset,
     });
   }
 

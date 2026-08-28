@@ -7,12 +7,7 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { Public } from '../../auth/decorators/public.decorator';
 import { SkipResponseWrap } from '../../../common/interceptors/api-response.interceptor';
 import { ConfigService } from '@nestjs/config';
-
-interface MtnWebhookPayload {
-  referenceId: string;
-  status: 'SUCCESSFUL' | 'FAILED' | 'PENDING';
-  financialTransactionId?: string;
-}
+import { MtnWebhookDto, MtnWebhookStatus } from '../dto/mtn-webhook.dto';
 
 /** Masque une référence de transaction pour les logs : garde les 4 derniers. */
 function maskRef(ref?: string): string {
@@ -44,7 +39,7 @@ export class WebhookController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Callback MTN MoMo (webhook)' })
   async handleMtnMomoWebhook(
-    @Body() payload: MtnWebhookPayload,
+    @Body() payload: MtnWebhookDto,
     @Headers('x-callback-signature') signature?: string,
     @Headers('x-webhook-secret') webhookSecret?: string,
   ) {
@@ -52,7 +47,7 @@ export class WebhookController {
     this.validateWebhookSecret(signature, webhookSecret);
 
     try {
-      if (payload.status === 'SUCCESSFUL') {
+      if (payload.status === MtnWebhookStatus.SUCCESSFUL) {
         const payment = await this.prisma.payment.findFirst({
           where: { providerTransactionId: payload.referenceId },
         });

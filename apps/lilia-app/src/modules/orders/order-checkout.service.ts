@@ -1,11 +1,13 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
-  OnModuleDestroy,
+  Optional,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
+import { InjectRedis } from '@nestjs-modules/ioredis';
 import Redis from 'ioredis';
 
 import { PrismaService } from '../../prisma/prisma.service';
@@ -28,9 +30,17 @@ import { QuartiersService } from '../quartiers/quartiers.service';
  * `createOrderFromCart` — l'API publique reste inchangée.
  */
 @Injectable()
-export class OrderCheckoutService implements OnModuleDestroy {
+export class OrderCheckoutService {
   private readonly logger = new Logger(OrderCheckoutService.name);
-  private readonly redis: Redis;
+
+  /** Marqueur d'une clé d'idempotence réservée mais dont le traitement court. */
+  private static readonly PENDING = '__pending__';
+  /** Durée de la réservation : au-delà, on considère le traitement perdu. */
+  private static readonly PENDING_TTL_SECONDS = 120;
+  /** Durée de conservation de la réponse pour rejouer un retry client. */
+  private static readonly RESULT_TTL_SECONDS = 3600;
+
+  private readonly idempotencyEnabled: boolean;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -43,27 +53,67 @@ export class OrderCheckoutService implements OnModuleDestroy {
     private readonly platformSettings: PlatformSettingsService,
     private readonly preorderValidator: PreorderValidatorService,
     private readonly quartiersService: QuartiersService,
+    // Client partagé fourni par `RedisModule.forRootAsync` (app.module). On
+    // n'ouvre plus une seconde connexion ici : Render plafonne les connexions
+    // Redis et `UserCacheService` utilise déjà ce même pool.
+    @Optional() @InjectRedis() private readonly redis?: Redis,
   ) {
-    const redisUrl = this.config.get<string>('REDIS_URL');
-    this.redis = redisUrl ? new Redis(redisUrl) : (null as any);
-    // Sans listener 'error', une coupure réseau Redis fait planter le process
-    // Node (EventEmitter). L'idempotence est best-effort : on log et on continue.
-    this.redis?.on('error', (err) =>
-      this.logger.error(
-        `Redis (idempotence checkout) indisponible: ${err.message}`,
-      ),
+    this.idempotencyEnabled = Boolean(
+      this.config.get<string>('REDIS_URL') && this.redis,
     );
   }
 
-  async onModuleDestroy(): Promise<void> {
-    await this.redis?.quit().catch(() => undefined);
-  }
-
+  /**
+   * Point d'entrée du checkout, avec garde d'idempotence **atomique**.
+   *
+   * La clé est réservée en `SET NX` **avant** tout traitement : deux requêtes
+   * concurrentes portant la même `Idempotency-Key` (double-tap, retry du
+   * `RetryInterceptor` client) ne peuvent plus créer deux commandes. La
+   * seconde reçoit un 409 tant que la première tourne, puis la réponse cachée
+   * une fois celle-ci terminée.
+   *
+   * En cas d'échec du traitement, la réservation est libérée pour qu'un vrai
+   * retry reste possible.
+   */
   async createOrderFromCart(
     firebaseUid: string,
     dto: CreateOrderDto,
     idempotencyKey?: string,
   ) {
+    const cacheKey =
+      idempotencyKey && this.idempotencyEnabled
+        ? `idempotency:${firebaseUid}:${idempotencyKey}`
+        : null;
+
+    if (!cacheKey) {
+      return this.performCheckout(firebaseUid, dto);
+    }
+
+    const claim = await this.claimIdempotencyKey(cacheKey, idempotencyKey!);
+    if (claim.replay) {
+      this.logger.log(
+        `📦 [IDEMPOTENCY] Réponse cachée retournée — key: ${idempotencyKey}`,
+      );
+      return claim.replay;
+    }
+
+    try {
+      const result = await this.performCheckout(firebaseUid, dto);
+      await this.storeIdempotentResult(cacheKey, result);
+      return result;
+    } catch (err) {
+      // Le traitement a échoué : on relâche la réservation, sinon le client
+      // resterait bloqué en 409 pendant 2 min sur une commande jamais créée.
+      if (claim.reserved) {
+        await this.redis
+          ?.del(cacheKey)
+          .catch(() => this.logger.warn('Libération clé idempotence échouée'));
+      }
+      throw err;
+    }
+  }
+
+  private async performCheckout(firebaseUid: string, dto: CreateOrderDto) {
     const {
       adresseId,
       paymentMethod,
@@ -78,17 +128,6 @@ export class OrderCheckoutService implements OnModuleDestroy {
       scheduledFor,
     } = dto;
     const scheduledForDate = scheduledFor ? new Date(scheduledFor) : null;
-    // Idempotency check — évite les doublons sur double-tap ou retry réseau
-    if (idempotencyKey && this.redis) {
-      const cacheKey = `idempotency:${firebaseUid}:${idempotencyKey}`;
-      const cached = await this.redis.get(cacheKey);
-      if (cached) {
-        this.logger.log(
-          `📦 [IDEMPOTENCY] Réponse cachée retournée — key: ${idempotencyKey}`,
-        );
-        return JSON.parse(cached);
-      }
-    }
 
     this.logger.log(
       `📦 [COMMANDE] Début création commande - user: ${firebaseUid}, payload: ${JSON.stringify({ adresseId: dto.adresseId, paymentMethod: dto.paymentMethod, isDelivery: dto.isDelivery })}`,
@@ -340,17 +379,82 @@ export class OrderCheckoutService implements OnModuleDestroy {
       this.logger.error(`Erreur récompense parrainage: ${err}`),
     );
 
-    const result = { message: 'Commande créée avec succès.', data: order };
+    return { message: 'Commande créée avec succès.', data: order };
+  }
 
-    // Cache idempotency result — TTL 1h
-    if (idempotencyKey && this.redis) {
-      const cacheKey = `idempotency:${firebaseUid}:${idempotencyKey}`;
-      await this.redis
-        .setex(cacheKey, 3600, JSON.stringify(result))
-        .catch(() => {});
+  /**
+   * Réserve la clé d'idempotence de façon atomique.
+   *
+   * - `SET NX` réussit → on est le premier, on peut traiter (`reserved: true`).
+   * - La clé porte une réponse → c'est un retry légitime, on la rejoue.
+   * - La clé est encore en `__pending__` → un traitement est en cours, 409.
+   *
+   * Si Redis est indisponible, on dégrade en best-effort (traitement sans
+   * garde) plutôt que de refuser la commande : c'était déjà le comportement
+   * historique, et une panne Redis ne doit pas fermer la caisse.
+   */
+  private async claimIdempotencyKey(
+    cacheKey: string,
+    idempotencyKey: string,
+  ): Promise<{ reserved: boolean; replay?: unknown }> {
+    try {
+      const reserved = await this.redis!.set(
+        cacheKey,
+        OrderCheckoutService.PENDING,
+        'EX',
+        OrderCheckoutService.PENDING_TTL_SECONDS,
+        'NX',
+      );
+      if (reserved === 'OK') return { reserved: true };
+
+      const existing = await this.redis!.get(cacheKey);
+
+      // Expirée entre le SET et le GET : on retente une fois de la réserver.
+      if (existing === null) {
+        const retry = await this.redis!.set(
+          cacheKey,
+          OrderCheckoutService.PENDING,
+          'EX',
+          OrderCheckoutService.PENDING_TTL_SECONDS,
+          'NX',
+        );
+        if (retry === 'OK') return { reserved: true };
+        throw new ConflictException(
+          'Une commande identique est déjà en cours de traitement.',
+        );
+      }
+
+      if (existing === OrderCheckoutService.PENDING) {
+        this.logger.warn(
+          `📦 [IDEMPOTENCY] Requête concurrente rejetée — key: ${idempotencyKey}`,
+        );
+        throw new ConflictException(
+          'Une commande identique est déjà en cours de traitement.',
+        );
+      }
+
+      return { reserved: false, replay: JSON.parse(existing) };
+    } catch (err) {
+      if (err instanceof ConflictException) throw err;
+      this.logger.error(
+        `Redis (idempotence checkout) indisponible — checkout non protégé : ${
+          (err as Error).message
+        }`,
+      );
+      return { reserved: false };
     }
+  }
 
-    return result;
+  private async storeIdempotentResult(cacheKey: string, result: unknown) {
+    await this.redis
+      ?.setex(
+        cacheKey,
+        OrderCheckoutService.RESULT_TTL_SECONDS,
+        JSON.stringify(result),
+      )
+      .catch(() =>
+        this.logger.warn('Mise en cache du résultat idempotent échouée'),
+      );
   }
 
   private async handleReferralReward(userId: string): Promise<void> {

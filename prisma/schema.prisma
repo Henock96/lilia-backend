@@ -8,8 +8,22 @@ generator client {
 }
 
 datasource db {
-  provider     = "postgresql"
-  relationMode = "prisma"
+  provider = "postgresql"
+  // `relationMode = "prisma"` (retiré en août 2026) désactivait les clés
+  // étrangères au niveau base et faisait émuler les relations par le client.
+  // C'est un mode conçu pour les bases qui ne supportent pas les FK
+  // (PlanetScale, Vitess) ; sur PostgreSQL c'était un renoncement pur :
+  //
+  //  - aucune intégrité référentielle garantie — toute écriture hors Prisma
+  //    (psql, script d'admin, outil de BI, migration SQL manuelle) pouvait
+  //    créer des lignes pointant vers un parent inexistant, et l'a fait :
+  //    l'audit du 27/08/2026 a trouvé 24 orphelins sur 5 relations ;
+  //  - les `onDelete: Cascade` n'étaient qu'émulés par le client ;
+  //  - chaque relation nested générait des requêtes supplémentaires que le
+  //    moteur aurait résolues nativement.
+  //
+  // Le défaut (`foreignKeys`) est désormais actif : les 45 contraintes sont
+  // créées par la migration `20260827_enable_foreign_keys`.
 }
 
 model User {
@@ -30,18 +44,18 @@ model User {
   adresses     Adresses[] // Ajout de la relation aux adresses
   fcmTokens    FcmToken[]
   reviews      Review[]
-  orders       Order[] // Commandes passÃƒÆ’Ã‚Â©es par l'utilisateur
+  orders       Order[] // Commandes passées par l'utilisateur
   promoUsages  PromoUsage[]  @relation("UserPromoUsages")
 
   // Ajout recent 04/04/2026
   statusUser StatusUser @default(ACTIVE)
 
   // Parrainage
-  referralCode     String? @unique // code unique ÃƒÆ’Ã‚Â  partager
-  referredByCode   String? // code du parrain utilisÃƒÆ’Ã‚Â© ÃƒÆ’Ã‚Â  l'inscription
-  referralRewarded Boolean @default(false) // vrai quand la rÃƒÆ’Ã‚Â©compense a ÃƒÆ’Ã‚Â©tÃƒÆ’Ã‚Â© ÃƒÆ’Ã‚Â©mise
+  referralCode     String? @unique // code unique à partager
+  referredByCode   String? // code du parrain utilisé à l'inscription
+  referralRewarded Boolean @default(false) // vrai quand la récompense a été émise
 
-  // Points de fidÃƒÆ’Ã‚Â©litÃƒÆ’Ã‚Â©
+  // Points de fidélité
   loyaltyPoints       Int                  @default(0)
   loyaltyTransactions LoyaltyTransaction[]
   favorites           Favorite[]
@@ -55,9 +69,9 @@ model LoyaltyTransaction {
   id        String   @id @default(cuid())
   userId    String
   user      User     @relation(fields: [userId], references: [id])
-  points    Int // positif = gain, nÃƒÆ’Ã‚Â©gatif = dÃƒÆ’Ã‚Â©pense
-  reason    String // ex: "Commande #ABC123", "RÃƒÆ’Ã‚Â©compense parrainage"
-  orderId   String? // lien optionnel ÃƒÆ’Ã‚Â  la commande
+  points    Int // positif = gain, négatif = dépense
+  reason    String // ex: "Commande #ABC123", "Récompense parrainage"
+  orderId   String? // lien optionnel à la commande
   createdAt DateTime @default(now())
 
   @@index([userId])
@@ -78,13 +92,13 @@ model Adresses {
   id         String    @id @default(cuid())
   rue        String
   ville      String
-  etat       String? // RÃƒÆ’Ã‚Â©gion/ÃƒÆ’Ã¢â‚¬Â°tat
+  etat       String? // Région/État
   country    String
   user       User      @relation(fields: [userId], references: [id])
   userId     String
   isDefault  Boolean   @default(false)
   quartier   Quartier? @relation(fields: [quartierId], references: [id])
-  quartierId String? // RÃƒÆ’Ã‚Â©fÃƒÆ’Ã‚Â©rence au quartier pour le calcul des frais
+  quartierId String? // Référence au quartier pour le calcul des frais
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
@@ -110,15 +124,15 @@ model Restaurant {
   orders      Order[]
   reviews     Review[]
   favorites   Favorite[]
-  specialties Specialty[] // SpÃƒÆ’Ã‚Â©cialitÃƒÆ’Ã‚Â©s du restaurant
-  banners     Banner[] // BanniÃƒÆ’Ã‚Â¨res du restaurant
+  specialties Specialty[] // Spécialités du restaurant
+  banners     Banner[] // Bannières du restaurant
   photos      VendorPhoto[] // Galerie photos vendeur
 
-  // Statut d'activitÃƒÆ’Ã‚Â© (contrÃƒÆ’Ã‚Â´lÃƒÆ’Ã‚Â© par l'admin)
-  isActive Boolean @default(true) // Restaurant actif/dÃƒÆ’Ã‚Â©sactivÃƒÆ’Ã‚Â© par l'admin
+  // Statut d'activité (contrôlé par l'admin)
+  isActive Boolean @default(true) // Restaurant actif/désactivé par l'admin
 
   // Statut d'ouverture
-  isOpen         Boolean          @default(true) // Restaurant ouvert/fermÃƒÆ’Ã‚Â©
+  isOpen         Boolean          @default(true) // Restaurant ouvert/fermé
   manualOverride Boolean          @default(false) // Si true, le cron ne modifie pas isOpen
   operatingHours OperatingHours[]
   promoCodes     PromoCode[]      @relation("RestaurantPromoCodes")
@@ -168,7 +182,7 @@ model VendorProfile {
   updatedAt DateTime @updatedAt
 }
 
-// SpÃƒÆ’Ã‚Â©cialitÃƒÆ’Ã‚Â©s d'un restaurant (ex: "Pizza", "Sushi", "Burgers", "Africain")
+// Spécialités d'un restaurant (ex: "Pizza", "Sushi", "Burgers", "Africain")
 model Specialty {
   id           String     @id @default(cuid())
   name         String
@@ -176,7 +190,7 @@ model Specialty {
   restaurantId String
   createdAt    DateTime   @default(now())
 
-  @@unique([restaurantId, name]) // Une spÃƒÆ’Ã‚Â©cialitÃƒÆ’Ã‚Â© unique par restaurant
+  @@unique([restaurantId, name]) // Une spécialité unique par restaurant
   @@index([restaurantId])
 }
 
@@ -198,9 +212,9 @@ model MenuDuJour {
   ingredients    String? // Composition du plat special (texte libre, ex: "Riz, poulet, legumes")
   stockQuotidien Int? // Quantite disponible par jour (null = illimite)
   stockRestant   Int? // Quantite restante aujourd'hui (null = illimite)
-  dateDebut      DateTime // Date et heure de dÃƒÆ’Ã‚Â©but de validitÃƒÆ’Ã‚Â© du menu
-  dateFin        DateTime // Date et heure de fin de validitÃƒÆ’Ã‚Â© du menu
-  isActive       Boolean       @default(true) // Permet de dÃƒÆ’Ã‚Â©sactiver manuellement un menu
+  dateDebut      DateTime // Date et heure de début de validité du menu
+  dateFin        DateTime // Date et heure de fin de validité du menu
+  isActive       Boolean       @default(true) // Permet de désactiver manuellement un menu
   restaurant     Restaurant    @relation(fields: [restaurantId], references: [id])
   restaurantId   String
   products       MenuProduct[] // Relation many-to-many avec Product
@@ -211,7 +225,7 @@ model MenuDuJour {
   updatedAt      DateTime      @updatedAt
 
   @@index([restaurantId])
-  @@index([dateDebut, dateFin]) // Index pour les requÃƒÆ’Ã‚Âªtes par date
+  @@index([dateDebut, dateFin]) // Index pour les requêtes par date
 }
 
 // Table de liaison pour la relation many-to-many entre Menu et Product
@@ -224,7 +238,7 @@ model MenuProduct {
   ordre     Int        @default(0) // Ordre d'affichage dans le menu
   createdAt DateTime   @default(now())
 
-  @@unique([menuId, productId]) // Un produit ne peut ÃƒÆ’Ã‚Âªtre ajoutÃƒÆ’Ã‚Â© qu'une seule fois dans un menu
+  @@unique([menuId, productId]) // Un produit ne peut être ajouté qu'une seule fois dans un menu
   @@index([menuId])
   @@index([productId])
 }
@@ -279,7 +293,7 @@ model ProductVariant {
   id        String     @id @default(cuid())
   label     String? // e.g., "30cl", "1.5L", "Normal", "Grand"
   prix      Float
-  product   Product    @relation(fields: [productId], references: [id])
+  product   Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
   productId String
   cartItems CartItem[]
   createdAt DateTime   @default(now())
@@ -299,7 +313,7 @@ model Cart {
 
 model CartItem {
   id        String         @id @default(cuid())
-  cart      Cart           @relation(fields: [cartId], references: [id])
+  cart      Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
   cartId    String
   product   Product        @relation(fields: [productId], references: [id])
   productId String
@@ -309,17 +323,17 @@ model CartItem {
   variantId String
   quantite  Int
   createdAt DateTime       @default(now())
-  //04/04/2026 Nouveau champ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â nullable au dÃƒÆ’Ã‚Â©but pour ne pas casser l'existant
+  //04/04/2026 Nouveau champ — nullable au début pour ne pas casser l'existant
   itemKey   String? // "productId:variantId:menuId|none"
 
-  @@unique([cartId, variantId, menuId]) // Permet un mÃƒÆ’Ã‚Âªme variant comme produit individuel ET dans un menu
+  @@unique([cartId, variantId, menuId]) // Permet un même variant comme produit individuel ET dans un menu
   @@index([variantId])
   @@index([productId])
   @@index([menuId])
   @@index([cartId, itemKey]) // index de remplacement
 }
 
-// 04/04/2026 ÃƒÆ’Ã¢â‚¬Â°TAPE 1 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Ajouter les nouveaux enums (non-breaking)
+// 04/04/2026 ÉTAPE 1 — Ajouter les nouveaux enums (non-breaking)
 
 model Order {
   id                 String                @id @default(cuid())
@@ -329,7 +343,7 @@ model Order {
   userId             String
   subTotal           Float // Sous-total des articles
   deliveryFee        Float // Frais de livraison (0 si retrait)
-  serviceFee         Float                 @default(0) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â nouveau : commission 10%
+  serviceFee         Float                 @default(0) // ← nouveau : commission 10%
   total              Float // subTotal + deliveryFee + serviceFee        // Montant total (subTotal + deliveryFee)
   isDelivery         Boolean               @default(true) // true = livraison, false = retrait au restaurant
   deliveryAddress    String? // Adresse de livraison (null si retrait)
@@ -337,13 +351,13 @@ model Order {
   orderHistory       OrderHistory[] // Historique des changements de statut
   deliveryLatitude   Float? // nouveau
   deliveryLongitude  Float? // nouveau  
-  deliveryQuartierId String? // nouveau ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â pour les frais de zone
+  deliveryQuartierId String? // nouveau — pour les frais de zone
   deleteCommande     Boolean               @default(false)
-  paymentMethod      PaymentMethod // MÃƒÆ’Ã‚Â©thode de paiement
+  paymentMethod      PaymentMethod // Méthode de paiement
   status             OrderStatus           @default(EN_ATTENTE)
   paidAt             DateTime? // Date de paiement
   notes              String? // Notes optionnelles du client pour le restaurant
-  contactPhone       String? // NumÃƒÆ’Ã‚Â©ro de tÃƒÆ’Ã‚Â©lÃƒÆ’Ã‚Â©phone saisi lors de la commande
+  contactPhone       String? // Numéro de téléphone saisi lors de la commande
   items              OrderItem[]
   reviews            Review[]
   delivery           Delivery?
@@ -353,7 +367,7 @@ model Order {
   Payment        Payment[]
   promoCodeId    String?
   promoCode      PromoCode? @relation(fields: [promoCodeId], references: [id])
-  discountAmount Float      @default(0) // montant dÃƒÆ’Ã‚Â©duit par le code promo
+  discountAmount Float      @default(0) // montant déduit par le code promo
 
   // Précommandes (Sprint A — LIL-111)
   isPreorder          Boolean   @default(false)
@@ -368,8 +382,8 @@ model Order {
   @@index([promoCodeId])
   @@index([restaurantId])
   @@index([userId])
-  @@index([status]) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â manquait
-  @@index([createdAt]) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â manquait
+  @@index([status]) // ← manquait
+  @@index([createdAt]) // ← manquait
 }
 
 model OrderItem {
@@ -397,7 +411,7 @@ model OrderItem {
 
 model OrderHistory {
   id         String      @id @default(cuid())
-  order      Order       @relation(fields: [orderId], references: [id])
+  order      Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
   orderId    String
   fromStatus OrderStatus
   toStatus   OrderStatus
@@ -424,11 +438,11 @@ model Delivery {
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 
-  estimatedArrival DateTime? // ETA calculÃƒÆ’Ã‚Â©
+  estimatedArrival DateTime? // ETA calculé
   pickedUpAt       DateTime? // quand le livreur a pris la commande
-  deliveredAt      DateTime? // timestamp rÃƒÆ’Ã‚Â©el de livraison
+  deliveredAt      DateTime? // timestamp réel de livraison
 
-  // Position derniÃƒÆ’Ã‚Â¨re connue du livreur
+  // Position dernière connue du livreur
   lastLatitude   Float?
   lastLongitude  Float?
   lastPositionAt DateTime?
@@ -436,17 +450,17 @@ model Delivery {
 
   @@index([delivererId, status]) // missions d'un livreur filtrees par statut (LFD-9)
   @@index([delivererId])
-  @@index([status]) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â manquait
+  @@index([status]) // ← manquait
 }
 
-// Nouvelle table ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â n'affecte pas l'existant
+// Nouvelle table — n'affecte pas l'existant
 model DeliveryLocation {
   id         String   @id @default(cuid())
   deliveryId String
-  delivery   Delivery @relation(fields: [deliveryId], references: [id])
+  delivery   Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
   latitude   Float
   longitude  Float
-  accuracy   Float? // prÃƒÆ’Ã‚Â©cision GPS en mÃƒÆ’Ã‚Â¨tres
+  accuracy   Float? // précision GPS en mètres
   recordedAt DateTime @default(now())
 
   @@index([deliveryId, recordedAt])
@@ -558,17 +572,17 @@ enum StockMode {
   PERMANENT // Stock réel, décrémentation pure, pas de reset
 }
 
-// ModÃƒÆ’Ã‚Â¨le pour les avis et notes des clients
+// Modèle pour les avis et notes des clients
 model Review {
   id           String     @id @default(cuid())
-  rating       Int // Note de 1 ÃƒÆ’Ã‚Â  5
+  rating       Int // Note de 1 à 5
   comment      String? // Commentaire optionnel
   user         User       @relation(fields: [userId], references: [id])
   userId       String
   restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
   restaurantId String
   order        Order?     @relation(fields: [orderId], references: [id])
-  orderId      String?    @unique // Optionnel: liÃƒÆ’Ã‚Â© ÃƒÆ’Ã‚Â  une commande spÃƒÆ’Ã‚Â©cifique
+  orderId      String?    @unique // Optionnel: lié à une commande spécifique
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
@@ -577,7 +591,7 @@ model Review {
   @@index([userId])
 }
 
-// Zones de livraison avec prix personnalisÃƒÆ’Ã‚Â© par restaurant
+// Zones de livraison avec prix personnalisé par restaurant
 model DeliveryZone {
   id           String         @id @default(cuid())
   restaurant   Restaurant     @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
@@ -594,7 +608,7 @@ model DeliveryZone {
 // Liste des quartiers de Brazzaville
 model Quartier {
   id        String         @id @default(cuid())
-  nom       String         @unique // Ex: "Bacongo", "Poto-Poto", "TalangaÃƒÆ’Ã‚Â¯"
+  nom       String         @unique // Ex: "Bacongo", "Poto-Poto", "Talangaï"
   ville     String         @default("Brazzaville")
   zones     QuartierZone[]
   adresses  Adresses[]
@@ -703,24 +717,24 @@ enum DiscountType {
 
 model PromoCode {
   id          String  @id @default(cuid())
-  code        String  @unique // "BIENVENUE500" ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â toujours uppercase
-  description String? // affichÃƒÆ’Ã‚Â© dans l'app : "500 FCFA offerts sur ta 1ÃƒÆ’Ã‚Â¨re commande"
+  code        String  @unique // "BIENVENUE500" — toujours uppercase
+  description String? // affiché dans l'app : "500 FCFA offerts sur ta 1ère commande"
 
   discountType  DiscountType
   discountValue Float // 500 si FIXED, 10 si PERCENT (= 10%), 0 si FREE_DELIVERY
-  maxDiscount   Float? // plafond si PERCENT : max 2000 FCFA de rÃƒÆ’Ã‚Â©duction
+  maxDiscount   Float? // plafond si PERCENT : max 2000 FCFA de réduction
 
   minOrderAmount  Float @default(0) // montant minimum pour activer le code
-  maxUsageTotal   Int? // null = illimitÃƒÆ’Ã‚Â© ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ex: 100 pour une campagne limitÃƒÆ’Ã‚Â©e
+  maxUsageTotal   Int? // null = illimité — ex: 100 pour une campagne limitée
   maxUsagePerUser Int   @default(1) // 1 = 1 fois par utilisateur
 
-  firstOrderOnly Boolean @default(false) // rÃƒÆ’Ã‚Â©servÃƒÆ’Ã‚Â© aux nouveaux clients
+  firstOrderOnly Boolean @default(false) // réservé aux nouveaux clients
   isActive       Boolean @default(true)
 
   // Restriction par restaurant (null = toute la plateforme)
   restaurantId   String?
   restaurant     Restaurant? @relation("RestaurantPromoCodes", fields: [restaurantId], references: [id])
-  discountAmount Float       @default(0) // montant dÃƒÆ’Ã‚Â©duit par le code promo
+  discountAmount Float       @default(0) // montant déduit par le code promo
   startsAt       DateTime    @default(now())
   expiresAt      DateTime? // null = pas d'expiration
 
@@ -741,7 +755,7 @@ model PromoUsage {
   userId          String
   user            User      @relation("UserPromoUsages", fields: [userId], references: [id])
   orderId         String    @unique // 1 promo max par commande
-  discountApplied Float // montant rÃƒÆ’Ã‚Â©ellement dÃƒÆ’Ã‚Â©duit (snapshot)
+  discountApplied Float // montant réellement déduit (snapshot)
   usedAt          DateTime  @default(now())
 
   @@index([promoCodeId])

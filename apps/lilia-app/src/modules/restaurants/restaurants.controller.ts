@@ -15,6 +15,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { Public } from '../auth/decorators/public.decorator';
 import { DayOfWeek, SetOperatingHoursDto, UpdateOperatingHourDto } from './dto/operating-hours.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
+import { OptionalLimitQueryDto, PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
 
 /**
  * Guards globaux actifs (APP_GUARD dans AuthModule) :
@@ -49,8 +50,8 @@ export class RestaurantsController {
     @Public()
     @Get('popular')
     @ApiOperation({ summary: 'Restaurants les plus commandés' })
-    findPopular(@Query('limit') limit = '6') {
-        return this.service.findPopular(parseInt(limit, 10));
+    findPopular(@Query() query: OptionalLimitQueryDto) {
+        return this.service.findPopular(query.limit ?? 6);
     }
   // ─── ROUTES AUTHENTIFIÉES STATIQUES (avant :id) ───────────────────────────
 
@@ -229,10 +230,9 @@ export class RestaurantsController {
     @ApiOperation({ summary: 'Clients distincts du restaurant (paginés)' })
     findClients(
         @Param('id') id: string,
-        @Query('page') page = '1',
-        @Query('limit') limit = '10',
+        @Query() query: PaginationQueryDto,
     ) {
-        return this.service.findClients(parseInt(page, 10), parseInt(limit, 10), id);
+        return this.service.findClients(query.page, query.limit, id);
     }
 
     @Get(':id/clients/:userId/orders')

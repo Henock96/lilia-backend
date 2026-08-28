@@ -74,6 +74,19 @@ export class UserCacheService {
     }
   }
 
+  /**
+   * Variante d'`invalidate` qui **propage** l'erreur Redis.
+   *
+   * `invalidate` avale les erreurs pour ne jamais casser un flux nominal. Sur un
+   * changement de statut de sécurité (ban / débannissement) ce silence est
+   * dangereux : l'ancien statut resterait servi jusqu'à 5 min sans qu'aucun
+   * signal ne remonte. L'appelant doit savoir.
+   */
+  async invalidateOrThrow(firebaseUid: string): Promise<void> {
+    if (!firebaseUid) return;
+    await this.redis.del(this.buildKey(firebaseUid));
+  }
+
   private buildKey(firebaseUid: string): string {
     return `${this.KEY_PREFIX}${firebaseUid}`;
   }

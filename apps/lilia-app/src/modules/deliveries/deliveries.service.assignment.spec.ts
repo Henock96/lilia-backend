@@ -100,11 +100,75 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
         delivererId: 'liv1',
         status: 'ASSIGNER',
       });
-      expect(notifications.sendPushNotification).toHaveBeenCalled();
+      // La notification est désormais portée par `DeliveriesListener` : le
+      // service se contente de décrire ce qui s'est passé.
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'delivery.assigned',
+        expect.objectContaining({
+          delivererId: 'liv1',
+          previousDelivererId: null,
+        }),
+      );
       expect(res).toEqual({
         data: { id: 'd1', status: 'ASSIGNER' },
         message: 'Livreur assigné avec succès',
       });
+    });
+
+    it('réassignation : transmet l’ancien livreur pour qu’il soit libéré', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        id: 'd1',
+        orderId: 'o1',
+        delivererId: 'liv-old',
+        order: {
+          restaurantId: 'resto1',
+          status: 'PRET',
+          restaurant: { nom: 'Resto', owner: { firebaseUid: 'uid' } },
+        },
+      });
+      mockUsers(
+        { id: 'u1', role: 'RESTAURATEUR' },
+        { id: 'liv-new', role: 'LIVREUR' },
+      );
+      prisma.delivery.update.mockResolvedValue({
+        id: 'd1',
+        status: 'ASSIGNER',
+      });
+
+      const res = await service.assignDeliverer('d1', 'liv-new', 'uid');
+
+      // Sans `previousDelivererId`, l'ancien livreur restait ON_DELIVERY à vie
+      // et ne pouvait plus accepter aucune course.
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'delivery.assigned',
+        expect.objectContaining({
+          delivererId: 'liv-new',
+          previousDelivererId: 'liv-old',
+        }),
+      );
+      expect(res.message).toContain('réassigné');
+    });
+
+    it('refuse de réassigner au livreur déjà en place', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        id: 'd1',
+        orderId: 'o1',
+        delivererId: 'liv1',
+        order: {
+          restaurantId: 'resto1',
+          status: 'PRET',
+          restaurant: { nom: 'Resto', owner: { firebaseUid: 'uid' } },
+        },
+      });
+      mockUsers(
+        { id: 'u1', role: 'RESTAURATEUR' },
+        { id: 'liv1', role: 'LIVREUR' },
+      );
+
+      await expect(
+        service.assignDeliverer('d1', 'liv1', 'uid'),
+      ).rejects.toThrow('déjà assigné');
+      expect(prisma.delivery.update).not.toHaveBeenCalled();
     });
 
     it('refuse une cible qui n’est pas LIVREUR', async () => {

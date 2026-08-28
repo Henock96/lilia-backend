@@ -42,7 +42,12 @@ describe('AdminService (caractérisation — clients/users/reviews)', () => {
       delete: jest.fn(),
     },
   };
-  const userCache = { invalidate: jest.fn() };
+  const userCache = {
+    invalidate: jest.fn(),
+    // Utilisé depuis le correctif du bannissement : propage l'échec Redis au
+    // lieu de l'avaler, pour que l'admin sache que le blocage peut traîner.
+    invalidateOrThrow: jest.fn(),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -153,7 +158,7 @@ describe('AdminService (caractérisation — clients/users/reviews)', () => {
       const res = await service.updateUserRole('u1', {
         role: 'LIVREUR',
       } as any);
-      expect(userCache.invalidate).toHaveBeenCalledWith('fb1');
+      expect(userCache.invalidateOrThrow).toHaveBeenCalledWith('fb1');
       expect(res.message).toBe('Rôle mis à jour : LIVREUR');
     });
   });
@@ -170,15 +175,24 @@ describe('AdminService (caractérisation — clients/users/reviews)', () => {
       );
     });
 
-    it('invalide le cache et retourne le firebaseUid pour révocation', async () => {
+    it('écrit BLOCKED, invalide le cache et retourne le firebaseUid', async () => {
       prisma.user.findUnique.mockResolvedValue({
         id: 'u1',
         role: 'CLIENT',
         firebaseUid: 'fb1',
       });
       const res = await service.banUser('u1', 'spam');
-      expect(userCache.invalidate).toHaveBeenCalledWith('fb1');
-      expect(res).toEqual({ firebaseUid: 'fb1', userId: 'u1' });
+      // Le bannissement était un no-op : il ne touchait jamais la base.
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'u1' },
+        data: { statusUser: 'BLOCKED' },
+      });
+      expect(userCache.invalidateOrThrow).toHaveBeenCalledWith('fb1');
+      expect(res).toEqual({
+        firebaseUid: 'fb1',
+        userId: 'u1',
+        cacheInvalidated: true,
+      });
     });
   });
 

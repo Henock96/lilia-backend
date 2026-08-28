@@ -5,6 +5,7 @@ import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger'
 import { Roles } from '../auth/decorators/roles.decorator';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { DecodedIdToken } from 'firebase-admin/auth';
+import { OptionalLimitQueryDto } from '../../common/pagination/pagination-query.dto';
 
 @ApiTags('Dashboard')
 @ApiBearerAuth()
@@ -46,12 +47,12 @@ export class DashboardController {
   @Get('top-products')
   getTopProducts(
     @FirebaseUser() fbUser: DecodedIdToken,
-    @Query('limit') limit?: string,
+    @Query() query: OptionalLimitQueryDto,
     @Query('period') period?: string,
   ) {
     return this.dashboardService.getTopProducts(
       fbUser.uid,
-      limit ? parseInt(limit, 10) : undefined,
+      query.limit,
       period,
     );
   }

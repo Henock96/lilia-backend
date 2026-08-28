@@ -33,7 +33,10 @@ export const envValidationSchema = Joi.object({
   FIREBASE_PROJECT_ID: Joi.string().required(),
   FIREBASE_CLIENT_EMAIL: Joi.string().email().required(),
   FIREBASE_PRIVATE_KEY: Joi.string().required(),
-  FIREBASE_SERVICE_ACCOUNT_PATH: Joi.string().optional(), // dev uniquement
+  // `.allow('')` : une variable présente mais vide dans un .env doit être
+  // traitée comme absente. Sans ça, `FIREBASE_SERVICE_ACCOUNT_PATH=` faisait
+  // échouer le démarrage avec un message peu parlant.
+  FIREBASE_SERVICE_ACCOUNT_PATH: Joi.string().allow('').optional(), // dev uniquement
 
   // ─── CORS — requis en production (cohérent avec le fail-fast de main.ts) ──
   ALLOWED_ORIGINS: Joi.string().when('NODE_ENV', {
@@ -48,15 +51,19 @@ export const envValidationSchema = Joi.object({
     .optional(),
 
   // ─── Cloudinary ───────────────────────────────────────────────────────────
-  CLOUDINARY_CLOUD_NAME: Joi.string().optional(),
-  CLOUDINARY_API_KEY: Joi.string().optional(),
-  CLOUDINARY_API_SECRET: Joi.string().optional(),
+  CLOUDINARY_CLOUD_NAME: Joi.string().allow('').optional(),
+  CLOUDINARY_API_KEY: Joi.string().allow('').optional(),
+  CLOUDINARY_API_SECRET: Joi.string().allow('').optional(),
 
   // ─── Paiements ──────────────────────────────────────────────────────────
   PAYMENT_MODE: Joi.string()
     .valid('MANUAL', 'SANDBOX', 'MTN_PRODUCTION')
     .default('MANUAL'),
-  LILIA_PAYMENT_PHONE: Joi.string().optional(),
+  LILIA_PAYMENT_PHONE: Joi.string().allow('').optional(),
+  // Numéro d'encaissement Airtel. Si absent, on retombe sur LILIA_PAYMENT_PHONE
+  // (cf. PaymentService) — mais un client Airtel ne peut pas envoyer sur un
+  // numéro MTN : à définir dès qu'Airtel Money est proposé au checkout.
+  LILIA_AIRTEL_PAYMENT_PHONE: Joi.string().allow('').optional(),
   MTN_MOMO_API_KEY: Joi.string().optional(),
   MTN_MOMO_API_USER: Joi.string().optional(),
 
@@ -87,18 +94,29 @@ export const envValidationSchema = Joi.object({
     otherwise: Joi.optional(),
   }),
 
+  // ─── Expiration des commandes impayées ────────────────────────────────────
+  // Le stock est réservé au checkout : sans expiration il reste bloqué
+  // indéfiniment sur une commande abandonnée (cf. OrderExpiryService).
+  // Délai court = paiement jamais initié ; délai long = paiement en attente de
+  // confirmation admin (le client a peut-être bien envoyé l'argent).
+  ORDER_PAYMENT_TIMEOUT_MINUTES: Joi.number().integer().min(5).default(45),
+  ORDER_PENDING_PAYMENT_TIMEOUT_MINUTES: Joi.number()
+    .integer()
+    .min(30)
+    .default(360),
+
   // ─── SMS Infobip ──────────────────────────────────────────────────────────
-  INFOBIP_API_KEY: Joi.string().optional(),
-  INFOBIP_BASE_URL: Joi.string().optional(),
+  INFOBIP_API_KEY: Joi.string().allow('').optional(),
+  INFOBIP_BASE_URL: Joi.string().allow('').optional(),
   INFOBIP_SENDER: Joi.string().default('LiliaFood'),
 
   // ─── Email Mailtrap ───────────────────────────────────────────────────────
-  MAILTRAP_API_TOKEN: Joi.string().optional(),
-  MAILTRAP_SENDER_EMAIL: Joi.string().email().optional(),
-  MAILTRAP_SENDER_NAME: Joi.string().optional(),
+  MAILTRAP_API_TOKEN: Joi.string().allow('').optional(),
+  MAILTRAP_SENDER_EMAIL: Joi.string().email().allow('').optional(),
+  MAILTRAP_SENDER_NAME: Joi.string().allow('').optional(),
 
   // ─── Sentry ───────────────────────────────────────────────────────────────
-  SENTRY_DSN: Joi.string().uri().optional(),
+  SENTRY_DSN: Joi.string().uri().allow('').optional(),
 })
   // tolère les variables non listées (PATH, etc.) sans les rejeter
   .unknown(true);

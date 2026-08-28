@@ -43,5 +43,8 @@ import { QuartiersModule } from '../quartiers/quartiers.module';
     PromoService,
     OrderReceiptService,
   ],
+  // `OrderExpiryService` (module schedule) réutilise le chemin d'annulation
+  // avec ses compensations plutôt que de le réimplémenter.
+  exports: [OrderLifecycleService],
 })
 export class OrdersModule {}

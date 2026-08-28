@@ -21,6 +21,11 @@ import { ProductType, VendorType } from '@prisma/client';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import {
+  ProductFilterQueryDto,
+  ProductSearchQueryDto,
+} from './dto/product-query.dto';
+import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Public } from '../auth/decorators/public.decorator';
@@ -49,21 +54,14 @@ export class ProductsController {
   @ApiQuery({ name: 'vendorType', required: false, enum: VendorType })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
-  findAll(
-    @Query('restaurantId') restaurantId?: string,
-    @Query('categoryId') categoryId?: string,
-    @Query('page') page = '1',
-    @Query('limit') limit = '20',
-    @Query('productType') productType?: ProductType,
-    @Query('vendorType') vendorType?: VendorType,
-  ) {
+  findAll(@Query() query: ProductFilterQueryDto) {
     return this.productsService.findAll(
-      restaurantId,
-      categoryId,
-      parseInt(page, 10),
-      parseInt(limit, 10),
-      productType,
-      vendorType,
+      query.restaurantId,
+      query.categoryId,
+      query.page,
+      query.limit,
+      query.productType,
+      query.vendorType,
     );
   }
 
@@ -74,8 +72,8 @@ export class ProductsController {
   @Public()
   @Get('search')
   @ApiOperation({ summary: 'Recherche produits + restaurants' })
-  search(@Query('q') q = '', @Query('limit') limit = '20') {
-    return this.productsService.search(q, parseInt(limit, 10));
+  search(@Query() query: ProductSearchQueryDto) {
+    return this.productsService.search(query.q, query.limit);
   }
 
   /**
@@ -85,8 +83,8 @@ export class ProductsController {
   @Public()
   @Get('popular')
   @ApiOperation({ summary: 'Plats les plus commandés' })
-  findPopular(@Query('limit') limit = '10') {
-    return this.productsService.findPopular(parseInt(limit, 10));
+  findPopular(@Query() query: PaginationQueryDto) {
+    return this.productsService.findPopular(query.limit);
   }
 
   /**
@@ -97,12 +95,9 @@ export class ProductsController {
   @ApiOperation({ summary: 'Recommandations personnalisées (authentifié)' })
   getRecommendations(
     @FirebaseUser() fbUser: DecodedIdToken,
-    @Query('limit') limit = '10',
+    @Query() query: PaginationQueryDto,
   ) {
-    return this.productsService.getRecommendations(
-      fbUser.uid,
-      parseInt(limit, 10),
-    );
+    return this.productsService.getRecommendations(fbUser.uid, query.limit);
   }
 
   /**

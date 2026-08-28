@@ -51,6 +51,7 @@ import { IncidentsModule } from './modules/incidents/incidents.module';
 
 // Listeners (providers globaux)
 import { OrdersListener } from './modules/listeners/orders.listener';
+import { DeliveriesListener } from './modules/listeners/deliveries.listener';
 import { PaymentListener } from './modules/listeners/payment.listener';
 import { MenusListener } from './modules/listeners/menus.listener';
 import { UserListener } from './modules/listeners/user.listener';
@@ -212,6 +213,7 @@ import { envValidationSchema } from './config/env.validation';
     { provide: APP_INTERCEPTOR, useClass: SentryUserInterceptor },
     // Listeners globaux
     OrdersListener,
+    DeliveriesListener,
     PaymentListener,
     MenusListener,
     UserListener,

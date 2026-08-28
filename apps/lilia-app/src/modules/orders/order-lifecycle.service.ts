@@ -192,6 +192,62 @@ export class OrderLifecycleService {
   }
 
   /**
+   * Annulation automatique d'une commande jamais payée (expiration).
+   *
+   * Le stock est décrémenté au checkout, pas au paiement : sans ce chemin, un
+   * client qui abandonne au moment de composer `*105#` immobilise le stock
+   * indéfiniment — définitivement pour les produits `stockMode = PERMANENT`,
+   * que le reset quotidien ne touche pas.
+   *
+   * Réutilise exactement les compensations d'une annulation client (stock,
+   * points de fidélité, usage du code promo) et émet `order.cancelled`, qui
+   * déclenche les notifications FCM au client et au vendeur.
+   *
+   * Idempotent : l'`updateMany` conditionnel sur `status: EN_ATTENTE` garantit
+   * qu'une commande payée entre-temps n'est jamais annulée, même si deux
+   * instances Render exécutent le cron en parallèle.
+   */
+  async expireUnpaidOrder(orderId: string): Promise<boolean> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { items: true },
+    });
+    if (!order || order.status !== 'EN_ATTENTE') return false;
+
+    const expired = await this.prisma.$transaction(async (tx) => {
+      // Garde de concurrence : seule l'instance qui affecte une ligne annule.
+      const claimed = await tx.order.updateMany({
+        where: { id: orderId, status: 'EN_ATTENTE' },
+        data: { status: 'ANNULER' },
+      });
+      if (claimed.count === 0) return false;
+
+      await this.stockService.restoreInTransaction(tx, order.items);
+      await this.restoreCheckoutCompensations(tx, orderId, order.userId);
+      return true;
+    });
+
+    if (!expired) return false;
+
+    this.eventEmitter.emit(
+      'order.cancelled',
+      new OrderCancelledEvent(
+        order.id,
+        order.userId,
+        order.restaurantId,
+        'Système',
+        'Paiement non reçu dans le délai imparti',
+        0, // rien n'a été encaissé : aucun remboursement
+      ),
+    );
+
+    this.logger.warn(
+      `⏱️ Commande ${orderId} expirée (paiement non reçu) — stock et avantages restitués`,
+    );
+    return true;
+  }
+
+  /**
    * Supprime (soft delete) une commande annulée pour un client.
    */
   async deleteOrder(orderId: string, firebaseUid: string) {

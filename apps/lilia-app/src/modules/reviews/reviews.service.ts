@@ -86,7 +86,13 @@ export class ReviewsService {
   /**
    * Récupérer tous les avis d'un restaurant
    */
-  async findByRestaurant(restaurantId: string) {
+  /**
+   * Avis d'un vendeur, paginés.
+   *
+   * La route est publique : sans `take`, un vendeur populaire renvoyait
+   * l'intégralité de ses avis à chaque ouverture de fiche.
+   */
+  async findByRestaurant(restaurantId: string, page = 1, limit = 20) {
     const restaurant = await this.prisma.restaurant.findUnique({
       where: { id: restaurantId },
     });
@@ -95,21 +101,26 @@ export class ReviewsService {
       throw new NotFoundException('Restaurant non trouvé');
     }
 
-    const reviews = await this.prisma.review.findMany({
-      where: { restaurantId },
-      include: {
-        user: {
-          select: {
-            id: true,
-            nom: true,
-            imageUrl: true,
+    const [reviews, total] = await Promise.all([
+      this.prisma.review.findMany({
+        where: { restaurantId },
+        include: {
+          user: {
+            select: {
+              id: true,
+              nom: true,
+              imageUrl: true,
+            },
           },
         },
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
+        orderBy: {
+          createdAt: 'desc',
+        },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.review.count({ where: { restaurantId } }),
+    ]);
 
     // Calculer les statistiques
     const stats = await this.getRestaurantStats(restaurantId);
@@ -118,6 +129,7 @@ export class ReviewsService {
       message: 'Avis récupérés avec succès',
       data: reviews,
       stats,
+      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
   }
 
