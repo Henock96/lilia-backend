@@ -64,3 +64,6 @@ pids
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 /generated/prisma
+
+# Clés APNs Apple (.p8) — un secret, jamais versionné
+*.p8
