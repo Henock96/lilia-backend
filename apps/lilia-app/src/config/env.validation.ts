@@ -21,6 +21,19 @@ export const envValidationSchema = Joi.object({
   // `app.set('trust proxy', n)` : sans ça, `req.ip` vaut l'IP du load balancer
   // et le rate limiting devient un compteur global (fix C4).
   TRUST_PROXY_HOPS: Joi.number().integer().min(0).max(5).default(1),
+  // Ce processus exécute-t-il les crons et le dépilage de l'outbox ?
+  // `false` sur le service web quand le worker est déployé (cf.
+  // `config/background-jobs.ts`). Défaut `true` : mieux vaut une redondance
+  // — protégée par les verrous Redis — qu'une panne silencieuse.
+  RUN_BACKGROUND_JOBS: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .default(true),
+  WORKER_PORT: Joi.number().port().default(8081),
+  // Rétention des positions GPS des courses terminées. La table grossit d'une
+  // ligne par minute et par course ; 30 jours laissent le temps qu'un litige
+  // remonte, sans conserver indéfiniment des traces de déplacement.
+  TRACKING_RETENTION_DAYS: Joi.number().integer().min(1).max(365).default(30),
 
   // ─── Logs (nestjs-pino) ──────────────────────────────────────────────────
   // Niveau pino. Défaut résolu au runtime (info en prod, debug sinon).

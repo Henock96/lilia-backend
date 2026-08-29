@@ -50,6 +50,122 @@ jobs:
       - name: Build
         run: npm run build
 
+  # Concurrence réelle : ces garanties sont portées par PostgreSQL
+  # (UPDATE conditionnel, contraintes d'unicité, index partiels) et ne peuvent
+  # pas être vérifiées contre un Prisma mocké.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lilia_integration_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/lilia_integration_test
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+
+      # Rejoue TOUTES les migrations sur une base vierge : si l'une d'elles ne
+      # passe plus, on l'apprend ici et pas au déploiement.
+      - name: Appliquer les migrations
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+        run: npx prisma migrate deploy
+
+      - name: Tests d'intégration
+        run: npm run test:integration
+
+  # Un binaire qui compile n'est pas un binaire qui démarre.
+  #
+  # Le worker a été livré avec un graphe d'injection invalide : `tsc`, les tests
+  # et `npm run build` passaient au vert, et le processus mourait au bootstrap.
+  # Nest résout ses dépendances au démarrage — aucune vérification statique ne
+  # pouvait l'attraper. Ce job lève réellement les deux processus.
+  boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lilia_boot_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/lilia_boot_test
+      REDIS_URL: redis://localhost:6379
+      ALLOWED_ORIGINS: http://localhost:3000
+      PAYMENT_MODE: MANUAL
+      LILIA_PAYMENT_PHONE: '060000000'
+      FIREBASE_PROJECT_ID: lilia-boot-test
+      FIREBASE_CLIENT_EMAIL: ci@lilia-boot-test.iam.gserviceaccount.com
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+
+      - name: Appliquer les migrations
+        run: npx prisma migrate deploy
+
+      # Le SDK Firebase Admin parse la clé au démarrage mais ne contacte aucun
+      # serveur : une paire RSA jetable suffit à franchir le bootstrap, sans
+      # jamais exposer de secret réel dans la CI.
+      - name: Générer une clé de service jetable
+        run: |
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+            -out /tmp/ci-key.pem 2>/dev/null
+          {
+            echo 'FIREBASE_PRIVATE_KEY<<PEM_EOF'
+            cat /tmp/ci-key.pem
+            echo 'PEM_EOF'
+          } >> "$GITHUB_ENV"
+
+      - run: npm run build
+      - run: npx nest build worker
+
+      - name: Démarrage réel des deux processus
+        run: ./scripts/ci/boot-smoke.sh
+
   security:
     runs-on: ubuntu-latest
     timeout-minutes: 10

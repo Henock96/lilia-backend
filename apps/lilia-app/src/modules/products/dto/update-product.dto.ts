@@ -4,7 +4,6 @@ import {
   IsBoolean,
   IsEnum,
   IsInt,
-  IsNumber,
   IsOptional,
   IsString,
   IsUrl,
@@ -30,7 +29,10 @@ class UpdateProductVariantDto {
 
   // Mêmes bornes qu'à la création (fix H3) : sans elles, la mise à jour était
   // un chemin de contournement complet.
-  @IsNumber()
+  @IsInt({
+    message:
+      'Un montant en francs CFA est un nombre entier — le XAF n’a pas de sous-unité.',
+  })
   @IsOptional()
   @Min(0, { message: 'Le prix ne peut pas être négatif.' })
   @Max(MAX_PRIX_XAF, { message: 'Prix hors limites.' })
@@ -50,7 +52,10 @@ export class UpdateProductDto {
   @IsOptional()
   imageUrl?: string;
 
-  @IsNumber()
+  @IsInt({
+    message:
+      'Un montant en francs CFA est un nombre entier — le XAF n’a pas de sous-unité.',
+  })
   @IsOptional()
   @Min(0, { message: 'Le prix ne peut pas être négatif.' })
   @Max(MAX_PRIX_XAF, { message: 'Prix hors limites.' })

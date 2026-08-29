@@ -155,6 +155,7 @@ export class OrderLifecycleService {
     if (!actor)
       throw new ForbiddenException('Acteur invalide pour cette transition');
     this.stateMachine.assertTransition(order.status, newStatus, actor);
+    await this.assertStatusMatchesGround(order, newStatus);
 
     // Une annulation côté restaurateur/admin doit rendre au client exactement ce
     // qu'une annulation côté client lui rend : stock réservé, points de fidélité
@@ -429,6 +430,58 @@ export class OrderLifecycleService {
     if (claimed.count === 0) {
       throw new ConflictException(
         'Le statut de cette commande a changé entre-temps. Rechargez-la avant de réessayer.',
+      );
+    }
+  }
+
+  /**
+   * Refuse un statut que la réalité ne soutient pas (audit post-correction, B-1).
+   *
+   * La matrice dit *qui* a le droit de faire une transition ; elle ne peut pas
+   * dire si elle correspond à quelque chose sur le terrain. Or le statut d'une
+   * commande n'est pas un simple libellé : chaque changement déclenche une
+   * notification au client. `EN_ROUTE` lui annonce « votre livreur est en
+   * chemin » — une phrase qui doit être vraie.
+   *
+   * Deux mensonges possibles sont fermés ici :
+   *
+   *  - `→ EN_ROUTE` **sans course en cours**. Le passage légitime se fait par
+   *    `PATCH /deliveries/:id/pickup`, au moment où le livreur a le repas en
+   *    main. Un ADMIN qui force ce statut depuis la file des commandes
+   *    enverrait la notification sans que personne ne roule.
+   *  - `PRET → LIVRER` **sur une commande à livrer**. Ce raccourci existe pour
+   *    le retrait au comptoir ; l'appliquer à une livraison clôturerait la
+   *    commande — et créditerait les points de fidélité — alors que le client
+   *    n'a rien reçu.
+   */
+  private async assertStatusMatchesGround(
+    order: { id: string; isDelivery: boolean; status: OrderStatus },
+    newStatus: OrderStatus,
+  ): Promise<void> {
+    if (newStatus === 'EN_ROUTE') {
+      const enTransit = await this.prisma.delivery.findFirst({
+        where: { orderId: order.id, status: 'EN_TRANSIT' },
+        select: { id: true },
+      });
+
+      if (!enTransit) {
+        throw new BadRequestException(
+          'Cette commande ne peut pas être marquée « en route » : aucun livreur ' +
+            "ne l'a récupérée. Le passage se fait quand le livreur confirme la " +
+            'récupération depuis son application.',
+        );
+      }
+      return;
+    }
+
+    // Uniquement le raccourci comptoir. Depuis `EN_ROUTE`, la clôture reste
+    // ouverte à l'ADMIN : la course a bien eu lieu, il ne fait que constater
+    // une fin que le livreur n'a pas enregistrée.
+    if (newStatus === 'LIVRER' && order.status === 'PRET' && order.isDelivery) {
+      throw new BadRequestException(
+        'Cette commande doit être livrée : seul le livreur peut la marquer comme ' +
+          'livrée, une fois la course terminée. Le passage direct est réservé aux ' +
+          'commandes à emporter.',
       );
     }
   }

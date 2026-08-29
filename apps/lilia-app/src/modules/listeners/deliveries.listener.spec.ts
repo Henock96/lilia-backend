@@ -1,5 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { DriverStatus, IncidentType } from '@prisma/client';
+import {
+  DeliveryStatus,
+  DriverStatus,
+  IncidentSeverity,
+  IncidentType,
+} from '@prisma/client';
 
 import { DeliveriesListener } from './deliveries.listener';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -155,16 +160,25 @@ describe('DeliveriesListener', () => {
   });
 
   describe('échec de livraison', () => {
-    const failed = new DeliveryFailedEvent(
-      'd1',
-      'o1abcdef',
-      'resto1',
-      'client-1',
-      'liv-1',
-      'Chez Maman Lili',
-      'Client injoignable',
-      'liv-1',
-    );
+    /// Deux échecs, distingués par l'état de la course au moment du signalement.
+    const failedAt = (previousStatus: DeliveryStatus) =>
+      new DeliveryFailedEvent(
+        'd1',
+        'o1abcdef',
+        'resto1',
+        'client-1',
+        'liv-1',
+        'Chez Maman Lili',
+        'Client injoignable',
+        'liv-1',
+        previousStatus,
+      );
+
+    /** Échec en pleine course : le client attend dans la rue. */
+    const failed = failedAt(DeliveryStatus.EN_TRANSIT);
+
+    /** Désistement avant récupération : le repas est encore au comptoir. */
+    const failedBeforePickup = failedAt(DeliveryStatus.ACCEPTER);
 
     it('prévient le vendeur avec une action explicite', async () => {
       await listener.handleFailed(failed);
@@ -182,6 +196,41 @@ describe('DeliveriesListener', () => {
       await listener.handleFailed(failed);
 
       expect(titlesFor('client-1')).toContain('Incident de livraison');
+    });
+
+    it('n’alarme PAS le client quand le livreur se désiste avant récupération', async () => {
+      // La commande est encore `PRET` au comptoir : le client n'a jamais été
+      // prévenu d'un départ. Lui annoncer que sa commande « n'a pas pu être
+      // livrée » l'inquiéterait pour un incident invisible de son côté, que le
+      // vendeur règle en réassignant un livreur.
+      await listener.handleFailed(failedBeforePickup);
+
+      expect(titlesFor('client-1')).toHaveLength(0);
+    });
+
+    it('prévient quand même le vendeur, qui doit réassigner', async () => {
+      await listener.handleFailed(failedBeforePickup);
+
+      const call = notifications.sendPushNotification.mock.calls.find(
+        (c) => c[0] === 'owner-1',
+      );
+      expect(call[1]).toContain('désisté');
+      expect(call[2]).toContain('toujours chez vous');
+    });
+
+    it('ne classe pas un désistement annoncé comme un livreur disparu', async () => {
+      // `DRIVER_NO_SHOW` / `HIGH` pour un livreur qui prévient d'une panne
+      // avant de partir, c'est sanctionner le comportement qu'on veut
+      // encourager. L'incident reste tracé — la commande doit être
+      // réassignée — mais sans accusation.
+      await listener.handleFailed(failedBeforePickup);
+
+      expect(incidents.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: IncidentType.OTHER,
+          severity: IncidentSeverity.MEDIUM,
+        }),
+      );
     });
 
     it('libère le livreur et trace un incident', async () => {

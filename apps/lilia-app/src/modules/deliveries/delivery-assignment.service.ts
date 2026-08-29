@@ -15,6 +15,7 @@ import {
   DeliveryAcceptedEvent,
   DeliveryAssignedEvent,
   DeliveryPickedUpEvent,
+  DeliveryUnassignedEvent,
 } from '../events/delivery-events';
 
 /**
@@ -284,6 +285,70 @@ export class DeliveryAssignmentService {
     );
 
     return updated;
+  }
+
+  /**
+   * Le livreur refuse la mission qui lui a été confiée.
+   *
+   * Sans ce chemin, il n'avait que deux options : ignorer la mission — qui
+   * restait alors `ASSIGNER` indéfiniment, sans que le vendeur l'apprenne — ou
+   * accepter puis « signaler un échec », qui trace un incident
+   * `DRIVER_NO_SHOW` de sévérité HIGH. Refuser poliment une course n'est ni
+   * un abandon ni un incident.
+   *
+   * La livraison redevient assignable (`EN_ATTENTE`, sans livreur) et le
+   * vendeur est prévenu qu'il doit en désigner un autre.
+   */
+  async declineDelivery(
+    deliveryId: string,
+    firebaseUid: string,
+    reason?: string,
+  ) {
+    const user = await this.getUserOrThrow(firebaseUid);
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
+      include: { order: { select: { restaurantId: true } } },
+    });
+
+    if (!delivery) throw new NotFoundException('Livraison introuvable.');
+    if (delivery.delivererId !== user.id) {
+      throw new ForbiddenException('Cette livraison ne vous est pas assignée');
+    }
+
+    // On ne refuse que ce qu'on n'a pas encore pris en charge. Après
+    // acceptation, le livreur s'est engagé : le chemin est « signaler un
+    // échec », qui prévient le client et trace l'incident.
+    if (delivery.status !== DeliveryStatus.ASSIGNER) {
+      throw new BadRequestException(
+        delivery.status === DeliveryStatus.ACCEPTER
+          ? 'Vous avez déjà accepté cette mission. Signalez un échec si vous ne pouvez plus la faire.'
+          : 'Cette mission ne peut plus être refusée.',
+      );
+    }
+
+    const claimed = await this.prisma.delivery.updateMany({
+      where: { id: deliveryId, status: DeliveryStatus.ASSIGNER },
+      data: { status: DeliveryStatus.EN_ATTENTE, delivererId: null },
+    });
+    if (claimed.count === 0) {
+      throw new ConflictException(
+        'Cette mission a changé d’état entre-temps. Rechargez vos missions.',
+      );
+    }
+
+    this.eventEmitter.emit(
+      'delivery.unassigned',
+      new DeliveryUnassignedEvent(
+        delivery.id,
+        delivery.orderId,
+        delivery.order.restaurantId,
+        user.id,
+        'declined',
+        reason?.trim() || null,
+      ),
+    );
+
+    return { message: 'Mission refusée. Elle est de nouveau assignable.' };
   }
 
   /**

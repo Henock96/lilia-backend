@@ -5,7 +5,6 @@ import {
   IsEnum,
   IsInt,
   IsNotEmpty,
-  IsNumber,
   IsOptional,
   IsString,
   IsUrl,
@@ -34,7 +33,10 @@ class CreateProductVariantDto {
   // @Min(0) : sans lui, une variante à -50 000 faisait chuter le sous-total du
   // panier et rendait `serviceFee` négatif — le vendeur pouvait fabriquer une
   // commande gratuite (fix H3).
-  @IsNumber()
+  @IsInt({
+    message:
+      'Un montant en francs CFA est un nombre entier — le XAF n’a pas de sous-unité.',
+  })
   @IsNotEmpty()
   @Min(0, { message: 'Le prix ne peut pas être négatif.' })
   @Max(MAX_PRIX_XAF, { message: 'Prix hors limites.' })
@@ -54,7 +56,10 @@ export class CreateProductDto {
   @IsOptional()
   imageUrl?: string;
 
-  @IsNumber()
+  @IsInt({
+    message:
+      'Un montant en francs CFA est un nombre entier — le XAF n’a pas de sous-unité.',
+  })
   @IsNotEmpty()
   @Min(0, { message: 'Le prix ne peut pas être négatif.' })
   @Max(MAX_PRIX_XAF, { message: 'Prix hors limites.' })

@@ -2,6 +2,8 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectRedis } from '@nestjs-modules/ioredis';
 import Redis from 'ioredis';
 
+import { shouldRunBackgroundJobs } from '../../config/background-jobs';
+
 /**
  * Verrou distribué pour les tâches planifiées (fix M8 — audit du 28/08/2026).
  *
@@ -32,6 +34,27 @@ export class CronLockService {
     ttlSeconds: number,
     task: () => Promise<T>,
   ): Promise<T | undefined> {
+    // `RUN_BACKGROUND_JOBS` est lu **ici**, à l'exécution, et non à la
+    // construction des modules (audit post-correction, B-2).
+    //
+    // Les modules filtraient déjà leurs providers avec `shouldRunBackgroundJobs()`,
+    // mais un décorateur `@Module` s'évalue à l'import du fichier — donc avant
+    // que `ConfigModule.forRoot()` n'ait chargé le `.env`. Un
+    // `RUN_BACKGROUND_JOBS=false` posé dans un fichier `.env` était donc lu
+    // comme `undefined`, et le processus web continuait à exécuter les crons
+    // qu'on croyait avoir désactivés. Sur Render la variable est un vrai
+    // `process.env` et le filtre fonctionnait ; en local et sur tout
+    // déploiement qui s'appuie sur un `.env`, non.
+    //
+    // Tous les jobs de fond passent par ce point d'entrée : c'est le seul
+    // endroit où la garde est à la fois unique et évaluée assez tard.
+    if (!shouldRunBackgroundJobs()) {
+      this.logger.debug(
+        `« ${jobName} » ignoré : RUN_BACKGROUND_JOBS=false sur ce processus.`,
+      );
+      return undefined;
+    }
+
     const key = `cron_lock:${jobName}`;
 
     if (!this.redis) {

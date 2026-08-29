@@ -1,16 +1,17 @@
 import { Module } from '@nestjs/common';
-import { PrismaModule } from '../../prisma/prisma.module';
-import { PlatformSettingsService } from './platform-settings.service';
+import { PlatformSettingsCoreModule } from './platform-settings-core.module';
 import {
   PlatformSettingsController,
   PublicPlatformSettingsController,
 } from './platform-settings.controller';
-import { MaintenanceGuard } from './guards/maintenance.guard';
 
+/**
+ * Ajoute l'exposition HTTP au service porté par `PlatformSettingsCoreModule`.
+ * Un consommateur qui veut seulement *lire* les réglages importe le core.
+ */
 @Module({
-  imports: [PrismaModule],
+  imports: [PlatformSettingsCoreModule],
   controllers: [PublicPlatformSettingsController, PlatformSettingsController],
-  providers: [PlatformSettingsService, MaintenanceGuard],
-  exports: [PlatformSettingsService, MaintenanceGuard],
+  exports: [PlatformSettingsCoreModule],
 })
 export class PlatformSettingsModule {}

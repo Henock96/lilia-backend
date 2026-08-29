@@ -1,6 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { DriverStatus, IncidentSeverity, IncidentType } from '@prisma/client';
+import {
+  DeliveryStatus,
+  DriverStatus,
+  IncidentSeverity,
+  IncidentType,
+} from '@prisma/client';
 
 import { NotificationsService } from '../notifications/notifications.service';
 import { IncidentsService } from '../incidents/incidents.service';
@@ -167,9 +172,25 @@ export class DeliveriesListener {
 
   /**
    * Un échec ne décide pas du sort de la commande : le vendeur arbitre entre
-   * réassigner et annuler. On le prévient (action requise), on informe le
-   * client sans lui promettre une issue, et on trace un incident pour qu'une
-   * commande oubliée reste visible dans la supervision.
+   * réassigner et annuler. On le prévient (action requise), on trace un
+   * incident pour qu'une commande oubliée reste visible en supervision, et on
+   * n'informe le client **que s'il attendait effectivement quelque chose**.
+   *
+   * Deux échecs très différents partagent ce chemin (audit post-correction,
+   * B-4) :
+   *
+   *  - **avant récupération** (`ASSIGNER` / `ACCEPTER`) — le repas est encore
+   *    au comptoir, la commande est `PRET`, le client n'a jamais reçu « votre
+   *    commande est en route ». Il suffit au vendeur de réassigner. Prévenir
+   *    le client que « sa commande n'a pas pu être livrée » l'alarmerait pour
+   *    un incident qu'il n'aurait jamais dû voir ;
+   *  - **en pleine course** (`EN_TRANSIT`) — le client a été prévenu du
+   *    départ et attend dans la rue. Là, le silence serait la faute.
+   *
+   * La gravité de l'incident suit la même ligne. Tout classer
+   * `DRIVER_NO_SHOW` / `HIGH` revenait à sanctionner de la même façon le
+   * livreur qui prévient d'une panne avant de partir et celui qui disparaît
+   * avec la commande — en décourageant précisément le premier comportement.
    */
   @OnEvent('delivery.failed')
   async handleFailed(event: DeliveryFailedEvent) {
@@ -181,13 +202,20 @@ export class DeliveriesListener {
     const shortId = event.orderId.slice(-6).toUpperCase();
     const tasks: Promise<unknown>[] = [];
 
+    // Le repas avait-il quitté le comptoir ?
+    const wasEnRoute = event.previousStatus === DeliveryStatus.EN_TRANSIT;
+
     if (restaurant) {
       tasks.push(
         this.notifications.sendPushNotification(
           restaurant.ownerId,
-          '⚠️ Livraison échouée — action requise',
+          wasEnRoute
+            ? '⚠️ Livraison échouée — action requise'
+            : '⚠️ Le livreur s’est désisté — action requise',
           `Commande #${shortId} : ${event.reason ?? 'la livraison n’a pas abouti'}. ` +
-            'Réassignez un livreur ou annulez la commande.',
+            (wasEnRoute
+              ? 'Réassignez un livreur ou annulez la commande.'
+              : 'La commande est toujours chez vous. Réassignez un livreur.'),
           {
             type: 'delivery_failed',
             orderId: event.orderId,
@@ -198,20 +226,23 @@ export class DeliveriesListener {
       );
     }
 
-    // Le client voyait « votre livreur est en chemin » indéfiniment : la
-    // commande reste EN_ROUTE tant que le vendeur n'a pas tranché.
-    tasks.push(
-      this.notifications.sendPushNotification(
-        event.userId,
-        'Incident de livraison',
-        `Votre commande #${shortId} n’a pas pu être livrée. ` +
-          'Le vendeur vous recontacte pour trouver une solution.',
-        {
-          type: 'delivery_failed_customer',
-          orderId: event.orderId,
-        },
-      ),
-    );
+    // Uniquement si le client avait été prévenu d'un départ : sinon sa
+    // commande est simplement toujours en préparation de son point de vue, et
+    // elle repartira avec un autre livreur sans qu'il ait rien à faire.
+    if (wasEnRoute) {
+      tasks.push(
+        this.notifications.sendPushNotification(
+          event.userId,
+          'Incident de livraison',
+          `Votre commande #${shortId} n’a pas pu être livrée. ` +
+            'Le vendeur vous recontacte pour trouver une solution.',
+          {
+            type: 'delivery_failed_customer',
+            orderId: event.orderId,
+          },
+        ),
+      );
+    }
 
     if (event.delivererId) {
       tasks.push(this.releaseDeliverer(event.delivererId));
@@ -220,9 +251,17 @@ export class DeliveriesListener {
     tasks.push(
       this.incidents
         .create({
-          type: IncidentType.DRIVER_NO_SHOW,
-          severity: IncidentSeverity.HIGH,
-          title: `Livraison échouée #${shortId}`,
+          // `OTHER` plutôt que `DRIVER_NO_SHOW` avant récupération : le
+          // livreur ne s'est pas volatilisé, il a signalé qu'il ne pouvait
+          // pas. L'incident reste tracé — il faut bien que quelqu'un vérifie
+          // que la commande a été réassignée — mais sans accusation.
+          type: wasEnRoute ? IncidentType.DRIVER_NO_SHOW : IncidentType.OTHER,
+          severity: wasEnRoute
+            ? IncidentSeverity.HIGH
+            : IncidentSeverity.MEDIUM,
+          title: wasEnRoute
+            ? `Livraison échouée #${shortId}`
+            : `Livreur désisté avant récupération #${shortId}`,
           description:
             event.reason ?? 'Échec de livraison — aucune raison fournie.',
           orderId: event.orderId,
@@ -231,6 +270,7 @@ export class DeliveriesListener {
           metadata: {
             deliveryId: event.deliveryId,
             failedBy: event.failedBy,
+            previousStatus: event.previousStatus,
           },
         })
         .catch((err: Error) =>
@@ -329,14 +369,49 @@ export class DeliveriesListener {
 
   @OnEvent('delivery.unassigned')
   async handleUnassigned(event: DeliveryUnassignedEvent) {
-    if (event.cause !== 'order_cancelled') return; // la réassignation est traitée plus haut
+    // La réassignation est traitée dans `handleAssigned` (l'ancien livreur y
+    // est prévenu et libéré) : on ne la retraite pas ici.
+    if (event.cause === 'reassigned') return;
 
+    const shortId = event.orderId.slice(-6).toUpperCase();
+
+    if (event.cause === 'declined') {
+      // Le livreur rend la mission : c'est le VENDEUR qui doit agir, il lui
+      // faut quelqu'un d'autre. Le livreur, lui, sait déjà ce qu'il a fait —
+      // le notifier serait du bruit.
+      const restaurant = await this.prisma.restaurant.findUnique({
+        where: { id: event.restaurantId },
+        select: { ownerId: true },
+      });
+
+      await Promise.allSettled([
+        this.releaseDeliverer(event.delivererId),
+        restaurant
+          ? this.notifications.sendPushNotification(
+              restaurant.ownerId,
+              '↩️ Mission refusée — action requise',
+              `Le livreur a refusé la commande #${shortId}` +
+                `${event.reason ? ` (${event.reason})` : ''}. ` +
+                'Assignez un autre livreur.',
+              {
+                type: 'delivery_declined',
+                deliveryId: event.deliveryId,
+                orderId: event.orderId,
+                requiresAction: 'true',
+              },
+            )
+          : Promise.resolve(),
+      ]);
+      return;
+    }
+
+    // cause === 'order_cancelled'
     await Promise.allSettled([
       this.releaseDeliverer(event.delivererId),
       this.notifications.sendPushNotification(
         event.delivererId,
         '❌ Mission annulée',
-        `La commande #${event.orderId.slice(-6).toUpperCase()} a été annulée — ne vous déplacez pas.`,
+        `La commande #${shortId} a été annulée — ne vous déplacez pas.`,
         {
           type: 'delivery_cancelled',
           deliveryId: event.deliveryId,

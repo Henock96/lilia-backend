@@ -46,12 +46,18 @@ export class CreateVendorDto {
   @IsOptional()
   deliveryPriceMode?: DeliveryPriceMode;
 
-  @IsNumber()
+  @IsInt({
+    message:
+      'Un montant en francs CFA est un nombre entier — le XAF n’a pas de sous-unité.',
+  })
   @IsOptional()
   @Min(0)
   fixedDeliveryFee?: number;
 
-  @IsNumber()
+  @IsInt({
+    message:
+      'Un montant en francs CFA est un nombre entier — le XAF n’a pas de sous-unité.',
+  })
   @IsOptional()
   @Min(0)
   minimumOrderAmount?: number;

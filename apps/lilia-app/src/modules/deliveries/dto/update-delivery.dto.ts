@@ -47,3 +47,17 @@ export class AssignDeliveryDto {
   @IsString()
   delivererId: string;
 }
+
+/**
+ * Corps de `PATCH /deliveries/:id/decline`.
+ *
+ * Le motif est optionnel : exiger une justification pour refuser une course
+ * pousse au contournement (le livreur ignore la mission au lieu de la rendre),
+ * ce qui est précisément le comportement qu'on veut éviter.
+ */
+export class DeclineDeliveryDto {
+  @IsString()
+  @MaxLength(300, { message: 'Le motif est limité à 300 caractères' })
+  @IsOptional()
+  reason?: string;
+}

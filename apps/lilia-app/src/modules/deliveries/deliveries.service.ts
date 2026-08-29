@@ -269,6 +269,9 @@ export class DeliveriesService {
           delivery.order.restaurant.nom,
           reason ?? null,
           user.id,
+          // `delivery` a été lue avant la mise à jour : c'est bien l'état
+          // d'origine, celui qui dit si le repas avait quitté le comptoir.
+          delivery.status,
         ),
       );
     }
@@ -299,6 +302,19 @@ export class DeliveriesService {
 
   async acceptDelivery(deliveryId: string, firebaseUid: string) {
     return this.assignmentService.acceptDelivery(deliveryId, firebaseUid);
+  }
+
+  /** Le livreur refuse une mission qu'il n'a pas encore acceptée. */
+  async declineDelivery(
+    deliveryId: string,
+    firebaseUid: string,
+    reason?: string,
+  ) {
+    return this.assignmentService.declineDelivery(
+      deliveryId,
+      firebaseUid,
+      reason,
+    );
   }
 
   /**

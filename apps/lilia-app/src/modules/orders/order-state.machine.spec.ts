@@ -29,6 +29,16 @@ describe('OrderStateMachine — matrice complète', () => {
     'LIVREUR',
   ];
 
+  /**
+   * ⚠️ Ce bloc dérive ses attentes de `ORDER_TRANSITION_MATRIX` : il vérifie
+   * que `assertTransition` **lit** correctement la matrice, jamais que la
+   * matrice est **juste**. Une règle métier fausse y passerait sans bruit —
+   * c'est exactement ce qui est arrivé à B-1, où le vendeur pouvait déclarer
+   * `PRET → EN_ROUTE` : les 204 cas passaient au vert.
+   *
+   * Les règles métier se testent en dur, dans le bloc suivant. **Toute règle
+   * qui compte doit y avoir sa ligne écrite à la main.**
+   */
   describe('exhaustivité : chaque (from, to, acteur) fait ce que la matrice dit', () => {
     for (const from of ALL_STATUSES) {
       for (const to of ALL_STATUSES) {
@@ -78,6 +88,39 @@ describe('OrderStateMachine — matrice complète', () => {
         ).not.toThrow();
       },
     );
+
+    it('B-1 — le RESTAURATEUR ne peut PAS déclarer une commande en route', () => {
+      // `EN_ROUTE` déclenche « 🛵 Votre livreur est en chemin ! » côté client.
+      // Le vendeur n'a aucun moyen de savoir si c'est vrai : le seul geste qui
+      // l'établit est la confirmation de récupération par le livreur.
+      expect(() =>
+        machine.assertTransition('PRET', 'EN_ROUTE', 'RESTAURATEUR'),
+      ).toThrow(ForbiddenException);
+    });
+
+    it('B-1 — le LIVREUR, lui, le peut (chemin de la récupération)', () => {
+      expect(() =>
+        machine.assertTransition('PRET', 'EN_ROUTE', 'LIVREUR'),
+      ).not.toThrow();
+    });
+
+    it('B-1 — le vendeur clôture une commande à emporter sans passer par EN_ROUTE', () => {
+      // Contrepartie du retrait ci-dessus : sans ce raccourci, une commande au
+      // comptoir n'aurait plus aucun chemin vers LIVRER. La restriction
+      // « uniquement si `isDelivery === false` » est portée par
+      // `OrderLifecycleService`, que la matrice ne peut pas exprimer.
+      expect(() =>
+        machine.assertTransition('PRET', 'LIVRER', 'RESTAURATEUR'),
+      ).not.toThrow();
+    });
+
+    it('B-1 — le vendeur ne clôture pas une course déjà en route', () => {
+      // Une commande `EN_ROUTE` a un livreur : c'est lui (ou un ADMIN qui
+      // constate) qui la termine, pas le vendeur resté à son comptoir.
+      expect(() =>
+        machine.assertTransition('EN_ROUTE', 'LIVRER', 'RESTAURATEUR'),
+      ).toThrow(ForbiddenException);
+    });
 
     it('les états terminaux le restent', () => {
       for (const to of ALL_STATUSES) {

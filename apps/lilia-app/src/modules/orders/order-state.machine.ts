@@ -42,14 +42,28 @@ export const ORDER_TRANSITION_MATRIX: Record<
     ANNULER: ['RESTAURATEUR', 'ADMIN'], // fix M16 : rupture en cuisine
   },
   PRET: {
-    EN_ROUTE: ['RESTAURATEUR', 'ADMIN', 'LIVREUR'],
+    // Le RESTAURATEUR a été retiré d'`EN_ROUTE` (audit post-correction, B-1).
+    // Il pouvait déclencher « 🛵 Votre livreur est en chemin ! » par
+    // `PATCH /orders/:id/status` alors qu'aucun livreur n'avait rien récupéré
+    // — ce qui rouvrait, par une autre porte, la confusion que la séparation
+    // `ACCEPTER` / `EN_TRANSIT` venait justement de fermer.
+    //
+    // Le geste réel du départ est `PATCH /deliveries/:id/pickup`, qui bascule
+    // la commande lui-même. L'ADMIN reste listé pour rattraper une course
+    // bloquée, mais `OrderLifecycleService` lui impose une `Delivery` en
+    // `EN_TRANSIT` : le statut ne peut plus mentir sur le terrain.
+    EN_ROUTE: ['LIVREUR', 'ADMIN'],
+    // Retrait au comptoir : la commande passe de main à main, elle n'est
+    // jamais « en route ». Le vendeur la clôture donc directement, au lieu de
+    // traverser `EN_ROUTE` — ce détour était la seule raison pour laquelle il
+    // avait besoin de ce statut. `OrderLifecycleService` vérifie
+    // `isDelivery === false` : une commande à livrer ne peut pas être déclarée
+    // livrée sans qu'un livreur l'ait prise.
+    LIVRER: ['RESTAURATEUR', 'ADMIN'],
     ANNULER: ['RESTAURATEUR', 'ADMIN'], // fix M16 : plus aucun livreur
   },
   EN_ROUTE: {
-    // RESTAURATEUR autorisé pour clôturer les commandes en retrait (sans
-    // livreur) et pour rester cohérent avec le rôle accepté par le
-    // controller (B25).
-    LIVRER: ['LIVREUR', 'RESTAURATEUR', 'ADMIN'],
+    LIVRER: ['LIVREUR', 'ADMIN'],
     ANNULER: ['ADMIN'], // fix M16 : arbitrage humain uniquement
   },
   LIVRER: {}, // terminal

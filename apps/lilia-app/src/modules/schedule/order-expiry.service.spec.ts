@@ -61,6 +61,7 @@ describe('OrderExpiryService', () => {
 
     await service.expireUnpaidOrders();
 
+    const after = Date.now();
     const branches = prisma.order.findMany.mock.calls[0][0].where.AND[1].OR;
     const [noPayment, pendingPayment] = branches;
 
@@ -72,9 +73,18 @@ describe('OrderExpiryService', () => {
     expect(pendingPayment.createdAt.lt.getTime()).toBeLessThan(
       noPayment.createdAt.lt.getTime(),
     );
-    expect(before - noPayment.createdAt.lt.getTime()).toBeGreaterThanOrEqual(
-      45 * 60_000,
-    );
+
+    // Le cutoff est calculé PENDANT l'appel : il vaut `Date.now() − 45 min`
+    // pour un `Date.now()` compris entre `before` et `after`. On encadre donc
+    // au lieu de comparer à `before` seul.
+    //
+    // La version précédente affirmait `before − cutoff >= 45 min`, ce qui
+    // n'est vrai que si les deux horodatages tombent dans la MÊME
+    // milliseconde : le test passait par chance en exécution normale et
+    // échouait sous `--coverage`, plus lent à cause de l'instrumentation.
+    const cutoff = noPayment.createdAt.lt.getTime();
+    expect(cutoff).toBeGreaterThanOrEqual(before - 45 * 60_000);
+    expect(cutoff).toBeLessThanOrEqual(after - 45 * 60_000);
   });
 
   it('épargne les précommandes dont l’échéance n’est pas passée', async () => {

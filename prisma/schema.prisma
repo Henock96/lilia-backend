@@ -369,8 +369,6 @@ model CartItem {
   variantId String
   quantite  Int
   createdAt DateTime       @default(now())
-  //04/04/2026 Nouveau champ — nullable au début pour ne pas casser l'existant
-  itemKey   String? // "productId:variantId:menuId|none"
 
   // ⚠️ En PostgreSQL, `NULL != NULL` : cette contrainte ne protège PAS les
   // lignes `menuId = null`, c'est-à-dire les produits individuels — soit le cas
@@ -382,7 +380,6 @@ model CartItem {
   @@index([variantId])
   @@index([productId])
   @@index([menuId])
-  @@index([cartId, itemKey]) // index de remplacement
 }
 
 // 04/04/2026 ÉTAPE 1 — Ajouter les nouveaux enums (non-breaking)

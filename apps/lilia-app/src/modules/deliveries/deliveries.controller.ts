@@ -13,7 +13,7 @@ import { ApiBearerAuth, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestj
 import { DecodedIdToken } from 'firebase-admin/auth';
 
 import { DeliveriesService } from './deliveries.service';
-import { AssignDeliveryDto, DeliveryStatus, SetDriverStatusDto, UpdateDeliveryStatusDto } from './dto/update-delivery.dto';
+import { AssignDeliveryDto, DeclineDeliveryDto, DeliveryStatus, SetDriverStatusDto, UpdateDeliveryStatusDto } from './dto/update-delivery.dto';
 import { UpdateLocationDto } from './dto/update-location.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -185,6 +185,25 @@ export class DeliveriesController {
     @FirebaseUser() fbUser: DecodedIdToken,
   ) {
     return this.deliveriesService.acceptDelivery(id, fbUser.uid);
+  }
+
+  /**
+   * PATCH /deliveries/:id/decline
+   *
+   * Le livreur rend une mission qu'il n'a pas encore acceptée. La livraison
+   * redevient assignable et le vendeur est prévenu.
+   */
+  @Patch(':id/decline')
+  @Roles('LIVREUR')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Refuser une mission non encore acceptée' })
+  @ApiParam({ name: 'id' })
+  declineDelivery(
+    @Param('id') id: string,
+    @Body() dto: DeclineDeliveryDto,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return this.deliveriesService.declineDelivery(id, fbUser.uid, dto.reason);
   }
 
   /**

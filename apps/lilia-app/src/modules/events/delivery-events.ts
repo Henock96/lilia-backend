@@ -119,20 +119,40 @@ export class DeliveryFailedEvent extends BaseDeliveryEvent {
     public readonly restaurantName: string,
     public readonly reason: string | null,
     public readonly failedBy: string,
+    /**
+     * État de la livraison **avant** l'échec.
+     *
+     * Sépare deux situations que le système confondait : un livreur qui
+     * renonce avant d'avoir pris le repas (`ASSIGNER` / `ACCEPTER`) — la
+     * commande est encore au comptoir, personne n'attend dans la rue — et un
+     * échec en pleine course (`EN_TRANSIT`), où le client a déjà reçu « votre
+     * commande est en route ». Les deux n'appellent ni la même notification
+     * client, ni la même gravité d'incident.
+     */
+    public readonly previousStatus: DeliveryStatus,
     timestamp?: Date,
   ) {
     super(deliveryId, orderId, restaurantId, timestamp);
   }
 }
 
-/** La mission d'un livreur lui est retirée (réassignation ou annulation). */
+/**
+ * La mission d'un livreur lui est retirée, ou il la rend.
+ *
+ * `declined` : le livreur refuse explicitement. Sans ce chemin, il n'avait que
+ * deux options — ignorer la mission, qui restait alors `ASSIGNER`
+ * indéfiniment sans que le vendeur l'apprenne, ou accepter puis « signaler un
+ * échec », qui trace un incident `DRIVER_NO_SHOW` de sévérité HIGH :
+ * sémantiquement faux pour quelqu'un qui décline poliment une course.
+ */
 export class DeliveryUnassignedEvent extends BaseDeliveryEvent {
   constructor(
     deliveryId: string,
     orderId: string,
     restaurantId: string,
     public readonly delivererId: string,
-    public readonly cause: 'reassigned' | 'order_cancelled',
+    public readonly cause: 'reassigned' | 'order_cancelled' | 'declined',
+    public readonly reason?: string | null,
     timestamp?: Date,
   ) {
     super(deliveryId, orderId, restaurantId, timestamp);

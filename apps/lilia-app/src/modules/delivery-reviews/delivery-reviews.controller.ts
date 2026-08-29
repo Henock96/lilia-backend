@@ -16,7 +16,6 @@ import { DeliveryReviewsService } from './delivery-reviews.service';
 import { CreateDeliveryReviewDto } from './dto/create-delivery-review.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { Public } from '../auth/decorators/public.decorator';
 import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
 
 @ApiTags('DeliveryReviews')
@@ -54,10 +53,23 @@ export class DeliveryReviewsController {
   /**
    * Note moyenne d'un livreur.
    *
-   * Publique : c'est une information d'affichage (comme la note d'un vendeur),
-   * et elle ne contient ni identité de client ni détail de course.
+   * **Authentifiée**, contrairement à la note d'un vendeur à laquelle elle
+   * avait été assimilée (audit post-correction, B-5). La différence est que
+   * l'objet noté est ici une personne, pas un commerce : la moyenne et la
+   * distribution des notes d'un livreur constituent une évaluation de
+   * performance individuelle.
+   *
+   * Ouverte sans authentification, elle permettait de balayer les identifiants
+   * de livreurs — que `GET /deliveries/deliverers` et les payloads de course
+   * exposent aux vendeurs — pour reconstituer le classement de tous les
+   * livreurs de la plateforme depuis l'extérieur.
+   *
+   * Aucun appelant anonyme n'en avait besoin : les deux consommateurs (app
+   * livreur pour ses propres notes, app admin pour la supervision) sont
+   * authentifiés. Le rôle reste large — un client peut légitimement voir la
+   * note de celui qui lui livre.
    */
-  @Public()
+  @Roles('CLIENT', 'LIVREUR', 'RESTAURATEUR', 'ADMIN')
   @Get('deliverer/:delivererId/stats')
   @ApiOperation({ summary: 'Note moyenne et distribution d’un livreur' })
   @ApiParam({ name: 'delivererId' })
