@@ -4,14 +4,24 @@ import { ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { DecodedIdToken } from 'firebase-admin/auth';
 
-import { PaymentService, CreatePaymentRequest } from '../services/payment.service';
+import { PaymentService } from '../services/payment.service';
+import { CreatePaymentDto } from '../dto/create-payment.dto';
+import { RejectPaymentDto } from '../dto/reject-payment.dto';
+import { CurrentUser } from '../../auth/decorators/current-user.decorator';
+import { AdminAuditService } from '../../admin-audit/admin-audit.service';
+import { AdminAuditAction, User } from '@prisma/client';
 import { FirebaseUser } from '../../auth/decorators/firebase-user.decorator';
 import { Roles } from '../../auth/decorators/roles.decorator';
 
 @ApiBearerAuth()
 @Controller('payments')
 export class PaymentController {
-  constructor(private readonly paymentService: PaymentService) {}
+  constructor(
+    private readonly paymentService: PaymentService,
+    // Confirmer un virement, c'est décider qu'une commande est payée : la
+    // trace doit survivre à la rotation des logs (audit du 28/08/2026).
+    private readonly audit: AdminAuditService,
+  ) {}
 
   /**
    * Initie un paiement.
@@ -25,7 +35,7 @@ export class PaymentController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Initier un paiement pour une commande' })
   async createPayment(
-    @Body() request: CreatePaymentRequest,
+    @Body() request: CreatePaymentDto,
     @FirebaseUser() fbUser: DecodedIdToken,
   ) {
     return this.paymentService.createPayment(request, fbUser.uid);
@@ -56,10 +66,18 @@ export class PaymentController {
     summary: 'Confirmer un paiement manuellement (admin)',
     description: 'Utilisé en mode MANUAL — l\'admin valide le virement MTN reçu.',
   })
-  confirmPayment(
+  async confirmPayment(
     @Param('paymentId') paymentId: string,
+    @CurrentUser() admin: User,
   ) {
-    return this.paymentService.confirmManualPayment(paymentId);
+    const result = await this.paymentService.confirmManualPayment(paymentId);
+    await this.audit.record({
+      actorId: admin.id,
+      action: AdminAuditAction.PAYMENT_CONFIRMED,
+      targetType: 'Payment',
+      targetId: paymentId,
+    });
+    return result;
   }
 
   /**
@@ -74,10 +92,22 @@ export class PaymentController {
     summary: 'Rejeter un paiement manuellement (admin)',
     description: 'Utilisé en mode MANUAL — l\'admin n\'a pas retrouvé le virement MTN.',
   })
-  rejectPayment(
+  async rejectPayment(
     @Param('paymentId') paymentId: string,
-    @Body('reason') reason?: string,
+    @Body() dto: RejectPaymentDto,
+    @CurrentUser() admin: User,
   ) {
-    return this.paymentService.rejectManualPayment(paymentId, reason);
+    const result = await this.paymentService.rejectManualPayment(
+      paymentId,
+      dto.reason,
+    );
+    await this.audit.record({
+      actorId: admin.id,
+      action: AdminAuditAction.PAYMENT_REJECTED,
+      targetType: 'Payment',
+      targetId: paymentId,
+      reason: dto.reason,
+    });
+    return result;
   }
 }

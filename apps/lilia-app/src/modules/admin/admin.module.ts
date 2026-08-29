@@ -12,9 +12,10 @@ import { AdminRestaurantsService } from './admin-restaurants.service';
 import { FirebaseModule } from '../firebase/firebase.module';
 import { AuthModule } from '../auth/auth.module';
 import { VendorsModule } from '../vendors/vendors.module';
+import { LoyaltyModule } from '../loyalty/loyalty.module';
 
 @Module({
-  imports: [FirebaseModule, AuthModule, VendorsModule], // VendorsModule expose VendorsService
+  imports: [FirebaseModule, AuthModule, VendorsModule, LoyaltyModule], // VendorsModule expose VendorsService ; LoyaltyModule expose la réconciliation (M13)
   controllers: [AdminController],
   providers: [
     AdminService,

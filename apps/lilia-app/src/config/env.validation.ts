@@ -17,6 +17,10 @@ export const envValidationSchema = Joi.object({
     .valid('development', 'staging', 'production', 'test')
     .default('development'),
   PORT: Joi.number().port().default(8080),
+  // Nombre de proxys de confiance devant l'app (Render en place 1). Sert à
+  // `app.set('trust proxy', n)` : sans ça, `req.ip` vaut l'IP du load balancer
+  // et le rate limiting devient un compteur global (fix C4).
+  TRUST_PROXY_HOPS: Joi.number().integer().min(0).max(5).default(1),
 
   // ─── Logs (nestjs-pino) ──────────────────────────────────────────────────
   // Niveau pino. Défaut résolu au runtime (info en prod, debug sinon).
@@ -45,10 +49,22 @@ export const envValidationSchema = Joi.object({
     otherwise: Joi.optional().allow(''),
   }),
 
-  // ─── Redis / WebSocket / idempotency (optionnel — dégradé si absent) ──────
+  // ─── Redis — REQUIS en production (fix M11) ───────────────────────────────
+  // Sans Redis, trois contrôles se dégradent **en silence** :
+  //  · idempotence du checkout désactivée (doubles commandes) ;
+  //  · rate limiting en mémoire, donc par instance — la limite effective est
+  //    multipliée par le nombre d'instances ;
+  //  · verrous de cron inopérants (notifications vendeur en double) ;
+  //  et le tracking WebSocket multi-instance ne fonctionne plus.
+  // Un service de production qui démarre sans Redis démarre à moitié : on
+  // préfère échouer au boot, comme pour ALLOWED_ORIGINS.
   REDIS_URL: Joi.string()
     .uri({ scheme: ['redis', 'rediss'] })
-    .optional(),
+    .when('NODE_ENV', {
+      is: 'production',
+      then: Joi.required(),
+      otherwise: Joi.optional(),
+    }),
 
   // ─── Cloudinary ───────────────────────────────────────────────────────────
   CLOUDINARY_CLOUD_NAME: Joi.string().allow('').optional(),
@@ -104,6 +120,12 @@ export const envValidationSchema = Joi.object({
     .integer()
     .min(30)
     .default(360),
+
+  // ─── Parrainage ───────────────────────────────────────────────────────────
+  // Plafond de filleuls récompensés par parrain sur 30 jours glissants
+  // (fix C3) : l'inscription Firebase est gratuite et illimitée, rien ne
+  // corrèle deux comptes. 0 désactive le plafond.
+  REFERRAL_MAX_REWARDS_PER_MONTH: Joi.number().integer().min(0).default(10),
 
   // ─── SMS Infobip ──────────────────────────────────────────────────────────
   INFOBIP_API_KEY: Joi.string().allow('').optional(),

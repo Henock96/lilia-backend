@@ -142,22 +142,17 @@ export class CartMenusService {
       throw new NotFoundException("Ce menu n'est pas dans votre panier.");
     }
 
-    if (dto.quantite === 0) {
-      // Supprimer tout le groupe
-      await this.prisma.cartItem.deleteMany({
-        where: { cartId: cart.id, menuId },
-      });
-    } else {
-      // Mettre à jour la quantité de tous les items
-      await this.prisma.$transaction(
-        menuItems.map((item) =>
-          this.prisma.cartItem.update({
-            where: { id: item.id },
-            data: { quantite: dto.quantite },
-          }),
-        ),
-      );
-    }
+    // `UpdateCartItemDto` impose `@Min(1)` : la branche « quantite === 0 =
+    // suppression du groupe » était inatteignable depuis HTTP (fix L1). Pour
+    // retirer un menu, le client appelle DELETE /cart/menus/:menuId.
+    await this.prisma.$transaction(
+      menuItems.map((item) =>
+        this.prisma.cartItem.update({
+          where: { id: item.id },
+          data: { quantite: dto.quantite },
+        }),
+      ),
+    );
 
     return this.common.getCart(firebaseUid);
   }

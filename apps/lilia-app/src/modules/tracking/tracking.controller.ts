@@ -53,11 +53,10 @@ export class TrackingController {
     );
 
     // Broadcast aux clients connectés via WebSocket
-    this.gateway.server?.to(`order:${body.orderId}`)?.emit('driver:position', {
+    this.gateway.broadcastDriverPosition(body.orderId, {
       lat: body.lat,
       lng: body.lng,
       eta,
-      timestamp: Date.now(),
       source: 'http',
     });
 
@@ -112,11 +111,10 @@ export class TrackingController {
       last.lng,
     );
 
-    this.gateway.server?.to(`order:${body.orderId}`)?.emit('driver:position', {
+    this.gateway.broadcastDriverPosition(body.orderId, {
       lat: last.lat,
       lng: last.lng,
       eta,
-      timestamp: Date.now(),
       source: 'http-batch',
     });
 

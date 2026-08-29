@@ -13,6 +13,7 @@ import { PromoService } from '../promo/promo.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { PreorderValidatorService } from '../vendors/preorder-validator.service';
 import { QuartiersService } from '../quartiers/quartiers.service';
+import { OutboxService } from '../outbox/outbox.service';
 
 /**
  * Garde d'idempotence du checkout.
@@ -123,6 +124,13 @@ describe('OrderCheckoutService — idempotence', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        {
+          provide: OutboxService,
+          useValue: {
+            enqueueInTransaction: jest.fn().mockResolvedValue('outbox-1'),
+            markSent: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         OrderCheckoutService,
         { provide: PrismaService, useValue: prisma },
         { provide: OrderValidatorService, useValue: validator },

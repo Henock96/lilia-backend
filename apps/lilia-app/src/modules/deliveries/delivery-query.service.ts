@@ -122,7 +122,20 @@ export class DeliveryQueryService {
   /**
    * Récupère les livraisons assignées à un livreur
    */
-  async findAllForDeliverer(firebaseUid: string, status?: DeliveryStatus) {
+  /**
+   * Historique du livreur — **paginé** (fix P1, audit du 28/08/2026).
+   *
+   * La méthode ramenait l'intégralité des courses du livreur, avec pour
+   * chacune la commande, ses items et les produits. Sur un livreur actif
+   * depuis six mois, la réponse ne cesse de grossir — et elle est chargée à
+   * l'ouverture de l'app, sur la 4G de Brazzaville.
+   */
+  async findAllForDeliverer(
+    firebaseUid: string,
+    status?: DeliveryStatus,
+    page = 1,
+    limit = 20,
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { firebaseUid },
     });
@@ -167,11 +180,16 @@ export class DeliveryQueryService {
         },
       },
       orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * limit,
+      take: limit,
     });
+
+    const total = await this.prisma.delivery.count({ where });
 
     return {
       data: deliveries,
       count: deliveries.length,
+      meta: { page, limit, total, hasMore: page * limit < total },
     };
   }
 
@@ -239,16 +257,34 @@ export class DeliveryQueryService {
     };
   }
 
+  /**
+   * Livreurs assignables, pour le vendeur qui doit choisir à qui confier une
+   * course.
+   *
+   * Fix L11 : la méthode retournait **tous** les comptes LIVREUR de la
+   * plateforme — nom et téléphone inclus — sans le moindre filtre de
+   * disponibilité, à tout titulaire d'un compte vendeur. On exclut désormais
+   * les comptes hors ligne, bloqués ou supprimés : un vendeur n'a besoin que
+   * des livreurs à qui il peut réellement confier une course.
+   */
   async getAvailableDeliverers() {
     const deliverers = await this.prisma.user.findMany({
       where: {
         role: 'LIVREUR',
+        statusUser: 'ACTIVE',
+        // `driverStatus` est nullable : un livreur qui ne s'est jamais déclaré
+        // reste assignable (comportement historique), seul OFFLINE est exclu.
+        OR: [
+          { driverStatus: { in: ['AVAILABLE', 'ON_DELIVERY'] } },
+          { driverStatus: null },
+        ],
       },
       select: {
         id: true,
         nom: true,
         phone: true,
         imageUrl: true,
+        driverStatus: true,
         _count: {
           select: {
             deliveries: {

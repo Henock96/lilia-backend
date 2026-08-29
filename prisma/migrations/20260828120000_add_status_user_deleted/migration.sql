@@ -1,0 +1,13 @@
+-- Suppression de compte (RGPD / App Store) : nouveau statut terminal `DELETED`.
+--
+-- On ne supprime PAS la ligne User : depuis `20260827120000_enable_foreign_keys`,
+-- Order / Payment / Delivery / PromoUsage portent une vraie FK vers User et sont
+-- en RESTRICT. Or ce sont des pièces comptables — un DELETE cascade ferait
+-- disparaître du chiffre d'affaires déjà encaissé. `DELETE /users/me` anonymise
+-- donc la ligne et la marque `DELETED`, ce qui la sort de tous les accès
+-- authentifiés (RolesGuard + TrackingGateway).
+--
+-- `ALTER TYPE ... ADD VALUE` est transactionnel depuis PostgreSQL 12 tant que la
+-- nouvelle valeur n'est pas utilisée dans la même transaction — ce qui est le cas
+-- ici : aucun UPDATE n'accompagne l'ajout.
+ALTER TYPE "StatusUser" ADD VALUE 'DELETED';

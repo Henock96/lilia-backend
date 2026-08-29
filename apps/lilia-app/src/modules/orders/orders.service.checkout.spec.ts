@@ -18,6 +18,9 @@ import { PromoService } from '../promo/promo.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { PreorderValidatorService } from '../vendors/preorder-validator.service';
 import { QuartiersService } from '../quartiers/quartiers.service';
+import { LoyaltyService } from '../loyalty/loyalty.service';
+import { RefundsService } from '../refunds/refunds.service';
+import { OutboxService } from '../outbox/outbox.service';
 
 /**
  * Tests de CARACTÉRISATION de createOrderFromCart (le checkout) — LIL-134.
@@ -133,6 +136,25 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        {
+          provide: OutboxService,
+          useValue: {
+            enqueueInTransaction: jest.fn().mockResolvedValue('outbox-1'),
+            markSent: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: LoyaltyService,
+          useValue: {
+            awardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: RefundsService,
+          useValue: {
+            openForCancelledOrder: jest.fn().mockResolvedValue(null),
+          },
+        },
         OrdersService,
         OrderCheckoutService, // service réel : OrdersService y délègue le checkout
         OrderQueryService, // requis par OrdersService (lectures) — non sollicité ici
@@ -163,7 +185,7 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
   } as any;
 
   it('happy path : crée la commande, retourne { message, data } et émet order.created', async () => {
-    const res = await service.createOrderFromCart('uid', baseDto);
+    const res = await service.createOrderFromCart('uid', baseDto, 'idem-key-1');
 
     expect(res).toEqual({
       message: 'Commande créée avec succès.',
@@ -189,10 +211,11 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
 
   it('livraison sans adresseId → BadRequestException, pas de transaction', async () => {
     await expect(
-      service.createOrderFromCart('uid', {
-        paymentMethod: 'MTN_MOMO',
-        isDelivery: true,
-      } as any),
+      service.createOrderFromCart(
+        'uid',
+        { paymentMethod: 'MTN_MOMO', isDelivery: true } as any,
+        'idem-key-1',
+      ),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
@@ -204,10 +227,14 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
       newDeliveryFee: 1000,
     });
 
-    await service.createOrderFromCart('uid', {
-      ...baseDto,
-      promoCode: 'PROMO',
-    });
+    await service.createOrderFromCart(
+      'uid',
+      {
+        ...baseDto,
+        promoCode: 'PROMO',
+      },
+      'idem-key-1',
+    );
 
     expect(promoService.validateCode).toHaveBeenCalledWith(
       'PROMO',
@@ -236,10 +263,14 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
       referralRewarded: true,
     });
 
-    await service.createOrderFromCart('uid', {
-      ...baseDto,
-      useLoyaltyPoints: true,
-    });
+    await service.createOrderFromCart(
+      'uid',
+      {
+        ...baseDto,
+        useLoyaltyPoints: true,
+      },
+      'idem-key-1',
+    );
 
     // 1000 pts × 5 XAF = 5000 de réduction (plafonné au solde, < montant dû 11800)
     // Le décrément passe par un UPDATE … WHERE conditionnel, pas par tx.user.update.
@@ -269,10 +300,14 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
     tx.$executeRaw.mockResolvedValue(0);
 
     await expect(
-      service.createOrderFromCart('uid', {
-        ...baseDto,
-        useLoyaltyPoints: true,
-      }),
+      service.createOrderFromCart(
+        'uid',
+        {
+          ...baseDto,
+          useLoyaltyPoints: true,
+        },
+        'idem-key-1',
+      ),
     ).rejects.toBeInstanceOf(BadRequestException);
 
     // La transaction remonte l'exception → rollback : aucune trace de fidélité,

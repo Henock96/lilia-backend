@@ -1,5 +1,17 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Post, Body, Headers, Logger, HttpCode, HttpStatus, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Headers,
+  HttpCode,
+  HttpStatus,
+  Logger,
+  NotFoundException,
+  Post,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { timingSafeEqual } from 'crypto';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PaymentService } from '../services/payment.service';
@@ -63,9 +75,36 @@ export class WebhookController {
       return { status: 'received' };
     } catch (error) {
       this.logger.error(`Webhook MTN échoué : ${error.message}`);
-      // On retourne 200 quand même pour éviter que MTN retry en boucle
-      return { status: 'error', message: error.message };
+      // Fix M15 : on répondait 200 sur TOUTE erreur, « pour éviter que MTN
+      // retry en boucle ». Conséquence : un incident base de données faisait
+      // répondre 200, MTN considérait le callback livré, ne le rejouait
+      // jamais — et le paiement n'était jamais confirmé. Un client avait payé,
+      // sa commande expirait quand même.
+      //
+      // On distingue donc les deux familles :
+      //  - erreur PERMANENTE (payload inexploitable) → 200, rejouer n'aiderait
+      //    pas ;
+      //  - erreur TRANSITOIRE (DB, Redis, API MTN injoignable) → 500, pour que
+      //    MTN rejoue. Le traitement est idempotent (`updateMany` conditionnel
+      //    dans `handleSuccessfulPayment`), un rejeu est donc sans risque.
+      if (this.isPermanentError(error)) {
+        return { status: 'error', message: 'payload non traitable' };
+      }
+
+      throw new ServiceUnavailableException(
+        'Traitement temporairement indisponible — veuillez rejouer ce callback.',
+      );
     }
+  }
+
+  /**
+   * Une erreur permanente est une erreur que rejouer le même callback ne
+   * corrigera pas : payload invalide, ressource définitivement absente.
+   */
+  private isPermanentError(error: unknown): boolean {
+    return (
+      error instanceof BadRequestException || error instanceof NotFoundException
+    );
   }
 
   /**

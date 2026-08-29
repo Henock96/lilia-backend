@@ -32,6 +32,67 @@ export class PromoService {
    * Appelé depuis l'app mobile à la checkout avant de confirmer la commande.
    * Ne consomme PAS le code — juste la validation.
    */
+  /**
+   * Aperçu de réduction, calculé sur le **panier réel** du client (fix L6).
+   *
+   * `POST /promo/validate` acceptait `subTotal` et `deliveryFee` depuis le
+   * corps de la requête : le client pouvait donc sonder la remise d'un code
+   * pour n'importe quel montant et contourner `minOrderAmount` — en aperçu
+   * seulement (le checkout recalcule tout), mais c'était un oracle offert.
+   * On lit désormais le panier serveur ; le body ne sert plus qu'au code.
+   */
+  async validateCodeForCart(
+    code: string,
+    userId: string,
+  ): Promise<PromoValidationResult> {
+    const cart = await this.prisma.cart.findUnique({
+      where: { userId },
+      include: {
+        items: {
+          include: { product: true, variant: true, menu: true },
+        },
+      },
+    });
+
+    const items = cart?.items ?? [];
+    if (items.length === 0) {
+      throw new BadRequestException(
+        'Votre panier est vide : impossible de valider un code promo.',
+      );
+    }
+
+    const restaurantId = items[0].product.restaurantId;
+
+    // Même règle de calcul que le checkout : un menu porte son propre prix,
+    // les produits individuels celui de leur variante.
+    const menuIds = new Set<string>();
+    let subTotal = 0;
+    for (const item of items) {
+      if (item.menuId && item.menu) {
+        if (menuIds.has(item.menuId)) continue;
+        menuIds.add(item.menuId);
+        subTotal += item.menu.prix * item.quantite;
+      } else if (item.variant) {
+        subTotal += item.variant.prix * item.quantite;
+      }
+    }
+
+    const restaurant = await this.prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { fixedDeliveryFee: true },
+    });
+
+    return this.validateCode(
+      code,
+      userId,
+      restaurantId,
+      Math.round(subTotal),
+      // Aperçu : en mode ZONE_BASED, l'adresse n'est pas encore choisie. Le
+      // checkout recalculera le vrai montant.
+      restaurant?.fixedDeliveryFee ?? 0,
+    );
+  }
+
   async validateCode(
     code: string,
     userId: string,

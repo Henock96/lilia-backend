@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderLifecycleService } from '../orders/order-lifecycle.service';
+import { CronLockService } from '../../common/locks/cron-lock.service';
 
 /**
  * Expiration des commandes jamais payées.
@@ -37,6 +38,7 @@ export class OrderExpiryService {
     private readonly prisma: PrismaService,
     private readonly lifecycle: OrderLifecycleService,
     private readonly config: ConfigService,
+    private readonly cronLock: CronLockService,
   ) {
     this.timeoutMinutes =
       this.config.get<number>('ORDER_PAYMENT_TIMEOUT_MINUTES') ?? 45;
@@ -46,6 +48,15 @@ export class OrderExpiryService {
 
   @Cron('*/5 * * * *', { name: 'expire-unpaid-orders' })
   async expireUnpaidOrders(): Promise<void> {
+    // Le job est idempotent (`updateMany` conditionné sur EN_ATTENTE), mais le
+    // verrou évite que deux instances fassent le même travail et se disputent
+    // les mêmes lignes (fix M8).
+    await this.cronLock.runExclusively('expire-unpaid-orders', 240, () =>
+      this.expireUnpaidOrdersUnlocked(),
+    );
+  }
+
+  private async expireUnpaidOrdersUnlocked(): Promise<void> {
     const now = Date.now();
     const cutoff = new Date(now - this.timeoutMinutes * 60_000);
     const pendingCutoff = new Date(now - this.pendingTimeoutMinutes * 60_000);

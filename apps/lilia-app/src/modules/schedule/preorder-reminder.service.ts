@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { CronLockService } from '../../common/locks/cron-lock.service';
 
 /**
  * Rappel J-1 pour les commandes programmées (LIL-121, décision 3c).
@@ -24,11 +25,22 @@ export class PreorderReminderService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notifications: NotificationsService,
+    private readonly cronLock: CronLockService,
   ) {}
 
   // 8h00 heure locale (Brazzaville UTC+1) = 7h00 UTC.
   @Cron('0 7 * * *', { name: 'preorder-reminder-daily' })
   async sendDailyReminders(): Promise<void> {
+    // Fix M8 : `@nestjs/schedule` exécute les crons dans CHAQUE instance. Les
+    // autres jobs sont idempotents ; celui-ci envoie une notification par
+    // instance — le vendeur recevait le même rappel deux fois dès la deuxième
+    // instance Render. TTL de 5 min : largement au-dessus de la durée du job.
+    await this.cronLock.runExclusively('preorder-reminder-daily', 300, () =>
+      this.sendDailyRemindersUnlocked(),
+    );
+  }
+
+  private async sendDailyRemindersUnlocked(): Promise<void> {
     const now = new Date();
     const in24h = new Date(now.getTime() + 24 * 3600 * 1000);
 

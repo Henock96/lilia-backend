@@ -1,0 +1,71 @@
+name: CI
+
+# Pipeline bloquant avant déploiement (audit du 28/08/2026 —
+# « [PARTIAL] CI/CD : pas de pipeline lint/test bloquant avant deploy »).
+# Render déclenche son build sur push : ce workflow tourne en parallèle et
+# marque le commit en échec, ce qui bloque la fusion via les branch protections.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  # Scan hebdomadaire : les CVE sont publiées après le dernier commit — un
+  # dépôt inactif n'est pas un dépôt sûr.
+  schedule:
+    - cron: '0 6 * * 1'
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      # `prisma generate` doit précéder tsc : le client typé n'existe pas
+      # encore dans un checkout propre.
+      - name: Générer le client Prisma
+        run: npx prisma generate
+
+      - name: Vérifier le schéma Prisma
+        run: npx prisma validate
+
+      - name: Lint
+        run: npm run lint -- --max-warnings=0
+
+      - name: Types
+        run: npx tsc -p tsconfig.json --noEmit
+
+      - name: Tests unitaires
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      # Scan récurrent des dépendances de production. `--omit=dev` : une
+      # vulnérabilité dans un outil de build n'a pas le même statut qu'une
+      # vulnérabilité servie en production.
+      - name: npm audit (production)
+        run: npm audit --omit=dev --audit-level=high

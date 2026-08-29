@@ -29,7 +29,14 @@ import { SuspendVendorDto } from './dto/suspend-vendor.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { FirebaseService } from '../firebase/firebase.service';
-import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
+import {
+  OptionalLimitQueryDto,
+  PaginationQueryDto,
+} from '../../common/pagination/pagination-query.dto';
+import { ToggleActiveDto } from './dto/toggle-active.dto';
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
+import { LoyaltyReconciliationService } from '../loyalty/loyalty-reconciliation.service';
+import { AdminAuditAction } from '@prisma/client';
 
 /**
  * Toutes les routes sont ADMIN-only.
@@ -44,6 +51,10 @@ export class AdminController {
   constructor(
     private readonly adminService: AdminService,
     private readonly firebaseService: FirebaseService, // pour révoquer les tokens
+    // Journal d'audit : rôle, bannissement, suspension de vendeur et
+    // activation/désactivation ne laissaient aucune trace durable.
+    private readonly audit: AdminAuditService,
+    private readonly loyaltyReconciliation: LoyaltyReconciliationService,
   ) {}
 
   // ─── DASHBOARD ─────────────────────────────────────────────────────────────
@@ -74,9 +85,21 @@ export class AdminController {
   @ApiParam({ name: 'id', description: 'ID du restaurant' })
   async toggleRestaurantActive(
     @Param('id') id: string,
-    @Body('isActive') isActive: boolean,
+    @Body() dto: ToggleActiveDto,
+    @CurrentUser() admin: User,
   ) {
-    return this.adminService.toggleRestaurantActive(id, isActive);
+    const result = await this.adminService.toggleRestaurantActive(
+      id,
+      dto.isActive,
+    );
+    await this.audit.record({
+      actorId: admin.id,
+      action: AdminAuditAction.VENDOR_ACTIVE_TOGGLED,
+      targetType: 'Restaurant',
+      targetId: id,
+      metadata: { isActive: dto.isActive },
+    });
+    return result;
   }
 
   // ─── VENDORS (marketplace multi-vendeurs) ──────────────────────────────────
@@ -106,8 +129,15 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Approuver un vendeur en attente' })
   @ApiParam({ name: 'id', description: 'ID du vendeur (Restaurant)' })
-  approveVendor(@Param('id') id: string, @CurrentUser() admin: User) {
-    return this.adminService.approveVendor(id, admin.id);
+  async approveVendor(@Param('id') id: string, @CurrentUser() admin: User) {
+    const result = await this.adminService.approveVendor(id, admin.id);
+    await this.audit.record({
+      actorId: admin.id,
+      action: AdminAuditAction.VENDOR_APPROVED,
+      targetType: 'Restaurant',
+      targetId: id,
+    });
+    return result;
   }
 
   @Patch('vendors/:id/suspend')
@@ -116,12 +146,24 @@ export class AdminController {
     summary: 'Suspendre un vendeur (isActive=false, raison obligatoire)',
   })
   @ApiParam({ name: 'id', description: 'ID du vendeur (Restaurant)' })
-  suspendVendor(
+  async suspendVendor(
     @Param('id') id: string,
     @Body() dto: SuspendVendorDto,
     @CurrentUser() admin: User,
   ) {
-    return this.adminService.suspendVendor(id, dto.reason, admin.id);
+    const result = await this.adminService.suspendVendor(
+      id,
+      dto.reason,
+      admin.id,
+    );
+    await this.audit.record({
+      actorId: admin.id,
+      action: AdminAuditAction.VENDOR_SUSPENDED,
+      targetType: 'Restaurant',
+      targetId: id,
+      reason: dto.reason,
+    });
+    return result;
   }
 
   @Patch('vendors/:id/activate')
@@ -180,8 +222,20 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Changer le rôle d'un utilisateur" })
   @ApiParam({ name: 'id', description: "ID Prisma de l'utilisateur" })
-  updateUserRole(@Param('id') id: string, @Body() dto: UpdateUserRoleDto) {
-    return this.adminService.updateUserRole(id, dto);
+  async updateUserRole(
+    @Param('id') id: string,
+    @Body() dto: UpdateUserRoleDto,
+    @CurrentUser() admin: User,
+  ) {
+    const result = await this.adminService.updateUserRole(id, dto);
+    await this.audit.record({
+      actorId: admin.id,
+      action: AdminAuditAction.USER_ROLE_CHANGED,
+      targetType: 'User',
+      targetId: id,
+      metadata: { newRole: dto.role },
+    });
+    return result;
   }
 
   /**
@@ -205,7 +259,11 @@ export class AdminController {
       'Passe statusUser à BLOCKED, désactive le compte Firebase et révoque ' +
       'ses refresh tokens. Effet immédiat sur toutes les routes authentifiées.',
   })
-  async banUser(@Param('id') id: string, @Body() dto: BanUserDto) {
+  async banUser(
+    @Param('id') id: string,
+    @Body() dto: BanUserDto,
+    @CurrentUser() admin: User,
+  ) {
     const { firebaseUid, cacheInvalidated } = await this.adminService.banUser(
       id,
       dto.reason,
@@ -215,6 +273,14 @@ export class AdminController {
     await this.firebaseService.setUserDisabled(firebaseUid, true);
     // Révocation : bloque le renouvellement du token courant.
     await this.firebaseService.revokeUserTokens(firebaseUid);
+
+    await this.audit.record({
+      actorId: admin.id,
+      action: AdminAuditAction.USER_BANNED,
+      targetType: 'User',
+      targetId: id,
+      reason: dto.reason,
+    });
 
     return {
       message: cacheInvalidated
@@ -232,11 +298,18 @@ export class AdminController {
       'Repasse statusUser à ACTIVE et réactive le compte Firebase. ' +
       "L'utilisateur devra se reconnecter (ses tokens ont été révoqués).",
   })
-  async unbanUser(@Param('id') id: string) {
+  async unbanUser(@Param('id') id: string, @CurrentUser() admin: User) {
     const { firebaseUid, cacheInvalidated } =
       await this.adminService.unbanUser(id);
 
     await this.firebaseService.setUserDisabled(firebaseUid, false);
+
+    await this.audit.record({
+      actorId: admin.id,
+      action: AdminAuditAction.USER_UNBANNED,
+      targetType: 'User',
+      targetId: id,
+    });
 
     return {
       message: cacheInvalidated
@@ -356,5 +429,46 @@ export class AdminController {
   @ApiParam({ name: 'id', description: "ID de l'avis" })
   deleteReview(@Param('id') id: string) {
     return this.adminService.deleteReview(id);
+  }
+
+  // ─── RÉCONCILIATION FIDÉLITÉ ───────────────────────────────────────────────
+
+  @Get('loyalty-drifts')
+  @ApiOperation({
+    summary: 'Comptes dont le solde de fidélité diverge du ledger',
+    description:
+      'Fix M13 : `User.loyaltyPoints` est écrit par 5 chemins différents et ' +
+      'aucun contrôle ne vérifiait `SUM(points) == loyaltyPoints`. Un écart ' +
+      "de points est un écart d'argent (1 pt = 5 XAF).",
+  })
+  getLoyaltyDrifts(@Query() query: OptionalLimitQueryDto) {
+    return this.loyaltyReconciliation
+      .findDrifts(query.limit ?? 100)
+      .then((data) => ({ data, meta: { count: data.length } }));
+  }
+
+  // ─── JOURNAL D'AUDIT ───────────────────────────────────────────────────────
+
+  @Get('audit-log')
+  @ApiOperation({
+    summary: "Journal d'audit des actions d'administration",
+    description:
+      'Rôles modifiés, bannissements, suspensions de vendeurs et décisions ' +
+      'de paiement. Écriture seule côté application : aucune route ne le ' +
+      'modifie ni ne le supprime.',
+  })
+  @ApiQuery({ name: 'action', required: false, enum: AdminAuditAction })
+  @ApiQuery({ name: 'targetId', required: false })
+  getAuditLog(
+    @Query() query: PaginationQueryDto,
+    @Query('action') action?: AdminAuditAction,
+    @Query('targetId') targetId?: string,
+  ) {
+    return this.audit.list({
+      page: query.page,
+      limit: query.limit,
+      action,
+      targetId,
+    });
   }
 }

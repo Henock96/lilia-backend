@@ -15,14 +15,14 @@ const knownError = (code: string, target?: string[] | string) =>
  * devenait un 500 « Erreur interne du serveur ».
  */
 describe('mapPrismaError', () => {
-  it('traduit P2002 sur (userId, restaurantId) en 409 avec message métier', () => {
+  it('traduit P2002 sur (userId, restaurantId) en 409 avec message métier (favoris)', () => {
     const mapped = mapPrismaError(
       knownError('P2002', ['userId', 'restaurantId']),
     );
 
     expect(mapped).toEqual({
       status: HttpStatus.CONFLICT,
-      message: 'Vous avez déjà laissé un avis pour ce vendeur.',
+      message: 'Vous avez déjà enregistré ce vendeur.',
     });
   });
 

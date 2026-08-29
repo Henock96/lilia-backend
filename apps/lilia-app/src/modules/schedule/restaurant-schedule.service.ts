@@ -2,6 +2,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
+import { CronLockService } from '../../common/locks/cron-lock.service';
 
 // Mapping des jours JS (0=Dimanche) vers l'enum DayOfWeek
 const JS_DAY_TO_ENUM = [
@@ -18,7 +19,10 @@ const JS_DAY_TO_ENUM = [
 export class RestaurantScheduleService {
     private readonly logger = new Logger(RestaurantScheduleService.name);
 
-    constructor(private prisma: PrismaService) {}
+    constructor(
+        private prisma: PrismaService,
+        private readonly cronLock: CronLockService,
+    ) {}
 
     /**
      * Ouverture / fermeture automatique des vendeurs.
@@ -30,6 +34,15 @@ export class RestaurantScheduleService {
      */
     @Cron(CronExpression.EVERY_MINUTE)
     async handleScheduleCheck() {
+        // Fix M8 : deux instances ouvraient/fermaient les mêmes vendeurs à la
+        // même minute. Idempotent, mais deux fois le travail — et deux fois
+        // les écritures. TTL court : le job tourne chaque minute.
+        await this.cronLock.runExclusively('restaurant-open-close', 50, () =>
+            this.handleScheduleCheckUnlocked(),
+        );
+    }
+
+    private async handleScheduleCheckUnlocked() {
         // Heure courante en UTC+1 (Afrique Centrale/Ouest, pas de DST)
         const now = new Date();
         const utcPlusOneMs = now.getTime() + 1 * 60 * 60 * 1000;
@@ -126,6 +139,12 @@ export class RestaurantScheduleService {
      */
     @Cron('0 4 * * *') // 4h UTC = 5h UTC+1
     async handleDailyStockReset() {
+        await this.cronLock.runExclusively('daily-stock-reset', 600, () =>
+            this.handleDailyStockResetUnlocked(),
+        );
+    }
+
+    private async handleDailyStockResetUnlocked() {
         this.logger.log('Resetting daily stock for products and menus...');
 
         // LIL-112 : ne pas reset les produits stockMode=PERMANENT (cavistes,

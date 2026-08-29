@@ -11,6 +11,7 @@ import { OrderStateMachine } from '../orders/order-state.machine';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { TrackingService } from '../tracking/tracking.service';
+import { LoyaltyService } from '../loyalty/loyalty.service';
 
 /**
  * Tests de CARACTÉRISATION des lectures de DeliveriesService (LIL-134) :
@@ -32,6 +33,12 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        {
+          provide: LoyaltyService,
+          useValue: {
+            awardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         DeliveriesService,
         DeliveryQueryService, // service réel : DeliveriesService y délègue les lectures
         DeliveryAssignmentService, // requis par DeliveriesService — non sollicité ici
@@ -85,14 +92,24 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
       );
     });
 
-    it('retourne { data, count } filtré sur le livreur', async () => {
+    it('retourne { data, count, meta } filtré sur le livreur', async () => {
       prisma.user.findUnique.mockResolvedValue({ id: 'u1' });
       prisma.delivery.findMany.mockResolvedValue([{ id: 'd1' }, { id: 'd2' }]);
+      prisma.delivery.count.mockResolvedValue(2);
       const res = await service.findAllForDeliverer('uid');
       expect(prisma.delivery.findMany.mock.calls[0][0].where).toEqual({
         delivererId: 'u1',
       });
-      expect(res).toEqual({ data: [{ id: 'd1' }, { id: 'd2' }], count: 2 });
+      // Paginé depuis le fix P1 : l'historique complet du livreur était
+      // renvoyé d'un bloc, commandes et produits inclus.
+      expect(res.data).toEqual([{ id: 'd1' }, { id: 'd2' }]);
+      expect(res.count).toBe(2);
+      expect(res.meta).toEqual({
+        page: 1,
+        limit: 20,
+        total: 2,
+        hasMore: false,
+      });
     });
   });
 
@@ -147,8 +164,15 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
     it('retourne { data, count } des livreurs', async () => {
       prisma.user.findMany.mockResolvedValue([{ id: 'l1' }]);
       const res = await service.getAvailableDeliverers();
+      // Fix L11 : la requête ne ramène plus tous les comptes LIVREUR de la
+      // plateforme — les comptes bloqués/supprimés et hors ligne sont exclus.
       expect(prisma.user.findMany.mock.calls[0][0].where).toEqual({
         role: 'LIVREUR',
+        statusUser: 'ACTIVE',
+        OR: [
+          { driverStatus: { in: ['AVAILABLE', 'ON_DELIVERY'] } },
+          { driverStatus: null },
+        ],
       });
       expect(res).toEqual({ data: [{ id: 'l1' }], count: 1 });
     });

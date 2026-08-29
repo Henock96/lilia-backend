@@ -16,9 +16,9 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
 import { OrderStatusUpdatedEvent } from '../events/order-events';
 import { DeliveryFailedEvent } from '../events/delivery-events';
-import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { TrackingService } from '../tracking/tracking.service';
+import { LoyaltyService } from '../loyalty/loyalty.service';
 
 type ActorRole = 'CLIENT' | 'RESTAURATEUR' | 'ADMIN' | 'LIVREUR';
 
@@ -42,11 +42,11 @@ export class DeliveriesService {
     private readonly notificationsService: NotificationsService,
     private readonly eventEmitter: EventEmitter2,
     private readonly stateMachine: OrderStateMachine,
-    private readonly platformSettings: PlatformSettingsService,
     private readonly trackingGateway: TrackingGateway,
     private readonly trackingService: TrackingService,
     private readonly queryService: DeliveryQueryService,
     private readonly assignmentService: DeliveryAssignmentService,
+    private readonly loyalty: LoyaltyService,
   ) {}
 
   private resolveActor(role: string): ActorRole | null {
@@ -60,28 +60,6 @@ export class DeliveriesService {
   }
 
   /**
-   * Crédite +1pt par 100 FCFA de subTotal à la livraison.
-   * Aligné avec OrdersService.awardLoyaltyPoints (non-bloquant).
-   */
-  private async awardLoyaltyPoints(userId: string, orderId: string, subTotal: number): Promise<void> {
-    const settings = await this.platformSettings.getSettings();
-    const points = Math.floor(subTotal / 100) * settings.loyaltyPointsPer100Xaf;
-    if (points <= 0) return;
-
-    await this.prisma.$transaction([
-      this.prisma.user.update({
-        where: { id: userId },
-        data: { loyaltyPoints: { increment: points } },
-      }),
-      this.prisma.loyaltyTransaction.create({
-        data: { userId, orderId, points, reason: `+${points} pts — commande livrée` },
-      }),
-    ]);
-
-    this.logger.log(`⭐ +${points} points fidélité user ${userId} (commande ${orderId})`);
-  }
-
-  /**
    * Récupère toutes les livraisons pour un restaurant
    */
   async findAllForRestaurant(firebaseUid: string, status?: DeliveryStatus, page = 1, limit = 20) {
@@ -91,8 +69,18 @@ export class DeliveriesService {
   /**
    * Récupère les livraisons assignées à un livreur
    */
-  async findAllForDeliverer(firebaseUid: string, status?: DeliveryStatus) {
-    return this.queryService.findAllForDeliverer(firebaseUid, status);
+  async findAllForDeliverer(
+    firebaseUid: string,
+    status?: DeliveryStatus,
+    page?: number,
+    limit?: number,
+  ) {
+    return this.queryService.findAllForDeliverer(
+      firebaseUid,
+      status,
+      page,
+      limit,
+    );
   }
 
   /**
@@ -171,21 +159,35 @@ export class DeliveriesService {
     const now = new Date();
     const previousOrderStatus = delivery.order.status;
 
-    // Update atomique : Delivery + Order + DriverStatus
+    // Update atomique : Delivery + Order + DriverStatus.
+    //
+    // Fix L13 : `ECHEC` faisait DEUX `delivery.update` sur la même ligne dans
+    // la même transaction (le statut, puis le détachement du livreur). Les deux
+    // écritures sont fusionnées ci-dessous.
+    //
+    // ECHEC : la commande n'est PAS annulée automatiquement — c'est le vendeur
+    // qui arbitre entre réassigner un livreur et annuler. On retire simplement
+    // le livreur de la livraison pour qu'elle redevienne assignable ; le statut
+    // de la commande reste inchangé jusqu'à sa décision.
     const operations: any[] = [
       this.prisma.delivery.update({
         where: { id },
         data: {
           status,
           ...(status === DeliveryStatus.LIVRER ? { deliveredAt: now } : {}),
+          ...(status === DeliveryStatus.ECHEC && delivery.delivererId
+            ? { delivererId: null }
+            : {}),
         },
       }),
     ];
 
     if (status === DeliveryStatus.LIVRER) {
       operations.push(
-        this.prisma.order.update({
-          where: { id: delivery.orderId },
+        // Verrou optimiste (fix H6) : on n'écrase pas une commande que
+        // quelqu'un d'autre a fait avancer entre la lecture et l'écriture.
+        this.prisma.order.updateMany({
+          where: { id: delivery.orderId, status: previousOrderStatus },
           data: { status: OrderStatus.LIVRER },
         }),
       );
@@ -197,19 +199,6 @@ export class DeliveriesService {
         this.prisma.user.update({
           where: { id: delivery.delivererId },
           data: { driverStatus: DriverStatus.AVAILABLE },
-        }),
-      );
-    }
-
-    // ECHEC : la commande n'est PAS annulée automatiquement — c'est le vendeur
-    // qui arbitre entre réassigner un livreur et annuler. On retire simplement
-    // le livreur de la livraison pour qu'elle redevienne assignable ; le statut
-    // de la commande reste inchangé jusqu'à sa décision.
-    if (status === DeliveryStatus.ECHEC && delivery.delivererId) {
-      operations.push(
-        this.prisma.delivery.update({
-          where: { id },
-          data: { delivererId: null },
         }),
       );
     }
@@ -241,11 +230,15 @@ export class DeliveriesService {
       this.eventEmitter.emit('order.status.updated', statusEvent);
 
       // Crédite les points fidélité (non-bloquant)
-      this.awardLoyaltyPoints(
-        delivery.order.userId,
-        delivery.orderId,
-        delivery.order.subTotal,
-      ).catch((err) => this.logger.error(`Erreur points fidélité: ${err}`));
+      // Implémentation unique et idempotente (fix M5) : l'autre chemin vers
+      // LIVRER (PATCH /orders/:id/status) appelle exactement le même service.
+      this.loyalty
+        .awardForDeliveredOrder(
+          delivery.order.userId,
+          delivery.orderId,
+          delivery.order.subTotal,
+        )
+        .catch((err) => this.logger.error(`Erreur points fidélité: ${err}`));
     }
 
     // ECHEC était un cul-de-sac silencieux : aucun event, aucune notification,
@@ -308,9 +301,36 @@ export class DeliveriesService {
     return user;
   }
 
+  /**
+   * Le livreur change son statut de disponibilité.
+   *
+   * Fix M4 (audit du 28/08/2026) : la méthode n'avait AUCUNE garde. Le contrôle
+   * de `acceptDelivery` (qui exige `AVAILABLE`) devenait donc contournable —
+   * accepter la course A, se remettre `AVAILABLE`, accepter la course B. Deux
+   * livraisons `EN_TRANSIT` simultanées, alors qu'il n'existe **qu'une seule**
+   * clé GEO `driver_positions` par livreur : les deux clients voyaient la même
+   * position, et l'un des deux suivait une course qui n'était pas la sienne.
+   */
   async setDriverStatus(firebaseUid: string, status: DriverStatus) {
     const user = await this.getUserOrThrow(firebaseUid); // 404 si introuvable (plus de TypeError 500)
     if (user.role !== 'LIVREUR') throw new ForbiddenException();
+
+    if (status === DriverStatus.AVAILABLE || status === DriverStatus.OFFLINE) {
+      const activeDelivery = await this.prisma.delivery.findFirst({
+        where: {
+          delivererId: user.id,
+          status: { in: ['ASSIGNER', 'EN_TRANSIT'] },
+        },
+        select: { id: true, orderId: true, status: true },
+      });
+
+      if (activeDelivery) {
+        throw new BadRequestException(
+          `Vous avez une livraison en cours (${activeDelivery.status}). ` +
+            'Terminez-la ou signalez un échec avant de changer votre statut.',
+        );
+      }
+    }
 
     return this.prisma.user.update({
       where: { id: user.id },
@@ -375,15 +395,12 @@ export class DeliveriesService {
         latitude,
         longitude,
       );
-      this.trackingGateway.server
-        ?.to(`order:${delivery.orderId}`)
-        ?.emit('driver:position', {
-          lat: latitude,
-          lng: longitude,
-          eta,
-          timestamp: now.getTime(),
-          source: 'http-delivery',
-        });
+      this.trackingGateway.broadcastDriverPosition(delivery.orderId, {
+        lat: latitude,
+        lng: longitude,
+        eta,
+        source: 'http-delivery',
+      });
     } catch (err) {
       this.logger.warn(`Broadcast position fallback échoué: ${(err as Error).message}`);
     }

@@ -119,6 +119,23 @@ export class OrdersController {
     );
   }
   /**
+   * Badge « commandes non ouvertes » (fix H7).
+   *
+   * Correction minimale au risque n°1 du métier : une commande payée que le
+   * vendeur ne voit jamais parce que le push FCM s'est perdu. L'app vendeur
+   * poll cette route toutes les 30 s et affiche un compteur — la notification
+   * push ne sert plus qu'à la latence, plus à la correction.
+   */
+  @Get('restaurant/pending-count')
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @ApiOperation({
+    summary: 'Nombre de commandes reçues non encore prises en charge',
+  })
+  getPendingOrdersCount(@FirebaseUser() fbUser: DecodedIdToken) {
+    return this.ordersService.countUnhandledRestaurantOrders(fbUser.uid);
+  }
+
+  /**
    * Commandes d'un utilisateur spécifique — ADMIN uniquement.
    * Route déplacée depuis UserController où elle n'avait pas sa place.
    */
@@ -126,9 +143,18 @@ export class OrdersController {
   @Roles('ADMIN')
   @ApiOperation({ summary: "Commandes d'un utilisateur (admin)" })
   @ApiParam({ name: 'userId', description: "ID Prisma de l'utilisateur" })
-  getUserOrders(@Param('userId') userId: string, @CurrentUser() caller: User) {
+  getUserOrders(
+    @Param('userId') userId: string,
+    @CurrentUser() caller: User,
+    @Query() query: PaginationQueryDto,
+  ) {
     // findOrdersClient attend un firebaseUid — on ajoute une méthode par ID Prisma
-    return this.ordersService.findOrdersByUserId(userId, caller);
+    return this.ordersService.findOrdersByUserId(
+      userId,
+      caller,
+      query.page,
+      query.limit,
+    );
   }
 
   /**

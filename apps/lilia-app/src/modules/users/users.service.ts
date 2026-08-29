@@ -106,9 +106,11 @@ export class UserService {
   async syncFromFirebase(decoded: DecodedIdToken, phone?: string, referralCode?: string) {
     const { uid, email, name, picture } = decoded;
 
-    // Log structuré début sync pour tracer signups manquants en BDD (LIL-XX)
+    // Log structuré début sync pour tracer signups manquants en BDD (LIL-XX).
+    // Fix L4 : plus d'e-mail en clair (stdout Render + Sentry `enableLogs`).
+    // Le firebaseUid identifie le compte tout aussi bien pour le diagnostic.
     this.logger.log(
-      `[SYNC START] firebaseUid=${uid} email=${email ?? 'unknown'} phone=${phone ?? 'none'} referralCode=${referralCode ?? 'none'}`,
+      `[SYNC START] firebaseUid=${uid} hasEmail=${Boolean(email)} phone=${phone ? 'fourni' : 'none'} referralCode=${referralCode ? 'fourni' : 'none'}`,
     );
 
     // Vérifier d'abord si l'utilisateur existe
@@ -155,7 +157,7 @@ export class UserService {
 
     // Log structuré fin sync (succès) — utilisé pour tracer signups manquants
     this.logger.log(
-      `[SYNC SUCCESS] userId=${user.id} firebaseUid=${user.firebaseUid} email=${user.email} isNewUser=${isNewUser}`,
+      `[SYNC SUCCESS] userId=${user.id} firebaseUid=${user.firebaseUid} isNewUser=${isNewUser}`,
     );
 
     // Émettre l'événement uniquement pour les nouveaux utilisateurs

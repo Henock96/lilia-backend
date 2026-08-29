@@ -4,7 +4,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import {
   PHOTOS_GALLERY,
   RESTAURANT_INCLUDE,
-  RESTAURANT_WITH_REVIEWS,
+  RESTAURANT_LIST_INCLUDE,
 } from './restaurant.includes';
 
 /**
@@ -17,18 +17,44 @@ import {
 export class RestaurantQueryService {
   /** Nombre de produits renvoyés dans le détail d'un vendeur. */
   private static readonly PRODUCTS_PREVIEW_LIMIT = 100;
+  /** Taille de page par défaut du catalogue vendeurs. */
+  private static readonly LIST_DEFAULT_LIMIT = 50;
 
   constructor(private prisma: PrismaService) {}
 
   // ─── LECTURE ───────────────────────────────────────────────────────────────
 
-  async findAll() {
-    const restaurants = await this.prisma.restaurant.findMany({
-      where: { isActive: true, adminApproved: true },
-      include: RESTAURANT_INCLUDE,
-      orderBy: { createdAt: 'desc' },
-    });
-    return { data: restaurants };
+  /**
+   * Catalogue public des vendeurs — **paginé** (fix P0).
+   *
+   * La méthode retournait tous les vendeurs actifs avec leurs spécialités,
+   * horaires et galerie complète, sans aucune borne. Le défaut de 50 couvre
+   * largement l'usage réel (une page d'accueil), et `meta.total` permet au
+   * client de savoir s'il doit continuer.
+   */
+  async findAll(page = 1, limit = RestaurantQueryService.LIST_DEFAULT_LIMIT) {
+    const [restaurants, total] = await Promise.all([
+      this.prisma.restaurant.findMany({
+        where: { isActive: true, adminApproved: true },
+        include: RESTAURANT_LIST_INCLUDE,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.restaurant.count({
+        where: { isActive: true, adminApproved: true },
+      }),
+    ]);
+
+    return {
+      data: restaurants,
+      meta: {
+        page,
+        limit,
+        total,
+        hasMore: page * limit < total,
+      },
+    };
   }
 
   /**
@@ -58,7 +84,7 @@ export class RestaurantQueryService {
           take: RestaurantQueryService.PRODUCTS_PREVIEW_LIMIT,
         },
         _count: { select: { products: true } },
-        ...RESTAURANT_WITH_REVIEWS,
+        ...RESTAURANT_INCLUDE,
       },
     });
 
@@ -67,9 +93,12 @@ export class RestaurantQueryService {
     }
 
     const { _count, ...rest } = restaurant;
+    const ratings = await this.aggregateRatings([id]);
+
     return {
       data: {
-        ...this.attachRatingStats(rest),
+        ...rest,
+        ...(ratings.get(id) ?? { averageRating: null, totalReviews: 0 }),
         totalProducts: _count.products,
         hasMoreProducts:
           _count.products > RestaurantQueryService.PRODUCTS_PREVIEW_LIMIT,
@@ -116,15 +145,18 @@ export class RestaurantQueryService {
 
     const restaurants = await this.prisma.restaurant.findMany({
       where: { id: { in: ids }, isActive: true, adminApproved: true },
-      include: RESTAURANT_WITH_REVIEWS,
+      include: RESTAURANT_LIST_INCLUDE,
     });
+
+    const ratings = await this.aggregateRatings(restaurants.map((r) => r.id));
 
     // Préserve le tri par popularité
     const sorted = ids
       .map((id) => restaurants.find((r) => r.id === id))
       .filter(Boolean)
       .map((r) => ({
-        ...this.attachRatingStats(r),
+        ...r,
+        ...(ratings.get(r.id) ?? { averageRating: null, totalReviews: 0 }),
         orderCount: countMap.get(r.id) ?? 0,
       }));
 
@@ -176,9 +208,10 @@ export class RestaurantQueryService {
     const [clients, total] = await Promise.all([
       this.prisma.user.findMany({
         where: { id: { in: userIds } },
+        // Minimisation des données (fix C1) : le vendeur n'a pas besoin de
+        // l'e-mail de ses clients pour livrer — le téléphone suffit.
         select: {
           id: true,
-          email: true,
           nom: true,
           phone: true,
           imageUrl: true,
@@ -218,20 +251,37 @@ export class RestaurantQueryService {
   }
 
   /**
-   * Calcule et attache les stats de notation sur un restaurant.
-   * Extracted pour éviter la duplication dans findOne et findPopular.
+   * Moyenne + nombre d'avis, calculés **par PostgreSQL** (fix P0).
+   *
+   * Avant : `include: { reviews: { select: { rating: true } } }` chargeait la
+   * totalité des avis d'un vendeur pour afficher une étoile — sur la fiche
+   * publique et sur la liste des populaires. À 10 000 avis, c'est 10 000
+   * lignes transférées par carte affichée. Un `groupBy` avec `_avg`/`_count`
+   * ramène une ligne par vendeur.
    */
-  private attachRatingStats<T extends { reviews: { rating: number }[] }>(restaurant: T) {
-    const { reviews, ...rest } = restaurant;
-    const avgRating =
-      reviews.length > 0
-        ? reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length
-        : null;
+  private async aggregateRatings(
+    restaurantIds: string[],
+  ): Promise<Map<string, { averageRating: number | null; totalReviews: number }>> {
+    if (restaurantIds.length === 0) return new Map();
 
-    return {
-      ...rest,
-      averageRating: avgRating !== null ? Math.round(avgRating * 10) / 10 : null,
-      totalReviews: reviews.length,
-    };
+    const grouped = await this.prisma.review.groupBy({
+      by: ['restaurantId'],
+      where: { restaurantId: { in: restaurantIds } },
+      _avg: { rating: true },
+      _count: { rating: true },
+    });
+
+    return new Map(
+      grouped.map((row) => [
+        row.restaurantId,
+        {
+          averageRating:
+            row._avg.rating !== null
+              ? Math.round(row._avg.rating * 10) / 10
+              : null,
+          totalReviews: row._count.rating,
+        },
+      ]),
+    );
   }
 }

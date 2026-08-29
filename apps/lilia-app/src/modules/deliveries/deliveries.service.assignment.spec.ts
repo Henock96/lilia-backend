@@ -15,6 +15,7 @@ import { OrderStateMachine } from '../orders/order-state.machine';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { TrackingService } from '../tracking/tracking.service';
+import { LoyaltyService } from '../loyalty/loyalty.service';
 
 /**
  * Tests de CARACTÉRISATION de l'assignation/acceptation de DeliveriesService
@@ -45,6 +46,12 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        {
+          provide: LoyaltyService,
+          useValue: {
+            awardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         DeliveriesService,
         DeliveryQueryService,
         DeliveryAssignmentService, // service réel : DeliveriesService y délègue l'assignation

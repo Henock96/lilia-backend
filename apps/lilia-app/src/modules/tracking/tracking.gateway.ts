@@ -14,6 +14,7 @@ import { TrackingService } from './tracking.service';
 import { FirebaseService } from '../firebase/firebase.service';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import { DriverPositionDto, WatchOrderDto } from './dto/driver-position.dto';
+import { accessRevocationReason } from '../auth/utils/account-access';
 
 /**
  * `main.ts` n'applique son `useGlobalPipes` qu'au transport HTTP. Les gateways
@@ -103,12 +104,15 @@ export class TrackingGateway
     }
 
     const user = await this.userCache.getByFirebaseUid(client.data.uid);
-    if (!user || user.statusUser === 'BLOCKED') {
+    const revoked = user
+      ? accessRevocationReason(user.statusUser)
+      : 'Compte introuvable.';
+    if (revoked) {
       this.logger.warn(
-        `Socket rejetée — compte inactif/bloqué uid=${client.data.uid}`,
+        `Socket rejetée — compte inactif/bloqué/supprimé uid=${client.data.uid}`,
       );
       client.disconnect();
-      throw new WsException('Compte suspendu.');
+      throw new WsException(revoked);
     }
   }
 
@@ -126,7 +130,11 @@ export class TrackingGateway
     await client.join(`order:${payload.orderId}`);
 
     const lastPos = await this.tracking.getLastPosition(payload.orderId);
-    if (lastPos) client.emit('driver:position', lastPos);
+    // `orderId` explicite : une même socket peut watcher plusieurs commandes
+    // (admin), le client ne doit pas déduire la provenance de la room.
+    if (lastPos) {
+      client.emit('driver:position', { orderId: payload.orderId, ...lastPos });
+    }
   }
 
   /**
@@ -154,13 +162,32 @@ export class TrackingGateway
 
     const eta = await this.tracking.calculateETA(orderId, lat, lng);
 
-    // Broadcast à tous les clients qui regardent cette commande
-    // Le Redis Adapter s'occupe de router vers toutes les instances
-    this.server.to(`order:${orderId}`).emit('driver:position', {
-      lat,
-      lng,
-      eta,
+    this.broadcastDriverPosition(orderId, { lat, lng, eta });
+  }
+
+  /**
+   * Broadcast d'une position à tous les clients qui regardent la commande.
+   * Le Redis Adapter s'occupe de router vers toutes les instances.
+   *
+   * Point d'entrée unique des trois émetteurs (`driver:position` WS,
+   * `POST /tracking/position[/batch]`, `PATCH /deliveries/:id/location`) :
+   * c'est ce qui garantit qu'`orderId` est toujours dans le payload, plutôt
+   * que de dépendre de quatre `emit()` dispersés restant alignés.
+   *
+   * `server` est optionnel : la gateway est injectée dans des services testés
+   * sans serveur Socket.io attaché.
+   */
+  broadcastDriverPosition(
+    orderId: string,
+    payload: { lat: number; lng: number; eta: number; source?: string },
+  ) {
+    this.server?.to(`order:${orderId}`)?.emit('driver:position', {
+      orderId,
+      lat: payload.lat,
+      lng: payload.lng,
+      eta: payload.eta,
       timestamp: Date.now(),
+      ...(payload.source ? { source: payload.source } : {}),
     });
   }
 
@@ -169,6 +196,10 @@ export class TrackingGateway
    * Notifie le client sans qu'il ait besoin de poll.
    */
   broadcastOrderStatus(orderId: string, status: string) {
-    this.server.to(`order:${orderId}`).emit('order:status', { status });
+    this.server?.to(`order:${orderId}`)?.emit('order:status', {
+      orderId,
+      status,
+      timestamp: Date.now(),
+    });
   }
 }

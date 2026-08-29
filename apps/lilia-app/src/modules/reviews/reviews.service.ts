@@ -64,6 +64,25 @@ export class ReviewsService {
           'Vous devez avoir reçu au moins une commande de ce restaurant.',
         );
       }
+
+      // La contrainte `@@unique([userId, restaurantId])` a été retirée (audit
+      // du 28/08/2026) : elle interdisait un deuxième avis chez le même
+      // vendeur, ce qui contredisait le flux « un avis par commande livrée ».
+      // L'anti-spam reste nécessaire pour les avis SANS commande rattachée :
+      // un seul par client et par vendeur.
+      const existingFreeReview = await this.prisma.review.findFirst({
+        where: {
+          userId: user.id,
+          restaurantId: dto.restaurantId,
+          orderId: null,
+        },
+      });
+      if (existingFreeReview) {
+        throw new ConflictException(
+          'Vous avez déjà laissé un avis général pour ce vendeur. ' +
+            'Pour en laisser un nouveau, rattachez-le à une commande livrée.',
+        );
+      }
     }
 
     const review = await this.prisma.review.create({
@@ -137,31 +156,45 @@ export class ReviewsService {
    * Récupérer les statistiques d'un restaurant
    */
   async getRestaurantStats(restaurantId: string) {
-    const reviews = await this.prisma.review.findMany({
+    // PERFORMANCE (fix P0, audit du 28/08/2026) : la méthode chargeait **tous**
+    // les avis du vendeur en mémoire pour calculer une moyenne et un
+    // histogramme. À 10 000 avis, c'est 10 000 lignes transférées à chaque
+    // affichage de fiche vendeur — sur une route publique, donc un
+    // amplificateur de charge gratuit. `groupBy` fait le travail côté
+    // PostgreSQL, avec l'index (restaurantId, rating).
+    const grouped = await this.prisma.review.groupBy({
+      by: ['rating'],
       where: { restaurantId },
-      select: { rating: true },
+      _count: { rating: true },
     });
 
-    if (reviews.length === 0) {
-      return {
-        averageRating: 0,
-        totalReviews: 0,
-        ratingDistribution: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
-      };
+    const ratingDistribution: Record<1 | 2 | 3 | 4 | 5, number> = {
+      1: 0,
+      2: 0,
+      3: 0,
+      4: 0,
+      5: 0,
+    };
+
+    let totalReviews = 0;
+    let totalRating = 0;
+
+    for (const row of grouped) {
+      const count = row._count.rating;
+      totalReviews += count;
+      totalRating += row.rating * count;
+      if (row.rating >= 1 && row.rating <= 5) {
+        ratingDistribution[row.rating as 1 | 2 | 3 | 4 | 5] = count;
+      }
     }
 
-    const totalRating = reviews.reduce((sum, r) => sum + r.rating, 0);
-    const averageRating = totalRating / reviews.length;
-
-    // Distribution des notes
-    const ratingDistribution = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
-    reviews.forEach((r) => {
-      ratingDistribution[r.rating]++;
-    });
+    if (totalReviews === 0) {
+      return { averageRating: 0, totalReviews: 0, ratingDistribution };
+    }
 
     return {
-      averageRating: Math.round(averageRating * 10) / 10, // Arrondi à 1 décimale
-      totalReviews: reviews.length,
+      averageRating: Math.round((totalRating / totalReviews) * 10) / 10, // 1 décimale
+      totalReviews,
       ratingDistribution,
     };
   }
@@ -298,13 +331,12 @@ export class ReviewsService {
       throw new NotFoundException('Utilisateur non trouvé');
     }
 
-    const review = await this.prisma.review.findUnique({
-      where: {
-        userId_restaurantId: {
-          userId: user.id,
-          restaurantId,
-        },
-      },
+    // La contrainte `@@unique([userId, restaurantId])` a été retirée (audit du
+    // 28/08/2026) : un client peut désormais laisser un avis par commande
+    // livrée. On renvoie le plus récent.
+    const review = await this.prisma.review.findFirst({
+      where: { userId: user.id, restaurantId },
+      orderBy: { createdAt: 'desc' },
       include: {
         user: {
           select: {
@@ -334,21 +366,18 @@ export class ReviewsService {
       return { canReview: false, reason: 'Utilisateur non trouvé' };
     }
 
-    // Vérifier si l'utilisateur a déjà laissé un avis
-    const existingReview = await this.prisma.review.findUnique({
-      where: {
-        userId_restaurantId: {
-          userId: user.id,
-          restaurantId,
-        },
-      },
+    // Depuis le retrait de `@@unique([userId, restaurantId])` (audit du
+    // 28/08/2026), un client peut laisser un avis par commande livrée. Seul
+    // l'avis « général » (sans commande rattachée) reste unique.
+    const existingFreeReview = await this.prisma.review.findFirst({
+      where: { userId: user.id, restaurantId, orderId: null },
     });
 
-    if (existingReview) {
+    if (existingFreeReview) {
       return {
         canReview: false,
-        reason: 'Vous avez déjà laissé un avis',
-        existingReviewId: existingReview.id,
+        reason: 'Vous avez déjà laissé un avis général pour ce vendeur',
+        existingReviewId: existingFreeReview.id,
       };
     }
 

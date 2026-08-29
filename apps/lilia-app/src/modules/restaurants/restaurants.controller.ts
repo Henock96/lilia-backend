@@ -16,6 +16,7 @@ import { Public } from '../auth/decorators/public.decorator';
 import { DayOfWeek, SetOperatingHoursDto, UpdateOperatingHourDto } from './dto/operating-hours.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { OptionalLimitQueryDto, PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
+import { RestaurantListQueryDto } from './dto/restaurant-list-query.dto';
 
 /**
  * Guards globaux actifs (APP_GUARD dans AuthModule) :
@@ -43,8 +44,8 @@ export class RestaurantsController {
     @Public()
     @Get()
     @ApiOperation({ summary: 'Liste tous les restaurants actifs' })
-    findAll() {
-        return this.service.findAll();
+    findAll(@Query() query: RestaurantListQueryDto) {
+        return this.service.findAll(query.page, query.limit);
     }
 
     @Public()
@@ -221,8 +222,8 @@ export class RestaurantsController {
     @Get(':id/orders/count')
     @Roles('RESTAURATEUR', 'ADMIN')
     @ApiOperation({ summary: 'Nombre de commandes du restaurant' })
-    countOrders(@Param('id') id: string) {
-        return this.service.countOrders(id);
+    countOrders(@Param('id') id: string, @FirebaseUser() fbUser: DecodedIdToken) {
+        return this.service.countOrders(id, fbUser.uid);
     }
     // Endpoint pour récupérer les clients d'un restaurant spécifique
     @Get(':id/clients')
@@ -231,8 +232,9 @@ export class RestaurantsController {
     findClients(
         @Param('id') id: string,
         @Query() query: PaginationQueryDto,
+        @FirebaseUser() fbUser: DecodedIdToken,
     ) {
-        return this.service.findClients(query.page, query.limit, id);
+        return this.service.findClients(query.page, query.limit, id, fbUser.uid);
     }
 
     @Get(':id/clients/:userId/orders')
@@ -241,7 +243,8 @@ export class RestaurantsController {
     async getClientOrders(
         @Param('id') restaurantId: string,
         @Param('userId') userId: string,
+        @FirebaseUser() fbUser: DecodedIdToken,
     ) {
-        return this.service.findClientWithOrders(restaurantId, userId);
+        return this.service.findClientWithOrders(restaurantId, userId, fbUser.uid);
     }
 }

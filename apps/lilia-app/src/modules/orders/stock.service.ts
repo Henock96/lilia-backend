@@ -116,17 +116,29 @@ export class StockService {
     }
 
     const ops: Prisma.PrismaPromise<number>[] = [];
+    // Fix L8 (audit du 28/08/2026) : la ré-incrémentation n'avait aucun
+    // plafond. Des cycles commande/annulation pouvaient gonfler `stockRestant`
+    // au-delà de `stockQuotidien` — le vendeur se retrouvait à vendre plus que
+    // ce qu'il avait déclaré, jusqu'au reset de 5 h. On borne au stock
+    // déclaré ; `LEAST` ignore le cas `stockQuotidien IS NULL` grâce au
+    // COALESCE.
     for (const [id, qty] of qtyByProduct) {
       ops.push(tx.$executeRaw`
         UPDATE "Product"
-        SET "stockRestant" = "stockRestant" + ${qty}
+        SET "stockRestant" = LEAST(
+              "stockRestant" + ${qty},
+              COALESCE("stockQuotidien", "stockRestant" + ${qty})
+            )
         WHERE id = ${id} AND "stockRestant" IS NOT NULL
       `);
     }
     for (const [id, qty] of qtyByMenu) {
       ops.push(tx.$executeRaw`
         UPDATE "MenuDuJour"
-        SET "stockRestant" = "stockRestant" + ${qty}
+        SET "stockRestant" = LEAST(
+              "stockRestant" + ${qty},
+              COALESCE("stockQuotidien", "stockRestant" + ${qty})
+            )
         WHERE id = ${id} AND "stockRestant" IS NOT NULL
       `);
     }

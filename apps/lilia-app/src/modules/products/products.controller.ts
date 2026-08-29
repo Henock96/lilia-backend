@@ -29,6 +29,7 @@ import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Public } from '../auth/decorators/public.decorator';
+import { UpdateAvailabilityDto } from './dto/update-availability.dto';
 
 @ApiTags('Products')
 @ApiBearerAuth()
@@ -159,8 +160,28 @@ export class ProductsController {
   }
 
   /**
+   * PATCH /products/:id/availability
+   * Rend un produit disponible ou indisponible à la vente (fix M2).
+   */
+  @Patch(':id/availability')
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Rendre un produit disponible / indisponible' })
+  setAvailability(
+    @Param('id') id: string,
+    @Body() dto: UpdateAvailabilityDto,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return this.productsService.setAvailability(
+      id,
+      dto.isAvailable,
+      fbUser.uid,
+    );
+  }
+
+  /**
    * DELETE /products/:id
-   * Supprime un produit
+   * Retire un produit du catalogue
    */
   @Delete(':id')
   @Roles('RESTAURATEUR', 'ADMIN')

@@ -32,7 +32,9 @@ function fieldsOf(err: Prisma.PrismaClientKnownRequestError): string[] {
  * générique : on ne veut pas fuiter la structure de la base au client.
  */
 const UNIQUE_MESSAGES: Record<string, string> = {
-  'userId,restaurantId': 'Vous avez déjà laissé un avis pour ce vendeur.',
+  // `Review @@unique([userId, restaurantId])` a été retiré (audit 28/08/2026) ;
+  // la clé reste mappée car `Favorite` porte la même paire de colonnes.
+  'userId,restaurantId': 'Vous avez déjà enregistré ce vendeur.',
   'userId,productId': 'Vous avez déjà laissé un avis pour ce produit.',
   orderId: 'Cette commande a déjà été traitée.',
   email: 'Cette adresse e-mail est déjà utilisée.',

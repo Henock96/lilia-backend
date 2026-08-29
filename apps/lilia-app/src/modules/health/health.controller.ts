@@ -1,10 +1,12 @@
 /* eslint-disable prettier/prettier */
 // health/health.controller.ts
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, HttpStatus, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { FirebaseService } from '../firebase/firebase.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { Public } from '../auth/decorators/public.decorator';
+import { SkipResponseWrap } from '../../common/interceptors/api-response.interceptor';
 
 @ApiTags('Health')
 @Controller('health')
@@ -16,14 +18,26 @@ export class HealthController {
 
   /**
    * Health check public — utilisé par Render pour les checks de liveness.
+   *
+   * ⚠️ Route PUBLIQUE (fix L3) : elle exposait `NODE_ENV`,
+   * `RENDER_SERVICE_NAME` et la liste des secrets configurés (sous forme de
+   * booléens). C'est du fingerprinting offert à un attaquant — il apprend
+   * quelles intégrations tenter. Le détail de configuration n'est plus servi
+   * qu'en dehors de la production, où il aide réellement au diagnostic.
    */
   @Public()
   @Get()
   @ApiOperation({ summary: 'Statut général de l\'application' })
   check() {
-    return {
+    const base = {
       status: 'ok',
       timestamp: new Date().toISOString(),
+    };
+
+    if (process.env.NODE_ENV === 'production') return base;
+
+    return {
+      ...base,
       firebase: { ready: this.firebase.isReady() },
       environment: {
         nodeEnv: process.env.NODE_ENV ?? 'development',
@@ -35,6 +49,7 @@ export class HealthController {
           firebasePrivateKey: !!process.env.FIREBASE_PRIVATE_KEY,
           mailtrap: !!process.env.MAILTRAP_API_TOKEN,
           infobip: !!process.env.INFOBIP_API_KEY,
+          redis: !!process.env.REDIS_URL,
         },
       },
     };
@@ -55,11 +70,18 @@ export class HealthController {
   /**
    * Readiness probe — vérifie les dépendances joignables (DB + Firebase).
    * Distinct de /live : sert à savoir si l'instance peut servir du trafic.
+   *
+   * SÉCURITÉ / EXPLOITATION (fix M9) : la route répondait **200** avec
+   * `status: 'error'` dans le corps quand la base était injoignable. Un
+   * orchestrateur qui se fie au code HTTP — c'est-à-dire tous — continuait
+   * donc à router du trafic vers une instance incapable de servir. On répond
+   * désormais 503, et le corps reste identique pour les outils qui le lisent.
    */
   @Public()
+  @SkipResponseWrap()
   @Get('ready')
   @ApiOperation({ summary: 'Readiness probe (DB + Firebase)' })
-  async ready() {
+  async ready(@Res() res: Response) {
     let db: 'ok' | 'error' = 'ok';
     try {
       await this.prisma.$queryRaw`SELECT 1`;
@@ -67,12 +89,16 @@ export class HealthController {
       db = 'error';
     }
     const firebase = this.firebase.isReady() ? 'ok' : 'error';
-    return {
-      status: db === 'ok' ? 'ok' : 'error',
-      db,
-      firebase,
-      timestamp: new Date().toISOString(),
-    };
+    const healthy = db === 'ok';
+
+    res
+      .status(healthy ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE)
+      .json({
+        status: healthy ? 'ok' : 'error',
+        db,
+        firebase,
+        timestamp: new Date().toISOString(),
+      });
   }
 
   @Public()

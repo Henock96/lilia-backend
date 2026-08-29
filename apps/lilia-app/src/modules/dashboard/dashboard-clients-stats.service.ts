@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DashboardCommonService } from './dashboard-common.service';
 
@@ -116,19 +116,33 @@ export class DashboardClientsStatsService {
     const restaurant = await this.common.getRestaurant(firebaseUid);
     const restaurantFilter = restaurant ? { restaurantId: restaurant.id } : {};
 
+    // SÉCURITÉ (fix C2, audit 28/08/2026) : le filtre restaurant n'était appliqué
+    // qu'à la requête `order`. Le bloc identité partait sans aucune restriction,
+    // donc tout compte RESTAURATEUR pouvait lire nom / e-mail / téléphone /
+    // adresses de domicile de N'IMPORTE quel utilisateur. On n'expose le client
+    // que s'il a réellement commandé chez ce vendeur (l'ADMIN, lui, n'a pas de
+    // restaurant → périmètre global assumé).
+    if (restaurant) {
+      const hasOrdered = await this.prisma.order.count({
+        where: { userId: clientId, restaurantId: restaurant.id },
+      });
+      if (hasOrdered === 0) {
+        throw new ForbiddenException("Ce client n'a pas commandé chez vous.");
+      }
+    }
+
     const [client, orders] = await Promise.all([
       this.prisma.user.findUnique({
         where: { id: clientId },
+        // Minimisation : ni referralCode ni referredByCode (aucun usage vendeur
+        // légitime, et le code de parrainage permet de capter les filleuls).
         select: {
           id: true,
           nom: true,
-          email: true,
           phone: true,
           imageUrl: true,
           createdAt: true,
           loyaltyPoints: true,
-          referralCode: true,
-          referredByCode: true,
           adresses: {
             select: { rue: true, ville: true, etat: true, isDefault: true },
             take: 5,

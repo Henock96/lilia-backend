@@ -7,6 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { unavailabilityReason } from '../products/product-availability';
 import { PromoService } from '../promo/promo.service';
 
 @Injectable()
@@ -98,6 +99,17 @@ export class OrderValidatorService {
 
     for (const item of cartItems) {
       const product = productMap.get(item.productId);
+
+      // Fixes M1 + M2 : produit retiré du catalogue, marqué indisponible, ou
+      // hors de sa fenêtre horaire. Le catalogue les masque déjà, mais un
+      // panier peut avoir été rempli avant — et `availableFrom/Until` n'était
+      // jamais relu nulle part, donc une viennoiserie du matin passait
+      // commande à 3 h.
+      if (product) {
+        const reason = unavailabilityReason(product);
+        if (reason) errors.push(reason);
+      }
+
       if (product?.stockRestant !== null && product?.stockRestant !== undefined) {
         if (product.stockRestant < item.quantite) {
           errors.push(

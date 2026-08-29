@@ -4,6 +4,8 @@ import { Reflector } from '@nestjs/core';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 import { UserCacheService } from '../services/user-cache.service';
 import { AuthenticatedRequest } from '../types/authenticated-request.interface';
+import { accessRevocationReason } from '../utils/account-access';
+import { ALLOW_UNSYNCED_KEY } from '../decorators/allow-unsynced.decorator';
 
 @Injectable()
 export class RolesGuard implements CanActivate{
@@ -41,21 +43,38 @@ export class RolesGuard implements CanActivate{
       }
     }
 
-    // Compte banni : verrouillage global, quelle que soit la route authentifiée.
-    // (Note : à cause du cache user 5 min, un ban peut mettre jusqu'à 5 min à
-    //  s'appliquer — penser à invalider le cache à la modification du statut.)
-    if (request.user && request.user.statusUser === 'BLOCKED') {
-      this.logger.warn(`Accès refusé : compte bloqué ${request.firebaseUser.uid}`);
-      throw new ForbiddenException('Votre compte a été suspendu.');
+    // Compte banni ou supprimé : verrouillage global, quelle que soit la route
+    // authentifiée. (Note : à cause du cache user 5 min, un changement de statut
+    // peut mettre jusqu'à 5 min à s'appliquer — penser à invalider le cache à la
+    // modification du statut.)
+    const revoked = accessRevocationReason(request.user?.statusUser);
+    if (revoked) {
+      this.logger.warn(
+        `Accès refusé (${request.user?.statusUser}) : ${request.firebaseUser.uid}`,
+      );
+      throw new ForbiddenException(revoked);
+    }
+
+    // Fix M6 : sans @Roles(), le guard faisait `return true` même quand le
+    // user Prisma était absent — @CurrentUser() arrivait alors `undefined` et
+    // `PUT /users/me` plantait sur `updateUser(undefined.id)` (500 opaque).
+    // On exige donc le user synchronisé partout, sauf sur les routes marquées
+    // @AllowUnsynced() (POST /users/sync, GET /users/me).
+    if (!request.user) {
+      const allowUnsynced = this.reflector.getAllAndOverride<boolean>(
+        ALLOW_UNSYNCED_KEY,
+        [context.getHandler(), context.getClass()],
+      );
+      if (allowUnsynced) return true;
+
+      this.logger.warn(`User Firebase introuvable en DB : ${request.firebaseUser.uid}`);
+      throw new ForbiddenException(
+        'Compte non synchronisé. Appelez POST /users/sync avant cette action.',
+      );
     }
 
     // Pas de @Roles() sur cette route → authentifié suffit, pas de check rôle
     if (!requiredRoles?.length) return true;
-
-    if (!request.user) {
-      this.logger.warn(`User Firebase introuvable en DB : ${request.firebaseUser.uid}`);
-      throw new ForbiddenException('Compte non trouvé');
-    }
 
     if (!requiredRoles.includes(request.user.role)) {
       this.logger.warn(

@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { OrderExpiryService } from './order-expiry.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderLifecycleService } from '../orders/order-lifecycle.service';
+import { CronLockService } from '../../common/locks/cron-lock.service';
 
 /**
  * Sans ce cron, une commande abandonnée avant paiement immobilisait son stock
@@ -17,6 +18,13 @@ describe('OrderExpiryService', () => {
   const build = async (env: Record<string, number> = {}) => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        {
+          provide: CronLockService,
+          // Verrou neutre en test : on exécute la tâche directement.
+          useValue: {
+            runExclusively: jest.fn((_name, _ttl, task) => task()),
+          },
+        },
         OrderExpiryService,
         { provide: PrismaService, useValue: prisma },
         { provide: OrderLifecycleService, useValue: lifecycle },

@@ -22,6 +22,9 @@ import { PromoService } from '../promo/promo.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { PreorderValidatorService } from '../vendors/preorder-validator.service';
 import { QuartiersService } from '../quartiers/quartiers.service';
+import { LoyaltyService } from '../loyalty/loyalty.service';
+import { RefundsService } from '../refunds/refunds.service';
+import { OutboxService } from '../outbox/outbox.service';
 
 /**
  * Tests de CARACTÉRISATION du cycle de vie commande (LIL-134) :
@@ -33,10 +36,18 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
   let service: OrdersService;
 
   const tx = {
-    order: { update: jest.fn() },
+    // `updateMany` + `findUniqueOrThrow` : depuis le fix H6, la transition de
+    // statut passe par un verrou optimiste (updateMany conditionné sur l'état
+    // lu) au lieu d'un `update` inconditionnel.
+    order: {
+      update: jest.fn(),
+      updateMany: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
+    },
     user: { update: jest.fn() },
     loyaltyTransaction: { aggregate: jest.fn(), create: jest.fn() },
     promoUsage: { deleteMany: jest.fn() },
+    payment: { updateMany: jest.fn() },
   };
   const prisma = {
     user: { findUnique: jest.fn(), update: jest.fn() },
@@ -70,9 +81,31 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
       _sum: { points: null },
     });
     tx.promoUsage.deleteMany.mockResolvedValue({ count: 0 });
+    // Par défaut, le verrou optimiste réussit (une ligne réclamée).
+    tx.order.updateMany.mockResolvedValue({ count: 1 });
+    tx.payment.updateMany.mockResolvedValue({ count: 0 });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        {
+          provide: OutboxService,
+          useValue: {
+            enqueueInTransaction: jest.fn().mockResolvedValue('outbox-1'),
+            markSent: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: LoyaltyService,
+          useValue: {
+            awardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: RefundsService,
+          useValue: {
+            openForCancelledOrder: jest.fn().mockResolvedValue(null),
+          },
+        },
         OrdersService,
         OrderQueryService,
         OrderCheckoutService,
@@ -118,7 +151,10 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
     it('annule via state machine, restaure le stock en transaction et émet order.cancelled', async () => {
       prisma.user.findUnique.mockResolvedValue({ id: 'u1' });
       prisma.order.findUnique.mockResolvedValue(order);
-      tx.order.update.mockResolvedValue({ id: 'o1', status: 'ANNULER' });
+      tx.order.findUniqueOrThrow.mockResolvedValue({
+        id: 'o1',
+        status: 'ANNULER',
+      });
 
       const res = await service.cancelOrder('o1', 'uid');
 
@@ -141,7 +177,10 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
     it('restitue les points de fidélité consommés et libère le code promo', async () => {
       prisma.user.findUnique.mockResolvedValue({ id: 'u1' });
       prisma.order.findUnique.mockResolvedValue(order);
-      tx.order.update.mockResolvedValue({ id: 'o1', status: 'ANNULER' });
+      tx.order.findUniqueOrThrow.mockResolvedValue({
+        id: 'o1',
+        status: 'ANNULER',
+      });
       // Le checkout avait consommé 500 pts (transaction négative liée à la commande)
       tx.loyaltyTransaction.aggregate.mockResolvedValue({
         _sum: { points: -500 },
@@ -167,7 +206,10 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
     it('idempotent : rien à restituer si le solde net des points est déjà à zéro', async () => {
       prisma.user.findUnique.mockResolvedValue({ id: 'u1' });
       prisma.order.findUnique.mockResolvedValue(order);
-      tx.order.update.mockResolvedValue({ id: 'o1', status: 'ANNULER' });
+      tx.order.findUniqueOrThrow.mockResolvedValue({
+        id: 'o1',
+        status: 'ANNULER',
+      });
       // -500 (checkout) + 500 (compensation déjà écrite) = 0
       tx.loyaltyTransaction.aggregate.mockResolvedValue({
         _sum: { points: 0 },
@@ -204,7 +246,7 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
         restaurantId: 'rid',
         restaurant: { ownerId: 'r1', nom: 'Resto' },
       });
-      prisma.order.update.mockResolvedValue({
+      tx.order.findUniqueOrThrow.mockResolvedValue({
         id: 'o1',
         userId: 'c1',
         restaurantId: 'rid',
@@ -251,7 +293,7 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
         items: [{ id: 'it1' }],
         restaurant: { nom: 'Resto' },
       };
-      tx.order.update.mockResolvedValue(cancelled);
+      tx.order.findUniqueOrThrow.mockResolvedValue(cancelled);
       tx.loyaltyTransaction.aggregate.mockResolvedValue({
         _sum: { points: -300 },
       });

@@ -18,6 +18,9 @@ import { PromoService } from '../promo/promo.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { PreorderValidatorService } from '../vendors/preorder-validator.service';
 import { QuartiersService } from '../quartiers/quartiers.service';
+import { LoyaltyService } from '../loyalty/loyalty.service';
+import { RefundsService } from '../refunds/refunds.service';
+import { OutboxService } from '../outbox/outbox.service';
 
 /**
  * Tests de CARACTÉRISATION de OrdersService — méthodes de lecture.
@@ -55,6 +58,25 @@ describe('OrdersService (caractérisation — lectures)', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        {
+          provide: OutboxService,
+          useValue: {
+            enqueueInTransaction: jest.fn().mockResolvedValue('outbox-1'),
+            markSent: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: LoyaltyService,
+          useValue: {
+            awardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: RefundsService,
+          useValue: {
+            openForCancelledOrder: jest.fn().mockResolvedValue(null),
+          },
+        },
         OrdersService,
         OrderQueryService, // service réel : OrdersService y délègue les lectures
         OrderCheckoutService, // requis par OrdersService — non sollicité par les lectures
@@ -160,8 +182,15 @@ describe('OrdersService (caractérisation — lectures)', () => {
 
       expect(res.data).toEqual([{ id: 'o1' }]);
       expect(prisma.restaurant.findFirst).not.toHaveBeenCalled();
-      // pas de filtre `where` sur le findMany ADMIN
-      expect(prisma.order.findMany.mock.calls[0][0].where).toBeUndefined();
+      // Depuis le fix P1, le `count()` admin n'est plus sans filtre (scan
+      // séquentiel complet à chaque page) : il exclut les soft-deletes, et le
+      // findMany applique le même `where`.
+      expect(prisma.order.findMany.mock.calls[0][0].where).toEqual({
+        deleteCommande: false,
+      });
+      expect(prisma.order.count.mock.calls[0][0]).toEqual({
+        where: { deleteCommande: false },
+      });
     });
 
     it('RESTAURATEUR : lève NotFoundException sans restaurant rattaché', async () => {
@@ -203,8 +232,14 @@ describe('OrdersService (caractérisation — lectures)', () => {
 
     it('retourne { data } pour un ADMIN', async () => {
       prisma.order.findMany.mockResolvedValue([{ id: 'o1' }]);
+      prisma.order.count.mockResolvedValue(1);
       const res = await service.findOrdersByUserId('u1', { role: 'ADMIN' });
-      expect(res).toEqual({ data: [{ id: 'o1' }] });
+      // Paginé depuis le fix P1 : la méthode ramenait toutes les commandes du
+      // client, items et produits inclus.
+      expect(res.data).toEqual([{ id: 'o1' }]);
+      expect(res.meta).toEqual(
+        expect.objectContaining({ page: 1, limit: 20, total: 1 }),
+      );
       expect(prisma.order.findMany.mock.calls[0][0].where).toEqual({
         userId: 'u1',
         deleteCommande: false,
@@ -213,8 +248,9 @@ describe('OrdersService (caractérisation — lectures)', () => {
 
     it('retourne { data } sans caller (appel interne)', async () => {
       prisma.order.findMany.mockResolvedValue([]);
+      prisma.order.count.mockResolvedValue(0);
       const res = await service.findOrdersByUserId('u1');
-      expect(res).toEqual({ data: [] });
+      expect(res.data).toEqual([]);
     });
   });
 });

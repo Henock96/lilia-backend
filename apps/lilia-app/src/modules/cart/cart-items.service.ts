@@ -9,6 +9,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { AddToCartDto } from './dto/add-to-cart.dto';
 import { UpdateCartItemDto } from './dto/update-cart-item.dto';
 import { CartCommonService } from './cart-common.service';
+import { unavailabilityReason } from '../products/product-availability';
 
 /**
  * Opérations panier sur les articles individuels (extrait de CartService —
@@ -33,6 +34,12 @@ export class CartItemsService {
     });
     if (!variant)
       throw new NotFoundException('Variante de produit non trouvée.');
+
+    // Fixes M1 + M2 : on refuse d'emblée un produit retiré du catalogue,
+    // marqué indisponible ou hors de sa fenêtre horaire, plutôt que de le
+    // laisser bloquer le checkout plus tard.
+    const reason = unavailabilityReason(variant.product);
+    if (reason) throw new BadRequestException(reason);
 
     const cart = await this.common.getOrCreateCart(user.id);
 
@@ -97,14 +104,13 @@ export class CartItemsService {
       );
     }
 
-    if (dto.quantite === 0) {
-      await this.prisma.cartItem.delete({ where: { id: cartItemId } });
-    } else {
-      await this.prisma.cartItem.update({
-        where: { id: cartItemId },
-        data: { quantite: dto.quantite },
-      });
-    }
+    // `UpdateCartItemDto` impose `@Min(1)` : la branche « quantite === 0 =
+    // suppression » était du code mort, inatteignable depuis HTTP (fix L1).
+    // Pour retirer un article, le client appelle DELETE /cart/items/:id.
+    await this.prisma.cartItem.update({
+      where: { id: cartItemId },
+      data: { quantite: dto.quantite },
+    });
 
     return this.common.getCart(firebaseUid);
   }

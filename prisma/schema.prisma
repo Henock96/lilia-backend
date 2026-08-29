@@ -63,19 +63,39 @@ model User {
   // Flags d’idempotence bienvenue
   welcomeEmailSentAt DateTime?
   welcomeSmsSentAt   DateTime?
+
+  // Actions d'administration réalisées PAR ce compte (journal d'audit)
+  adminAuditLogs AdminAuditLog[] @relation("AdminAuditActor")
+
+  @@index([referredByCode]) // getReferralStats : 2 count() par ouverture de l'écran (fix M19)
 }
 
 model LoyaltyTransaction {
-  id        String   @id @default(cuid())
+  id        String                 @id @default(cuid())
   userId    String
-  user      User     @relation(fields: [userId], references: [id])
+  user      User                   @relation(fields: [userId], references: [id])
   points    Int // positif = gain, négatif = dépense
+  // Nature de l'écriture. Sert de clé de déduplication avec orderId (fix M5) :
+  // deux chemins mènent à LIVRER (PATCH /orders/:id/status et
+  // PATCH /deliveries/:id/status) et créditaient chacun leur copie des points.
+  type      LoyaltyTransactionType @default(ADJUSTMENT)
   reason    String // ex: "Commande #ABC123", "Récompense parrainage"
   orderId   String? // lien optionnel à la commande
-  createdAt DateTime @default(now())
+  createdAt DateTime               @default(now())
 
+  @@unique([orderId, type]) // NULL != NULL en PG : ne contraint que les lignes portant un orderId
   @@index([userId])
   @@index([userId, createdAt(sort: Desc)]) // historique fidelite par user, plus recent en premier (LFD-9)
+  @@index([userId, type, createdAt]) // plafond mensuel de parrainage (ReferralService)
+}
+
+enum LoyaltyTransactionType {
+  ORDER_SPEND // points dépensés au checkout
+  ORDER_EARN // points gagnés à la livraison
+  CANCELLATION_REFUND // recrédit des points à l'annulation
+  REFERRAL_REFERRER // récompense du parrain
+  REFERRAL_REFERRED // bonus de bienvenue du filleul
+  ADJUSTMENT // écriture manuelle / héritée
 }
 
 model FcmToken {
@@ -147,7 +167,12 @@ model Restaurant {
 
   // Multi-vendeurs (Sprint A — LIL-111)
   vendorType        VendorType     @default(RESTAURANT)
-  adminApproved     Boolean        @default(true) // false par défaut pour BEVERAGE_SHOP via service
+  // Défaut sûr (fix L10, audit du 28/08/2026) : la valeur par défaut était
+  // `true` et la règle « false hors RESTAURANT » ne vivait que dans les
+  // services. Toute création qui contournerait ces services (script, seed,
+  // futur endpoint) publiait donc un vendeur non validé. Les trois chemins de
+  // création posent explicitement `adminApproved = true` pour les restaurants.
+  adminApproved     Boolean        @default(false)
   adminApprovedAt   DateTime?
   adminApprovedById String? // User.id de l'admin qui a approuvé (pas de FK)
   acceptsPreorders  Boolean        @default(false)
@@ -276,9 +301,25 @@ model Product {
   shelfLifeDays Int? // durée conservation en jours
   madeToOrder   Boolean @default(false)
 
-  // Disponibilité horaire (BAKERY surtout)
+  // Disponibilité horaire (BAKERY surtout) — appliquée au catalogue ET au
+  // checkout depuis l'audit du 28/08/2026 (fix M1). Auparavant validée à
+  // l'écriture puis jamais relue : une viennoiserie du matin restait
+  // commandable à 3 h.
   availableFrom  String? // "HH:mm"
   availableUntil String? // "HH:mm"
+
+  // Disponibilité et retrait du catalogue (fix M2).
+  //
+  // `OrderItem.productId` est en RESTRICT depuis Ar1 : `DELETE /products/:id`
+  // renvoyait 409 dès la première vente, et le seul contournement
+  // (`stockQuotidien = 0`) affiche « épuisé » et non « retiré ». Deux notions
+  // distinctes :
+  //  - `isAvailable = false` : temporairement indisponible, le vendeur le
+  //    remettra ;
+  //  - `deletedAt` : retiré du catalogue pour de bon, mais la ligne survit
+  //    pour que l'historique des commandes reste lisible.
+  isAvailable Boolean   @default(true)
+  deletedAt   DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -287,6 +328,7 @@ model Product {
   @@index([categoryId])
   @@index([restaurantId, productType]) // catalogue par type
   @@index([productType, stockMode]) // cron reset DAILY uniquement
+  @@index([restaurantId, deletedAt, isAvailable]) // catalogue vendeur filtré (fix M2)
 }
 
 model ProductVariant {
@@ -326,6 +368,12 @@ model CartItem {
   //04/04/2026 Nouveau champ — nullable au début pour ne pas casser l'existant
   itemKey   String? // "productId:variantId:menuId|none"
 
+  // ⚠️ En PostgreSQL, `NULL != NULL` : cette contrainte ne protège PAS les
+  // lignes `menuId = null`, c'est-à-dire les produits individuels — soit le cas
+  // le plus fréquent (fix L9). Un index unique **partiel**
+  // `WHERE "menuId" IS NULL` la complète, créé par la migration
+  // `20260828200000_cart_item_partial_unique` (Prisma ne sait pas déclarer un
+  // index partiel).
   @@unique([cartId, variantId, menuId]) // Permet un même variant comme produit individuel ET dans un menu
   @@index([variantId])
   @@index([productId])
@@ -378,12 +426,17 @@ model Order {
   ageVerified   Boolean   @default(false)
   ageVerifiedAt DateTime?
 
+  // Remboursement ouvert si la commande est annulée après paiement (fix H5)
+  refund Refund?
+
   @@index([restaurantId, status, createdAt(sort: Desc)]) // dashboard resto: commandes par statut, plus recentes (LFD-9)
   @@index([promoCodeId])
   @@index([restaurantId])
   @@index([userId])
   @@index([status]) // ← manquait
   @@index([createdAt]) // ← manquait
+  @@index([userId, createdAt(sort: Desc)]) // GET /orders/my — pagination client (fix M19)
+  @@index([status, createdAt]) // cron d'expiration des commandes impayées (fix M19)
 }
 
 model OrderItem {
@@ -477,6 +530,10 @@ enum StatusUser {
   INACTIVE
   ACTIVE
   BLOCKED
+  // Compte supprimé par son propriétaire (DELETE /users/me). La ligne User est
+  // conservée anonymisée : Order/Payment sont des pièces comptables qu'on ne
+  // peut pas effacer, et elles portent une FK vers User depuis Ar1.
+  DELETED
 }
 
 enum PaymentMethod {
@@ -515,10 +572,12 @@ model Payment {
   createdAt             DateTime      @default(now())
   updatedAt             DateTime      @updatedAt
 
-  order Order @relation(fields: [orderId], references: [id])
+  order   Order    @relation(fields: [orderId], references: [id])
+  refunds Refund[]
 
   @@index([orderId])
   @@index([status]) // dashboard paiements filtrés par statut
+  @@index([orderId, status]) // assertNoPendingPayment + cron d'expiration (fix M19)
   @@map("payments")
 }
 
@@ -586,9 +645,14 @@ model Review {
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
-  @@unique([userId, restaurantId])
+  // `@@unique([userId, restaurantId])` a été RETIRÉ (audit du 28/08/2026) : il
+  // interdisait structurellement plus d'un avis par vendeur et par client, ce
+  // qui contredisait le flux « un avis par commande livrée » qu'implémente
+  // ReviewsService. L'unicité utile est déjà portée par `orderId @unique` ;
+  // pour les avis sans commande, c'est le service qui garde l'unicité.
   @@index([restaurantId])
   @@index([userId])
+  @@index([restaurantId, rating]) // stats agrégées (groupBy) — fix M19 / P0
 }
 
 // Zones de livraison avec prix personnalisé par restaurant
@@ -804,6 +868,117 @@ enum IncidentStatus {
   IN_PROGRESS
   RESOLVED
   CLOSED
+}
+
+/// Boîte d'envoi transactionnelle (fix H7 — audit du 28/08/2026).
+///
+/// Le seul signal qui prévenait un vendeur qu'une commande était arrivée était
+/// un push FCM émis via `EventEmitter2` **en mémoire**, après le commit :
+///  - process tué entre les deux ⇒ événement perdu, définitivement, sans trace ;
+///  - `@nestjs/event-emitter` applique `suppressErrors ?? true` ⇒ une erreur de
+///    listener est loguée puis avalée ;
+///  - vendeur sans token FCM ⇒ un simple `logger.warn` (cas déjà observé en
+///    production sur les comptes ADMIN).
+///
+/// Une commande payée pouvait donc n'être jamais vue. La ligne est désormais
+/// écrite **dans la transaction de checkout** : si la commande existe,
+/// l'obligation de notifier existe aussi. Un worker la dépile avec backoff, et
+/// escalade en SMS quand le push ne suffit pas.
+model OutboxEvent {
+  id            String            @id @default(cuid())
+  type          String // 'order.created', …
+  aggregateId   String // orderId, en général
+  payload       Json
+  status        OutboxEventStatus @default(PENDING)
+  attempts      Int               @default(0)
+  nextAttemptAt DateTime          @default(now())
+  lastError     String?           @db.Text
+  escalatedAt   DateTime? // date d'envoi du SMS de secours
+  processedAt   DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@index([aggregateId, type])
+}
+
+enum OutboxEventStatus {
+  PENDING // à traiter (ou à re-traiter)
+  SENT // acquitté
+  FAILED // abandonné après épuisement des tentatives
+}
+
+/// Remboursement d'une commande payée puis annulée (fix H5 — audit 28/08/2026).
+///
+/// Avant : le système restituait stock, points et code promo, mais la ligne
+/// `Payment` restait `SUCCESS`, aucune entité ne matérialisait la dette envers
+/// le client, aucune tâche admin n'était créée, et le `refundAmount` calculé
+/// (`total >= 1000 ? total : 0`) n'alimentait qu'un message de notification —
+/// une règle « non remboursable sous 1 000 XAF » qui n'apparaissait ni dans les
+/// CGU ni dans l'app. Chaque annulation après paiement était donc un litige
+/// non traçable.
+model Refund {
+  id          String       @id @default(cuid())
+  orderId     String
+  order       Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  paymentId   String?
+  payment     Payment?     @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  amount      Float // montant dû au client, en XAF
+  status      RefundStatus @default(PENDING)
+  reason      String       @db.Text
+  requestedBy String? // User.id à l'origine de l'annulation
+  processedBy String? // User.id de l'admin qui a exécuté le virement
+  processedAt DateTime?
+  notes       String?      @db.Text
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([orderId]) // une commande = au plus un remboursement en cours
+  @@index([status, createdAt])
+}
+
+enum RefundStatus {
+  PENDING // à traiter par l'admin
+  PROCESSING // virement en cours
+  COMPLETED // client remboursé
+  REJECTED // refus motivé (fraude, commande déjà consommée…)
+}
+
+/// Journal d'audit des actions d'administration (audit du 28/08/2026).
+///
+/// `updateUserRole`, `banUser`, `suspendVendor` et `confirmManualPayment`
+/// modifient des droits ou de l'argent et ne laissaient qu'une ligne de log
+/// applicatif — perdue à la rotation, non interrogeable, non opposable. Cette
+/// table est en écriture seule côté application : aucun endpoint ne la modifie
+/// ni ne la supprime.
+model AdminAuditLog {
+  id         String           @id @default(cuid())
+  actorId    String // User.id de l'administrateur qui agit
+  actor      User             @relation("AdminAuditActor", fields: [actorId], references: [id], onDelete: Restrict)
+  action     AdminAuditAction
+  targetType String // "User", "Restaurant", "Payment", "Order"…
+  targetId   String
+  reason     String?          @db.Text
+  metadata   Json? // avant/après, montants, références
+  createdAt  DateTime         @default(now())
+
+  @@index([actorId, createdAt(sort: Desc)])
+  @@index([targetType, targetId])
+  @@index([action, createdAt(sort: Desc)])
+}
+
+enum AdminAuditAction {
+  USER_ROLE_CHANGED
+  USER_BANNED
+  USER_UNBANNED
+  VENDOR_APPROVED
+  VENDOR_SUSPENDED
+  VENDOR_ACTIVE_TOGGLED
+  PAYMENT_CONFIRMED
+  PAYMENT_REJECTED
+  REFUND_CREATED
+  REFUND_UPDATED
+  ORDER_STATUS_FORCED
 }
 
 model Incident {

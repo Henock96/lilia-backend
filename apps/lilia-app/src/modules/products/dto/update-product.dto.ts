@@ -9,11 +9,13 @@ import {
   IsString,
   IsUrl,
   Matches,
+  Max,
   MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
 import { ProductType, StockMode } from '@prisma/client';
+import { MAX_PRIX_XAF } from './create-product.dto';
 
 const TIME_HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -26,8 +28,12 @@ class UpdateProductVariantDto {
   @IsOptional()
   label?: string;
 
+  // Mêmes bornes qu'à la création (fix H3) : sans elles, la mise à jour était
+  // un chemin de contournement complet.
   @IsNumber()
   @IsOptional()
+  @Min(0, { message: 'Le prix ne peut pas être négatif.' })
+  @Max(MAX_PRIX_XAF, { message: 'Prix hors limites.' })
   prix?: number;
 }
 
@@ -46,6 +52,8 @@ export class UpdateProductDto {
 
   @IsNumber()
   @IsOptional()
+  @Min(0, { message: 'Le prix ne peut pas être négatif.' })
+  @Max(MAX_PRIX_XAF, { message: 'Prix hors limites.' })
   prixOriginal?: number;
 
   @IsString()

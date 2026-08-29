@@ -18,6 +18,8 @@ import { TrackingModule } from '../tracking/tracking.module';
 import { PlatformSettingsModule } from '../platform-settings/platform-settings.module';
 import { VendorsModule } from '../vendors/vendors.module';
 import { QuartiersModule } from '../quartiers/quartiers.module';
+import { LoyaltyModule } from '../loyalty/loyalty.module';
+import { RefundsModule } from '../refunds/refunds.module';
 
 @Module({
   imports: [
@@ -27,6 +29,8 @@ import { QuartiersModule } from '../quartiers/quartiers.module';
     PlatformSettingsModule,
     VendorsModule,
     QuartiersModule,
+    LoyaltyModule,
+    RefundsModule,
   ],
   controllers: [OrdersController],
   providers: [

@@ -8,6 +8,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { OrderStateMachine } from '../orders/order-state.machine';
 import { PlatformSettingsModule } from '../platform-settings/platform-settings.module';
 import { TrackingModule } from '../tracking/tracking.module';
+import { LoyaltyModule } from '../loyalty/loyalty.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { TrackingModule } from '../tracking/tracking.module';
     NotificationsModule,
     PlatformSettingsModule,
     TrackingModule,
+    LoyaltyModule,
   ],
   providers: [
     DeliveriesService,

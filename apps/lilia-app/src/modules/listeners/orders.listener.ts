@@ -6,6 +6,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { OrderCreatedEvent, OrderStatusUpdatedEvent, OrderCancelledEvent } from '../events/order-events';
 import { OrderStatus } from '@prisma/client';
 import { TrackingGateway } from '../tracking/tracking.gateway';
+import { OutboxService } from '../outbox/outbox.service';
 
 @Injectable()
 export class OrdersListener {
@@ -15,6 +16,7 @@ export class OrdersListener {
     private readonly notificationsService: NotificationsService,
     private readonly prisma: PrismaService,
     private readonly trackingGateway: TrackingGateway, // injecté pour notifier les clients en temps réel
+    private readonly outbox: OutboxService,
   ) {}
 
 
@@ -30,7 +32,7 @@ export class OrdersListener {
       select: { ownerId: true, nom: true },
     });
 
-    await Promise.allSettled([
+    const [, vendorNotification] = await Promise.allSettled([
       // Notif client
       this.notificationsService.sendPushNotification(
         event.userId,
@@ -48,6 +50,14 @@ export class OrdersListener {
           )
         : Promise.resolve(),
     ]);
+
+    // Fix H7 : on n'acquitte l'outbox QUE si la notification vendeur est
+    // réellement partie. Sinon la ligne reste PENDING et le dispatcher la
+    // reprend avec retry puis escalade SMS — c'est le signal le plus critique
+    // du métier, il ne doit pas dépendre d'un push best-effort.
+    if (event.outboxId && vendorNotification.status === 'fulfilled') {
+      await this.outbox.markSent(event.outboxId);
+    }
       // Broadcast WebSocket — le client voit le statut EN_ATTENTE en temps réel
     this.trackingGateway.broadcastOrderStatus(event.orderId, 'EN_ATTENTE');
       this.logger.log(`Notifications de création de commande envoyées pour: ${event.orderId}`);

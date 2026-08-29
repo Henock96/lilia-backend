@@ -56,8 +56,17 @@ export class DeliveriesController {
   @Roles('LIVREUR')
   @ApiOperation({ summary: 'Mes livraisons assignées (livreur)' })
   @ApiQuery({ name: 'status', required: false, enum: DeliveryStatus })
-  findMyDeliveries(@FirebaseUser() fbUser: DecodedIdToken, @Query('status') status?: DeliveryStatus) {
-    return this.deliveriesService.findAllForDeliverer(fbUser.uid, status);
+  findMyDeliveries(
+    @FirebaseUser() fbUser: DecodedIdToken,
+    @Query() pagination: PaginationQueryDto,
+    @Query('status') status?: DeliveryStatus,
+  ) {
+    return this.deliveriesService.findAllForDeliverer(
+      fbUser.uid,
+      status,
+      pagination.page,
+      pagination.limit,
+    );
   }
 
   /**

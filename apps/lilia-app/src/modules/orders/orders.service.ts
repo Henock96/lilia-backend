@@ -98,7 +98,16 @@ export class OrdersService {
   }
 
   // orders/orders.service.ts — à ajouter
-  async findOrdersByUserId(userId: string, caller?: { role: string }) {
-    return this.queryService.findOrdersByUserId(userId, caller);
+  countUnhandledRestaurantOrders(firebaseUid: string) {
+    return this.queryService.countUnhandledRestaurantOrders(firebaseUid);
+  }
+
+  async findOrdersByUserId(
+    userId: string,
+    caller?: { role: string },
+    page?: number,
+    limit?: number,
+  ) {
+    return this.queryService.findOrdersByUserId(userId, caller, page, limit);
   }
 }

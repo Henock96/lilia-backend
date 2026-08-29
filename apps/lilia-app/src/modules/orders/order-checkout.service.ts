@@ -6,8 +6,10 @@ import {
   Optional,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { LoyaltyTransactionType } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { InjectRedis } from '@nestjs-modules/ioredis';
+import * as Sentry from '@sentry/nestjs';
 import Redis from 'ioredis';
 
 import { PrismaService } from '../../prisma/prisma.service';
@@ -20,6 +22,7 @@ import { StockService } from './stock.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { PreorderValidatorService } from '../vendors/preorder-validator.service';
 import { QuartiersService } from '../quartiers/quartiers.service';
+import { OutboxService } from '../outbox/outbox.service';
 
 /**
  * Checkout : création d'une commande à partir du panier (LIL-134).
@@ -53,6 +56,7 @@ export class OrderCheckoutService {
     private readonly platformSettings: PlatformSettingsService,
     private readonly preorderValidator: PreorderValidatorService,
     private readonly quartiersService: QuartiersService,
+    private readonly outbox: OutboxService,
     // Client partagé fourni par `RedisModule.forRootAsync` (app.module). On
     // n'ouvre plus une seconde connexion ici : Render plafonne les connexions
     // Redis et `UserCacheService` utilise déjà ce même pool.
@@ -80,16 +84,40 @@ export class OrderCheckoutService {
     dto: CreateOrderDto,
     idempotencyKey?: string,
   ) {
-    const cacheKey =
-      idempotencyKey && this.idempotencyEnabled
-        ? `idempotency:${firebaseUid}:${idempotencyKey}`
-        : null;
+    // Fix H8 : l'en-tête est désormais OBLIGATOIRE. Le mécanisme `SET NX`
+    // était correct mais ne s'activait que si le client l'envoyait — un client
+    // qui l'omettait (ou un attaquant) retrouvait le comportement d'avant le
+    // correctif : double-tap ⇒ deux commandes, deux décréments de stock, deux
+    // notifications. Les trois clients (Flutter ×2 + web) l'envoient déjà.
+    const key = idempotencyKey?.trim();
+    if (!key) {
+      throw new BadRequestException(
+        "En-tête 'Idempotency-Key' requis pour créer une commande.",
+      );
+    }
+    if (key.length > 128) {
+      throw new BadRequestException("En-tête 'Idempotency-Key' trop long.");
+    }
+
+    const cacheKey = this.idempotencyEnabled
+      ? `idempotency:${firebaseUid}:${key}`
+      : null;
 
     if (!cacheKey) {
+      // Redis non configuré : on n'a pas de garde possible. On le signale
+      // bruyamment plutôt que de le laisser passer en silence — sans quoi une
+      // panne d'infrastructure devient une faille métier invisible.
+      this.logger.error(
+        '⚠️ [IDEMPOTENCY] Redis indisponible — checkout NON protégé contre les doublons',
+      );
+      Sentry.captureMessage(
+        "Checkout sans garde d'idempotence (Redis indisponible)",
+        'warning',
+      );
       return this.performCheckout(firebaseUid, dto);
     }
 
-    const claim = await this.claimIdempotencyKey(cacheKey, idempotencyKey!);
+    const claim = await this.claimIdempotencyKey(cacheKey, key);
     if (claim.replay) {
       this.logger.log(
         `📦 [IDEMPOTENCY] Réponse cachée retournée — key: ${idempotencyKey}`,
@@ -263,7 +291,7 @@ export class OrderCheckoutService {
         loyaltyDiscount,
     );
     // 5. Exécuter la création de la commande et la suppression du panier dans une transaction
-    const order = await this.prisma.$transaction(async (tx) => {
+    const { order, outboxId } = await this.prisma.$transaction(async (tx) => {
       const newOrder = await tx.order.create({
         data: {
           userId: user.id,
@@ -304,12 +332,21 @@ export class OrderCheckoutService {
       });
       // Consomme le code promo dans la transaction
       if (promoResult) {
+        // Fix L7 : sur un code FREE_DELIVERY, `discountAmount` vaut 0 (la
+        // remise porte sur les frais, pas sur le sous-total) et
+        // `PromoUsage.discountApplied` enregistrait donc 0 — les statistiques
+        // de campagne sous-estimaient le coût réel. On trace ce que la
+        // plateforme a effectivement offert.
+        const deliveryDiscount = Math.max(
+          0,
+          amounts.deliveryFee - finalDeliveryFee,
+        );
         await this.promoService.applyCode(
           tx,
           promoResult.promoCodeId,
           user.id,
           newOrder.id,
-          discountAmount,
+          discountAmount + deliveryDiscount,
         );
       }
 
@@ -340,6 +377,7 @@ export class OrderCheckoutService {
             userId: user.id,
             orderId: newOrder.id,
             points: -loyaltyPointsUsed,
+            type: LoyaltyTransactionType.ORDER_SPEND,
             reason: `${loyaltyPointsUsed} pts utilisés — réduction ${loyaltyDiscount} FCFA`,
           },
         });
@@ -355,7 +393,22 @@ export class OrderCheckoutService {
         },
       });
 
-      return newOrder;
+      // 8. Obligation de notifier le vendeur, écrite DANS la transaction
+      // (fix H7). Si la commande existe, l'obligation existe : plus de
+      // notification perdue parce que le process est mort entre le commit et
+      // l'émission de l'événement en mémoire.
+      const outboxId = await this.outbox.enqueueInTransaction(tx, {
+        type: 'order.created',
+        aggregateId: newOrder.id,
+        payload: {
+          orderId: newOrder.id,
+          userId: newOrder.userId,
+          restaurantId: newOrder.restaurantId,
+          totalAmount: newOrder.total,
+        },
+      });
+
+      return { order: newOrder, outboxId };
     });
     this.logger.log(
       `🔔 Nouvelles commandes:${order.id} au restaurant ${order.restaurantId} pour un total de ${order.total} FCFA.`,
@@ -370,14 +423,20 @@ export class OrderCheckoutService {
         itemCount: order.items.length,
         restaurantName: order.restaurant.nom, // Exemple statique, à remplacer par une vraie estimation si disponible
       },
+      undefined,
+      // Chemin rapide : le listener notifie immédiatement puis acquitte cette
+      // ligne d'outbox. S'il échoue ou si le process meurt, le dispatcher
+      // reprend la main (fix H7). L'identifiant reste interne : il ne figure
+      // pas dans la réponse HTTP.
+      outboxId,
     );
 
     this.eventEmitter.emit('order.created', orderCreatedEvent);
 
-    // Récompense parrainage sur la 1ère commande (non-bloquant)
-    this.handleReferralReward(user.id).catch((err) =>
-      this.logger.error(`Erreur récompense parrainage: ${err}`),
-    );
+    // ⚠️ La récompense de parrainage N'EST PLUS versée ici (fix C3, audit du
+    // 28/08/2026) : elle l'était à la création de la commande, donc sans aucun
+    // paiement. Elle est désormais déclenchée par `order.payment.confirmed`
+    // → PaymentListener → ReferralService.rewardIfFirstPaidOrder().
 
     return { message: 'Commande créée avec succès.', data: order };
   }
@@ -436,11 +495,17 @@ export class OrderCheckoutService {
       return { reserved: false, replay: JSON.parse(existing) };
     } catch (err) {
       if (err instanceof ConflictException) throw err;
+      // Dégradation volontaire : une panne Redis ne doit pas fermer la caisse.
+      // Mais elle désactive une garde de sécurité, donc elle remonte en alerte
+      // (fix H8) au lieu de rester une ligne de log parmi d'autres.
       this.logger.error(
         `Redis (idempotence checkout) indisponible — checkout non protégé : ${
           (err as Error).message
         }`,
       );
+      Sentry.captureException(err, {
+        tags: { feature: 'checkout-idempotency', degraded: 'true' },
+      });
       return { reserved: false };
     }
   }
@@ -455,56 +520,5 @@ export class OrderCheckoutService {
       .catch(() =>
         this.logger.warn('Mise en cache du résultat idempotent échouée'),
       );
-  }
-
-  private async handleReferralReward(userId: string): Promise<void> {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { referredByCode: true, referralRewarded: true },
-    });
-    if (!user?.referredByCode || user.referralRewarded) return;
-
-    const orderCount = await this.prisma.order.count({ where: { userId } });
-    if (orderCount !== 1) return;
-
-    const referrer = await this.prisma.user.findUnique({
-      where: { referralCode: user.referredByCode },
-      select: { id: true },
-    });
-    if (!referrer) return;
-
-    const settings = await this.platformSettings.getSettings();
-
-    await this.prisma.$transaction([
-      this.prisma.user.update({
-        where: { id: referrer.id },
-        data: { loyaltyPoints: { increment: settings.referrerBonusPoints } },
-      }),
-      this.prisma.loyaltyTransaction.create({
-        data: {
-          userId: referrer.id,
-          points: settings.referrerBonusPoints,
-          reason: 'Récompense parrainage — filleul activé',
-        },
-      }),
-      this.prisma.user.update({
-        where: { id: userId },
-        data: {
-          loyaltyPoints: { increment: settings.referredBonusPoints },
-          referralRewarded: true,
-        },
-      }),
-      this.prisma.loyaltyTransaction.create({
-        data: {
-          userId,
-          points: settings.referredBonusPoints,
-          reason: 'Bonus bienvenue parrainage',
-        },
-      }),
-    ]);
-
-    this.logger.log(
-      `🎁 Parrainage: +${settings.referrerBonusPoints}pts → parrain ${referrer.id}, +${settings.referredBonusPoints}pts → filleul ${userId}`,
-    );
   }
 }

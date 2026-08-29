@@ -31,9 +31,11 @@ export class SentryUserInterceptor implements NestInterceptor {
 
     const user = request?.user;
     if (user) {
+      // Fix L4 : l'e-mail n'est plus transmis à Sentry. `id` suffit à
+      // corréler un incident à un compte (et à le retrouver en base) ; envoyer
+      // l'adresse expédie une donnée personnelle chez un tiers à chaque erreur.
       Sentry.setUser({
         id: user.id,
-        email: user.email,
         role: user.role,
       });
     } else if (request?.firebaseUser) {

@@ -37,13 +37,10 @@ export class PromoController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Valider un code promo au checkout' })
   validate(@CurrentUser() user: User, @Body() body: ValidatePromoDto) {
-    return this.promoService.validateCode(
-      body.code,
-      user.id,
-      body.restaurantId,
-      body.subTotal,
-      body.deliveryFee,
-    );
+    // Fix L6 : `subTotal`, `deliveryFee` et `restaurantId` du corps ne sont
+    // plus lus — le montant vient du panier serveur. Les champs restent
+    // acceptés (et ignorés) pour ne pas casser les clients déployés.
+    return this.promoService.validateCodeForCart(body.code, user.id);
   }
 
   // ─── Admin ────────────────────────────────────────────────────────────────

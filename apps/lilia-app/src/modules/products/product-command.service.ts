@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ProductType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateProductDto } from './dto/create-product.dto';
@@ -222,7 +222,19 @@ export class ProductCommandService {
   }
 
   /**
-   * Supprime un produit
+   * Retire un produit du catalogue.
+   *
+   * Fix M2 (audit du 28/08/2026) : la méthode faisait un `DELETE` réel. Depuis
+   * l'activation des clés étrangères (Ar1), `OrderItem.productId` est en
+   * RESTRICT — donc dès la **première vente**, la suppression renvoyait un 409
+   * et le vendeur n'avait plus aucun moyen de retirer son produit ; le seul
+   * contournement (`stockQuotidien = 0`) l'affiche « épuisé », ce qui n'est pas
+   * la même information pour le client.
+   *
+   * On fait donc un **soft delete** dès que le produit a un historique : la
+   * ligne survit pour que les commandes passées restent lisibles, mais elle
+   * disparaît du catalogue. Un produit jamais commandé est réellement supprimé
+   * (rien à préserver).
    */
   async remove(id: string, firebaseUid: string) {
     // Vérifier que le produit existe et appartient au restaurant de l'utilisateur
@@ -244,40 +256,95 @@ export class ProductCommandService {
       throw new ForbiddenException('Vous n\'êtes pas autorisé à supprimer ce produit.');
     }
 
-    // Supprimer les variantes et le produit dans une transaction
+    const soldAtLeastOnce = await this.prisma.orderItem.count({
+      where: { productId: id },
+    });
+
     await this.prisma.$transaction(async (tx) => {
-      // Récupérer les IDs des variantes
+      // Les paniers en cours référencent des variantes qui vont disparaître du
+      // catalogue : on les vide dans les deux cas. (Le client n'en est pas
+      // averti — ce point reste une amélioration UX à traiter côté apps.)
       const variants = await tx.productVariant.findMany({
         where: { productId: id },
         select: { id: true },
       });
       const variantIds = variants.map((v) => v.id);
 
-      // Supprimer les CartItems qui référencent ces variantes
       if (variantIds.length > 0) {
         await tx.cartItem.deleteMany({
           where: { variantId: { in: variantIds } },
         });
       }
 
-      // Supprimer les variantes
-      await tx.productVariant.deleteMany({
-        where: { productId: id },
-      });
+      if (soldAtLeastOnce > 0) {
+        // Soft delete : la ligne reste, pointée par des OrderItem en RESTRICT.
+        await tx.product.update({
+          where: { id },
+          data: { deletedAt: new Date(), isAvailable: false },
+        });
+        // Le produit ne doit plus composer de menu du jour.
+        await tx.menuProduct.deleteMany({ where: { productId: id } });
+        return;
+      }
 
-      // Supprimer les références dans les menus
-      await tx.menuProduct.deleteMany({
-        where: { productId: id },
-      });
-
-      // Supprimer le produit
-      await tx.product.delete({
-        where: { id },
-      });
+      // Jamais vendu : suppression réelle, rien à conserver.
+      await tx.productVariant.deleteMany({ where: { productId: id } });
+      await tx.menuProduct.deleteMany({ where: { productId: id } });
+      await tx.product.delete({ where: { id } });
     });
 
     return {
-      message: 'Produit supprimé avec succès',
+      message:
+        soldAtLeastOnce > 0
+          ? 'Produit retiré du catalogue (historique des commandes conservé)'
+          : 'Produit supprimé avec succès',
+    };
+  }
+
+  /**
+   * Active / désactive la vente d'un produit (fix M2).
+   *
+   * `stockQuotidien = 0` affiche « épuisé » — ce n'est pas la même information
+   * qu'« indisponible », et c'était pourtant le seul levier dont disposait le
+   * vendeur pour retirer temporairement un produit.
+   */
+  async setAvailability(
+    productId: string,
+    isAvailable: boolean,
+    firebaseUid: string,
+  ) {
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+      include: { restaurant: { include: { owner: true } } },
+    });
+    if (!product) {
+      throw new NotFoundException(`Produit avec l'ID "${productId}" non trouvé.`);
+    }
+    if (product.deletedAt) {
+      throw new BadRequestException('Ce produit a été retiré du catalogue.');
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    if (!user) throw new NotFoundException('Utilisateur non trouvé.');
+    if (
+      user.role !== 'ADMIN' &&
+      product.restaurant.owner.firebaseUid !== firebaseUid
+    ) {
+      throw new ForbiddenException(
+        "Vous n'êtes pas autorisé à modifier ce produit.",
+      );
+    }
+
+    const updated = await this.prisma.product.update({
+      where: { id: productId },
+      data: { isAvailable },
+    });
+
+    return {
+      message: isAvailable
+        ? 'Produit remis en vente'
+        : 'Produit marqué indisponible',
+      data: updated,
     };
   }
 
