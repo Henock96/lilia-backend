@@ -6,9 +6,23 @@ export class SetDriverStatusDto {
   status: DriverStatus;
 }
 
+/**
+ * Miroir HTTP de l'enum Prisma `DeliveryStatus`.
+ *
+ * `ACCEPTER` sépare « le livreur a accepté et va chercher le repas » de
+ * « le livreur roule avec le repas » (EN_TRANSIT). Sans cette distinction,
+ * accepter une mission faisait basculer la commande en EN_ROUTE et prévenait
+ * le client que sa commande était en chemin — alors que rien n'avait quitté le
+ * restaurant.
+ *
+ * ⚠️ `ACCEPTER` et `EN_TRANSIT` ne sont PAS atteignables via
+ * `PATCH /:id/status` : ils passent par `/accept` et `/pickup`, qui portent les
+ * effets de bord sur la commande et le statut du livreur.
+ */
 export enum DeliveryStatus {
   EN_ATTENTE = 'EN_ATTENTE',
   ASSIGNER = 'ASSIGNER',
+  ACCEPTER = 'ACCEPTER',
   EN_TRANSIT = 'EN_TRANSIT',
   LIVRER = 'LIVRER',
   ECHEC = 'ECHEC',

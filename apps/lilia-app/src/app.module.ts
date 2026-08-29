@@ -27,6 +27,7 @@ import { DeliveriesModule } from './modules/deliveries/deliveries.module';
 import { CartModule } from './modules/cart/cart.module';
 import { MenusModule } from './modules/menus/menus.module';
 import { ReviewsModule } from './modules/reviews/reviews.module';
+import { DeliveryReviewsModule } from './modules/delivery-reviews/delivery-reviews.module';
 import { PaymentModule } from './modules/payments/payment.module';
 import { AdressesModule } from './modules/adresses/adresses.module';
 import { QuartiersModule } from './modules/quartiers/quartiers.module';
@@ -185,6 +186,7 @@ import { envValidationSchema } from './config/env.validation';
     CartModule,
     MenusModule,
     ReviewsModule,
+    DeliveryReviewsModule,
     PaymentModule,
     AdressesModule,
     QuartiersModule,

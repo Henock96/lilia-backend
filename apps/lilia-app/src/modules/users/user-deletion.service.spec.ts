@@ -165,7 +165,7 @@ describe('UserDeletionService', () => {
       );
     });
 
-    it('livraison ASSIGNER ou EN_TRANSIT → refus', async () => {
+    it('livraison en cours (ASSIGNER / ACCEPTER / EN_TRANSIT) → refus', async () => {
       prisma.delivery.count.mockResolvedValue(1);
 
       await expect(service.deleteOwnAccount('u1')).rejects.toBeInstanceOf(
@@ -174,7 +174,9 @@ describe('UserDeletionService', () => {
       expect(prisma.delivery.count).toHaveBeenCalledWith({
         where: {
           delivererId: 'u1',
-          status: { in: ['ASSIGNER', 'EN_TRANSIT'] },
+          // `ACCEPTER` inclus depuis la séparation acceptation / récupération :
+          // un livreur qui va chercher un repas a bien une course en cours.
+          status: { in: ['ASSIGNER', 'ACCEPTER', 'EN_TRANSIT'] },
         },
       });
     });

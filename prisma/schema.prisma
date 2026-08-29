@@ -67,6 +67,10 @@ model User {
   // Actions d'administration réalisées PAR ce compte (journal d'audit)
   adminAuditLogs AdminAuditLog[] @relation("AdminAuditActor")
 
+  // Notes de livraison : reçues en tant que livreur, données en tant que client
+  delivererReviews      DeliveryReview[] @relation("DelivererReviews")
+  customerDeliveryReviews DeliveryReview[] @relation("CustomerDeliveryReviews")
+
   @@index([referredByCode]) // getReferralStats : 2 count() par ouverture de l'écran (fix M19)
 }
 
@@ -492,7 +496,11 @@ model Delivery {
   updatedAt   DateTime       @updatedAt
 
   estimatedArrival DateTime? // ETA calculé
-  pickedUpAt       DateTime? // quand le livreur a pris la commande
+  // Horodatage des trois moments distincts de la course. `pickedUpAt` était
+  // renseigné dès l'acceptation, ce qui en faisait une donnée fausse : il est
+  // désormais écrit à la récupération réelle du repas.
+  acceptedAt       DateTime? // le livreur a accepté et part au restaurant
+  pickedUpAt       DateTime? // le livreur a le repas en main
   deliveredAt      DateTime? // timestamp réel de livraison
 
   // Position dernière connue du livreur
@@ -501,10 +509,42 @@ model Delivery {
   lastPositionAt DateTime?
   locations      DeliveryLocation[]
 
+  review DeliveryReview? // note laissée par le client après livraison
+
   @@index([delivererId, status]) // missions d'un livreur filtrees par statut (LFD-9)
   @@index([delivererId])
   @@index([status]) // ← manquait
 }
+
+/// Note du LIVREUR par le client, après livraison.
+///
+/// Modèle distinct de `Review` (qui note un vendeur) plutôt qu'extension de
+/// celui-ci : `Review.orderId` est `@unique`, donc y loger la note du livreur
+/// interdirait de noter le restaurant ET le livreur pour la même commande. Et
+/// rendre `Review.restaurantId` nullable pour un modèle polymorphe fragiliserait
+/// les huit requêtes qui s'appuient dessus, sans rien simplifier.
+///
+/// `@@unique([deliveryId])` porte nativement la règle métier « une seule note
+/// par livraison » : la contrainte est en base, pas seulement dans le service.
+model DeliveryReview {
+  id          String   @id @default(cuid())
+  delivery    Delivery @relation(fields: [deliveryId], references: [id], onDelete: Restrict)
+  deliveryId  String   @unique
+  orderId     String // dénormalisé : évite une jointure sur l'écran « mes notes »
+  deliverer   User     @relation("DelivererReviews", fields: [delivererId], references: [id], onDelete: Restrict)
+  delivererId String
+  user        User     @relation("CustomerDeliveryReviews", fields: [userId], references: [id], onDelete: Restrict)
+  userId      String
+  rating      Int // 1 à 5, borné par le DTO
+  comment     String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([delivererId, createdAt(sort: Desc)]) // historique + moyenne du livreur
+  @@index([delivererId, rating]) // agrégats (groupBy) sans charger les lignes
+  @@index([userId])
+}
+
 
 // Nouvelle table — n'affecte pas l'existant
 model DeliveryLocation {
@@ -552,9 +592,17 @@ enum OrderStatus {
 }
 
 enum DeliveryStatus {
-  EN_ATTENTE
-  ASSIGNER
-  EN_TRANSIT
+  EN_ATTENTE // livraison créée, aucun livreur
+  ASSIGNER // un livreur est désigné, il n'a pas encore répondu
+  // Le livreur a accepté et se rend au restaurant. Il n'a PAS le repas.
+  //
+  // Cet état manquait : `acceptDelivery` faisait passer la livraison
+  // directement en EN_TRANSIT, écrivait `pickedUpAt` et basculait la commande
+  // en EN_ROUTE — le client recevait « votre livreur est en chemin » alors que
+  // le livreur n'avait encore rien récupéré. Accepter une mission n'est pas
+  // être en route vers le client.
+  ACCEPTER
+  EN_TRANSIT // repas récupéré, le livreur roule vers le client
   LIVRER
   ECHEC
 }

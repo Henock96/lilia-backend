@@ -188,6 +188,25 @@ export class DeliveriesController {
   }
 
   /**
+   * PATCH /deliveries/:id/pickup
+   *
+   * Le livreur confirme avoir récupéré le repas au restaurant. C'est ce geste
+   * — et non l'acceptation de la mission — qui fait passer la commande en
+   * EN_ROUTE et déclenche le « votre commande est en route » côté client.
+   */
+  @Patch(':id/pickup')
+  @Roles('LIVREUR')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Confirmer la récupération du repas au restaurant' })
+  @ApiParam({ name: 'id' })
+  confirmPickup(
+    @Param('id') id: string,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return this.deliveriesService.confirmPickup(id, fbUser.uid);
+  }
+
+  /**
    * PATCH /deliveries/:id/location
    * Le livreur met à jour sa position GPS (uniquement EN_TRANSIT)
    */

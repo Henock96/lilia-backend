@@ -82,19 +82,37 @@ export class OrdersListener {
       ),
     ];
 
-    // Notifie le restaurant uniquement pour LIVRER et ANNULER
-    const notifyRestaurantOn: OrderStatus[] = ['EN_ROUTE','LIVRER', 'ANNULER'];
+    // Notification au restaurant : uniquement LIVRER et ANNULER.
+    //
+    // `EN_ROUTE` a été RETIRÉ de cette liste : depuis que la commande n'y passe
+    // qu'à la récupération réelle du repas, c'est `DeliveriesListener
+    // .handlePickedUp` qui prévient le restaurant, avec un message qui dit
+    // quelque chose (« X a récupéré la commande #ABC ») plutôt qu'un enum brut.
+    // Les garder tous les deux enverrait deux push pour un seul geste.
+    const notifyRestaurantOn: OrderStatus[] = ['LIVRER', 'ANNULER'];
     if (notifyRestaurantOn.includes(event.newStatus)) {
       const restaurant = await this.prisma.restaurant.findUnique({
         where: { id: event.restaurantId },
         select: { ownerId: true },
       });
       if (restaurant) {
+        const shortId = event.orderId.slice(-6).toUpperCase();
+        const restaurantMsg =
+          event.newStatus === 'LIVRER'
+            ? {
+                title: '🎉 Commande livrée',
+                body: `La commande #${shortId} a été livrée au client.`,
+              }
+            : {
+                title: '❌ Commande annulée',
+                body: `La commande #${shortId} a été annulée.`,
+              };
+
         notifs.push(
           this.notificationsService.sendPushNotification(
             restaurant.ownerId,
-            'Statut commande',
-            `Commande #${event.orderId.slice(-6)} : ${event.newStatus}`,
+            restaurantMsg.title,
+            restaurantMsg.body,
             { orderId: event.orderId, type: 'status_update_restaurant' },
           ),
         );

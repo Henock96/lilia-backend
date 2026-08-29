@@ -1,17 +1,21 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { DriverStatus, OrderStatus } from '@prisma/client';
+import { DeliveryStatus, DriverStatus, OrderStatus } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { PrismaService } from '../../prisma/prisma.service';
-import { DeliveryStatus } from './dto/update-delivery.dto';
 import { OrderStateMachine } from '../orders/order-state.machine';
 import { OrderStatusUpdatedEvent } from '../events/order-events';
-import { DeliveryAssignedEvent } from '../events/delivery-events';
+import {
+  DeliveryAcceptedEvent,
+  DeliveryAssignedEvent,
+  DeliveryPickedUpEvent,
+} from '../events/delivery-events';
 
 /**
  * Assignation et acceptation de livraisons (LIL-134).
@@ -194,6 +198,23 @@ export class DeliveryAssignmentService {
     };
   }
 
+  /**
+   * Le livreur accepte la mission.
+   *
+   * ⚠️ Accepter une mission ≠ être en route vers le client.
+   *
+   * Cette méthode faisait auparavant passer la livraison directement en
+   * `EN_TRANSIT`, écrivait `pickedUpAt`, basculait la commande en `EN_ROUTE` et
+   * émettait `order.status.updated` — ce qui déclenchait le « 🛵 votre livreur
+   * est en chemin » côté client à la seconde où le livreur appuyait sur
+   * « Accepter », alors qu'il n'avait même pas quitté son domicile. Et
+   * `pickedUpAt`, dont le sens est « quand le livreur a pris la commande »,
+   * était donc faux en base.
+   *
+   * Elle ne fait plus que ce qu'elle dit : `ASSIGNER → ACCEPTER` et le livreur
+   * passe `ON_DELIVERY`. La commande, elle, reste `PRET` — c'est
+   * `confirmPickup` qui la fera avancer.
+   */
   async acceptDelivery(deliveryId: string, firebaseUid: string) {
     const user = await this.getUserOrThrow(firebaseUid);
     const delivery = await this.prisma.delivery.findUnique({
@@ -207,7 +228,7 @@ export class DeliveryAssignmentService {
     if (delivery.delivererId !== user.id) {
       throw new ForbiddenException('Cette livraison ne vous est pas assignée');
     }
-    if (delivery.status !== 'ASSIGNER') {
+    if (delivery.status !== DeliveryStatus.ASSIGNER) {
       throw new BadRequestException('Livraison déjà acceptée ou non assignée');
     }
     // Un livreur déjà en course ne peut pas en accepter une 2e (sinon les
@@ -224,46 +245,149 @@ export class DeliveryAssignmentService {
       );
     }
 
-    // Valide la transition Order PRET → EN_ROUTE via state machine
+    const now = new Date();
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // Verrou optimiste : les gardes ci-dessus ont été évaluées hors
+      // transaction, donc un double-tap peut les franchir deux fois. Seule
+      // l'écriture conditionnée sur `ASSIGNER` départage.
+      const claimed = await tx.delivery.updateMany({
+        where: { id: deliveryId, status: DeliveryStatus.ASSIGNER },
+        data: { status: DeliveryStatus.ACCEPTER, acceptedAt: now },
+      });
+      if (claimed.count === 0) {
+        throw new ConflictException(
+          'Cette mission a déjà été acceptée ou vous a été retirée.',
+        );
+      }
+
+      await tx.user.update({
+        where: { id: user.id },
+        data: { driverStatus: DriverStatus.ON_DELIVERY },
+      });
+
+      return tx.delivery.findUniqueOrThrow({ where: { id: deliveryId } });
+    });
+
+    // Seul le RESTAURANT est prévenu : il sait qu'un livreur vient chercher la
+    // commande. Le client, lui, n'a rien de nouveau à apprendre tant que le
+    // repas n'a pas quitté le comptoir.
+    this.eventEmitter.emit(
+      'delivery.accepted',
+      new DeliveryAcceptedEvent(
+        delivery.id,
+        delivery.orderId,
+        delivery.order.restaurantId,
+        user.id,
+        user.nom,
+      ),
+    );
+
+    return updated;
+  }
+
+  /**
+   * Le livreur confirme avoir **récupéré le repas** et part vers le client.
+   *
+   * C'est le seul point du système où l'on sait avec certitude que le livreur a
+   * la commande en main. D'où trois effets, et eux seuls ici :
+   *  - `ACCEPTER → EN_TRANSIT` (état qui conditionne déjà le tracking GPS) ;
+   *  - `pickedUpAt` enfin écrit au bon moment ;
+   *  - `Order PRET → EN_ROUTE`, ce qui déclenche le « votre commande est en
+   *    route » côté client via `order.status.updated`.
+   */
+  async confirmPickup(deliveryId: string, firebaseUid: string) {
+    const user = await this.getUserOrThrow(firebaseUid);
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
+      include: {
+        order: { include: { restaurant: { select: { nom: true } } } },
+      },
+    });
+
+    if (!delivery) throw new NotFoundException('Livraison introuvable.');
+    if (delivery.delivererId !== user.id) {
+      throw new ForbiddenException('Cette livraison ne vous est pas assignée');
+    }
+    if (delivery.status === DeliveryStatus.EN_TRANSIT) {
+      throw new ConflictException(
+        'Vous avez déjà confirmé la récupération de cette commande.',
+      );
+    }
+    if (delivery.status !== DeliveryStatus.ACCEPTER) {
+      throw new BadRequestException(
+        'Vous devez accepter la mission avant de récupérer la commande.',
+      );
+    }
+
+    // La commande doit être prête : on ne récupère pas un plat qui n'existe
+    // pas encore. La state machine porte déjà la règle PRET → EN_ROUTE par un
+    // LIVREUR — c'est ICI qu'elle devait être évaluée, pas à l'acceptation.
+    const previousOrderStatus = delivery.order.status;
     this.stateMachine.assertTransition(
-      delivery.order.status,
+      previousOrderStatus,
       OrderStatus.EN_ROUTE,
       'LIVREUR',
     );
 
-    const previousOrderStatus = delivery.order.status;
     const now = new Date();
 
-    // Met à jour livraison + statut livreur + commande en transaction
-    const [updated] = await this.prisma.$transaction([
-      this.prisma.delivery.update({
-        where: { id: deliveryId },
-        data: { status: 'EN_TRANSIT', pickedUpAt: now },
-      }),
-      this.prisma.user.update({
-        where: { id: user.id },
-        data: { driverStatus: 'ON_DELIVERY' },
-      }),
-      this.prisma.order.update({
-        where: { id: delivery.orderId },
-        data: { status: OrderStatus.EN_ROUTE },
-      }),
-    ]);
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.delivery.updateMany({
+        where: { id: deliveryId, status: DeliveryStatus.ACCEPTER },
+        data: { status: DeliveryStatus.EN_TRANSIT, pickedUpAt: now },
+      });
+      if (claimed.count === 0) {
+        throw new ConflictException(
+          'Cette livraison a changé d’état entre-temps. Rechargez la mission.',
+        );
+      }
 
-    // Notifie le client que le livreur est en route — payload structuré
-    const statusEvent = new OrderStatusUpdatedEvent(
-      delivery.orderId,
-      delivery.order.userId,
-      delivery.order.restaurantId,
-      previousOrderStatus,
-      OrderStatus.EN_ROUTE,
-      user.id,
-      {
-        restaurantName: delivery.order.restaurant.nom,
-        totalAmount: delivery.order.total,
-      },
+      // Verrou optimiste sur la commande aussi : le vendeur peut l'avoir
+      // annulée pendant que le livreur était au comptoir.
+      const orderClaimed = await tx.order.updateMany({
+        where: { id: delivery.orderId, status: previousOrderStatus },
+        data: { status: OrderStatus.EN_ROUTE },
+      });
+      if (orderClaimed.count === 0) {
+        throw new ConflictException(
+          'Le statut de la commande a changé. Rechargez la mission avant de continuer.',
+        );
+      }
+
+      return tx.delivery.findUniqueOrThrow({ where: { id: deliveryId } });
+    });
+
+    // 1. Le restaurant sait que le repas est parti de chez lui.
+    this.eventEmitter.emit(
+      'delivery.picked_up',
+      new DeliveryPickedUpEvent(
+        delivery.id,
+        delivery.orderId,
+        delivery.order.restaurantId,
+        user.id,
+        user.nom,
+        delivery.order.userId,
+      ),
     );
-    this.eventEmitter.emit('order.status.updated', statusEvent);
+
+    // 2. Le client reçoit « votre commande est en route » — maintenant, et
+    // seulement maintenant.
+    this.eventEmitter.emit(
+      'order.status.updated',
+      new OrderStatusUpdatedEvent(
+        delivery.orderId,
+        delivery.order.userId,
+        delivery.order.restaurantId,
+        previousOrderStatus,
+        OrderStatus.EN_ROUTE,
+        user.id,
+        {
+          restaurantName: delivery.order.restaurant.nom,
+          totalAmount: delivery.order.total,
+        },
+      ),
+    );
 
     return updated;
   }

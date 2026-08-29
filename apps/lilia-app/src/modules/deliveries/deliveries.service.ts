@@ -9,6 +9,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { DeliveryStatus } from './dto/update-delivery.dto';
 import { DeliveryQueryService } from './delivery-query.service';
+import { ACTIVE_DELIVERY_STATUSES } from './delivery-statuses';
 import { DeliveryAssignmentService } from './delivery-assignment.service';
 import { DriverStatus, OrderStatus } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -23,11 +24,21 @@ import { LoyaltyService } from '../loyalty/loyalty.service';
 type ActorRole = 'CLIENT' | 'RESTAURATEUR' | 'ADMIN' | 'LIVREUR';
 
 // Cycle de vie d'une livraison — transitions autorisées via PATCH /:id/status.
-// EN_TRANSIT n'est PAS atteignable ici : il passe par /accept (effets de bord
-// sur Order.status + DriverStatus). LIVRER et ECHEC sont des états terminaux.
+//
+// Deux transitions ne passent PAS par ici, car elles ont des effets de bord sur
+// `Order.status` et `DriverStatus` et méritent chacune leur endpoint explicite :
+//   ASSIGNER → ACCEPTER    : PATCH /:id/accept
+//   ACCEPTER → EN_TRANSIT  : PATCH /:id/pickup
+//
+// Conséquence directe : `LIVRER` n'est atteignable que depuis `EN_TRANSIT`,
+// donc une commande ne peut pas être déclarée livrée sans avoir été récupérée.
+// LIVRER et ECHEC sont terminaux.
 const DELIVERY_STATUS_TRANSITIONS: Record<string, DeliveryStatus[]> = {
   [DeliveryStatus.EN_ATTENTE]: [DeliveryStatus.ECHEC],
   [DeliveryStatus.ASSIGNER]: [DeliveryStatus.ECHEC],
+  // Le livreur a accepté mais n'a pas (ou plus) la commande : il peut encore
+  // renoncer, par exemple s'il n'arrive pas à joindre le restaurant.
+  [DeliveryStatus.ACCEPTER]: [DeliveryStatus.ECHEC],
   [DeliveryStatus.EN_TRANSIT]: [DeliveryStatus.LIVRER, DeliveryStatus.ECHEC],
   [DeliveryStatus.LIVRER]: [],
   [DeliveryStatus.ECHEC]: [],
@@ -290,6 +301,15 @@ export class DeliveriesService {
     return this.assignmentService.acceptDelivery(deliveryId, firebaseUid);
   }
 
+  /**
+   * Le livreur confirme avoir récupéré le repas au restaurant.
+   * C'est ce geste — et non l'acceptation — qui met la commande EN_ROUTE et
+   * prévient le client.
+   */
+  async confirmPickup(deliveryId: string, firebaseUid: string) {
+    return this.assignmentService.confirmPickup(deliveryId, firebaseUid);
+  }
+
   async getUserOrThrow(firebaseUid: string) {
     const user = await this.prisma.user.findUnique({
       where: { firebaseUid },
@@ -319,7 +339,7 @@ export class DeliveriesService {
       const activeDelivery = await this.prisma.delivery.findFirst({
         where: {
           delivererId: user.id,
-          status: { in: ['ASSIGNER', 'EN_TRANSIT'] },
+          status: { in: ACTIVE_DELIVERY_STATUSES },
         },
         select: { id: true, orderId: true, status: true },
       });

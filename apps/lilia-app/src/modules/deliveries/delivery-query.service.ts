@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DeliveryStatus } from './dto/update-delivery.dto';
+import { ACTIVE_DELIVERY_STATUSES } from './delivery-statuses';
 
 /**
  * Lectures de livraisons (queries) extraites de `DeliveriesService` (LIL-134).
@@ -288,11 +289,7 @@ export class DeliveryQueryService {
         _count: {
           select: {
             deliveries: {
-              where: {
-                status: {
-                  in: ['ASSIGNER', 'EN_TRANSIT'],
-                },
-              },
+              where: { status: { in: ACTIVE_DELIVERY_STATUSES } },
             },
           },
         },
@@ -310,7 +307,11 @@ export class DeliveryQueryService {
     return this.prisma.delivery.findMany({
       where: {
         delivererId: user.id,
-        status: { in: ['ASSIGNER', 'EN_TRANSIT'] },
+        // `ACCEPTER` y figure : c'est l'état d'une course prise en charge dont
+        // le repas n'est pas encore récupéré. L'omettre ferait disparaître la
+        // mission de l'écran du livreur entre le moment où il accepte et celui
+        // où il arrive au restaurant.
+        status: { in: ACTIVE_DELIVERY_STATUSES },
       },
       include: {
         order: {
@@ -356,10 +357,14 @@ export class DeliveryQueryService {
         createdAt: true,
         // Champs internes utilisés uniquement pour le contrôle d'accès (retirés
         // de la réponse plus bas).
+        acceptedAt: true,
         delivererId: true,
         deliverer: {
           select: { id: true, nom: true, phone: true, imageUrl: true },
         },
+        // La note déjà laissée : permet au client de savoir s'il peut encore
+        // noter, sans un second appel réseau.
+        review: { select: { id: true, rating: true, createdAt: true } },
         // Coords de l'adresse client + restaurant pour permettre au client
         // de tracking d'afficher le marker destination et le contexte
         // commande sans appel HTTP additionnel.

@@ -6,8 +6,10 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { IncidentsService } from '../incidents/incidents.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
+  DeliveryAcceptedEvent,
   DeliveryAssignedEvent,
   DeliveryFailedEvent,
+  DeliveryPickedUpEvent,
   DeliveryReadyForPickupEvent,
   DeliveryUnassignedEvent,
 } from '../events/delivery-events';
@@ -76,6 +78,73 @@ export class DeliveriesListener {
     }
 
     await Promise.allSettled(tasks);
+  }
+
+  // ─── ACCEPTATION ───────────────────────────────────────────────────────────
+
+  /**
+   * Le livreur a accepté et part chercher le repas.
+   *
+   * **Seul le restaurant est prévenu.** C'est lui qui a une information à en
+   * tirer : quelqu'un vient chercher la commande, il peut la finaliser et la
+   * poser au comptoir. Le client, lui, n'apprend rien d'utile — et lui envoyer
+   * « votre livreur est en chemin » ici était précisément le défaut corrigé :
+   * le livreur n'a pas encore le repas.
+   */
+  @OnEvent('delivery.accepted')
+  async handleAccepted(event: DeliveryAcceptedEvent) {
+    const restaurant = await this.prisma.restaurant.findUnique({
+      where: { id: event.restaurantId },
+      select: { ownerId: true },
+    });
+    if (!restaurant) return;
+
+    const shortId = event.orderId.slice(-6).toUpperCase();
+    const who = event.delivererName?.trim() || 'Le livreur';
+
+    await this.notifications.sendPushNotification(
+      restaurant.ownerId,
+      '✅ Livreur en approche',
+      `${who} a accepté la mission pour la commande #${shortId} et vient la récupérer.`,
+      {
+        type: 'delivery_accepted',
+        deliveryId: event.deliveryId,
+        orderId: event.orderId,
+      },
+    );
+  }
+
+  // ─── REPAS RÉCUPÉRÉ ────────────────────────────────────────────────────────
+
+  /**
+   * Le livreur a le repas en main et part vers le client.
+   *
+   * Le restaurant est informé que la commande a quitté son comptoir. Le client,
+   * lui, reçoit son « votre commande est en route » via `order.status.updated`
+   * (la commande passe `PRET → EN_ROUTE` au même moment) : on ne le notifie pas
+   * deux fois d'ici.
+   */
+  @OnEvent('delivery.picked_up')
+  async handlePickedUp(event: DeliveryPickedUpEvent) {
+    const restaurant = await this.prisma.restaurant.findUnique({
+      where: { id: event.restaurantId },
+      select: { ownerId: true },
+    });
+    if (!restaurant) return;
+
+    const shortId = event.orderId.slice(-6).toUpperCase();
+    const who = event.delivererName?.trim() || 'Le livreur';
+
+    await this.notifications.sendPushNotification(
+      restaurant.ownerId,
+      '📦 Commande récupérée',
+      `${who} a récupéré la commande #${shortId} et part chez le client.`,
+      {
+        type: 'delivery_picked_up',
+        deliveryId: event.deliveryId,
+        orderId: event.orderId,
+      },
+    );
   }
 
   // ─── COMMANDE PRÊTE ────────────────────────────────────────────────────────
@@ -204,7 +273,18 @@ export class DeliveriesListener {
     });
 
     // Personne d'assigné, ou le livreur est déjà parti avec la commande.
-    if (!delivery?.delivererId || delivery.status !== 'ASSIGNER') return;
+    //
+    // `ACCEPTER` doit être inclus : depuis la séparation acceptation /
+    // récupération, un livreur peut très bien avoir accepté la mission avant
+    // que le plat soit prêt (l'assignation est autorisée dès `PAYER`). C'est
+    // même le cas le plus fréquent — et c'est lui qui a le plus besoin de
+    // savoir qu'il peut passer au comptoir.
+    if (
+      !delivery?.delivererId ||
+      (delivery.status !== 'ASSIGNER' && delivery.status !== 'ACCEPTER')
+    ) {
+      return;
+    }
 
     await this.handleReadyForPickup(
       new DeliveryReadyForPickupEvent(

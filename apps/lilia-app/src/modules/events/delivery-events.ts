@@ -44,6 +44,49 @@ export class DeliveryAssignedEvent extends BaseDeliveryEvent {
   }
 }
 
+/**
+ * Le livreur a accepté la mission et part vers le restaurant.
+ *
+ * ⚠️ Cet événement signifie « je prends cette course et je vais chercher le
+ * repas » — **pas** « la commande est en route ». Le client ne doit donc rien
+ * recevoir ici : c'est précisément la confusion qui lui faisait annoncer
+ * « votre livreur est en chemin » alors que le livreur n'avait pas encore
+ * quitté son domicile. Seul le restaurant est prévenu, parce que lui a une
+ * décision à prendre : il sait que quelqu'un vient chercher la commande.
+ */
+export class DeliveryAcceptedEvent extends BaseDeliveryEvent {
+  constructor(
+    deliveryId: string,
+    orderId: string,
+    restaurantId: string,
+    public readonly delivererId: string,
+    public readonly delivererName: string | null,
+    timestamp?: Date,
+  ) {
+    super(deliveryId, orderId, restaurantId, timestamp);
+  }
+}
+
+/**
+ * Le livreur a **réellement** le repas en main et part vers le client.
+ *
+ * C'est le seul déclencheur légitime du « votre commande est en route » côté
+ * client, et le moment où `Order` passe `PRET → EN_ROUTE`.
+ */
+export class DeliveryPickedUpEvent extends BaseDeliveryEvent {
+  constructor(
+    deliveryId: string,
+    orderId: string,
+    restaurantId: string,
+    public readonly delivererId: string,
+    public readonly delivererName: string | null,
+    public readonly userId: string,
+    timestamp?: Date,
+  ) {
+    super(deliveryId, orderId, restaurantId, timestamp);
+  }
+}
+
 /** La commande est prête : le livreur assigné peut venir la chercher. */
 export class DeliveryReadyForPickupEvent extends BaseDeliveryEvent {
   constructor(

@@ -8,6 +8,7 @@ import { OrderStatus, Prisma, User } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FirebaseService } from '../firebase/firebase.service';
 import { UserCacheService } from '../auth/services/user-cache.service';
+import { ACTIVE_DELIVERY_STATUSES } from '../deliveries/delivery-statuses';
 
 /**
  * Suppression de compte à l'initiative de l'utilisateur (`DELETE /users/me`).
@@ -129,7 +130,7 @@ export class UserDeletionService {
       this.prisma.delivery.count({
         where: {
           delivererId: user.id,
-          status: { in: ['ASSIGNER', 'EN_TRANSIT'] },
+          status: { in: ACTIVE_DELIVERY_STATUSES },
         },
       }),
     ]);

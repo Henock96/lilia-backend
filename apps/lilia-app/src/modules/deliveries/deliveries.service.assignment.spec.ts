@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
@@ -25,14 +26,23 @@ import { LoyaltyService } from '../loyalty/loyalty.service';
 describe('DeliveriesService (caractérisation — assignation)', () => {
   let service: DeliveriesService;
 
-  const tx = {};
+  // Depuis la séparation acceptation / récupération, les deux transitions
+  // passent par un `updateMany` conditionné sur le statut lu (verrou optimiste
+  // contre le double-tap), puis relisent la ligne.
+  const tx = {
+    delivery: { updateMany: jest.fn(), findUniqueOrThrow: jest.fn() },
+    order: { updateMany: jest.fn() },
+    user: { update: jest.fn() },
+  };
   const prisma = {
     delivery: {
       findUnique: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
     },
-    order: { findUnique: jest.fn(), update: jest.fn() },
+    order: { findUnique: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
     user: { findUnique: jest.fn(), update: jest.fn() },
     $transaction: jest.fn(async (arg: any) =>
       Array.isArray(arg) ? Promise.all(arg) : arg(tx),
@@ -44,6 +54,10 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    // Par défaut, le verrou optimiste réussit.
+    tx.delivery.updateMany.mockResolvedValue({ count: 1 });
+    tx.order.updateMany.mockResolvedValue({ count: 1 });
+    tx.user.update.mockResolvedValue({});
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         {
@@ -276,31 +290,166 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
       );
     });
 
-    it('happy : transaction (EN_TRANSIT + ON_DELIVERY + EN_ROUTE) + émet order.status.updated', async () => {
+    it('accepte : ACCEPTER + ON_DELIVERY, la commande NE bouge PAS', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'liv1',
+        nom: 'John',
+        driverStatus: 'AVAILABLE',
+      });
+      prisma.delivery.findUnique.mockResolvedValue(assigned);
+      tx.delivery.findUniqueOrThrow.mockResolvedValue({
+        id: 'd1',
+        status: 'ACCEPTER',
+      });
+
+      const res = await service.acceptDelivery('d1', 'uid');
+
+      // La livraison passe ACCEPTER, pas EN_TRANSIT.
+      expect(tx.delivery.updateMany).toHaveBeenCalledWith({
+        where: { id: 'd1', status: 'ASSIGNER' },
+        data: expect.objectContaining({ status: 'ACCEPTER' }),
+      });
+      // `pickedUpAt` n'est PAS écrit : le livreur n'a rien récupéré.
+      expect(
+        tx.delivery.updateMany.mock.calls[0][0].data.pickedUpAt,
+      ).toBeUndefined();
+      // La commande reste PRET — donc aucun « votre commande est en route ».
+      expect(tx.order.updateMany).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalledWith(
+        'order.status.updated',
+        expect.anything(),
+      );
+      // Seul le restaurant est prévenu.
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'delivery.accepted',
+        expect.anything(),
+      );
+      expect(res).toEqual({ id: 'd1', status: 'ACCEPTER' });
+    });
+
+    it('double-tap : le second appel est rejeté par le verrou optimiste', async () => {
       prisma.user.findUnique.mockResolvedValue({
         id: 'liv1',
         driverStatus: 'AVAILABLE',
       });
       prisma.delivery.findUnique.mockResolvedValue(assigned);
-      prisma.delivery.update.mockResolvedValue({
+      tx.delivery.updateMany.mockResolvedValue({ count: 0 }); // déjà acceptée
+
+      await expect(service.acceptDelivery('d1', 'uid')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── RÉCUPÉRATION DU REPAS ────────────────────────────────────────────────
+
+  describe('confirmPickup', () => {
+    const accepted = {
+      id: 'd1',
+      orderId: 'o1',
+      delivererId: 'liv1',
+      status: 'ACCEPTER',
+      order: {
+        status: 'PRET',
+        userId: 'c1',
+        restaurantId: 'r1',
+        total: 5000,
+        restaurant: { nom: 'Resto' },
+      },
+    };
+
+    beforeEach(() => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'liv1',
+        nom: 'John',
+        driverStatus: 'ON_DELIVERY',
+      });
+      tx.delivery.findUniqueOrThrow.mockResolvedValue({
         id: 'd1',
         status: 'EN_TRANSIT',
       });
-      prisma.user.update.mockResolvedValue({});
-      prisma.order.update.mockResolvedValue({});
+    });
 
-      const res = await service.acceptDelivery('d1', 'uid');
+    it('récupère : EN_TRANSIT + pickedUpAt + commande EN_ROUTE + notifie le client', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(accepted);
 
+      const res = await service.confirmPickup('d1', 'uid');
+
+      // C'est ICI que la state machine est évaluée, plus à l'acceptation.
       expect(stateMachine.assertTransition).toHaveBeenCalledWith(
         'PRET',
         'EN_ROUTE',
         'LIVREUR',
       );
+      expect(tx.delivery.updateMany).toHaveBeenCalledWith({
+        where: { id: 'd1', status: 'ACCEPTER' },
+        data: expect.objectContaining({
+          status: 'EN_TRANSIT',
+          pickedUpAt: expect.any(Date),
+        }),
+      });
+      expect(tx.order.updateMany).toHaveBeenCalledWith({
+        where: { id: 'o1', status: 'PRET' },
+        data: { status: 'EN_ROUTE' },
+      });
+      // Le client est prévenu maintenant, et seulement maintenant.
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         'order.status.updated',
         expect.anything(),
       );
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'delivery.picked_up',
+        expect.anything(),
+      );
       expect(res).toEqual({ id: 'd1', status: 'EN_TRANSIT' });
+    });
+
+    it('refuse une récupération sans acceptation préalable', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...accepted,
+        status: 'ASSIGNER',
+      });
+
+      await expect(service.confirmPickup('d1', 'uid')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(tx.delivery.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('double récupération : 409, aucun second événement', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        ...accepted,
+        status: 'EN_TRANSIT',
+      });
+
+      await expect(service.confirmPickup('d1', 'uid')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('Forbidden si un autre livreur tente la récupération', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'autre',
+        driverStatus: 'ON_DELIVERY',
+      });
+      prisma.delivery.findUnique.mockResolvedValue(accepted);
+
+      await expect(service.confirmPickup('d1', 'uid')).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(tx.delivery.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('commande annulée entre-temps : 409, le client n’est pas notifié', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(accepted);
+      tx.order.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.confirmPickup('d1', 'uid')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
     });
   });
 });
