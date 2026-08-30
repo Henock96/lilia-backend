@@ -133,6 +133,25 @@ export class FirebaseService implements OnModuleInit {
   }
 
   /**
+   * Génère un lien de définition de mot de passe pour une adresse existante.
+   *
+   * C'est ce qui permet à un administrateur de créer un compte vendeur sans
+   * jamais en connaître le secret : le compte naît avec un mot de passe
+   * jetable, et ce lien — signé par Firebase, à usage unique, à durée limitée —
+   * laisse le vendeur définir le sien.
+   *
+   * ⚠️ Le SDK Admin **génère** le lien, il ne l'envoie pas. L'acheminement
+   * (e-mail, SMS) est à la charge de l'appelant : voir `VendorInvitationService`.
+   */
+  async generatePasswordResetLink(email: string): Promise<string> {
+    const link = await getAuth(this.app).generatePasswordResetLink(email);
+    // L'URL porte un `oobCode` à usage unique : la journaliser reviendrait à
+    // laisser un jeton de prise de contrôle du compte dans les logs.
+    this.logger.log(`Lien d'activation généré pour ${email}`);
+    return link;
+  }
+
+  /**
    * Supprime un user Firebase Auth — utilisé pour rollback en cas d'échec
    * de la transaction Prisma post-création (LIL-118). Best effort : on log
    * l'erreur mais on ne la propage pas pour ne pas masquer l'erreur d'origine.

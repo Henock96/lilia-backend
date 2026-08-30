@@ -8,6 +8,8 @@ import { CronLockService } from '../../common/locks/cron-lock.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { SmsService } from '../sms/sms.service';
 import { OutboxService } from './outbox.service';
+import { VendorInvitationService } from '../vendors/vendor-invitation.service';
+import { VENDOR_INVITATION_EVENT } from '../vendors/events/vendor-events';
 
 /**
  * Dépilage de la boîte d'envoi (fix H7 — audit du 28/08/2026).
@@ -40,6 +42,7 @@ export class OutboxDispatcherService {
     private readonly notifications: NotificationsService,
     private readonly sms: SmsService,
     private readonly lock: CronLockService,
+    private readonly invitations: VendorInvitationService,
   ) {}
 
   @Cron(CronExpression.EVERY_30_SECONDS)
@@ -76,6 +79,9 @@ export class OutboxDispatcherService {
     switch (event.type) {
       case 'order.created':
         await this.dispatchOrderCreated(event);
+        return;
+      case VENDOR_INVITATION_EVENT:
+        await this.dispatchVendorInvitation(event);
         return;
       default:
         // Type inconnu : on ne le rejoue pas indéfiniment.
@@ -157,6 +163,53 @@ export class OutboxDispatcherService {
       event.id,
       event.attempts,
       'Commande toujours non prise en charge',
+    );
+  }
+
+  /**
+   * Rattrape une invitation vendeur qui n'est pas partie.
+   *
+   * L'envoi immédiat a lieu à la création ; cette reprise couvre le process tué
+   * entre le commit et l'envoi, la panne Mailtrap, et l'erreur transitoire
+   * Firebase. Sans elle, un vendeur créé pourrait n'être jamais informé de
+   * l'existence de son compte — et personne ne s'en apercevrait.
+   *
+   * L'entrée est acquittée dès que le propriétaire s'est connecté au moins une
+   * fois : le but de l'invitation est atteint, quel qu'ait été le canal (y
+   * compris un lien transmis à la main par l'administrateur).
+   */
+  private async dispatchVendorInvitation(event: OutboxEvent): Promise<void> {
+    const vendor = await this.prisma.restaurant.findUnique({
+      where: { id: event.aggregateId },
+      select: { nom: true, owner: { select: { email: true, lastLogin: true } } },
+    });
+
+    if (!vendor) {
+      await this.outbox.markFailed(event.id, 'Vendeur introuvable');
+      return;
+    }
+
+    if (vendor.owner.lastLogin) {
+      await this.outbox.markSent(event.id);
+      return;
+    }
+
+    const result = await this.invitations.sendForVendor(event.aggregateId);
+    if (result.emailSent) {
+      this.logger.log(
+        `📨 Invitation vendeur rattrapée pour ${vendor.nom} (${event.aggregateId})`,
+      );
+      await this.outbox.markSent(event.id);
+      return;
+    }
+
+    // Toujours pas d'e-mail : on garde l'obligation ouverte. L'administrateur
+    // dispose du lien de repli côté API, et l'abandon après MAX_ATTEMPTS laisse
+    // une trace interrogeable plutôt qu'un silence.
+    await this.outbox.scheduleRetry(
+      event.id,
+      event.attempts,
+      result.detail,
     );
   }
 }

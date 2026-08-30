@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayMinSize,
   IsArray,
@@ -31,6 +31,15 @@ export class MenuProductDto {
 }
 
 export class CreateMenuDto {
+  @ApiPropertyOptional({
+    description:
+      "Vendeur cible — réservé à l'ADMIN (amorçage de catalogue). Omis, " +
+      "le menu est créé chez le vendeur de l'appelant.",
+  })
+  @IsString()
+  @IsOptional()
+  restaurantId?: string;
+
   @ApiProperty({
     description: 'Nom du menu',
     example: 'Menu du Jour - Mercredi',

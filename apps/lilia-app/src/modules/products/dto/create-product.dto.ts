@@ -44,6 +44,17 @@ class CreateProductVariantDto {
 }
 
 export class CreateProductDto {
+  /**
+   * Vendeur cible — **réservé à l'ADMIN**, refusé (403) pour tout autre rôle.
+   *
+   * Sert à amorcer le catalogue d'un vendeur pendant son onboarding, ou à le
+   * dépanner. Omis, le produit est créé chez le vendeur de l'appelant, ce qui
+   * reste le cas nominal. Le geste est tracé dans `AdminAuditLog`.
+   */
+  @IsString()
+  @IsOptional()
+  restaurantId?: string;
+
   @IsString()
   @IsNotEmpty()
   nom: string;

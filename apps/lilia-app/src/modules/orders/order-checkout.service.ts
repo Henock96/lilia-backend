@@ -229,6 +229,10 @@ export class OrderCheckoutService {
       effectiveDeliveryFee,
       isDelivery,
       settings.serviceFeePercent,
+      // Le taux du vendeur est lu maintenant et figé sur la commande : le
+      // modifier ensuite ne doit pas réécrire ce que la plateforme a prélevé
+      // sur des commandes déjà passées.
+      restaurant.commissionPercent,
     );
     this.validator.validateMinimumOrderAmount(
       amounts.subTotal,
@@ -299,6 +303,8 @@ export class OrderCheckoutService {
           subTotal: amounts.subTotal,
           deliveryFee: finalDeliveryFee,
           serviceFee: amounts.serviceFee,
+          commissionPercent: amounts.commissionPercent,
+          commissionAmount: amounts.commissionAmount,
           discountAmount: discountAmount + loyaltyDiscount,
           total: finalTotal,
           promoCodeId: promoResult?.promoCodeId ?? null,

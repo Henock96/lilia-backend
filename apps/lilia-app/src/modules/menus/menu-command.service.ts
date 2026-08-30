@@ -10,6 +10,9 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateMenuDto, UpdateMenuDto } from './dto';
 import { MenuCreatedEvent } from '../events/menu-events';
+import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
+import { AdminAuditAction } from '@prisma/client';
 
 /**
  * Authoring des menus (extrait de MenusService — LIL-141).
@@ -26,6 +29,8 @@ export class MenuCommandService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly access: RestaurantAccessService,
+    private readonly audit: AdminAuditService,
   ) {}
 
   /**
@@ -34,20 +39,13 @@ export class MenuCommandService {
    * Supporte deux types : COMBO (multi-produits) et PLAT_SPECIAL (plat unique auto-cree)
    */
   async create(dto: CreateMenuDto, firebaseUid: string) {
-    // 1. Vérifier que l'utilisateur possède un restaurant
-    const restaurant = await this.prisma.restaurant.findFirst({
-      where: {
-        owner: {
-          firebaseUid: firebaseUid,
-        },
-      },
-    });
-
-    if (!restaurant) {
-      throw new ForbiddenException(
-        'Vous devez posséder un restaurant pour créer un menu.',
-      );
-    }
+    // 1. Déterminer le vendeur cible. Sans `restaurantId`, c'est celui de
+    // l'appelant (cas nominal) ; avec, seul un ADMIN passe — ce qui lui permet
+    // enfin d'amorcer le catalogue d'un vendeur en cours d'onboarding.
+    const restaurant = await this.access.resolveTargetRestaurant(
+      firebaseUid,
+      dto.restaurantId,
+    );
 
     // 2. Valider les dates
     const dateDebut = new Date(dto.dateDebut);
@@ -202,6 +200,24 @@ export class MenuCommandService {
         },
       ),
     );
+
+    // Écriture d'un administrateur au nom d'un vendeur : traçable, comme la
+    // création de produit par le même chemin.
+    if (restaurant.onBehalfOf) {
+      const actor = await this.prisma.user.findUnique({
+        where: { firebaseUid },
+        select: { id: true },
+      });
+      if (actor) {
+        await this.audit.record({
+          actorId: actor.id,
+          action: AdminAuditAction.VENDOR_CATALOG_EDITED,
+          targetType: 'Restaurant',
+          targetId: restaurant.id,
+          metadata: { entity: 'MenuDuJour', menuId: menu.id, nom: menu.nom },
+        });
+      }
+    }
 
     return {
       message: 'Menu créé avec succès',

@@ -4,6 +4,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { PhotosCommonService } from '../photos-common/photos-common.service';
 import {
   CreateVendorPhotoDto,
@@ -18,10 +19,44 @@ export class VendorPhotosService {
     private readonly common: PhotosCommonService,
   ) {}
 
+  /**
+   * Galerie publique d'un vendeur.
+   *
+   * Le filtre de visibilité manquait : la route est `@Public()` et rendait la
+   * galerie de n'importe quel vendeur par son seul identifiant — y compris un
+   * vendeur en cours de configuration, en attente de validation ou suspendu.
+   * Les identifiants étant publics via `GET /vendors`, la frontière marketplace
+   * était contournable de l'extérieur pour ce type de contenu.
+   *
+   * Même condition que `VendorsService.findOne` et `RestaurantQueryService` :
+   * une seule définition de « visible du client », appliquée partout.
+   */
   async list(restaurantId: string) {
     if (!restaurantId) {
       throw new BadRequestException('restaurantId requis');
     }
+    const visible = await this.prisma.restaurant.findFirst({
+      where: {
+        id: restaurantId,
+        ...PUBLIC_VENDOR_WHERE,
+      },
+      select: { id: true },
+    });
+    if (!visible) return [];
+
+    return this.prisma.vendorPhoto.findMany({
+      where: { restaurantId },
+      orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+    });
+  }
+
+  /**
+   * Galerie vue par son propriétaire ou un administrateur, sans filtre de
+   * visibilité : pendant l'onboarding, le vendeur doit voir les photos qu'il
+   * vient d'ajouter alors même que sa boutique n'est pas encore publiée.
+   */
+  async listForOwner(restaurantId: string, user: { id: string; role: string }) {
+    await this.common.assertRestaurantOwnership(restaurantId, user);
     return this.prisma.vendorPhoto.findMany({
       where: { restaurantId },
       orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],

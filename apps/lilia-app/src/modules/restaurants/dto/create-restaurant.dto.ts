@@ -69,6 +69,12 @@ export class AddSpecialtyDto {
 }
 
 // DTO pour mettre à jour le restaurant
+//
+// ⚠️ Ne jamais y ajouter `commissionPercent` : cette route est ouverte au
+// RESTAURATEUR, qui fixerait alors lui-même la marge de la plateforme. La
+// commission se règle par `PATCH /admin/vendors/:id/commerce`, réservé à
+// l'ADMIN et tracé dans `AdminAuditLog`. `whitelist: true` sur le
+// ValidationPipe global écarte le champ s'il est tout de même envoyé.
 export class UpdateRestaurantDto {
     @IsOptional()
     @IsString()

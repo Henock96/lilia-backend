@@ -15,5 +15,10 @@ import { PrismaService } from '../../prisma/prisma.service';
     PrismaService,
   ],
   controllers: [RestaurantsController],
+  // Le contrôle de propriété et la gestion des horaires servent aussi à
+  // l'onboarding vendeur. Les exporter évite d'en écrire une seconde version :
+  // deux implémentations d'une règle d'autorisation finissent toujours par
+  // diverger, et c'est celle qu'on a oublié de corriger qui laisse passer.
+  exports: [RestaurantAccessService, RestaurantHoursService],
 })
 export class RestaurantsModule {}

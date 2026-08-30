@@ -1,10 +1,12 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { ProductType } from '@prisma/client';
+import { AdminAuditAction, ProductType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ProductValidatorService } from './product-validator.service';
+import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
 
 /**
  * Écritures du catalogue produits (extrait de ProductsService — LIL-143).
@@ -16,22 +18,18 @@ export class ProductCommandService {
   constructor(
     private prisma: PrismaService,
     private readonly productValidator: ProductValidatorService,
+    private readonly access: RestaurantAccessService,
+    private readonly audit: AdminAuditService,
   ) {}
 
   async create(dto: CreateProductDto, firebaseUid: string) {
-    const restaurant = await this.prisma.restaurant.findFirst({
-      where: {
-        owner: {
-          firebaseUid: firebaseUid,
-        },
-      },
-    });
-
-    if (!restaurant) {
-      throw new ForbiddenException(
-        'Vous devez posséder un restaurant pour créer un produit.',
-      );
-    }
+    // `dto.restaurantId` n'est renseigné que par un administrateur agissant au
+    // nom d'un vendeur (amorçage de catalogue, dépannage). Le vendeur, lui, ne
+    // le transmet pas et reste cantonné à sa propre boutique.
+    const restaurant = await this.access.resolveTargetRestaurant(
+      firebaseUid,
+      dto.restaurantId,
+    );
 
     if (dto.categoryId) {
       const categoryExists = await this.prisma.category.findUnique({
@@ -100,10 +98,42 @@ export class ProductCommandService {
         },
       });
     });
+
+    // Écriture d'un administrateur dans le catalogue d'un tiers : le geste est
+    // légitime mais doit rester opposable — c'est le prix de la permission
+    // qu'on vient d'ouvrir.
+    if (restaurant.onBehalfOf) {
+      await this.recordAdminCatalogEdit(firebaseUid, restaurant.id, {
+        entity: 'Product',
+        productId: produit?.id,
+        nom: dto.nom,
+      });
+    }
+
     return {
       message: 'Création de produit réussie',
       data: produit,
     }
+  }
+
+  /** Trace une écriture faite par un ADMIN au nom d'un vendeur. */
+  private async recordAdminCatalogEdit(
+    firebaseUid: string,
+    restaurantId: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    const actor = await this.prisma.user.findUnique({
+      where: { firebaseUid },
+      select: { id: true },
+    });
+    if (!actor) return;
+    await this.audit.record({
+      actorId: actor.id,
+      action: AdminAuditAction.VENDOR_CATALOG_EDITED,
+      targetType: 'Restaurant',
+      targetId: restaurantId,
+      metadata: metadata as never,
+    });
   }
 
   /**

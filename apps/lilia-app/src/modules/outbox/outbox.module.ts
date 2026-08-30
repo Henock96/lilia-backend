@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { NotificationsCoreModule } from '../notifications/notifications-core.module';
 import { SmsModule } from '../sms/sms.module';
+import { VendorsCoreModule } from '../vendors/vendors-core.module';
 import { OutboxService } from './outbox.service';
 import { OutboxDispatcherService } from './outbox-dispatcher.service';
 import { CronLockService } from '../../common/locks/cron-lock.service';
@@ -16,7 +17,15 @@ import { CronLockService } from '../../common/locks/cron-lock.service';
  */
 @Global()
 @Module({
-  imports: [PrismaModule, NotificationsCoreModule, SmsModule],
+  // `VendorsCoreModule` et non `VendorsModule` : ce module est chargé par le
+  // worker, qui ne monte aucun guard. Importer le module complet y exposerait
+  // `/admin/vendors/*` sans authentification.
+  imports: [
+    PrismaModule,
+    NotificationsCoreModule,
+    SmsModule,
+    VendorsCoreModule,
+  ],
   providers: [
     OutboxService,
     CronLockService,

@@ -166,11 +166,20 @@ export class AdminController {
     return result;
   }
 
-  @Patch('vendors/:id/activate')
+  /**
+   * Lève une suspension (`isActive = true`).
+   *
+   * Renommée de `/activate` en `/unsuspend` : `POST /admin/vendors/:id/activate`
+   * existe désormais pour **publier une boutique dont l'onboarding est
+   * terminé**. Deux gestes distincts — l'un annule une sanction, l'autre met en
+   * ligne — qui ne pouvaient pas continuer à porter le même nom. `unsuspend`
+   * est aussi le symétrique lisible de `suspend`.
+   */
+  @Patch('vendors/:id/unsuspend')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Réactiver un vendeur suspendu (isActive=true)' })
+  @ApiOperation({ summary: 'Lever la suspension d’un vendeur (isActive=true)' })
   @ApiParam({ name: 'id', description: 'ID du vendeur (Restaurant)' })
-  activateVendor(@Param('id') id: string, @CurrentUser() admin: User) {
+  unsuspendVendor(@Param('id') id: string, @CurrentUser() admin: User) {
     return this.adminService.activateVendor(id, admin.id);
   }
 

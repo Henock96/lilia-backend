@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import {
   PHOTOS_GALLERY,
   RESTAURANT_INCLUDE,
@@ -35,14 +36,14 @@ export class RestaurantQueryService {
   async findAll(page = 1, limit = RestaurantQueryService.LIST_DEFAULT_LIMIT) {
     const [restaurants, total] = await Promise.all([
       this.prisma.restaurant.findMany({
-        where: { isActive: true, adminApproved: true },
+        where: PUBLIC_VENDOR_WHERE,
         include: RESTAURANT_LIST_INCLUDE,
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
       }),
       this.prisma.restaurant.count({
-        where: { isActive: true, adminApproved: true },
+        where: PUBLIC_VENDOR_WHERE,
       }),
     ]);
 
@@ -72,7 +73,7 @@ export class RestaurantQueryService {
    */
   async findOne(id: string) {
     const restaurant = await this.prisma.restaurant.findFirst({
-      where: { id, isActive: true, adminApproved: true },
+      where: { id, ...PUBLIC_VENDOR_WHERE },
       include: {
         products: {
           include: {
@@ -144,7 +145,7 @@ export class RestaurantQueryService {
     const countMap = new Map(topIds.map((r) => [r.restaurantId, r._count.restaurantId]));
 
     const restaurants = await this.prisma.restaurant.findMany({
-      where: { id: { in: ids }, isActive: true, adminApproved: true },
+      where: { id: { in: ids }, ...PUBLIC_VENDOR_WHERE },
       include: RESTAURANT_LIST_INCLUDE,
     });
 
@@ -165,7 +166,7 @@ export class RestaurantQueryService {
 
   async findRestaurant() {
     const resto = await this.prisma.restaurant.findMany({
-      where: { isActive: true, adminApproved: true },
+      where: PUBLIC_VENDOR_WHERE,
       include: {
         specialties: true,
         operatingHours: true,

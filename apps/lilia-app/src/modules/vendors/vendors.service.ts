@@ -9,6 +9,7 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma, User, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { PaginationService } from '../../common/pagination/pagination.service';
 import { CreateVendorDto } from './dto/create-vendor.dto';
 import { FilterVendorsDto } from './dto/filter-vendors.dto';
@@ -137,8 +138,8 @@ export class VendorsService {
 
   async findAll(dto: FilterVendorsDto) {
     const where: Prisma.RestaurantWhereInput = {
-      isActive: true,
-      adminApproved: true, // SÉCURITÉ : jamais exposer les non approuvés
+      // Frontière de sécurité du module : activé, approuvé, non suspendu.
+      ...PUBLIC_VENDOR_WHERE,
       ...(dto.vendorType && { vendorType: dto.vendorType }),
       ...(dto.isOpen !== undefined && { isOpen: dto.isOpen }),
     };
@@ -170,7 +171,7 @@ export class VendorsService {
 
   async findOne(id: string) {
     const vendor = await this.prisma.restaurant.findFirst({
-      where: { id, isActive: true, adminApproved: true },
+      where: { id, ...PUBLIC_VENDOR_WHERE },
       include: vendorDetailInclude(),
     });
     if (!vendor) throw new NotFoundException(`Vendeur "${id}" introuvable.`);

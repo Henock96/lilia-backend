@@ -68,7 +68,7 @@ model User {
   adminAuditLogs AdminAuditLog[] @relation("AdminAuditActor")
 
   // Notes de livraison : reçues en tant que livreur, données en tant que client
-  delivererReviews      DeliveryReview[] @relation("DelivererReviews")
+  delivererReviews        DeliveryReview[] @relation("DelivererReviews")
   customerDeliveryReviews DeliveryReview[] @relation("CustomerDeliveryReviews")
 
   @@index([referredByCode]) // getReferralStats : 2 count() par ouverture de l'écran (fix M19)
@@ -131,15 +131,36 @@ model Adresses {
 }
 
 model Restaurant {
-  id       String  @id @default(cuid())
-  nom      String
-  adresse  String
-  phone    String
-  imageUrl String?
+  id            String  @id @default(cuid())
+  nom           String
+  // Présentation du commerce au client. Le modèle n'avait aucun champ libre :
+  // le seul emplacement descriptif était `VendorProfile.story`, réservé de fait
+  // aux vendeurs non-RESTAURANT par les formulaires d'admin.
+  description   String? @db.Text
+  // E-mail de contact du commerce, distinct de celui du propriétaire : le
+  // compte owner sert à se connecter, cette adresse est publiable.
+  email         String?
+  adresse       String
+  phone         String
+  imageUrl      String?
+  // `public_id` Cloudinary du logo. Sans lui, remplacer l'image d'un vendeur
+  // laissait l'ancienne dans Cloudinary sans aucun moyen de la retrouver :
+  // `VendorPhoto`, `ProductImage` et `MenuImage` le stockent tous, `Restaurant`
+  // était le seul porteur d'image à ne pas le faire.
+  imagePublicId String?
 
   //Ajout 04/04
   latitude  Float?
   longitude Float?
+
+  // Localisation structurée (onboarding, août 2026). L'adresse restait une
+  // chaîne libre : impossible de rattacher un vendeur à une zone de livraison
+  // ni de le filtrer géographiquement. La ville n'est pas dupliquée ici, elle
+  // vient de `Quartier.ville`.
+  quartier             Quartier? @relation(fields: [quartierId], references: [id])
+  quartierId           String?
+  // Repères pour le livreur : « portail bleu face à la pharmacie ».
+  deliveryInstructions String?
 
   owner       User          @relation(fields: [ownerId], references: [id])
   ownerId     String        @unique
@@ -155,8 +176,30 @@ model Restaurant {
   // Statut d'activité (contrôlé par l'admin)
   isActive Boolean @default(true) // Restaurant actif/désactivé par l'admin
 
-  // Statut d'ouverture
-  isOpen         Boolean          @default(true) // Restaurant ouvert/fermé
+  // Avancement de la configuration — orthogonal aux trois booléens ci-dessus.
+  //
+  // `adminApproved` (validation marketplace), `isActive` (suspension) et
+  // `isOpen` (ouvert maintenant) répondent chacun à une question différente et
+  // peuvent varier indépendamment : un vendeur peut être approuvé, suspendu et
+  // fermé en même temps. Il manquait la quatrième question — « sa boutique
+  // est-elle configurée ? » — à laquelle aucun des trois ne répond.
+  //
+  // Trois valeurs suffisent : le détail de l'avancement (quelles cases sont
+  // cochées) est **calculé** par VendorReadinessService à partir des données
+  // elles-mêmes. Le stocker en colonne créerait une seconde vérité qui se
+  // désynchroniserait au premier écrit hors service.
+  onboardingStatus OnboardingStatus @default(DRAFT)
+  activatedAt      DateTime?
+  activatedById    String? // User.id de l'admin qui a activé (pas de FK, comme adminApprovedById)
+
+  // Statut d'ouverture.
+  //
+  // Le défaut est passé de `true` à `false` (onboarding, août 2026) : le cron
+  // d'ouverture ignorait les vendeurs sans horaires, si bien qu'un vendeur créé
+  // et jamais configuré restait « ouvert » en permanence et acceptait des
+  // commandes à 3 h du matin. Naître fermé est le défaut sûr ; le cron ouvre
+  // dès qu'il y a des horaires à respecter.
+  isOpen         Boolean          @default(false)
   manualOverride Boolean          @default(false) // Si true, le cron ne modifie pas isOpen
   operatingHours OperatingHours[]
   promoCodes     PromoCode[]      @relation("RestaurantPromoCodes")
@@ -168,6 +211,18 @@ model Restaurant {
   estimatedDeliveryTimeMin Int               @default(15) // Temps de livraison min (minutes)
   estimatedDeliveryTimeMax Int               @default(30) // Temps de livraison max (minutes)
   minimumOrderAmount       Float             @default(0) // Montant minimum de commande
+
+  // Modes de service acceptés. `Order.isDelivery` existait déjà, mais c'est un
+  // choix du client par commande : rien n'exprimait qu'un vendeur ne livre pas,
+  // ou ne fait que de la livraison. Les deux à `true` reproduisent le
+  // comportement historique.
+  supportsDelivery Boolean @default(true)
+  supportsPickup   Boolean @default(true)
+
+  // Commission prélevée par la plateforme sur ce vendeur, en pourcentage.
+  // `null` = taux plateforme (PlatformSettings). Réservé à l'ADMIN : un vendeur
+  // qui pourrait fixer sa propre commission fixerait la marge de Lilia.
+  commissionPercent Float?
 
   // Multi-vendeurs (Sprint A — LIL-111)
   vendorType        VendorType     @default(RESTAURANT)
@@ -190,6 +245,20 @@ model Restaurant {
 
   @@index([vendorType, isActive, adminApproved]) // marketplace filtering
   @@index([vendorType, isOpen]) // vendeurs ouverts par type
+  @@index([onboardingStatus, adminApproved, isActive]) // frontière de visibilité publique
+  @@index([quartierId])
+}
+
+/// Avancement de la configuration d'un vendeur (onboarding, août 2026).
+///
+/// Volontairement court. Les états intermédiaires qu'on serait tenté d'ajouter
+/// (« informations saisies », « photos ajoutées », « catalogue rempli ») sont
+/// des vues sur les données, pas des états du vendeur : `VendorReadinessService`
+/// les dérive, ce qui garantit qu'ils ne peuvent jamais mentir.
+enum OnboardingStatus {
+  DRAFT // en cours de configuration — jamais exposé au client
+  READY // checklist satisfaite, en attente d'activation par un admin
+  ACTIVATED // activé ; la visibilité dépend alors de adminApproved + isActive
 }
 
 // Profil enrichi pour les vendeurs non-restaurant (Sprint A — LIL-111)
@@ -385,38 +454,46 @@ model CartItem {
 // 04/04/2026 ÉTAPE 1 — Ajouter les nouveaux enums (non-breaking)
 
 model Order {
-  id                 String                @id @default(cuid())
-  restaurant         Restaurant            @relation(fields: [restaurantId], references: [id])
+  id                 String         @id @default(cuid())
+  restaurant         Restaurant     @relation(fields: [restaurantId], references: [id])
   restaurantId       String
-  user               User                  @relation(fields: [userId], references: [id])
+  user               User           @relation(fields: [userId], references: [id])
   userId             String
   subTotal           Float // Sous-total des articles
   deliveryFee        Float // Frais de livraison (0 si retrait)
-  serviceFee         Float                 @default(0) // ← nouveau : commission 10%
+  serviceFee         Float          @default(0) // ← nouveau : commission 10%
   total              Float // subTotal + deliveryFee + serviceFee        // Montant total (subTotal + deliveryFee)
-  isDelivery         Boolean               @default(true) // true = livraison, false = retrait au restaurant
+  isDelivery         Boolean        @default(true) // true = livraison, false = retrait au restaurant
   deliveryAddress    String? // Adresse de livraison (null si retrait)
   // 04/04/2026
   orderHistory       OrderHistory[] // Historique des changements de statut
   deliveryLatitude   Float? // nouveau
   deliveryLongitude  Float? // nouveau  
   deliveryQuartierId String? // nouveau — pour les frais de zone
-  deleteCommande     Boolean               @default(false)
+  deleteCommande     Boolean        @default(false)
   paymentMethod      PaymentMethod // Méthode de paiement
-  status             OrderStatus           @default(EN_ATTENTE)
+  status             OrderStatus    @default(EN_ATTENTE)
   paidAt             DateTime? // Date de paiement
   notes              String? // Notes optionnelles du client pour le restaurant
   contactPhone       String? // Numéro de téléphone saisi lors de la commande
   items              OrderItem[]
   reviews            Review[]
   delivery           Delivery?
-  createdAt          DateTime              @default(now())
-  updatedAt          DateTime              @updatedAt
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
 
   Payment        Payment[]
   promoCodeId    String?
   promoCode      PromoCode? @relation(fields: [promoCodeId], references: [id])
   discountAmount Float      @default(0) // montant déduit par le code promo
+
+  // Commission plateforme figée au moment de la commande (onboarding, août
+  // 2026). `Restaurant.commissionPercent` peut changer ; sans ce snapshot, un
+  // changement de taux réécrirait rétroactivement ce que Lilia a prélevé sur
+  // des commandes déjà encaissées — un chiffre comptable ne se recalcule pas.
+  // Même raison que `OrderItem.snapshotPrice`.
+  commissionPercent Float @default(0) // taux appliqué, en %
+  commissionAmount  Float @default(0) // montant retenu sur subTotal, en XAF
 
   // Précommandes (Sprint A — LIL-111)
   isPreorder          Boolean   @default(false)
@@ -541,7 +618,6 @@ model DeliveryReview {
   @@index([delivererId, rating]) // agrégats (groupBy) sans charger les lignes
   @@index([userId])
 }
-
 
 // Nouvelle table — n'affecte pas l'existant
 model DeliveryLocation {
@@ -716,12 +792,13 @@ model DeliveryZone {
 
 // Liste des quartiers de Brazzaville
 model Quartier {
-  id        String         @id @default(cuid())
-  nom       String         @unique // Ex: "Bacongo", "Poto-Poto", "Talangaï"
-  ville     String         @default("Brazzaville")
-  zones     QuartierZone[]
-  adresses  Adresses[]
-  createdAt DateTime       @default(now())
+  id          String         @id @default(cuid())
+  nom         String         @unique // Ex: "Bacongo", "Poto-Poto", "Talangaï"
+  ville       String         @default("Brazzaville")
+  zones       QuartierZone[]
+  adresses    Adresses[]
+  restaurants Restaurant[] // Vendeurs implantés dans ce quartier
+  createdAt   DateTime       @default(now())
 }
 
 // Table de liaison entre quartiers et zones de livraison
@@ -1016,6 +1093,13 @@ enum AdminAuditAction {
   USER_ROLE_CHANGED
   USER_BANNED
   USER_UNBANNED
+  VENDOR_CREATED
+  VENDOR_ACTIVATED
+  VENDOR_COMMISSION_CHANGED
+  // Écriture au catalogue d'un vendeur par un administrateur : l'admin peut
+  // désormais créer produits et menus au nom d'un vendeur (sans quoi il ne
+  // pouvait pas amorcer une boutique), ce qui doit rester traçable.
+  VENDOR_CATALOG_EDITED
   VENDOR_APPROVED
   VENDOR_SUSPENDED
   VENDOR_ACTIVE_TOGGLED
