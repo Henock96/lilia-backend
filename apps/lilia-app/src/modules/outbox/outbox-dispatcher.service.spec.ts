@@ -20,7 +20,10 @@ import { OutboxDispatcherService } from './outbox-dispatcher.service';
  * Le module était livré sans aucun test (audit post-correction).
  */
 describe('OutboxDispatcherService', () => {
-  let prisma: { order: { findUnique: jest.Mock } };
+  let prisma: {
+    order: { findUnique: jest.Mock };
+    restaurant: { findUnique: jest.Mock };
+  };
   let outbox: {
     claimDue: jest.Mock;
     markSent: jest.Mock;
@@ -30,6 +33,7 @@ describe('OutboxDispatcherService', () => {
   };
   let notifications: { sendPushNotification: jest.Mock };
   let sms: { send: jest.Mock };
+  let invitations: { sendForVendor: jest.Mock };
   let service: OutboxDispatcherService;
 
   /** Verrou qui accorde toujours l'exécution. */
@@ -38,7 +42,10 @@ describe('OutboxDispatcherService', () => {
   };
 
   beforeEach(() => {
-    prisma = { order: { findUnique: jest.fn() } };
+    prisma = {
+      order: { findUnique: jest.fn() },
+      restaurant: { findUnique: jest.fn() },
+    };
     outbox = {
       claimDue: jest.fn().mockResolvedValue([]),
       markSent: jest.fn().mockResolvedValue(undefined),
@@ -48,6 +55,11 @@ describe('OutboxDispatcherService', () => {
     };
     notifications = { sendPushNotification: jest.fn().mockResolvedValue(true) };
     sms = { send: jest.fn().mockResolvedValue(true) };
+    invitations = {
+      sendForVendor: jest
+        .fn()
+        .mockResolvedValue({ emailSent: true, smsSent: true, detail: 'ok' }),
+    };
 
     service = new OutboxDispatcherService(
       prisma as never,
@@ -55,6 +67,7 @@ describe('OutboxDispatcherService', () => {
       notifications as never,
       sms as never,
       lock as never,
+      invitations as never,
     );
     jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
     jest.spyOn(service['logger'], 'error').mockImplementation(() => undefined);

@@ -1,7 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { MailtrapClient } from 'mailtrap';
+import { Resend } from 'resend';
 
 interface EmailOptions {
   to: string;
@@ -10,10 +10,27 @@ interface EmailOptions {
   text?: string;
 }
 
+/**
+ * Envoi d'e-mails transactionnels via **Resend** (août 2026).
+ *
+ * Remplace Mailtrap. La bascule vaut surtout pour l'invitation vendeur : le
+ * plan de test de Mailtrap capture les messages dans une boîte de
+ * démonstration au lieu de les livrer, ce qui rendait l'accès au compte d'un
+ * vendeur dépendant d'un réglage invisible depuis le code.
+ *
+ * Le contrat de la classe est inchangé — `isReady()` et `sendEmail()` gardent
+ * leur signature, et les trois modèles de message n'ont pas bougé. Seul le
+ * transporteur change.
+ *
+ * ⚠️ Resend n'accepte que des expéditeurs sur un **domaine vérifié** chez lui.
+ * `RESEND_SENDER_EMAIL` doit donc porter un domaine dont les enregistrements
+ * DNS ont été validés dans la console Resend, sans quoi l'API répond 403 et
+ * les envois échouent silencieusement du point de vue de l'appelant (`false`).
+ */
 @Injectable()
 export class EmailService implements OnModuleInit {
   private readonly logger = new Logger(EmailService.name);
-  private client: MailtrapClient | null = null;
+  private client: Resend | null = null;
   private senderEmail: string;
   private senderName: string;
   private isConfigured = false;
@@ -21,21 +38,22 @@ export class EmailService implements OnModuleInit {
   constructor(private configService: ConfigService) {}
 
   onModuleInit() {
-    const apiKey = this.configService.get<string>('MAILTRAP_API_TOKEN');
-    this.senderEmail = this.configService.get<string>('MAILTRAP_SENDER_EMAIL') || 'noreply@lilia-food.com';
-    this.senderName = this.configService.get<string>('MAILTRAP_SENDER_NAME') || 'Lilia Food';
+    const apiKey = this.configService.get<string>('RESEND_API_KEY');
+    this.senderEmail =
+      this.configService.get<string>('RESEND_SENDER_EMAIL') || 'noreply@liliafood.com';
+    this.senderName = this.configService.get<string>('RESEND_SENDER_NAME') || 'Lilia Food';
 
     if (!apiKey) {
-      this.logger.warn('⚠️ MAILTRAP_API_TOKEN is not configured. Email service is disabled.');
+      this.logger.warn('⚠️ RESEND_API_KEY absente — service e-mail désactivé.');
       return;
     }
 
     try {
-      this.client = new MailtrapClient({ token: apiKey });
+      this.client = new Resend(apiKey);
       this.isConfigured = true;
-      this.logger.log('✅ Email service initialized with Mailtrap');
+      this.logger.log(`✅ Service e-mail initialisé (Resend, expéditeur ${this.senderEmail})`);
     } catch (error) {
-      this.logger.error('❌ Failed to initialize Mailtrap client:', error.message);
+      this.logger.error('❌ Initialisation du client Resend impossible :', (error as Error).message);
     }
   }
 
@@ -45,28 +63,39 @@ export class EmailService implements OnModuleInit {
 
   async sendEmail(options: EmailOptions): Promise<boolean> {
     if (!this.isReady()) {
-      this.logger.warn('⚠️ Email service is not configured. Skipping email.');
+      this.logger.warn('⚠️ Service e-mail non configuré — envoi ignoré.');
       return false;
     }
 
     try {
-      this.logger.log(`📧 Sending email to ${options.to}: ${options.subject}`);
+      this.logger.log(`📧 Envoi à ${options.to} : ${options.subject}`);
 
-      await this.client.send({
-        from: {
-          name: this.senderName,
-          email: this.senderEmail,
-        },
-        to: [{ email: options.to }],
+      // Le SDK Resend ne lève pas sur une erreur d'API : il renvoie
+      // `{ data, error }`. Sans ce contrôle, un domaine non vérifié ou une clé
+      // révoquée produirait un « envoi réussi » parfaitement silencieux — et
+      // l'invitation d'un vendeur serait perdue sans que personne ne le sache.
+      const { data, error } = await this.client!.emails.send({
+        from: `${this.senderName} <${this.senderEmail}>`,
+        to: [options.to],
         subject: options.subject,
         html: options.html,
         text: options.text || this.stripHtml(options.html),
       });
 
-      this.logger.log(`✅ Email sent successfully to ${options.to}`);
+      if (error) {
+        this.logger.error(
+          `❌ Resend a refusé l'envoi à ${options.to} : ${error.name} — ${error.message}`,
+        );
+        return false;
+      }
+
+      this.logger.log(`✅ E-mail envoyé à ${options.to} (id ${data?.id ?? 'inconnu'})`);
       return true;
     } catch (error) {
-      this.logger.error(`❌ Failed to send email to ${options.to}:`, error.message);
+      this.logger.error(
+        `❌ Échec d'envoi à ${options.to} :`,
+        (error as Error).message,
+      );
       return false;
     }
   }
@@ -334,6 +363,86 @@ export class EmailService implements OnModuleInit {
 </body>
 </html>
     `.trim();
+  }
+
+  /**
+   * Invitation d'activation du compte vendeur.
+   *
+   * Seul canal par lequel un vendeur créé par un administrateur apprend que son
+   * espace existe. Avant, l'admin choisissait un mot de passe et le
+   * transmettait de vive voix ou par messagerie : un secret partagé, jamais
+   * changé, hors de tout contrôle.
+   */
+  async sendVendorInvitation(
+    email: string,
+    nom: string,
+    boutique: string,
+    activationLink: string,
+  ): Promise<boolean> {
+    return this.sendEmail({
+      to: email,
+      subject: `Activez votre espace vendeur — ${boutique}`,
+      html: this.getVendorInvitationTemplate(nom, boutique, activationLink),
+    });
+  }
+
+  private getVendorInvitationTemplate(
+    nom: string,
+    boutique: string,
+    link: string,
+  ): string {
+    return `
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Votre espace vendeur Lilia Food</title></head>
+<body style="margin:0;padding:0;background:#f5f5f5;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f5;padding:24px 0;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:12px;padding:32px;">
+        <tr><td>
+          <h1 style="margin:0 0 16px;font-size:22px;color:#1a1a1a;">Bienvenue sur Lilia Food, ${this.escape(nom)}</h1>
+          <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#444;">
+            Votre espace vendeur pour <strong>${this.escape(boutique)}</strong> a été créé.
+            Pour y accéder, définissez votre mot de passe :
+          </p>
+          <p style="margin:24px 0;text-align:center;">
+            <a href="${link}" style="display:inline-block;background:#e85d04;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:8px;font-size:16px;font-weight:bold;">
+              Définir mon mot de passe
+            </a>
+          </p>
+          <p style="margin:0 0 8px;font-size:13px;color:#777;">
+            Ce lien est personnel et à usage unique. Si le bouton ne fonctionne pas,
+            copiez cette adresse dans votre navigateur :
+          </p>
+          <p style="margin:0 0 24px;font-size:12px;color:#999;word-break:break-all;">${link}</p>
+          <p style="margin:0;font-size:14px;line-height:1.6;color:#444;">
+            Une fois connecté, vous pourrez compléter vos horaires, vos photos et votre
+            catalogue. Votre boutique ne sera visible des clients qu'après validation.
+          </p>
+        </td></tr>
+      </table>
+      <p style="margin:16px 0 0;font-size:12px;color:#999;">Lilia Food — Brazzaville</p>
+    </td></tr>
+  </table>
+</body>
+</html>
+    `.trim();
+  }
+
+  /**
+   * Neutralise le HTML dans les valeurs interpolées. `nom` et `boutique` sont
+   * saisis par un administrateur dans un formulaire : sans échappement, un
+   * apostrophe ou un chevron casserait la mise en page, et une balise injectée
+   * partirait telle quelle dans la boîte du destinataire.
+   */
+  private escape(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   /**

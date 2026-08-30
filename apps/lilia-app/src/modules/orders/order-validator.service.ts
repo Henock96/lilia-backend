@@ -6,6 +6,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { OnboardingStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { unavailabilityReason } from '../products/product-availability';
 import { PromoService } from '../promo/promo.service';
@@ -67,9 +68,16 @@ export class OrderValidatorService {
       where: { id: restaurantId },
     });
     if (!restaurant) throw new NotFoundException('Restaurant non trouvé.');
-    if (!restaurant.isActive || !restaurant.adminApproved) {
+    if (
+      !restaurant.isActive ||
+      !restaurant.adminApproved ||
+      restaurant.onboardingStatus !== OnboardingStatus.ACTIVATED
+    ) {
       // Défense en profondeur : le catalogue ne devrait pas exposer ces vendeurs,
-      // mais un panier obsolète peut encore les référencer.
+      // mais un panier obsolète peut encore les référencer. `onboardingStatus`
+      // couvre le cas d'un vendeur remis en configuration après avoir été
+      // publié — sa boutique disparaît du catalogue, mais les paniers déjà
+      // constitués la référencent toujours.
       throw new BadRequestException(
         `"${restaurant.nom}" n'est plus disponible sur la plateforme.`,
       );

@@ -7,6 +7,15 @@ export interface OrderAmounts {
   deliveryFee: number;
   serviceFee: number;   // ← nouveau
   total: number;
+  /**
+   * Commission plateforme retenue sur le vendeur, figée à la commande.
+   *
+   * Elle **ne modifie pas** ce que paie le client : `serviceFee` est un frais
+   * ajouté au panier, la commission est un prélèvement sur ce que touche le
+   * vendeur. Les confondre ferait payer deux fois la même chose.
+   */
+  commissionPercent: number;
+  commissionAmount: number;
 }
 
 export interface OrderItemSnapshot {
@@ -27,6 +36,12 @@ export class OrderCalculatorService {
     deliveryFee: number,
     isDelivery: boolean,
     serviceFeePercent: number,
+    /**
+     * Taux propre au vendeur. `null` (le cas courant) signifie « pas de
+     * commission spécifique » : on retombe sur 0, pas sur `serviceFeePercent`,
+     * qui décrit un autre flux d'argent.
+     */
+    commissionPercent: number | null = null,
   ): OrderAmounts {
     const menuGroups = new Map<string, any[]>();
     const individualItems: any[] = [];
@@ -67,11 +82,21 @@ export class OrderCalculatorService {
     const serviceFee = Math.round(subTotal * serviceFeePercent / 100);
 
 
+    // Prélèvement sur le vendeur, calculé sur le sous-total. Il n'entre pas
+    // dans `total` : le client ne le paie pas, il est retenu sur le reversement.
+    const effectiveCommission =
+      commissionPercent !== null && Number.isFinite(commissionPercent)
+        ? Math.min(Math.max(commissionPercent, 0), 50)
+        : 0;
+    const commissionAmount = Math.round((subTotal * effectiveCommission) / 100);
+
     return {
       subTotal: Math.round(subTotal),
       deliveryFee: Math.round(fee),
       serviceFee: serviceFee,
       total: Math.round(subTotal + fee + serviceFee),
+      commissionPercent: effectiveCommission,
+      commissionAmount,
     };
   }
 

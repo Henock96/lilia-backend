@@ -6,7 +6,9 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { VendorsService } from '../vendors/vendors.service';
+import { VendorSuspendedEvent } from '../vendors/events/vendor-events';
 import { AdminVendorFilterDto } from './dto/admin-vendor-filter.dto';
 
 /**
@@ -21,6 +23,7 @@ export class AdminVendorsService {
   constructor(
     private prisma: PrismaService,
     private readonly vendorsService: VendorsService,
+    private readonly events: EventEmitter2,
   ) {}
 
   async getAllVendors(dto: AdminVendorFilterDto) {
@@ -107,6 +110,14 @@ export class AdminVendorsService {
 
     this.logger.warn(
       `Vendeur ${vendor.nom} (${restaurantId}) suspendu par admin ${adminUserId} — raison: ${reason}`,
+    );
+
+    // Le vendeur découvrait sa suspension en constatant l'absence de commandes :
+    // aucune notification n'était émise. `VendorsListener` le prévient
+    // désormais par push et par SMS.
+    this.events.emit(
+      'vendor.suspended',
+      new VendorSuspendedEvent(updated, reason, adminUserId),
     );
 
     return {

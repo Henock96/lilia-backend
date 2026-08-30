@@ -47,7 +47,7 @@ export class HealthController {
           firebaseProjectId: !!process.env.FIREBASE_PROJECT_ID,
           firebaseClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
           firebasePrivateKey: !!process.env.FIREBASE_PRIVATE_KEY,
-          mailtrap: !!process.env.MAILTRAP_API_TOKEN,
+          resend: !!process.env.RESEND_API_KEY,
           infobip: !!process.env.INFOBIP_API_KEY,
           redis: !!process.env.REDIS_URL,
         },

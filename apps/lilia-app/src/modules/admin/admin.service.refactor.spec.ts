@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 
 import { AdminService } from './admin.service';
@@ -60,6 +61,9 @@ describe('AdminService (caractérisation — deliverers/payments/vendors)', () =
         { provide: UserCacheService, useValue: {} },
         { provide: VendorsService, useValue: vendorsService },
         { provide: FirebaseService, useValue: {} },
+        // AdminVendorsService émet `vendor.suspended` depuis août 2026 :
+        // le vendeur était suspendu sans jamais en être informé.
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
     service = module.get<AdminService>(AdminService);

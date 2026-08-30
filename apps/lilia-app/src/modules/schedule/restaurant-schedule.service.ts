@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { OnboardingStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CronLockService } from '../../common/locks/cron-lock.service';
 
@@ -55,10 +56,23 @@ export class RestaurantScheduleService {
         const previousDay = JS_DAY_TO_ENUM[(currentDayIndex + 6) % 7];
         const currentMinutes = localDate.getUTCHours() * 60 + localDate.getUTCMinutes();
 
+        // `operatingHours: { some: {} }` filtrait ici les vendeurs sans
+        // horaires — ils n'étaient donc jamais évalués et gardaient leur
+        // `isOpen` initial, historiquement `true`. Un vendeur créé et jamais
+        // configuré apparaissait « ouvert » en permanence et acceptait des
+        // commandes à 3 h du matin. Ils sont désormais évalués comme les
+        // autres : sans horaire correspondant, `shouldBeOpen` vaut `false` et
+        // ils sont fermés.
+        //
+        // La migration `20260830120000_vendor_onboarding` pose une plage
+        // 07:00–22:00 sur les vendeurs actifs qui n'en avaient aucun, pour
+        // qu'aucune boutique en activité ne ferme du fait de ce changement.
         const restaurants = await this.prisma.restaurant.findMany({
             where: {
                 manualOverride: false,
-                operatingHours: { some: {} },
+                // Un vendeur encore en configuration n'a pas à être ouvert par
+                // un automate : son ouverture est décidée à l'activation.
+                onboardingStatus: OnboardingStatus.ACTIVATED,
             },
             select: {
                 id: true,

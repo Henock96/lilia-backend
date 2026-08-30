@@ -30,9 +30,26 @@ export class VendorPhotosController {
 
   @Public()
   @Get()
-  @ApiOperation({ summary: "Liste les photos d'un restaurant (public)" })
+  @ApiOperation({
+    summary: "Liste les photos d'un vendeur publié (public)",
+    description:
+      'Renvoie une liste vide pour un vendeur non activé, non approuvé ou ' +
+      'suspendu. Le propriétaire consulte sa galerie via `/vendor-photos/mine`.',
+  })
   list(@Query('restaurantId') restaurantId: string) {
     return this.service.list(restaurantId);
+  }
+
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @Get('mine')
+  @ApiOperation({
+    summary: 'Galerie du vendeur, y compris pendant son onboarding',
+  })
+  listMine(
+    @Query('restaurantId') restaurantId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.service.listForOwner(restaurantId, user);
   }
 
   @Roles('RESTAURATEUR', 'ADMIN')

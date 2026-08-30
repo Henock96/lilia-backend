@@ -145,10 +145,16 @@ export const envValidationSchema = Joi.object({
   INFOBIP_BASE_URL: Joi.string().allow('').optional(),
   INFOBIP_SENDER: Joi.string().default('LiliaFood'),
 
-  // ─── Email Mailtrap ───────────────────────────────────────────────────────
-  MAILTRAP_API_TOKEN: Joi.string().allow('').optional(),
-  MAILTRAP_SENDER_EMAIL: Joi.string().email().allow('').optional(),
-  MAILTRAP_SENDER_NAME: Joi.string().allow('').optional(),
+  // ─── Email Resend ─────────────────────────────────────────────────────────
+  // Optionnelles : sans elles le service se désactive proprement (les e-mails
+  // sont ignorés, `sendEmail` renvoie `false`) plutôt que d'empêcher le
+  // démarrage. En production, leur absence prive les vendeurs de leur lien
+  // d'activation — l'API rend alors le lien à l'administrateur pour qu'il le
+  // transmette lui-même.
+  // ⚠️ `RESEND_SENDER_EMAIL` doit être sur un domaine vérifié dans Resend.
+  RESEND_API_KEY: Joi.string().allow('').optional(),
+  RESEND_SENDER_EMAIL: Joi.string().email().allow('').optional(),
+  RESEND_SENDER_NAME: Joi.string().allow('').optional(),
 
   // ─── Sentry ───────────────────────────────────────────────────────────────
   SENTRY_DSN: Joi.string().uri().allow('').optional(),

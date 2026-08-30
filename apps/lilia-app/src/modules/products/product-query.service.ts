@@ -2,6 +2,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, ProductType, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { availableProductWhere } from './product-availability';
 
 /**
@@ -88,7 +89,7 @@ export class ProductQueryService {
     const product = await this.prisma.product.findFirst({
       where: {
         id,
-        restaurant: { isActive: true, adminApproved: true },
+        restaurant: PUBLIC_VENDOR_WHERE,
         // Un produit RETIRÉ n'existe plus pour le public (fix M2). En
         // revanche, un produit simplement indisponible ou hors fenêtre reste
         // consultable : le client doit pouvoir voir la fiche et l'horaire.
@@ -141,7 +142,7 @@ export class ProductQueryService {
     const products = await this.prisma.product.findMany({
       where: {
         id: { in: productIds },
-        restaurant: { isActive: true, adminApproved: true },
+        restaurant: PUBLIC_VENDOR_WHERE,
         AND: [availableProductWhere()],
       },
       include: {
@@ -195,7 +196,7 @@ export class ProductQueryService {
             { description: { contains: searchTerm, mode: 'insensitive' } },
             { category: { nom: { contains: searchTerm, mode: 'insensitive' } } },
           ],
-          restaurant: { isActive: true, adminApproved: true },
+          restaurant: PUBLIC_VENDOR_WHERE,
           AND: [availableProductWhere()],
         },
         include: {
@@ -250,7 +251,7 @@ export class ProductQueryService {
     const recommendations = await this.prisma.product.findMany({
       where: {
         id: { notIn: excludeIds },
-        restaurant: { isActive: true, adminApproved: true },
+        restaurant: PUBLIC_VENDOR_WHERE,
         AND: [availableProductWhere()],
         OR: [
           ...(categoryIds.length > 0 ? [{ categoryId: { in: categoryIds } }] : []),
