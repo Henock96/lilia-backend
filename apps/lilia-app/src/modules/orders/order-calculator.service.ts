@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 // orders/order-calculator.service.ts
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 
 export interface OrderAmounts {
   subTotal: number;
@@ -48,6 +48,16 @@ export class OrderCalculatorService {
     for (const [, groupItems] of menuGroups) {
       // Le prix du menu est porté par le menu, pas par les variants individuels
       subTotal += groupItems[0].menu!.prix * groupItems[0].quantite;
+    }
+
+    // Garde défensive (fix H3) : les DTO produit bornent désormais les prix à
+    // [0, MAX_PRIX_XAF], mais des lignes antérieures au correctif peuvent
+    // exister en base. Un sous-total négatif signifie qu'un prix l'est —
+    // on refuse la commande plutôt que d'encaisser un total faussé.
+    if (!Number.isFinite(subTotal) || subTotal < 0) {
+      throw new BadRequestException(
+        'Le montant du panier est invalide. Contactez le support.',
+      );
     }
 
     const fee = isDelivery ? deliveryFee : 0;

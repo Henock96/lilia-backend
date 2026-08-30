@@ -9,7 +9,7 @@
 |--------|---------|--------|
 | **Position live (temps réel)** | **Redis** | `driver_positions` (GEO) + `delivery:{orderId}` (JSON, TTL 5 min). C'est ce que lit un client au `order:watch`. **Source de vérité.** |
 | **Historique / persistance** | **PostgreSQL** | `Delivery.lastLatitude/lastLongitude/lastPositionAt` + `DeliveryLocation[]` (trace). Pour rapports / forensics. Pas la source live. |
-| **Diffusion** | **WebSocket** | broadcast `driver:position { lat, lng, eta, timestamp }` aux rooms `order:{orderId}`. |
+| **Diffusion** | **WebSocket** | broadcast `driver:position { orderId, lat, lng, eta, timestamp }` aux rooms `order:{orderId}`. |
 
 Si Redis et DB divergent, **Redis fait foi pour la position courante**. La DB
 peut être en retard (persistée au plus 1×/min côté WS) — c'est attendu.

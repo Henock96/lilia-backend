@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRedisConnectionToken } from '@nestjs-modules/ioredis';
 import { User } from '@prisma/client';

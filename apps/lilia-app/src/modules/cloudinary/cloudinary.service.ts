@@ -5,12 +5,20 @@ import { ConfigService } from '@nestjs/config';
 import { v2 as cloudinary, UploadApiResponse } from 'cloudinary';
 import { Readable } from 'stream';
 
-export type CloudinaryFolder =
-  | 'restaurants'
-  | 'products'
-  | 'menus'
-  | 'users'
-  | 'banners';
+/**
+ * Liste blanche des dossiers Cloudinary. Exportée comme valeur (et non plus
+ * seulement comme type) pour être vérifiable au runtime par `@IsIn` — un type
+ * TypeScript ne valide rien une fois compilé (fix H4).
+ */
+export const CLOUDINARY_FOLDERS = [
+  'restaurants',
+  'products',
+  'menus',
+  'users',
+  'banners',
+] as const;
+
+export type CloudinaryFolder = (typeof CLOUDINARY_FOLDERS)[number];
 
 @Injectable()
 export class CloudinaryService {

@@ -107,10 +107,7 @@ export class AdminDeliverersService {
 
     const durations = deliveredRows
       .filter((d) => d.pickedUpAt && d.deliveredAt)
-      .map(
-        (d) =>
-          (d.deliveredAt!.getTime() - d.pickedUpAt!.getTime()) / 60000,
-      );
+      .map((d) => (d.deliveredAt!.getTime() - d.pickedUpAt!.getTime()) / 60000);
     const avgDeliveryMinutes =
       durations.length === 0
         ? null

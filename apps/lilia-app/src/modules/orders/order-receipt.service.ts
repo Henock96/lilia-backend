@@ -1,4 +1,9 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { User } from '@prisma/client';
 import type { TDocumentDefinitions } from 'pdfmake/interfaces';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -8,7 +13,10 @@ import { renderPdf } from './order-receipt-pdf.util';
 export class OrderReceiptService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async generateReceipt(orderId: string, caller: User): Promise<{ buffer: Buffer; numero: string }> {
+  async generateReceipt(
+    orderId: string,
+    caller: User,
+  ): Promise<{ buffer: Buffer; numero: string }> {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: {
@@ -29,7 +37,9 @@ export class OrderReceiptService {
       throw new ForbiddenException('Accès refusé.');
     }
     if (!order.paidAt || order.status === 'ANNULER') {
-      throw new BadRequestException('Reçu disponible uniquement pour une commande payée.');
+      throw new BadRequestException(
+        'Reçu disponible uniquement pour une commande payée.',
+      );
     }
 
     const numero = this.buildNumero(order.id, order.createdAt);
@@ -92,8 +102,26 @@ export class OrderReceiptService {
       defaultStyle: { font: 'Roboto' },
       content: [
         { text: 'LILIA FOOD', bold: true, fontSize: 14, alignment: 'center' },
-        { text: 'Reçu de commande', fontSize: 8, color: '#71717a', alignment: 'center', margin: [0, 0, 0, 8] },
-        { canvas: [{ type: 'line', x1: 0, y1: 0, x2: 188, y2: 0, dash: { length: 2 }, lineColor: '#d4d4d8' }] },
+        {
+          text: 'Reçu de commande',
+          fontSize: 8,
+          color: '#71717a',
+          alignment: 'center',
+          margin: [0, 0, 0, 8],
+        },
+        {
+          canvas: [
+            {
+              type: 'line',
+              x1: 0,
+              y1: 0,
+              x2: 188,
+              y2: 0,
+              dash: { length: 2 },
+              lineColor: '#d4d4d8',
+            },
+          ],
+        },
         { text: '', margin: [0, 0, 0, 6] },
         row('Reçu N°', numero),
         row('Commande N°', order.id),
@@ -102,25 +130,76 @@ export class OrderReceiptService {
         row('Vendeur', order.restaurant.nom),
         row('Client', order.user?.nom ?? 'Client'),
         { text: '', margin: [0, 0, 0, 6] },
-        { canvas: [{ type: 'line', x1: 0, y1: 0, x2: 188, y2: 0, dash: { length: 2 }, lineColor: '#d4d4d8' }] },
+        {
+          canvas: [
+            {
+              type: 'line',
+              x1: 0,
+              y1: 0,
+              x2: 188,
+              y2: 0,
+              dash: { length: 2 },
+              lineColor: '#d4d4d8',
+            },
+          ],
+        },
         { text: '', margin: [0, 0, 0, 6] },
         ...itemRows,
         { text: '', margin: [0, 0, 0, 6] },
-        { canvas: [{ type: 'line', x1: 0, y1: 0, x2: 188, y2: 0, dash: { length: 2 }, lineColor: '#d4d4d8' }] },
+        {
+          canvas: [
+            {
+              type: 'line',
+              x1: 0,
+              y1: 0,
+              x2: 188,
+              y2: 0,
+              dash: { length: 2 },
+              lineColor: '#d4d4d8',
+            },
+          ],
+        },
         { text: '', margin: [0, 0, 0, 6] },
         ...totals,
         {
           columns: [
             { text: 'TOTAL', bold: true, fontSize: 11 },
-            { text: `${this.fmt(order.total)} XAF`, bold: true, fontSize: 11, alignment: 'right' },
+            {
+              text: `${this.fmt(order.total)} XAF`,
+              bold: true,
+              fontSize: 11,
+              alignment: 'right',
+            },
           ],
           margin: [0, 4, 0, 4] as [number, number, number, number],
         },
         { text: '', margin: [0, 0, 0, 6] },
-        { canvas: [{ type: 'line', x1: 0, y1: 0, x2: 188, y2: 0, dash: { length: 2 }, lineColor: '#d4d4d8' }] },
+        {
+          canvas: [
+            {
+              type: 'line',
+              x1: 0,
+              y1: 0,
+              x2: 188,
+              y2: 0,
+              dash: { length: 2 },
+              lineColor: '#d4d4d8',
+            },
+          ],
+        },
         { text: '', margin: [0, 0, 0, 6] },
-        { text: `Payé par ${this.paymentLabel(order.paymentMethod)} - PAYÉ`, fontSize: 8, alignment: 'center' },
-        { text: 'Merci de votre commande !', fontSize: 8, color: '#71717a', alignment: 'center', margin: [0, 4, 0, 0] },
+        {
+          text: `Payé par ${this.paymentLabel(order.paymentMethod)} - PAYÉ`,
+          fontSize: 8,
+          alignment: 'center',
+        },
+        {
+          text: 'Merci de votre commande !',
+          fontSize: 8,
+          color: '#71717a',
+          alignment: 'center',
+          margin: [0, 4, 0, 0],
+        },
       ],
     };
   }

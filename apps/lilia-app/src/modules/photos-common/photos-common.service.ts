@@ -43,7 +43,9 @@ export class PhotosCommonService {
     });
     if (!r) throw new NotFoundException('Restaurant introuvable');
     if (r.ownerId !== user.id) {
-      throw new ForbiddenException('Vous n\'êtes pas propriétaire de ce restaurant');
+      throw new ForbiddenException(
+        "Vous n'êtes pas propriétaire de ce restaurant",
+      );
     }
   }
 
@@ -74,7 +76,11 @@ export class PhotosCommonService {
   ): Promise<void> {
     const filter = keepId ? { ...where, NOT: { id: keepId } } : where;
     const client = tx ?? this.prisma;
-    await (client[table] as { updateMany: Function }).updateMany({
+    // Accès dynamique à une table Prisma : le type exact dépend de `table`, on
+    // décrit donc la seule méthode appelée plutôt que le fourre-tout `Function`.
+    await (
+      client[table] as { updateMany: (args: any) => Promise<unknown> }
+    ).updateMany({
       where: { ...filter, isCover: true },
       data: { isCover: false },
     });
@@ -94,7 +100,12 @@ export class PhotosCommonService {
     }
   }
 
-  private async countByEntity(table: PhotoTable, where: object): Promise<number> {
-    return (this.prisma[table] as { count: Function }).count({ where });
+  private async countByEntity(
+    table: PhotoTable,
+    where: object,
+  ): Promise<number> {
+    return (
+      this.prisma[table] as { count: (args: any) => Promise<number> }
+    ).count({ where });
   }
 }

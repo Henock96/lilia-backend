@@ -33,11 +33,25 @@ async function bootstrap() {
       app.useWebSocketAdapter(redisIoAdapter);
       logger.log('WebSocket adapter : Redis (multi-instance)');
     } catch (err) {
-      logger.warn(`Redis non disponible, adapter par défaut utilisé : ${err.message}`);
+      logger.warn(
+        `Redis non disponible, adapter par défaut utilisé : ${err.message}`,
+      );
     }
   } else {
     logger.warn('REDIS_URL non défini — WebSocket en mode single-instance');
   }
+  // ─── Confiance au proxy (fix C4) ────────────────────────────────────────────
+  // Render place un load balancer devant l'app. Sans `trust proxy`, Express
+  // ignore `X-Forwarded-For` et `req.ip` vaut l'adresse du proxy — la MÊME pour
+  // tous les clients. Le ThrottlerGuard, qui trace par `req.ip`, dégénérait
+  // alors en un compteur GLOBAL par route : 10 POST /orders/checkout en une
+  // minute suffisaient à renvoyer 429 à toute la plateforme.
+  // La valeur 1 = un seul proxy de confiance (celui de Render) ; passer `true`
+  // laisserait n'importe qui usurper son IP via un en-tête forgé.
+  const trustProxyHops = parseInt(process.env.TRUST_PROXY_HOPS ?? '1', 10);
+  app.set('trust proxy', trustProxyHops);
+  logger.log(`trust proxy = ${trustProxyHops}`);
+
   // ─── Sécurité HTTP & compression ────────────────────────────────────────────
   // helmet : en-têtes de sécurité (X-Content-Type-Options, HSTS, etc.).
   // CSP désactivée : c'est une API JSON (les fronts gèrent leur propre CSP) et la
@@ -114,6 +128,12 @@ async function bootstrap() {
 
     logger.log('Swagger disponible : /api-docs');
   }
+
+  // ─── Arrêt propre (fix M10) ─────────────────────────────────────────────────
+  // Sans cet appel, NestJS n'écoute pas SIGTERM et `onModuleDestroy` n'est
+  // JAMAIS exécuté : à chaque déploiement Render, les connexions Redis de
+  // TrackingService restaient ouvertes jusqu'au timeout côté serveur.
+  app.enableShutdownHooks();
 
   // ─── Démarrage ──────────────────────────────────────────────────────────────
   const port = parseInt(process.env.PORT ?? '8080', 10);

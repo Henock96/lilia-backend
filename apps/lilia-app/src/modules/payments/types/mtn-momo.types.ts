@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 export interface MtnMomoConfig {
   baseUrl: string;
   subscriptionKey: string;

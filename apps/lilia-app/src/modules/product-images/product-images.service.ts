@@ -47,7 +47,9 @@ export class ProductImagesService {
 
   async create(dto: CreateProductImageDto, user: { id: string; role: string }) {
     await this.assertProductOwnership(dto.productId, user);
-    await this.common.assertUnderMax('productImage', { productId: dto.productId });
+    await this.common.assertUnderMax('productImage', {
+      productId: dto.productId,
+    });
 
     return this.prisma.$transaction(async (tx) => {
       if (dto.isCover) {
@@ -100,7 +102,9 @@ export class ProductImagesService {
         where: { id },
         data: {
           ...(dto.alt !== undefined && { alt: dto.alt }),
-          ...(dto.displayOrder !== undefined && { displayOrder: dto.displayOrder }),
+          ...(dto.displayOrder !== undefined && {
+            displayOrder: dto.displayOrder,
+          }),
           ...(dto.isCover !== undefined && { isCover: dto.isCover }),
         },
       });
@@ -149,7 +153,10 @@ export class ProductImagesService {
     return { success: true };
   }
 
-  async reorder(dto: ReorderProductImagesDto, user: { id: string; role: string }) {
+  async reorder(
+    dto: ReorderProductImagesDto,
+    user: { id: string; role: string },
+  ) {
     await this.assertProductOwnership(dto.productId, user);
 
     const images = await this.prisma.productImage.findMany({
@@ -162,7 +169,7 @@ export class ProductImagesService {
     const wrongOwner = images.find((p) => p.productId !== dto.productId);
     if (wrongOwner) {
       throw new BadRequestException(
-        'Certaines images n\'appartiennent pas au produit cible',
+        "Certaines images n'appartiennent pas au produit cible",
       );
     }
 

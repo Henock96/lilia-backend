@@ -1,11 +1,12 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, ForbiddenException, HttpException, HttpStatus, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, HttpException, HttpStatus, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MtnMomoService } from './mtn-momo.service';
 import { OrderStatus } from '@prisma/client';
 import { OrderPaymentConfirmedEvent } from '../../events/order-events';
 import { ConfigService } from '@nestjs/config';
+import { CreatePaymentDto } from '../dto/create-payment.dto';
 
 /** Masque un numéro de téléphone pour les logs : garde les 2 derniers chiffres. */
 function maskPhone(phone?: string): string {
@@ -26,19 +27,20 @@ export enum PaymentMode {
   MANUAL = 'MANUAL',          // Virement manuel vers numéro Lilia Food
   MTN_PRODUCTION = 'MTN_PRODUCTION', // Quand agrément obtenu
 }
-export interface CreatePaymentRequest {
-  orderId: string;
-  amount?: number;
-  currency?: string;
-  phoneNumber: string;
-  payerMessage?: string;
-}
+/**
+ * ⚠️ Ne PAS retyper la route sur une interface (fix H1) : une interface
+ * n'existe pas au runtime, donc le ValidationPipe global ne valide rien.
+ * Le contrat HTTP est porté par `dto/create-payment.dto.ts` ; ce type-ci n'est
+ * plus qu'un alias interne pour les appels programmatiques.
+ */
+export type CreatePaymentRequest = CreatePaymentDto;
 
 @Injectable()
 export class PaymentService {
   private readonly logger = new Logger(PaymentService.name);
   private readonly mode: PaymentMode;
   private readonly manualPaymentNumber: string;
+  private readonly airtelPaymentNumber: string;
   constructor(
     private readonly prisma: PrismaService,
     private readonly mtnMomoService: MtnMomoService,
@@ -47,9 +49,23 @@ export class PaymentService {
   ) {
     this.mode = this.config.get<PaymentMode>('PAYMENT_MODE', PaymentMode.MANUAL);
     this.manualPaymentNumber = this.config.get<string>('LILIA_PAYMENT_PHONE', '');
+    // Numéro d'encaissement Airtel. Sans valeur dédiée, on retombe sur le
+    // numéro MTN plutôt que d'afficher un numéro vide au client.
+    this.airtelPaymentNumber =
+      this.config.get<string>('LILIA_AIRTEL_PAYMENT_PHONE', '') ||
+      this.manualPaymentNumber;
   }
 
   async createPayment(request: CreatePaymentRequest, firebaseUid: string) {
+    // Fix M3 : une commande intégralement réglée en points de fidélité a un
+    // total de 0. On affichait « Envoyez 0 FCFA au … », aucun paiement n'était
+    // possible, et `OrderExpiryService` annulait la commande 45 min plus tard.
+    // Il n'y a rien à encaisser : on la marque payée immédiatement.
+    const order = await this.getPayableOrder(request.orderId, firebaseUid);
+    if (order.total <= 0) {
+      return this.settleZeroAmountOrder(order);
+    }
+
     switch (this.mode) {
       case PaymentMode.MANUAL:
         return this.createManualPayment(request, firebaseUid);
@@ -123,14 +139,20 @@ export class PaymentService {
       this.logger.error(
         `❌ Payment request failed — status: ${error.response?.status ?? 'n/a'}, code: ${error.response?.data?.code ?? error.code ?? 'n/a'}`,
       );
+      // Fix M14 : `details: error.response?.data` était repris tel quel par
+      // HttpExceptionFilter et renvoyé au client — fuite d'informations du
+      // fournisseur (codes internes, messages, parfois identifiants d'appel).
+      // Le diagnostic reste entièrement disponible côté logs ci-dessus.
       throw new HttpException(
-      {
-        message: 'Payment request failed',
-        details: error.response?.data,
-        status: error.response?.status,
-      },
-      error.response?.status || HttpStatus.BAD_REQUEST
-    );
+        {
+          message:
+            "Le paiement n'a pas pu être initié auprès de l'opérateur. Réessayez dans un instant.",
+          code: 'PAYMENT_PROVIDER_ERROR',
+        },
+        error.response?.status && error.response.status < 500
+          ? HttpStatus.BAD_REQUEST
+          : HttpStatus.BAD_GATEWAY,
+      );
     }
   }
 
@@ -144,32 +166,139 @@ export class PaymentService {
     const amount = order.total;
     const currency = 'XAF';
 
-    await this.assertNoPendingPayment(order.id);
+    // Le numéro d'encaissement dépend de l'opérateur choisi au checkout : on
+    // ne peut pas demander à un client Airtel d'envoyer sur un numéro MTN.
+    const isAirtel = order.paymentMethod === 'AIRTEL_MONEY';
+    const paymentPhone = isAirtel
+      ? this.airtelPaymentNumber
+      : this.manualPaymentNumber;
+    const methodLabel = isAirtel ? 'Airtel Money' : 'MTN MoMo';
 
-    const payment = await this.prisma.payment.create({
-      data: {
-        orderId: request.orderId,
-        amount,
-        currency,
-        phoneNumber: request.phoneNumber,
-        status: 'PENDING',
-        provider: 'MANUAL',
-        metadata: { mode: 'manual', paymentPhone: this.manualPaymentNumber },
-      },
+    if (!paymentPhone) {
+      // Mieux vaut un message clair qu'une modale affichant un numéro vide.
+      this.logger.error(
+        `LILIA_PAYMENT_PHONE non configuré — paiement ${methodLabel} impossible`,
+      );
+      throw new BadRequestException(
+        'Le paiement est temporairement indisponible. Contactez le support.',
+      );
+    }
+
+    // Idempotent : si un paiement est déjà en attente pour cette commande, on
+    // renvoie ses instructions au lieu de lever.
+    //
+    // Le client peut légitimement rejouer cet appel — timeout Render, 4G qui
+    // coupe entre la création de la commande et celle du paiement. Refuser le
+    // retry laissait le client devant des instructions de paiement sans aucune
+    // ligne `Payment` correspondante : il payait, et le virement n'était
+    // rattachable à rien.
+    const existing = await this.prisma.payment.findFirst({
+      where: { orderId: order.id, status: 'PENDING', provider: 'MANUAL' },
     });
+
+    const payment =
+      existing ??
+      (await this.prisma.payment.create({
+        data: {
+          orderId: request.orderId,
+          amount,
+          currency,
+          phoneNumber: request.phoneNumber,
+          status: 'PENDING',
+          provider: 'MANUAL',
+          metadata: {
+            mode: 'manual',
+            paymentPhone,
+            method: order.paymentMethod,
+          },
+        },
+      }));
 
     return {
       paymentId: payment.id,
       mode: 'MANUAL',
       instructions: {
-        message: `Envoyez ${amount} FCFA au ${this.manualPaymentNumber} (MTN MoMo)`,
+        message: `Envoyez ${amount} FCFA au ${paymentPhone} (${methodLabel})`,
         reference: payment.id.slice(-8).toUpperCase(),
-        phone: this.manualPaymentNumber,
+        phone: paymentPhone,
+        method: order.paymentMethod,
+        methodLabel,
         amount,
+        currency,
         note: `Commande ${order.id.slice(-6)} - ${order.restaurant.nom}`,
       },
     };
   }
+  /**
+   * Commande à total nul (100 % points de fidélité) — fix M3.
+   *
+   * Aucun opérateur mobile money n'accepte un transfert de 0 FCFA : la commande
+   * restait donc impayable et finissait annulée par le cron d'expiration. On
+   * trace un `Payment` SUCCESS à 0 (pour que la commande ait bien une pièce
+   * comptable) et on passe la commande à `PAYER` dans la même transaction.
+   * Idempotent : rejouer l'appel renvoie le paiement existant.
+   */
+  private async settleZeroAmountOrder(order: any) {
+    const existing = await this.prisma.payment.findFirst({
+      where: { orderId: order.id, status: 'SUCCESS' },
+    });
+
+    const payment =
+      existing ??
+      (await this.prisma.$transaction(async (tx) => {
+        const created = await tx.payment.create({
+          data: {
+            orderId: order.id,
+            amount: 0,
+            currency: 'XAF',
+            phoneNumber: '',
+            status: 'SUCCESS',
+            provider: 'MANUAL',
+            metadata: { mode: 'zero_amount', reason: 'loyalty_points_only' },
+          },
+        });
+
+        const claimed = await tx.order.updateMany({
+          where: { id: order.id, status: OrderStatus.EN_ATTENTE },
+          data: { status: OrderStatus.PAYER, paidAt: new Date() },
+        });
+        if (claimed.count === 0) {
+          throw new ConflictException(
+            'Le statut de la commande a changé. Rechargez la commande.',
+          );
+        }
+        return created;
+      }));
+
+    if (!existing) {
+      this.eventEmitter.emit(
+        'order.payment.confirmed',
+        new OrderPaymentConfirmedEvent(
+          order.id,
+          order.userId,
+          order.restaurantId,
+          payment.id,
+          0,
+        ),
+      );
+      this.logger.log(
+        `💰 [PAIEMENT] Commande ${order.id} à 0 FCFA (fidélité) — marquée payée sans opérateur`,
+      );
+    }
+
+    return {
+      paymentId: payment.id,
+      mode: 'ZERO_AMOUNT',
+      instructions: {
+        message:
+          'Commande intégralement réglée avec vos points de fidélité — rien à payer.',
+        reference: payment.id.slice(-8).toUpperCase(),
+        amount: 0,
+        currency: 'XAF',
+      },
+    };
+  }
+
   /**
    * Confirmation manuelle par l'admin — mode MANUAL uniquement.
    * L'admin vérifie le virement et confirme via cette méthode.
@@ -184,12 +313,54 @@ export class PaymentService {
       throw new BadRequestException('Paiement déjà traité');
     }
 
-    await this.prisma.payment.update({
-      where: { id: paymentId },
-      data: { status: 'SUCCESS', updatedAt: new Date() },
+    // Fix H2 : refuser explicitement de confirmer un virement sur une commande
+    // qui n'attend plus de paiement. Sans cette garde, l'admin voyait un
+    // paiement en attente, retrouvait le virement, cliquait « Confirmer » — et
+    // ressuscitait une commande annulée dont le stock avait été rendu, les
+    // points recrédités et le code promo libéré.
+    if (payment.order.status !== OrderStatus.EN_ATTENTE) {
+      throw new ConflictException(
+        `Cette commande n'attend plus de paiement (statut : ${payment.order.status}). ` +
+          `Si le client a réellement payé, traitez-le par la procédure de remboursement.`,
+      );
+    }
+
+    // La mise à jour du paiement et celle de la commande doivent tomber
+    // ensemble : mort du process entre les deux ⇒ Payment SUCCESS sur une
+    // commande EN_ATTENTE, qui expirera ensuite.
+    await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.payment.updateMany({
+        where: { id: paymentId, status: 'PENDING' },
+        data: { status: 'SUCCESS', updatedAt: new Date() },
+      });
+      if (claimed.count === 0) {
+        throw new ConflictException('Paiement déjà traité');
+      }
+
+      const order = await tx.order.updateMany({
+        where: { id: payment.orderId, status: OrderStatus.EN_ATTENTE },
+        data: { status: OrderStatus.PAYER, paidAt: new Date() },
+      });
+      if (order.count === 0) {
+        throw new ConflictException(
+          "Le statut de la commande a changé pendant la confirmation. Rechargez la fiche.",
+        );
+      }
     });
 
-    await this.handleSuccessfulPayment(payment);
+    // L'événement part APRÈS le commit : pas de notification fantôme sur
+    // rollback.
+    this.eventEmitter.emit(
+      'order.payment.confirmed',
+      new OrderPaymentConfirmedEvent(
+        payment.orderId,
+        payment.order.userId,
+        payment.order.restaurantId,
+        payment.id,
+        payment.amount,
+      ),
+    );
+
     return { message: 'Paiement confirmé manuellement' };
   }
 
@@ -312,18 +483,33 @@ export class PaymentService {
 
   private async handleSuccessfulPayment(payment: any) {
     // Idempotence : le webhook MTN et le polling `checkPaymentStatus` peuvent
-    // arriver en parallèle. Le `updateMany` conditionnel (status != PAYER)
-    // garantit qu'UN SEUL appel effectue réellement la transition et émet
-    // l'événement — évite les doubles notifications / doubles crédits.
+    // arriver en parallèle. Le `updateMany` conditionnel garantit qu'UN SEUL
+    // appel effectue réellement la transition et émet l'événement — évite les
+    // doubles notifications / doubles crédits.
+    //
+    // SÉCURITÉ (fix H2, audit du 28/08/2026) : la condition était
+    // `status != PAYER`, ce qui acceptait AUSSI `ANNULER`, `LIVRER`… Une
+    // commande expirée au bout de 6 h — stock rendu, points recrédités, promo
+    // libérée — repassait donc à `PAYER` dès que l'admin retrouvait le
+    // virement le lundi matin. Seule `EN_ATTENTE` est une origine légale.
     const result = await this.prisma.order.updateMany({
-      where: { id: payment.orderId, status: { not: OrderStatus.PAYER } },
+      where: { id: payment.orderId, status: OrderStatus.EN_ATTENTE },
       data: { status: OrderStatus.PAYER, paidAt: new Date() },
     });
 
     if (result.count === 0) {
-      this.logger.log(
-        `Paiement déjà traité pour la commande ${payment.orderId} — événement ignoré`,
-      );
+      const current = await this.prisma.order.findUnique({
+        where: { id: payment.orderId },
+        select: { status: true },
+      });
+
+      // Déjà payée : c'est le cas nominal d'un webhook rejoué.
+      if (current && current.status !== OrderStatus.EN_ATTENTE) {
+        this.logger.warn(
+          `Paiement confirmé sur la commande ${payment.orderId} au statut ${current.status} — ` +
+            `transition refusée. Si de l'argent a été encaissé, il relève de la procédure de remboursement.`,
+        );
+      }
       return;
     }
 

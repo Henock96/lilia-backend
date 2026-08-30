@@ -66,10 +66,25 @@ export class RestaurantsService {
 
         const { specialties, ...restaurantData } = data;
 
+        // Règle d'approbation rejouée ici aussi (fix L15 + L10). C'est le
+        // troisième chemin de création de vendeur, après POST /vendors et
+        // POST /admin/restaurants, et le seul où elle n'était pas écrite : il
+        // héritait du défaut de la base. Ce défaut vaut désormais `false`
+        // (défaut sûr), donc l'omission publierait un vendeur non validé —
+        // ou, avant, un vendeur non-RESTAURANT approuvé sans contrôle.
+        // Le DTO n'expose PAS `vendorType` : cette route ne crée que des
+        // restaurants au sens historique, donc auto-approuvés. Si le DTO
+        // venait à l'exposer, la règle ci-dessous devrait être recalculée à
+        // partir de la valeur reçue — c'est précisément le piège signalé par
+        // l'audit (L15).
+        const adminApproved = true;
+
         // 3. Créer le restaurant en utilisant l'ID interne de l'utilisateur pour la relation
         const resto = await this.prisma.restaurant.create({
             data: {
                 ...restaurantData,
+                adminApproved,
+                adminApprovedAt: adminApproved ? new Date() : null,
                 owner: { connect: { id: user.id }},
                 // Créer les spécialités si fournies
                 ...(specialties?.length && {
@@ -90,8 +105,8 @@ export class RestaurantsService {
 
     // ─── LECTURE (délégué → RestaurantQueryService) ─────────────────────────────
 
-    findAll() {
-        return this.query.findAll();
+    findAll(page?: number, limit?: number) {
+        return this.query.findAll(page, limit);
     }
 
     findOne(id: string) {
@@ -239,16 +254,26 @@ export class RestaurantsService {
     }
 
     // ─── ANALYTICS / CLIENTS (délégué → RestaurantQueryService) ─────────────────
+    //
+    // SÉCURITÉ (fix C1, audit 28/08/2026) : ces trois lectures prennent un
+    // restaurantId en paramètre de chemin. Sans verifyOwnership, tout compte
+    // RESTAURATEUR lisait la base clients (nom, e-mail, téléphone) et le volume
+    // d'affaires de n'importe quel concurrent — les ids vendeur étant publics
+    // (GET /vendors). Le contrôle de rôle ne suffit pas : il faut le contrôle
+    // d'objet, comme sur les mutations.
 
-    countOrders(restaurantId: string) {
+    async countOrders(restaurantId: string, firebaseUid: string) {
+        await this.access.verifyOwnership(restaurantId, firebaseUid);
         return this.query.countOrders(restaurantId);
     }
 
-    findClients(page = 1, limit = 10, restaurantId: string) {
+    async findClients(page = 1, limit = 10, restaurantId: string, firebaseUid: string) {
+        await this.access.verifyOwnership(restaurantId, firebaseUid);
         return this.query.findClients(page, limit, restaurantId);
     }
 
-    findClientWithOrders(restaurantId: string, userId: string) {
+    async findClientWithOrders(restaurantId: string, userId: string, firebaseUid: string) {
+        await this.access.verifyOwnership(restaurantId, firebaseUid);
         return this.query.findClientWithOrders(restaurantId, userId);
     }
 }

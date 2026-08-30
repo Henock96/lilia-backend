@@ -11,6 +11,7 @@ import { SentryModule } from '@sentry/nestjs/setup';
 
 import { SentryUserInterceptor } from './common/interceptors/sentry-user.interceptor';
 import { ApiResponseInterceptor } from './common/interceptors/api-response.interceptor';
+import { resolveThrottlerTracker } from './common/throttler/throttler-tracker';
 
 import { PrismaModule } from './prisma/prisma.module';
 import { FirebaseModule } from './modules/firebase/firebase.module';
@@ -26,6 +27,7 @@ import { DeliveriesModule } from './modules/deliveries/deliveries.module';
 import { CartModule } from './modules/cart/cart.module';
 import { MenusModule } from './modules/menus/menus.module';
 import { ReviewsModule } from './modules/reviews/reviews.module';
+import { DeliveryReviewsModule } from './modules/delivery-reviews/delivery-reviews.module';
 import { PaymentModule } from './modules/payments/payment.module';
 import { AdressesModule } from './modules/adresses/adresses.module';
 import { QuartiersModule } from './modules/quartiers/quartiers.module';
@@ -48,9 +50,13 @@ import { CloudinaryModule } from './modules/cloudinary/cloudinary.module';
 import { AppScheduleModule } from './modules/schedule/schedule.module';
 import { HealthsModule } from './modules/health/health.module';
 import { IncidentsModule } from './modules/incidents/incidents.module';
+import { AdminAuditModule } from './modules/admin-audit/admin-audit.module';
+import { RefundsModule } from './modules/refunds/refunds.module';
+import { OutboxModule } from './modules/outbox/outbox.module';
 
 // Listeners (providers globaux)
 import { OrdersListener } from './modules/listeners/orders.listener';
+import { DeliveriesListener } from './modules/listeners/deliveries.listener';
 import { PaymentListener } from './modules/listeners/payment.listener';
 import { MenusListener } from './modules/listeners/menus.listener';
 import { UserListener } from './modules/listeners/user.listener';
@@ -140,13 +146,16 @@ import { envValidationSchema } from './config/env.validation';
             { name: 'short', ttl: 1000, limit: 10 },
             { name: 'long', ttl: 60000, limit: 100 },
           ],
+          // Traçage par COMPTE quand un jeton est présent, par IP sinon
+          // (fix C4) — voir common/throttler/throttler-tracker.ts.
+          getTracker: resolveThrottlerTracker,
           storage: redisUrl
             ? new ThrottlerStorageRedisService(redisUrl)
             : undefined,
         };
       },
     }),
-    // app.module.ts â€” ajouter
+    // app.module.ts — ajouter
     RedisModule.forRootAsync({
       useFactory: (config: ConfigService) => ({
         type: 'single',
@@ -158,7 +167,7 @@ import { envValidationSchema } from './config/env.validation';
     EventEmitterModule.forRoot({
       wildcard: false,
       delimiter: '.',
-      maxListeners: 20, // augmentÃ© pour tous les listeners
+      maxListeners: 20, // augmenté pour tous les listeners
       ignoreErrors: false,
     }),
 
@@ -177,6 +186,7 @@ import { envValidationSchema } from './config/env.validation';
     CartModule,
     MenusModule,
     ReviewsModule,
+    DeliveryReviewsModule,
     PaymentModule,
     AdressesModule,
     QuartiersModule,
@@ -199,6 +209,9 @@ import { envValidationSchema } from './config/env.validation';
     AppScheduleModule,
     HealthsModule,
     IncidentsModule,
+    AdminAuditModule,
+    RefundsModule,
+    OutboxModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
@@ -212,6 +225,7 @@ import { envValidationSchema } from './config/env.validation';
     { provide: APP_INTERCEPTOR, useClass: SentryUserInterceptor },
     // Listeners globaux
     OrdersListener,
+    DeliveriesListener,
     PaymentListener,
     MenusListener,
     UserListener,
@@ -219,4 +233,3 @@ import { envValidationSchema } from './config/env.validation';
   ],
 })
 export class AppModule {}
-

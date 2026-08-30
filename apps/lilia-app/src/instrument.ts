@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 /**
  * Initialisation Sentry — DOIT être importé en TOUT PREMIER dans main.ts,
  * avant tout autre module, pour que l'auto-instrumentation patche les

@@ -26,7 +26,9 @@ export class AdminVendorsService {
   async getAllVendors(dto: AdminVendorFilterDto) {
     const where: Prisma.RestaurantWhereInput = {
       ...(dto.vendorType && { vendorType: dto.vendorType }),
-      ...(dto.adminApproved !== undefined && { adminApproved: dto.adminApproved }),
+      ...(dto.adminApproved !== undefined && {
+        adminApproved: dto.adminApproved,
+      }),
       ...(dto.isActive !== undefined && { isActive: dto.isActive }),
     };
 
@@ -85,7 +87,11 @@ export class AdminVendorsService {
    * On NE touche PAS à adminApproved — un vendeur peut être suspendu
    * temporairement sans repasser par toute la validation initiale.
    */
-  async suspendVendor(restaurantId: string, reason: string, adminUserId: string) {
+  async suspendVendor(
+    restaurantId: string,
+    reason: string,
+    adminUserId: string,
+  ) {
     const vendor = await this.prisma.restaurant.findUnique({
       where: { id: restaurantId },
     });

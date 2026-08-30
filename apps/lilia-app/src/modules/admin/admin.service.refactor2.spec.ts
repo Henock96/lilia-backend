@@ -24,11 +24,30 @@ describe('AdminService (caractérisation — clients/users/reviews)', () => {
   let service: AdminService;
 
   const prisma = {
-    user: { findUnique: jest.fn(), findMany: jest.fn(), count: jest.fn(), update: jest.fn() },
-    loyaltyTransaction: { findMany: jest.fn(), count: jest.fn(), aggregate: jest.fn() },
-    review: { findMany: jest.fn(), count: jest.fn(), findUnique: jest.fn(), delete: jest.fn() },
+    user: {
+      findUnique: jest.fn(),
+      findMany: jest.fn(),
+      count: jest.fn(),
+      update: jest.fn(),
+    },
+    loyaltyTransaction: {
+      findMany: jest.fn(),
+      count: jest.fn(),
+      aggregate: jest.fn(),
+    },
+    review: {
+      findMany: jest.fn(),
+      count: jest.fn(),
+      findUnique: jest.fn(),
+      delete: jest.fn(),
+    },
   };
-  const userCache = { invalidate: jest.fn() };
+  const userCache = {
+    invalidate: jest.fn(),
+    // Utilisé depuis le correctif du bannissement : propage l'échec Redis au
+    // lieu de l'avaler, pour que l'admin sache que le blocage peut traîner.
+    invalidateOrThrow: jest.fn(),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -64,7 +83,10 @@ describe('AdminService (caractérisation — clients/users/reviews)', () => {
     });
 
     it('retourne balance + transactions paginées', async () => {
-      prisma.user.findUnique.mockResolvedValue({ id: 'c1', loyaltyPoints: 250 });
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'c1',
+        loyaltyPoints: 250,
+      });
       prisma.loyaltyTransaction.findMany.mockResolvedValue([{ id: 't1' }]);
       prisma.loyaltyTransaction.count.mockResolvedValue(1);
       const res = await service.getClientLoyalty('c1', 1, 20);
@@ -82,9 +104,15 @@ describe('AdminService (caractérisation — clients/users/reviews)', () => {
     });
 
     it('agrège filleuls + bonus parrainage', async () => {
-      prisma.user.findUnique.mockResolvedValue({ id: 'c1', referralCode: 'ABC', referredByCode: null });
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'c1',
+        referralCode: 'ABC',
+        referredByCode: null,
+      });
       prisma.user.count.mockResolvedValueOnce(3).mockResolvedValueOnce(2);
-      prisma.loyaltyTransaction.aggregate.mockResolvedValue({ _sum: { points: 700 } });
+      prisma.loyaltyTransaction.aggregate.mockResolvedValue({
+        _sum: { points: 700 },
+      });
       const res = await service.getClientReferral('c1');
       expect(res.data).toEqual({
         referralCode: 'ABC',
@@ -110,32 +138,61 @@ describe('AdminService (caractérisation — clients/users/reviews)', () => {
   // ─── Users ─────────────────────────────────────────────────────────────
   describe('updateUserRole', () => {
     it('BadRequest si rétrogradation d’un ADMIN', async () => {
-      prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'ADMIN', firebaseUid: 'fb1' });
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'u1',
+        role: 'ADMIN',
+        firebaseUid: 'fb1',
+      });
       await expect(
         service.updateUserRole('u1', { role: 'CLIENT' } as any),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('met à jour le rôle et invalide le cache', async () => {
-      prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'CLIENT', firebaseUid: 'fb1' });
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'u1',
+        role: 'CLIENT',
+        firebaseUid: 'fb1',
+      });
       prisma.user.update.mockResolvedValue({ id: 'u1', role: 'LIVREUR' });
-      const res = await service.updateUserRole('u1', { role: 'LIVREUR' } as any);
-      expect(userCache.invalidate).toHaveBeenCalledWith('fb1');
+      const res = await service.updateUserRole('u1', {
+        role: 'LIVREUR',
+      } as any);
+      expect(userCache.invalidateOrThrow).toHaveBeenCalledWith('fb1');
       expect(res.message).toBe('Rôle mis à jour : LIVREUR');
     });
   });
 
   describe('banUser', () => {
     it('BadRequest si on tente de bannir un ADMIN', async () => {
-      prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'ADMIN', firebaseUid: 'fb1' });
-      await expect(service.banUser('u1')).rejects.toBeInstanceOf(BadRequestException);
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'u1',
+        role: 'ADMIN',
+        firebaseUid: 'fb1',
+      });
+      await expect(service.banUser('u1')).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
     });
 
-    it('invalide le cache et retourne le firebaseUid pour révocation', async () => {
-      prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'CLIENT', firebaseUid: 'fb1' });
+    it('écrit BLOCKED, invalide le cache et retourne le firebaseUid', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'u1',
+        role: 'CLIENT',
+        firebaseUid: 'fb1',
+      });
       const res = await service.banUser('u1', 'spam');
-      expect(userCache.invalidate).toHaveBeenCalledWith('fb1');
-      expect(res).toEqual({ firebaseUid: 'fb1', userId: 'u1' });
+      // Le bannissement était un no-op : il ne touchait jamais la base.
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'u1' },
+        data: { statusUser: 'BLOCKED' },
+      });
+      expect(userCache.invalidateOrThrow).toHaveBeenCalledWith('fb1');
+      expect(res).toEqual({
+        firebaseUid: 'fb1',
+        userId: 'u1',
+        cacheInvalidated: true,
+      });
     });
   });
 
@@ -151,7 +208,9 @@ describe('AdminService (caractérisation — clients/users/reviews)', () => {
     it('supprime l’avis et retourne un message', async () => {
       prisma.review.findUnique.mockResolvedValue({ id: 'r1' });
       const res = await service.deleteReview('r1');
-      expect(prisma.review.delete).toHaveBeenCalledWith({ where: { id: 'r1' } });
+      expect(prisma.review.delete).toHaveBeenCalledWith({
+        where: { id: 'r1' },
+      });
       expect(res).toEqual({ message: 'Avis supprimé' });
     });
   });

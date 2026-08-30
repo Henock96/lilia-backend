@@ -1,11 +1,12 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
   ForbiddenException,
   Logger,
 } from '@nestjs/common';
-import { OrderStatus } from '@prisma/client';
+import { LoyaltyTransactionType, OrderStatus, Prisma } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { PrismaService } from '../../prisma/prisma.service';
@@ -15,7 +16,8 @@ import {
 } from '../events/order-events';
 import { OrderStateMachine } from './order-state.machine';
 import { StockService } from './stock.service';
-import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import { LoyaltyService } from '../loyalty/loyalty.service';
+import { RefundsService } from '../refunds/refunds.service';
 
 /**
  * Cycle de vie d'une commande (LIL-134) : annulation, transitions de statut,
@@ -31,7 +33,8 @@ export class OrderLifecycleService {
     private readonly eventEmitter: EventEmitter2,
     private readonly stateMachine: OrderStateMachine,
     private readonly stockService: StockService,
-    private readonly platformSettings: PlatformSettingsService,
+    private readonly loyalty: LoyaltyService,
+    private readonly refunds: RefundsService,
   ) {}
 
   async cancelOrder(orderId: string, firebaseUid: string) {
@@ -55,30 +58,53 @@ export class OrderLifecycleService {
       );
     }
 
-    // Passe par la state machine — CLIENT peut annuler depuis EN_ATTENTE ou PAYER
+    // Fix H5 : le CLIENT ne peut plus annuler une commande déjà payée —
+    // l'argent est encaissé. Message explicite plutôt que l'erreur générique
+    // de la state machine : le client doit savoir quoi faire ensuite.
+    if (order.status !== 'EN_ATTENTE') {
+      throw new ForbiddenException(
+        'Cette commande est déjà payée et ne peut plus être annulée depuis ' +
+          "l'application. Contactez le support pour demander un remboursement.",
+      );
+    }
+
     this.stateMachine.assertTransition(order.status, 'ANNULER', 'CLIENT');
 
     // Annulation + restauration du stock réservé au checkout, en une transaction
     // (sinon le stock décrémenté à la commande est perdu = stock fantôme).
     const updatedOrder = await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.order.update({
+      // Verrou optimiste (fix H6) : sans lui, une annulation client concurrente
+      // d'un passage en préparation appliquait les compensations à une
+      // commande toujours vivante.
+      await this.claimStatus(tx, orderId, order.status, 'ANNULER');
+      const updated = await tx.order.findUniqueOrThrow({
         where: { id: orderId },
-        data: { status: 'ANNULER' },
         include: {
           restaurant: true,
           items: true, // Correction: Toujours inclure les items
         },
       });
       await this.stockService.restoreInTransaction(tx, order.items);
+      await this.restoreCheckoutCompensations(tx, orderId, order.userId);
       return updated;
     });
+    // Fix H5 : le montant remboursable n'est plus une heuristique
+    // (`total >= 1000 ? total : 0`, règle écrite nulle part) mais le montant
+    // réellement encaissé. `openForCancelledOrder` ne crée rien si aucun
+    // paiement n'a abouti — cas nominal d'une annulation avant paiement.
+    const refund = await this.refunds.openForCancelledOrder({
+      orderId: order.id,
+      reason: 'Annulation par le client',
+      requestedBy: user.id,
+    });
+
     const orderCancelledEvent = new OrderCancelledEvent(
       order.id,
       order.userId,
       order.restaurantId,
       'Client', // cancelledBy
       null, // cancelReason
-      order.total >= 1000 ? order.total : 0, // refundAmount: rembourser si >= 1000
+      refund?.amount ?? 0,
     );
 
     this.eventEmitter.emit('order.cancelled', orderCancelledEvent);
@@ -126,17 +152,50 @@ export class OrderLifecycleService {
     }
 
     const actor = this.resolveActor(user.role);
-    if (!actor) throw new ForbiddenException('Acteur invalide pour cette transition');
+    if (!actor)
+      throw new ForbiddenException('Acteur invalide pour cette transition');
     this.stateMachine.assertTransition(order.status, newStatus, actor);
+    await this.assertStatusMatchesGround(order, newStatus);
 
-    const updatedOrder = await this.prisma.order.update({
-      where: { id: orderId },
-      data: { status: newStatus },
-      include: {
-        restaurant: true,
-        items: true, // Correction: Toujours inclure les items
-      },
-    });
+    // Une annulation côté restaurateur/admin doit rendre au client exactement ce
+    // qu'une annulation côté client lui rend : stock réservé, points de fidélité
+    // consommés, usage du code promo. Sinon le client est pénalisé selon qui a
+    // annulé — et il n'a aucune main sur ce choix.
+    //
+    // CONCURRENCE (fix H6, audit du 28/08/2026) : le statut était lu, validé
+    // par la state machine, puis écrit avec un `update` **inconditionnel**.
+    // Deux requêtes concurrentes lisaient le même état, passaient toutes deux
+    // la validation, et la dernière écriture gagnait — l'admin annulait
+    // pendant que le vendeur passait en préparation, et la commande restait
+    // vivante alors que le stock avait été rendu et les points recrédités.
+    // On verrouille donc sur l'état lu (`claimStatus`), comme le fait déjà
+    // `expireUnpaidOrder`.
+    const updatedOrder =
+      newStatus === 'ANNULER'
+        ? await this.prisma.$transaction(async (tx) => {
+            await this.claimStatus(tx, orderId, order.status, newStatus);
+            const updated = await tx.order.findUniqueOrThrow({
+              where: { id: orderId },
+              include: { restaurant: true, items: true },
+            });
+            await this.stockService.restoreInTransaction(tx, updated.items);
+            await this.restoreCheckoutCompensations(
+              tx,
+              orderId,
+              updated.userId,
+            );
+            return updated;
+          })
+        : await this.prisma.$transaction(async (tx) => {
+            await this.claimStatus(tx, orderId, order.status, newStatus);
+            return tx.order.findUniqueOrThrow({
+              where: { id: orderId },
+              include: {
+                restaurant: true,
+                items: true, // Correction: Toujours inclure les items
+              },
+            });
+          });
 
     // 🔥 ÉMETTRE L'ÉVÉNEMENT au lieu d'appeler directement les notifications
     const statusUpdatedEvent = new OrderStatusUpdatedEvent(
@@ -159,12 +218,100 @@ export class OrderLifecycleService {
 
     // Points fidélité quand la commande est livrée (non-bloquant)
     if (newStatus === 'LIVRER') {
-      this.awardLoyaltyPoints(updatedOrder.userId, orderId, updatedOrder.subTotal).catch((err) =>
-        this.logger.error(`Erreur points fidélité: ${err}`),
-      );
+      this.loyalty
+        .awardForDeliveredOrder(
+          updatedOrder.userId,
+          orderId,
+          updatedOrder.subTotal,
+        )
+        .catch((err) => this.logger.error(`Erreur points fidélité: ${err}`));
+    }
+
+    // Fix H5 : une annulation vendeur/admin sur une commande déjà encaissée
+    // ouvre une ligne de remboursement. C'est le seul chemin qui rend la dette
+    // visible et traçable — le client, lui, ne peut plus annuler après
+    // paiement (state machine).
+    if (newStatus === 'ANNULER') {
+      await this.refunds
+        .openForCancelledOrder({
+          orderId,
+          reason: `Annulation par ${user.role.toLowerCase()}`,
+          requestedBy: user.id,
+        })
+        .catch((err) =>
+          this.logger.error(`Ouverture du remboursement échouée : ${err}`),
+        );
     }
 
     return updatedOrder;
+  }
+
+  /**
+   * Annulation automatique d'une commande jamais payée (expiration).
+   *
+   * Le stock est décrémenté au checkout, pas au paiement : sans ce chemin, un
+   * client qui abandonne au moment de composer `*105#` immobilise le stock
+   * indéfiniment — définitivement pour les produits `stockMode = PERMANENT`,
+   * que le reset quotidien ne touche pas.
+   *
+   * Réutilise exactement les compensations d'une annulation client (stock,
+   * points de fidélité, usage du code promo) et émet `order.cancelled`, qui
+   * déclenche les notifications FCM au client et au vendeur.
+   *
+   * Idempotent : l'`updateMany` conditionnel sur `status: EN_ATTENTE` garantit
+   * qu'une commande payée entre-temps n'est jamais annulée, même si deux
+   * instances Render exécutent le cron en parallèle.
+   */
+  async expireUnpaidOrder(orderId: string): Promise<boolean> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { items: true },
+    });
+    if (!order || order.status !== 'EN_ATTENTE') return false;
+
+    const expired = await this.prisma.$transaction(async (tx) => {
+      // Garde de concurrence : seule l'instance qui affecte une ligne annule.
+      const claimed = await tx.order.updateMany({
+        where: { id: orderId, status: 'EN_ATTENTE' },
+        data: { status: 'ANNULER' },
+      });
+      if (claimed.count === 0) return false;
+
+      await this.stockService.restoreInTransaction(tx, order.items);
+      await this.restoreCheckoutCompensations(tx, orderId, order.userId);
+
+      // Fix H2 : un `Payment` PENDING survivait à l'annulation et restait
+      // listé dans `GET /admin/payments?status=PENDING`. L'admin le confirmait
+      // plus tard de bonne foi et ressuscitait la commande. On clôt les
+      // paiements en attente dans la même transaction.
+      await tx.payment.updateMany({
+        where: { orderId, status: 'PENDING' },
+        data: {
+          status: 'CANCELLED',
+          updatedAt: new Date(),
+        },
+      });
+      return true;
+    });
+
+    if (!expired) return false;
+
+    this.eventEmitter.emit(
+      'order.cancelled',
+      new OrderCancelledEvent(
+        order.id,
+        order.userId,
+        order.restaurantId,
+        'Système',
+        'Paiement non reçu dans le délai imparti',
+        0, // rien n'a été encaissé : aucun remboursement
+      ),
+    );
+
+    this.logger.warn(
+      `⏱️ Commande ${orderId} expirée (paiement non reçu) — stock et avantages restitués`,
+    );
+    return true;
   }
 
   /**
@@ -204,6 +351,141 @@ export class OrderLifecycleService {
     return { message: 'Commande supprimée avec succès.' };
   }
 
+  /**
+   * Rend au client ce que le checkout lui avait prélevé, hors stock :
+   * les points de fidélité consommés et l'usage du code promo.
+   *
+   * Sans ça, un client qui annule perd définitivement ses points ET son code
+   * promo (qui reste compté contre `maxUsagePerUser` / `maxUsageTotal`).
+   *
+   * **Idempotent** : on re-crédite le solde NET des `LoyaltyTransaction` liées à
+   * la commande. Une fois la compensation écrite, ce solde vaut 0 et un second
+   * appel ne fait plus rien — important, la même commande pouvant être annulée
+   * via deux chemins (client / restaurateur).
+   *
+   * À appeler DANS la transaction d'annulation : si l'annulation échoue, le
+   * remboursement ne doit pas subsister.
+   */
+  private async restoreCheckoutCompensations(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    userId: string,
+  ): Promise<void> {
+    // 1. Points de fidélité — solde net des mouvements liés à cette commande.
+    const netPoints = await tx.loyaltyTransaction.aggregate({
+      where: { orderId, userId },
+      _sum: { points: true },
+    });
+    const pointsToRefund = -(netPoints._sum.points ?? 0);
+
+    if (pointsToRefund > 0) {
+      await tx.user.update({
+        where: { id: userId },
+        data: { loyaltyPoints: { increment: pointsToRefund } },
+      });
+      await tx.loyaltyTransaction.create({
+        data: {
+          userId,
+          orderId,
+          points: pointsToRefund,
+          type: LoyaltyTransactionType.CANCELLATION_REFUND,
+          reason: `+${pointsToRefund} pts — annulation commande`,
+        },
+      });
+      this.logger.log(
+        `↩️ ${pointsToRefund} points fidélité restitués au user ${userId} (commande ${orderId} annulée)`,
+      );
+    }
+
+    // 2. Code promo — libère l'usage pour que le client puisse le réutiliser et
+    //    que les quotas globaux redeviennent exacts.
+    const removedUsages = await tx.promoUsage.deleteMany({
+      where: { orderId },
+    });
+    if (removedUsages.count > 0) {
+      this.logger.log(
+        `↩️ Usage du code promo libéré (commande ${orderId} annulée)`,
+      );
+    }
+  }
+
+  /**
+   * Verrou optimiste sur la transition de statut (fix H6).
+   *
+   * Écrit le nouveau statut **uniquement** si la commande est toujours dans
+   * l'état lu au moment de la validation. Zéro ligne affectée = quelqu'un
+   * d'autre a fait avancer la commande entre-temps : on refuse plutôt que
+   * d'appliquer des compensations à une commande qui a changé de main.
+   */
+  private async claimStatus(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    expectedStatus: OrderStatus,
+    newStatus: OrderStatus,
+  ): Promise<void> {
+    const claimed = await tx.order.updateMany({
+      where: { id: orderId, status: expectedStatus },
+      data: { status: newStatus },
+    });
+    if (claimed.count === 0) {
+      throw new ConflictException(
+        'Le statut de cette commande a changé entre-temps. Rechargez-la avant de réessayer.',
+      );
+    }
+  }
+
+  /**
+   * Refuse un statut que la réalité ne soutient pas (audit post-correction, B-1).
+   *
+   * La matrice dit *qui* a le droit de faire une transition ; elle ne peut pas
+   * dire si elle correspond à quelque chose sur le terrain. Or le statut d'une
+   * commande n'est pas un simple libellé : chaque changement déclenche une
+   * notification au client. `EN_ROUTE` lui annonce « votre livreur est en
+   * chemin » — une phrase qui doit être vraie.
+   *
+   * Deux mensonges possibles sont fermés ici :
+   *
+   *  - `→ EN_ROUTE` **sans course en cours**. Le passage légitime se fait par
+   *    `PATCH /deliveries/:id/pickup`, au moment où le livreur a le repas en
+   *    main. Un ADMIN qui force ce statut depuis la file des commandes
+   *    enverrait la notification sans que personne ne roule.
+   *  - `PRET → LIVRER` **sur une commande à livrer**. Ce raccourci existe pour
+   *    le retrait au comptoir ; l'appliquer à une livraison clôturerait la
+   *    commande — et créditerait les points de fidélité — alors que le client
+   *    n'a rien reçu.
+   */
+  private async assertStatusMatchesGround(
+    order: { id: string; isDelivery: boolean; status: OrderStatus },
+    newStatus: OrderStatus,
+  ): Promise<void> {
+    if (newStatus === 'EN_ROUTE') {
+      const enTransit = await this.prisma.delivery.findFirst({
+        where: { orderId: order.id, status: 'EN_TRANSIT' },
+        select: { id: true },
+      });
+
+      if (!enTransit) {
+        throw new BadRequestException(
+          'Cette commande ne peut pas être marquée « en route » : aucun livreur ' +
+            "ne l'a récupérée. Le passage se fait quand le livreur confirme la " +
+            'récupération depuis son application.',
+        );
+      }
+      return;
+    }
+
+    // Uniquement le raccourci comptoir. Depuis `EN_ROUTE`, la clôture reste
+    // ouverte à l'ADMIN : la course a bien eu lieu, il ne fait que constater
+    // une fin que le livreur n'a pas enregistrée.
+    if (newStatus === 'LIVRER' && order.status === 'PRET' && order.isDelivery) {
+      throw new BadRequestException(
+        'Cette commande doit être livrée : seul le livreur peut la marquer comme ' +
+          'livrée, une fois la course terminée. Le passage direct est réservé aux ' +
+          'commandes à emporter.',
+      );
+    }
+  }
+
   private resolveActor(
     role: string,
   ): 'CLIENT' | 'RESTAURATEUR' | 'ADMIN' | 'LIVREUR' | null {
@@ -214,23 +496,5 @@ export class OrderLifecycleService {
       LIVREUR: 'LIVREUR',
     };
     return map[role] ?? null;
-  }
-
-  private async awardLoyaltyPoints(userId: string, orderId: string, subTotal: number): Promise<void> {
-    const settings = await this.platformSettings.getSettings();
-    const points = Math.floor(subTotal / 100) * settings.loyaltyPointsPer100Xaf;
-    if (points <= 0) return;
-
-    await this.prisma.$transaction([
-      this.prisma.user.update({
-        where: { id: userId },
-        data: { loyaltyPoints: { increment: points } },
-      }),
-      this.prisma.loyaltyTransaction.create({
-        data: { userId, orderId, points, reason: `+${points} pts — commande livrée` },
-      }),
-    ]);
-
-    this.logger.log(`⭐ +${points} points fidélité user ${userId}`);
   }
 }

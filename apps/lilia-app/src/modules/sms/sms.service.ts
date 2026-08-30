@@ -24,7 +24,9 @@ export class SmsService {
       });
       this.logger.log('SMS service initialise (Infobip)');
     } else {
-      this.logger.warn('SMS service desactive — INFOBIP_API_KEY/INFOBIP_BASE_URL manquant');
+      this.logger.warn(
+        'SMS service desactive — INFOBIP_API_KEY/INFOBIP_BASE_URL manquant',
+      );
     }
   }
 
@@ -41,7 +43,11 @@ export class SmsService {
       const formatted = this.formatNumber(to);
       await this.client.channels.sms.send({
         messages: [
-          { destinations: [{ to: formatted }], from: this.sender, text: message },
+          {
+            destinations: [{ to: formatted }],
+            from: this.sender,
+            text: message,
+          },
         ],
       });
       this.logger.log(`SMS envoye -> ${formatted}`);

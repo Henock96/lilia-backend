@@ -8,8 +8,22 @@ generator client {
 }
 
 datasource db {
-  provider     = "postgresql"
-  relationMode = "prisma"
+  provider = "postgresql"
+  // `relationMode = "prisma"` (retiré en août 2026) désactivait les clés
+  // étrangères au niveau base et faisait émuler les relations par le client.
+  // C'est un mode conçu pour les bases qui ne supportent pas les FK
+  // (PlanetScale, Vitess) ; sur PostgreSQL c'était un renoncement pur :
+  //
+  //  - aucune intégrité référentielle garantie — toute écriture hors Prisma
+  //    (psql, script d'admin, outil de BI, migration SQL manuelle) pouvait
+  //    créer des lignes pointant vers un parent inexistant, et l'a fait :
+  //    l'audit du 27/08/2026 a trouvé 24 orphelins sur 5 relations ;
+  //  - les `onDelete: Cascade` n'étaient qu'émulés par le client ;
+  //  - chaque relation nested générait des requêtes supplémentaires que le
+  //    moteur aurait résolues nativement.
+  //
+  // Le défaut (`foreignKeys`) est désormais actif : les 45 contraintes sont
+  // créées par la migration `20260827_enable_foreign_keys`.
 }
 
 model User {
@@ -30,18 +44,18 @@ model User {
   adresses     Adresses[] // Ajout de la relation aux adresses
   fcmTokens    FcmToken[]
   reviews      Review[]
-  orders       Order[] // Commandes passÃƒÆ’Ã‚Â©es par l'utilisateur
+  orders       Order[] // Commandes passées par l'utilisateur
   promoUsages  PromoUsage[]  @relation("UserPromoUsages")
 
   // Ajout recent 04/04/2026
   statusUser StatusUser @default(ACTIVE)
 
   // Parrainage
-  referralCode     String? @unique // code unique ÃƒÆ’Ã‚Â  partager
-  referredByCode   String? // code du parrain utilisÃƒÆ’Ã‚Â© ÃƒÆ’Ã‚Â  l'inscription
-  referralRewarded Boolean @default(false) // vrai quand la rÃƒÆ’Ã‚Â©compense a ÃƒÆ’Ã‚Â©tÃƒÆ’Ã‚Â© ÃƒÆ’Ã‚Â©mise
+  referralCode     String? @unique // code unique à partager
+  referredByCode   String? // code du parrain utilisé à l'inscription
+  referralRewarded Boolean @default(false) // vrai quand la récompense a été émise
 
-  // Points de fidÃƒÆ’Ã‚Â©litÃƒÆ’Ã‚Â©
+  // Points de fidélité
   loyaltyPoints       Int                  @default(0)
   loyaltyTransactions LoyaltyTransaction[]
   favorites           Favorite[]
@@ -49,19 +63,43 @@ model User {
   // Flags d’idempotence bienvenue
   welcomeEmailSentAt DateTime?
   welcomeSmsSentAt   DateTime?
+
+  // Actions d'administration réalisées PAR ce compte (journal d'audit)
+  adminAuditLogs AdminAuditLog[] @relation("AdminAuditActor")
+
+  // Notes de livraison : reçues en tant que livreur, données en tant que client
+  delivererReviews      DeliveryReview[] @relation("DelivererReviews")
+  customerDeliveryReviews DeliveryReview[] @relation("CustomerDeliveryReviews")
+
+  @@index([referredByCode]) // getReferralStats : 2 count() par ouverture de l'écran (fix M19)
 }
 
 model LoyaltyTransaction {
-  id        String   @id @default(cuid())
+  id        String                 @id @default(cuid())
   userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  points    Int // positif = gain, nÃƒÆ’Ã‚Â©gatif = dÃƒÆ’Ã‚Â©pense
-  reason    String // ex: "Commande #ABC123", "RÃƒÆ’Ã‚Â©compense parrainage"
-  orderId   String? // lien optionnel ÃƒÆ’Ã‚Â  la commande
-  createdAt DateTime @default(now())
+  user      User                   @relation(fields: [userId], references: [id])
+  points    Int // positif = gain, négatif = dépense
+  // Nature de l'écriture. Sert de clé de déduplication avec orderId (fix M5) :
+  // deux chemins mènent à LIVRER (PATCH /orders/:id/status et
+  // PATCH /deliveries/:id/status) et créditaient chacun leur copie des points.
+  type      LoyaltyTransactionType @default(ADJUSTMENT)
+  reason    String // ex: "Commande #ABC123", "Récompense parrainage"
+  orderId   String? // lien optionnel à la commande
+  createdAt DateTime               @default(now())
 
+  @@unique([orderId, type]) // NULL != NULL en PG : ne contraint que les lignes portant un orderId
   @@index([userId])
   @@index([userId, createdAt(sort: Desc)]) // historique fidelite par user, plus recent en premier (LFD-9)
+  @@index([userId, type, createdAt]) // plafond mensuel de parrainage (ReferralService)
+}
+
+enum LoyaltyTransactionType {
+  ORDER_SPEND // points dépensés au checkout
+  ORDER_EARN // points gagnés à la livraison
+  CANCELLATION_REFUND // recrédit des points à l'annulation
+  REFERRAL_REFERRER // récompense du parrain
+  REFERRAL_REFERRED // bonus de bienvenue du filleul
+  ADJUSTMENT // écriture manuelle / héritée
 }
 
 model FcmToken {
@@ -78,13 +116,13 @@ model Adresses {
   id         String    @id @default(cuid())
   rue        String
   ville      String
-  etat       String? // RÃƒÆ’Ã‚Â©gion/ÃƒÆ’Ã¢â‚¬Â°tat
+  etat       String? // Région/État
   country    String
   user       User      @relation(fields: [userId], references: [id])
   userId     String
   isDefault  Boolean   @default(false)
   quartier   Quartier? @relation(fields: [quartierId], references: [id])
-  quartierId String? // RÃƒÆ’Ã‚Â©fÃƒÆ’Ã‚Â©rence au quartier pour le calcul des frais
+  quartierId String? // Référence au quartier pour le calcul des frais
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
@@ -110,15 +148,15 @@ model Restaurant {
   orders      Order[]
   reviews     Review[]
   favorites   Favorite[]
-  specialties Specialty[] // SpÃƒÆ’Ã‚Â©cialitÃƒÆ’Ã‚Â©s du restaurant
-  banners     Banner[] // BanniÃƒÆ’Ã‚Â¨res du restaurant
+  specialties Specialty[] // Spécialités du restaurant
+  banners     Banner[] // Bannières du restaurant
   photos      VendorPhoto[] // Galerie photos vendeur
 
-  // Statut d'activitÃƒÆ’Ã‚Â© (contrÃƒÆ’Ã‚Â´lÃƒÆ’Ã‚Â© par l'admin)
-  isActive Boolean @default(true) // Restaurant actif/dÃƒÆ’Ã‚Â©sactivÃƒÆ’Ã‚Â© par l'admin
+  // Statut d'activité (contrôlé par l'admin)
+  isActive Boolean @default(true) // Restaurant actif/désactivé par l'admin
 
   // Statut d'ouverture
-  isOpen         Boolean          @default(true) // Restaurant ouvert/fermÃƒÆ’Ã‚Â©
+  isOpen         Boolean          @default(true) // Restaurant ouvert/fermé
   manualOverride Boolean          @default(false) // Si true, le cron ne modifie pas isOpen
   operatingHours OperatingHours[]
   promoCodes     PromoCode[]      @relation("RestaurantPromoCodes")
@@ -133,7 +171,12 @@ model Restaurant {
 
   // Multi-vendeurs (Sprint A — LIL-111)
   vendorType        VendorType     @default(RESTAURANT)
-  adminApproved     Boolean        @default(true) // false par défaut pour BEVERAGE_SHOP via service
+  // Défaut sûr (fix L10, audit du 28/08/2026) : la valeur par défaut était
+  // `true` et la règle « false hors RESTAURANT » ne vivait que dans les
+  // services. Toute création qui contournerait ces services (script, seed,
+  // futur endpoint) publiait donc un vendeur non validé. Les trois chemins de
+  // création posent explicitement `adminApproved = true` pour les restaurants.
+  adminApproved     Boolean        @default(false)
   adminApprovedAt   DateTime?
   adminApprovedById String? // User.id de l'admin qui a approuvé (pas de FK)
   acceptsPreorders  Boolean        @default(false)
@@ -168,7 +211,7 @@ model VendorProfile {
   updatedAt DateTime @updatedAt
 }
 
-// SpÃƒÆ’Ã‚Â©cialitÃƒÆ’Ã‚Â©s d'un restaurant (ex: "Pizza", "Sushi", "Burgers", "Africain")
+// Spécialités d'un restaurant (ex: "Pizza", "Sushi", "Burgers", "Africain")
 model Specialty {
   id           String     @id @default(cuid())
   name         String
@@ -176,7 +219,7 @@ model Specialty {
   restaurantId String
   createdAt    DateTime   @default(now())
 
-  @@unique([restaurantId, name]) // Une spÃƒÆ’Ã‚Â©cialitÃƒÆ’Ã‚Â© unique par restaurant
+  @@unique([restaurantId, name]) // Une spécialité unique par restaurant
   @@index([restaurantId])
 }
 
@@ -198,9 +241,9 @@ model MenuDuJour {
   ingredients    String? // Composition du plat special (texte libre, ex: "Riz, poulet, legumes")
   stockQuotidien Int? // Quantite disponible par jour (null = illimite)
   stockRestant   Int? // Quantite restante aujourd'hui (null = illimite)
-  dateDebut      DateTime // Date et heure de dÃƒÆ’Ã‚Â©but de validitÃƒÆ’Ã‚Â© du menu
-  dateFin        DateTime // Date et heure de fin de validitÃƒÆ’Ã‚Â© du menu
-  isActive       Boolean       @default(true) // Permet de dÃƒÆ’Ã‚Â©sactiver manuellement un menu
+  dateDebut      DateTime // Date et heure de début de validité du menu
+  dateFin        DateTime // Date et heure de fin de validité du menu
+  isActive       Boolean       @default(true) // Permet de désactiver manuellement un menu
   restaurant     Restaurant    @relation(fields: [restaurantId], references: [id])
   restaurantId   String
   products       MenuProduct[] // Relation many-to-many avec Product
@@ -211,7 +254,7 @@ model MenuDuJour {
   updatedAt      DateTime      @updatedAt
 
   @@index([restaurantId])
-  @@index([dateDebut, dateFin]) // Index pour les requÃƒÆ’Ã‚Âªtes par date
+  @@index([dateDebut, dateFin]) // Index pour les requêtes par date
 }
 
 // Table de liaison pour la relation many-to-many entre Menu et Product
@@ -224,7 +267,7 @@ model MenuProduct {
   ordre     Int        @default(0) // Ordre d'affichage dans le menu
   createdAt DateTime   @default(now())
 
-  @@unique([menuId, productId]) // Un produit ne peut ÃƒÆ’Ã‚Âªtre ajoutÃƒÆ’Ã‚Â© qu'une seule fois dans un menu
+  @@unique([menuId, productId]) // Un produit ne peut être ajouté qu'une seule fois dans un menu
   @@index([menuId])
   @@index([productId])
 }
@@ -262,9 +305,25 @@ model Product {
   shelfLifeDays Int? // durée conservation en jours
   madeToOrder   Boolean @default(false)
 
-  // Disponibilité horaire (BAKERY surtout)
+  // Disponibilité horaire (BAKERY surtout) — appliquée au catalogue ET au
+  // checkout depuis l'audit du 28/08/2026 (fix M1). Auparavant validée à
+  // l'écriture puis jamais relue : une viennoiserie du matin restait
+  // commandable à 3 h.
   availableFrom  String? // "HH:mm"
   availableUntil String? // "HH:mm"
+
+  // Disponibilité et retrait du catalogue (fix M2).
+  //
+  // `OrderItem.productId` est en RESTRICT depuis Ar1 : `DELETE /products/:id`
+  // renvoyait 409 dès la première vente, et le seul contournement
+  // (`stockQuotidien = 0`) affiche « épuisé » et non « retiré ». Deux notions
+  // distinctes :
+  //  - `isAvailable = false` : temporairement indisponible, le vendeur le
+  //    remettra ;
+  //  - `deletedAt` : retiré du catalogue pour de bon, mais la ligne survit
+  //    pour que l'historique des commandes reste lisible.
+  isAvailable Boolean   @default(true)
+  deletedAt   DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -273,13 +332,14 @@ model Product {
   @@index([categoryId])
   @@index([restaurantId, productType]) // catalogue par type
   @@index([productType, stockMode]) // cron reset DAILY uniquement
+  @@index([restaurantId, deletedAt, isAvailable]) // catalogue vendeur filtré (fix M2)
 }
 
 model ProductVariant {
   id        String     @id @default(cuid())
   label     String? // e.g., "30cl", "1.5L", "Normal", "Grand"
   prix      Float
-  product   Product    @relation(fields: [productId], references: [id])
+  product   Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
   productId String
   cartItems CartItem[]
   createdAt DateTime   @default(now())
@@ -299,7 +359,7 @@ model Cart {
 
 model CartItem {
   id        String         @id @default(cuid())
-  cart      Cart           @relation(fields: [cartId], references: [id])
+  cart      Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
   cartId    String
   product   Product        @relation(fields: [productId], references: [id])
   productId String
@@ -309,17 +369,20 @@ model CartItem {
   variantId String
   quantite  Int
   createdAt DateTime       @default(now())
-  //04/04/2026 Nouveau champ ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â nullable au dÃƒÆ’Ã‚Â©but pour ne pas casser l'existant
-  itemKey   String? // "productId:variantId:menuId|none"
 
-  @@unique([cartId, variantId, menuId]) // Permet un mÃƒÆ’Ã‚Âªme variant comme produit individuel ET dans un menu
+  // ⚠️ En PostgreSQL, `NULL != NULL` : cette contrainte ne protège PAS les
+  // lignes `menuId = null`, c'est-à-dire les produits individuels — soit le cas
+  // le plus fréquent (fix L9). Un index unique **partiel**
+  // `WHERE "menuId" IS NULL` la complète, créé par la migration
+  // `20260828200000_cart_item_partial_unique` (Prisma ne sait pas déclarer un
+  // index partiel).
+  @@unique([cartId, variantId, menuId]) // Permet un même variant comme produit individuel ET dans un menu
   @@index([variantId])
   @@index([productId])
   @@index([menuId])
-  @@index([cartId, itemKey]) // index de remplacement
 }
 
-// 04/04/2026 ÃƒÆ’Ã¢â‚¬Â°TAPE 1 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Ajouter les nouveaux enums (non-breaking)
+// 04/04/2026 ÉTAPE 1 — Ajouter les nouveaux enums (non-breaking)
 
 model Order {
   id                 String                @id @default(cuid())
@@ -329,7 +392,7 @@ model Order {
   userId             String
   subTotal           Float // Sous-total des articles
   deliveryFee        Float // Frais de livraison (0 si retrait)
-  serviceFee         Float                 @default(0) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â nouveau : commission 10%
+  serviceFee         Float                 @default(0) // ← nouveau : commission 10%
   total              Float // subTotal + deliveryFee + serviceFee        // Montant total (subTotal + deliveryFee)
   isDelivery         Boolean               @default(true) // true = livraison, false = retrait au restaurant
   deliveryAddress    String? // Adresse de livraison (null si retrait)
@@ -337,13 +400,13 @@ model Order {
   orderHistory       OrderHistory[] // Historique des changements de statut
   deliveryLatitude   Float? // nouveau
   deliveryLongitude  Float? // nouveau  
-  deliveryQuartierId String? // nouveau ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â pour les frais de zone
+  deliveryQuartierId String? // nouveau — pour les frais de zone
   deleteCommande     Boolean               @default(false)
-  paymentMethod      PaymentMethod // MÃƒÆ’Ã‚Â©thode de paiement
+  paymentMethod      PaymentMethod // Méthode de paiement
   status             OrderStatus           @default(EN_ATTENTE)
   paidAt             DateTime? // Date de paiement
   notes              String? // Notes optionnelles du client pour le restaurant
-  contactPhone       String? // NumÃƒÆ’Ã‚Â©ro de tÃƒÆ’Ã‚Â©lÃƒÆ’Ã‚Â©phone saisi lors de la commande
+  contactPhone       String? // Numéro de téléphone saisi lors de la commande
   items              OrderItem[]
   reviews            Review[]
   delivery           Delivery?
@@ -353,7 +416,7 @@ model Order {
   Payment        Payment[]
   promoCodeId    String?
   promoCode      PromoCode? @relation(fields: [promoCodeId], references: [id])
-  discountAmount Float      @default(0) // montant dÃƒÆ’Ã‚Â©duit par le code promo
+  discountAmount Float      @default(0) // montant déduit par le code promo
 
   // Précommandes (Sprint A — LIL-111)
   isPreorder          Boolean   @default(false)
@@ -364,12 +427,17 @@ model Order {
   ageVerified   Boolean   @default(false)
   ageVerifiedAt DateTime?
 
+  // Remboursement ouvert si la commande est annulée après paiement (fix H5)
+  refund Refund?
+
   @@index([restaurantId, status, createdAt(sort: Desc)]) // dashboard resto: commandes par statut, plus recentes (LFD-9)
   @@index([promoCodeId])
   @@index([restaurantId])
   @@index([userId])
-  @@index([status]) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â manquait
-  @@index([createdAt]) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â manquait
+  @@index([status]) // ← manquait
+  @@index([createdAt]) // ← manquait
+  @@index([userId, createdAt(sort: Desc)]) // GET /orders/my — pagination client (fix M19)
+  @@index([status, createdAt]) // cron d'expiration des commandes impayées (fix M19)
 }
 
 model OrderItem {
@@ -397,7 +465,7 @@ model OrderItem {
 
 model OrderHistory {
   id         String      @id @default(cuid())
-  order      Order       @relation(fields: [orderId], references: [id])
+  order      Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
   orderId    String
   fromStatus OrderStatus
   toStatus   OrderStatus
@@ -424,29 +492,65 @@ model Delivery {
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 
-  estimatedArrival DateTime? // ETA calculÃƒÆ’Ã‚Â©
-  pickedUpAt       DateTime? // quand le livreur a pris la commande
-  deliveredAt      DateTime? // timestamp rÃƒÆ’Ã‚Â©el de livraison
+  estimatedArrival DateTime? // ETA calculé
+  // Horodatage des trois moments distincts de la course. `pickedUpAt` était
+  // renseigné dès l'acceptation, ce qui en faisait une donnée fausse : il est
+  // désormais écrit à la récupération réelle du repas.
+  acceptedAt       DateTime? // le livreur a accepté et part au restaurant
+  pickedUpAt       DateTime? // le livreur a le repas en main
+  deliveredAt      DateTime? // timestamp réel de livraison
 
-  // Position derniÃƒÆ’Ã‚Â¨re connue du livreur
+  // Position dernière connue du livreur
   lastLatitude   Float?
   lastLongitude  Float?
   lastPositionAt DateTime?
   locations      DeliveryLocation[]
 
+  review DeliveryReview? // note laissée par le client après livraison
+
   @@index([delivererId, status]) // missions d'un livreur filtrees par statut (LFD-9)
   @@index([delivererId])
-  @@index([status]) // ÃƒÂ¢Ã¢â‚¬Â Ã‚Â manquait
+  @@index([status]) // ← manquait
 }
 
-// Nouvelle table ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â n'affecte pas l'existant
+/// Note du LIVREUR par le client, après livraison.
+///
+/// Modèle distinct de `Review` (qui note un vendeur) plutôt qu'extension de
+/// celui-ci : `Review.orderId` est `@unique`, donc y loger la note du livreur
+/// interdirait de noter le restaurant ET le livreur pour la même commande. Et
+/// rendre `Review.restaurantId` nullable pour un modèle polymorphe fragiliserait
+/// les huit requêtes qui s'appuient dessus, sans rien simplifier.
+///
+/// `@@unique([deliveryId])` porte nativement la règle métier « une seule note
+/// par livraison » : la contrainte est en base, pas seulement dans le service.
+model DeliveryReview {
+  id          String   @id @default(cuid())
+  delivery    Delivery @relation(fields: [deliveryId], references: [id], onDelete: Restrict)
+  deliveryId  String   @unique
+  orderId     String // dénormalisé : évite une jointure sur l'écran « mes notes »
+  deliverer   User     @relation("DelivererReviews", fields: [delivererId], references: [id], onDelete: Restrict)
+  delivererId String
+  user        User     @relation("CustomerDeliveryReviews", fields: [userId], references: [id], onDelete: Restrict)
+  userId      String
+  rating      Int // 1 à 5, borné par le DTO
+  comment     String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([delivererId, createdAt(sort: Desc)]) // historique + moyenne du livreur
+  @@index([delivererId, rating]) // agrégats (groupBy) sans charger les lignes
+  @@index([userId])
+}
+
+
+// Nouvelle table — n'affecte pas l'existant
 model DeliveryLocation {
   id         String   @id @default(cuid())
   deliveryId String
-  delivery   Delivery @relation(fields: [deliveryId], references: [id])
+  delivery   Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
   latitude   Float
   longitude  Float
-  accuracy   Float? // prÃƒÆ’Ã‚Â©cision GPS en mÃƒÆ’Ã‚Â¨tres
+  accuracy   Float? // précision GPS en mètres
   recordedAt DateTime @default(now())
 
   @@index([deliveryId, recordedAt])
@@ -463,6 +567,10 @@ enum StatusUser {
   INACTIVE
   ACTIVE
   BLOCKED
+  // Compte supprimé par son propriétaire (DELETE /users/me). La ligne User est
+  // conservée anonymisée : Order/Payment sont des pièces comptables qu'on ne
+  // peut pas effacer, et elles portent une FK vers User depuis Ar1.
+  DELETED
 }
 
 enum PaymentMethod {
@@ -481,9 +589,17 @@ enum OrderStatus {
 }
 
 enum DeliveryStatus {
-  EN_ATTENTE
-  ASSIGNER
-  EN_TRANSIT
+  EN_ATTENTE // livraison créée, aucun livreur
+  ASSIGNER // un livreur est désigné, il n'a pas encore répondu
+  // Le livreur a accepté et se rend au restaurant. Il n'a PAS le repas.
+  //
+  // Cet état manquait : `acceptDelivery` faisait passer la livraison
+  // directement en EN_TRANSIT, écrivait `pickedUpAt` et basculait la commande
+  // en EN_ROUTE — le client recevait « votre livreur est en chemin » alors que
+  // le livreur n'avait encore rien récupéré. Accepter une mission n'est pas
+  // être en route vers le client.
+  ACCEPTER
+  EN_TRANSIT // repas récupéré, le livreur roule vers le client
   LIVRER
   ECHEC
 }
@@ -501,10 +617,12 @@ model Payment {
   createdAt             DateTime      @default(now())
   updatedAt             DateTime      @updatedAt
 
-  order Order @relation(fields: [orderId], references: [id])
+  order   Order    @relation(fields: [orderId], references: [id])
+  refunds Refund[]
 
   @@index([orderId])
   @@index([status]) // dashboard paiements filtrés par statut
+  @@index([orderId, status]) // assertNoPendingPayment + cron d'expiration (fix M19)
   @@map("payments")
 }
 
@@ -558,26 +676,31 @@ enum StockMode {
   PERMANENT // Stock réel, décrémentation pure, pas de reset
 }
 
-// ModÃƒÆ’Ã‚Â¨le pour les avis et notes des clients
+// Modèle pour les avis et notes des clients
 model Review {
   id           String     @id @default(cuid())
-  rating       Int // Note de 1 ÃƒÆ’Ã‚Â  5
+  rating       Int // Note de 1 à 5
   comment      String? // Commentaire optionnel
   user         User       @relation(fields: [userId], references: [id])
   userId       String
   restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
   restaurantId String
   order        Order?     @relation(fields: [orderId], references: [id])
-  orderId      String?    @unique // Optionnel: liÃƒÆ’Ã‚Â© ÃƒÆ’Ã‚Â  une commande spÃƒÆ’Ã‚Â©cifique
+  orderId      String?    @unique // Optionnel: lié à une commande spécifique
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
-  @@unique([userId, restaurantId])
+  // `@@unique([userId, restaurantId])` a été RETIRÉ (audit du 28/08/2026) : il
+  // interdisait structurellement plus d'un avis par vendeur et par client, ce
+  // qui contredisait le flux « un avis par commande livrée » qu'implémente
+  // ReviewsService. L'unicité utile est déjà portée par `orderId @unique` ;
+  // pour les avis sans commande, c'est le service qui garde l'unicité.
   @@index([restaurantId])
   @@index([userId])
+  @@index([restaurantId, rating]) // stats agrégées (groupBy) — fix M19 / P0
 }
 
-// Zones de livraison avec prix personnalisÃƒÆ’Ã‚Â© par restaurant
+// Zones de livraison avec prix personnalisé par restaurant
 model DeliveryZone {
   id           String         @id @default(cuid())
   restaurant   Restaurant     @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
@@ -594,7 +717,7 @@ model DeliveryZone {
 // Liste des quartiers de Brazzaville
 model Quartier {
   id        String         @id @default(cuid())
-  nom       String         @unique // Ex: "Bacongo", "Poto-Poto", "TalangaÃƒÆ’Ã‚Â¯"
+  nom       String         @unique // Ex: "Bacongo", "Poto-Poto", "Talangaï"
   ville     String         @default("Brazzaville")
   zones     QuartierZone[]
   adresses  Adresses[]
@@ -703,24 +826,24 @@ enum DiscountType {
 
 model PromoCode {
   id          String  @id @default(cuid())
-  code        String  @unique // "BIENVENUE500" ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â toujours uppercase
-  description String? // affichÃƒÆ’Ã‚Â© dans l'app : "500 FCFA offerts sur ta 1ÃƒÆ’Ã‚Â¨re commande"
+  code        String  @unique // "BIENVENUE500" — toujours uppercase
+  description String? // affiché dans l'app : "500 FCFA offerts sur ta 1ère commande"
 
   discountType  DiscountType
   discountValue Float // 500 si FIXED, 10 si PERCENT (= 10%), 0 si FREE_DELIVERY
-  maxDiscount   Float? // plafond si PERCENT : max 2000 FCFA de rÃƒÆ’Ã‚Â©duction
+  maxDiscount   Float? // plafond si PERCENT : max 2000 FCFA de réduction
 
   minOrderAmount  Float @default(0) // montant minimum pour activer le code
-  maxUsageTotal   Int? // null = illimitÃƒÆ’Ã‚Â© ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ex: 100 pour une campagne limitÃƒÆ’Ã‚Â©e
+  maxUsageTotal   Int? // null = illimité — ex: 100 pour une campagne limitée
   maxUsagePerUser Int   @default(1) // 1 = 1 fois par utilisateur
 
-  firstOrderOnly Boolean @default(false) // rÃƒÆ’Ã‚Â©servÃƒÆ’Ã‚Â© aux nouveaux clients
+  firstOrderOnly Boolean @default(false) // réservé aux nouveaux clients
   isActive       Boolean @default(true)
 
   // Restriction par restaurant (null = toute la plateforme)
   restaurantId   String?
   restaurant     Restaurant? @relation("RestaurantPromoCodes", fields: [restaurantId], references: [id])
-  discountAmount Float       @default(0) // montant dÃƒÆ’Ã‚Â©duit par le code promo
+  discountAmount Float       @default(0) // montant déduit par le code promo
   startsAt       DateTime    @default(now())
   expiresAt      DateTime? // null = pas d'expiration
 
@@ -741,7 +864,7 @@ model PromoUsage {
   userId          String
   user            User      @relation("UserPromoUsages", fields: [userId], references: [id])
   orderId         String    @unique // 1 promo max par commande
-  discountApplied Float // montant rÃƒÆ’Ã‚Â©ellement dÃƒÆ’Ã‚Â©duit (snapshot)
+  discountApplied Float // montant réellement déduit (snapshot)
   usedAt          DateTime  @default(now())
 
   @@index([promoCodeId])
@@ -790,6 +913,117 @@ enum IncidentStatus {
   IN_PROGRESS
   RESOLVED
   CLOSED
+}
+
+/// Boîte d'envoi transactionnelle (fix H7 — audit du 28/08/2026).
+///
+/// Le seul signal qui prévenait un vendeur qu'une commande était arrivée était
+/// un push FCM émis via `EventEmitter2` **en mémoire**, après le commit :
+///  - process tué entre les deux ⇒ événement perdu, définitivement, sans trace ;
+///  - `@nestjs/event-emitter` applique `suppressErrors ?? true` ⇒ une erreur de
+///    listener est loguée puis avalée ;
+///  - vendeur sans token FCM ⇒ un simple `logger.warn` (cas déjà observé en
+///    production sur les comptes ADMIN).
+///
+/// Une commande payée pouvait donc n'être jamais vue. La ligne est désormais
+/// écrite **dans la transaction de checkout** : si la commande existe,
+/// l'obligation de notifier existe aussi. Un worker la dépile avec backoff, et
+/// escalade en SMS quand le push ne suffit pas.
+model OutboxEvent {
+  id            String            @id @default(cuid())
+  type          String // 'order.created', …
+  aggregateId   String // orderId, en général
+  payload       Json
+  status        OutboxEventStatus @default(PENDING)
+  attempts      Int               @default(0)
+  nextAttemptAt DateTime          @default(now())
+  lastError     String?           @db.Text
+  escalatedAt   DateTime? // date d'envoi du SMS de secours
+  processedAt   DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@index([aggregateId, type])
+}
+
+enum OutboxEventStatus {
+  PENDING // à traiter (ou à re-traiter)
+  SENT // acquitté
+  FAILED // abandonné après épuisement des tentatives
+}
+
+/// Remboursement d'une commande payée puis annulée (fix H5 — audit 28/08/2026).
+///
+/// Avant : le système restituait stock, points et code promo, mais la ligne
+/// `Payment` restait `SUCCESS`, aucune entité ne matérialisait la dette envers
+/// le client, aucune tâche admin n'était créée, et le `refundAmount` calculé
+/// (`total >= 1000 ? total : 0`) n'alimentait qu'un message de notification —
+/// une règle « non remboursable sous 1 000 XAF » qui n'apparaissait ni dans les
+/// CGU ni dans l'app. Chaque annulation après paiement était donc un litige
+/// non traçable.
+model Refund {
+  id          String       @id @default(cuid())
+  orderId     String
+  order       Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  paymentId   String?
+  payment     Payment?     @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  amount      Float // montant dû au client, en XAF
+  status      RefundStatus @default(PENDING)
+  reason      String       @db.Text
+  requestedBy String? // User.id à l'origine de l'annulation
+  processedBy String? // User.id de l'admin qui a exécuté le virement
+  processedAt DateTime?
+  notes       String?      @db.Text
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([orderId]) // une commande = au plus un remboursement en cours
+  @@index([status, createdAt])
+}
+
+enum RefundStatus {
+  PENDING // à traiter par l'admin
+  PROCESSING // virement en cours
+  COMPLETED // client remboursé
+  REJECTED // refus motivé (fraude, commande déjà consommée…)
+}
+
+/// Journal d'audit des actions d'administration (audit du 28/08/2026).
+///
+/// `updateUserRole`, `banUser`, `suspendVendor` et `confirmManualPayment`
+/// modifient des droits ou de l'argent et ne laissaient qu'une ligne de log
+/// applicatif — perdue à la rotation, non interrogeable, non opposable. Cette
+/// table est en écriture seule côté application : aucun endpoint ne la modifie
+/// ni ne la supprime.
+model AdminAuditLog {
+  id         String           @id @default(cuid())
+  actorId    String // User.id de l'administrateur qui agit
+  actor      User             @relation("AdminAuditActor", fields: [actorId], references: [id], onDelete: Restrict)
+  action     AdminAuditAction
+  targetType String // "User", "Restaurant", "Payment", "Order"…
+  targetId   String
+  reason     String?          @db.Text
+  metadata   Json? // avant/après, montants, références
+  createdAt  DateTime         @default(now())
+
+  @@index([actorId, createdAt(sort: Desc)])
+  @@index([targetType, targetId])
+  @@index([action, createdAt(sort: Desc)])
+}
+
+enum AdminAuditAction {
+  USER_ROLE_CHANGED
+  USER_BANNED
+  USER_UNBANNED
+  VENDOR_APPROVED
+  VENDOR_SUSPENDED
+  VENDOR_ACTIVE_TOGGLED
+  PAYMENT_CONFIRMED
+  PAYMENT_REJECTED
+  REFUND_CREATED
+  REFUND_UPDATED
+  ORDER_STATUS_FORCED
 }
 
 model Incident {

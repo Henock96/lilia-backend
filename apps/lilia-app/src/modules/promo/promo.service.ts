@@ -13,7 +13,7 @@ export interface PromoValidationResult {
   promoCodeId: string;
   code: string;
   discountType: string;
-  discountAmount: number;      // montant exact à déduire
+  discountAmount: number; // montant exact à déduire
   description: string;
   newTotal: number;
   newDeliveryFee: number;
@@ -32,6 +32,67 @@ export class PromoService {
    * Appelé depuis l'app mobile à la checkout avant de confirmer la commande.
    * Ne consomme PAS le code — juste la validation.
    */
+  /**
+   * Aperçu de réduction, calculé sur le **panier réel** du client (fix L6).
+   *
+   * `POST /promo/validate` acceptait `subTotal` et `deliveryFee` depuis le
+   * corps de la requête : le client pouvait donc sonder la remise d'un code
+   * pour n'importe quel montant et contourner `minOrderAmount` — en aperçu
+   * seulement (le checkout recalcule tout), mais c'était un oracle offert.
+   * On lit désormais le panier serveur ; le body ne sert plus qu'au code.
+   */
+  async validateCodeForCart(
+    code: string,
+    userId: string,
+  ): Promise<PromoValidationResult> {
+    const cart = await this.prisma.cart.findUnique({
+      where: { userId },
+      include: {
+        items: {
+          include: { product: true, variant: true, menu: true },
+        },
+      },
+    });
+
+    const items = cart?.items ?? [];
+    if (items.length === 0) {
+      throw new BadRequestException(
+        'Votre panier est vide : impossible de valider un code promo.',
+      );
+    }
+
+    const restaurantId = items[0].product.restaurantId;
+
+    // Même règle de calcul que le checkout : un menu porte son propre prix,
+    // les produits individuels celui de leur variante.
+    const menuIds = new Set<string>();
+    let subTotal = 0;
+    for (const item of items) {
+      if (item.menuId && item.menu) {
+        if (menuIds.has(item.menuId)) continue;
+        menuIds.add(item.menuId);
+        subTotal += item.menu.prix * item.quantite;
+      } else if (item.variant) {
+        subTotal += item.variant.prix * item.quantite;
+      }
+    }
+
+    const restaurant = await this.prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: { fixedDeliveryFee: true },
+    });
+
+    return this.validateCode(
+      code,
+      userId,
+      restaurantId,
+      Math.round(subTotal),
+      // Aperçu : en mode ZONE_BASED, l'adresse n'est pas encore choisie. Le
+      // checkout recalculera le vrai montant.
+      restaurant?.fixedDeliveryFee ?? 0,
+    );
+  }
+
   async validateCode(
     code: string,
     userId: string,
@@ -54,21 +115,26 @@ export class PromoService {
 
     // ── Actif ──────────────────────────────────────────────────────────
     if (!promo.isActive) {
-      throw new BadRequestException('Ce code promo n\'est plus actif.');
+      throw new BadRequestException("Ce code promo n'est plus actif.");
     }
 
     // ── Dates de validité ─────────────────────────────────────────────
     const now = new Date();
     if (now < promo.startsAt) {
-      throw new BadRequestException('Ce code promo n\'est pas encore actif.');
+      throw new BadRequestException("Ce code promo n'est pas encore actif.");
     }
     if (promo.expiresAt && now > promo.expiresAt) {
       throw new BadRequestException('Ce code promo a expiré.');
     }
 
     // ── Usage total ───────────────────────────────────────────────────
-    if (promo.maxUsageTotal !== null && promo._count.usages >= promo.maxUsageTotal) {
-      throw new BadRequestException('Ce code promo a atteint son nombre maximal d\'utilisations.');
+    if (
+      promo.maxUsageTotal !== null &&
+      promo._count.usages >= promo.maxUsageTotal
+    ) {
+      throw new BadRequestException(
+        "Ce code promo a atteint son nombre maximal d'utilisations.",
+      );
     }
 
     // ── Usage par user ────────────────────────────────────────────────
@@ -85,13 +151,17 @@ export class PromoService {
         },
       });
       if (hasOrdered) {
-        throw new BadRequestException('Ce code est réservé aux nouvelles inscriptions.');
+        throw new BadRequestException(
+          'Ce code est réservé aux nouvelles inscriptions.',
+        );
       }
     }
 
     // ── Restriction restaurant ────────────────────────────────────────
     if (promo.restaurantId && promo.restaurantId !== restaurantId) {
-      throw new BadRequestException('Ce code promo n\'est pas valable pour ce restaurant.');
+      throw new BadRequestException(
+        "Ce code promo n'est pas valable pour ce restaurant.",
+      );
     }
 
     // ── Montant minimum ───────────────────────────────────────────────
@@ -162,7 +232,7 @@ export class PromoService {
       const totalUsages = await tx.promoUsage.count({ where: { promoCodeId } });
       if (totalUsages >= promo.maxUsageTotal) {
         throw new BadRequestException(
-          'Ce code promo a atteint son nombre maximal d\'utilisations.',
+          "Ce code promo a atteint son nombre maximal d'utilisations.",
         );
       }
     }
@@ -195,7 +265,10 @@ export class PromoService {
       case 'FIXED': {
         // Réduction fixe sur le subTotal
         const discount = Math.min(promo.discountValue, subTotal);
-        return { discountAmount: Math.round(discount), newDeliveryFee: deliveryFee };
+        return {
+          discountAmount: Math.round(discount),
+          newDeliveryFee: deliveryFee,
+        };
       }
 
       case 'PERCENT': {
@@ -204,7 +277,10 @@ export class PromoService {
         if (promo.maxDiscount !== null) {
           discount = Math.min(discount, promo.maxDiscount);
         }
-        return { discountAmount: Math.round(discount), newDeliveryFee: deliveryFee };
+        return {
+          discountAmount: Math.round(discount),
+          newDeliveryFee: deliveryFee,
+        };
       }
 
       case 'FREE_DELIVERY': {
@@ -223,7 +299,9 @@ export class PromoService {
     // Le code est toujours uppercase pour éviter les erreurs de casse
     const code = dto.code.toUpperCase().trim();
 
-    const existing = await this.prisma.promoCode.findUnique({ where: { code } });
+    const existing = await this.prisma.promoCode.findUnique({
+      where: { code },
+    });
     if (existing) {
       throw new BadRequestException(`Le code "${code}" existe déjà.`);
     }
@@ -257,7 +335,10 @@ export class PromoService {
       where: { id },
       data: { isActive: !promo.isActive },
     });
-    return { data: updated, message: updated.isActive ? 'Activé' : 'Désactivé' };
+    return {
+      data: updated,
+      message: updated.isActive ? 'Activé' : 'Désactivé',
+    };
   }
 
   async remove(id: string) {
@@ -280,7 +361,10 @@ export class PromoService {
     });
     if (!promo) throw new NotFoundException();
 
-    const totalDiscount = promo.usages.reduce((sum, u) => sum + u.discountApplied, 0);
+    const totalDiscount = promo.usages.reduce(
+      (sum, u) => sum + u.discountApplied,
+      0,
+    );
 
     return {
       data: {

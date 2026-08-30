@@ -30,7 +30,9 @@ export class VendorPhotosService {
 
   async create(dto: CreateVendorPhotoDto, user: { id: string; role: string }) {
     await this.common.assertRestaurantOwnership(dto.restaurantId, user);
-    await this.common.assertUnderMax('vendorPhoto', { restaurantId: dto.restaurantId });
+    await this.common.assertUnderMax('vendorPhoto', {
+      restaurantId: dto.restaurantId,
+    });
 
     return this.prisma.$transaction(async (tx) => {
       if (dto.isCover) {
@@ -75,7 +77,9 @@ export class VendorPhotosService {
         where: { id },
         data: {
           ...(dto.alt !== undefined && { alt: dto.alt }),
-          ...(dto.displayOrder !== undefined && { displayOrder: dto.displayOrder }),
+          ...(dto.displayOrder !== undefined && {
+            displayOrder: dto.displayOrder,
+          }),
           ...(dto.isCover !== undefined && { isCover: dto.isCover }),
         },
       });
@@ -92,7 +96,10 @@ export class VendorPhotosService {
     return { success: true };
   }
 
-  async reorder(dto: ReorderVendorPhotosDto, user: { id: string; role: string }) {
+  async reorder(
+    dto: ReorderVendorPhotosDto,
+    user: { id: string; role: string },
+  ) {
     await this.common.assertRestaurantOwnership(dto.restaurantId, user);
 
     const photos = await this.prisma.vendorPhoto.findMany({
@@ -105,7 +112,7 @@ export class VendorPhotosService {
     const wrongOwner = photos.find((p) => p.restaurantId !== dto.restaurantId);
     if (wrongOwner) {
       throw new BadRequestException(
-        'Certaines photos n\'appartiennent pas au restaurant cible',
+        "Certaines photos n'appartiennent pas au restaurant cible",
       );
     }
 

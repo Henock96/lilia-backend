@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 // schedule/schedule.controller.ts
 import { Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';

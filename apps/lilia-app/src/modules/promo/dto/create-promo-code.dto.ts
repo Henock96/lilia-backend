@@ -1,7 +1,15 @@
 // promo/dto/create-promo-code.dto.ts
 import {
-  IsBoolean, IsDateString, IsEnum, IsInt,
-  IsNumber, IsOptional, IsString, Max, MaxLength, Min, MinLength,
+  IsBoolean,
+  IsDateString,
+  IsEnum,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+  MinLength,
 } from 'class-validator';
 
 export enum DiscountType {
@@ -25,11 +33,11 @@ export class CreatePromoCodeDto {
 
   @IsNumber()
   @Min(0)
-  discountValue: number;            // 500 si FIXED, 10 si PERCENT
+  discountValue: number; // 500 si FIXED, 10 si PERCENT
 
   @IsOptional()
   @IsNumber()
-  maxDiscount?: number;             // plafond si PERCENT
+  maxDiscount?: number; // plafond si PERCENT
 
   @IsOptional()
   @IsNumber()
@@ -39,7 +47,7 @@ export class CreatePromoCodeDto {
   @IsOptional()
   @IsInt()
   @Min(1)
-  maxUsageTotal?: number;           // null = illimité
+  maxUsageTotal?: number; // null = illimité
 
   @IsOptional()
   @IsInt()
@@ -52,7 +60,7 @@ export class CreatePromoCodeDto {
 
   @IsOptional()
   @IsString()
-  restaurantId?: string;            // null = toute la plateforme
+  restaurantId?: string; // null = toute la plateforme
 
   @IsOptional()
   @IsDateString()

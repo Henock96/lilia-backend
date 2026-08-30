@@ -23,13 +23,17 @@ export class CreateVendorPhotoDto {
   @IsString()
   publicId?: string;
 
-  @ApiPropertyOptional({ description: 'Texte alternatif (a11y + SEO), max 200 chars' })
+  @ApiPropertyOptional({
+    description: 'Texte alternatif (a11y + SEO), max 200 chars',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(200)
   alt?: string;
 
-  @ApiPropertyOptional({ description: 'Marque cette photo comme cover (désactive les autres covers)' })
+  @ApiPropertyOptional({
+    description: 'Marque cette photo comme cover (désactive les autres covers)',
+  })
   @IsOptional()
   @IsBoolean()
   isCover?: boolean;

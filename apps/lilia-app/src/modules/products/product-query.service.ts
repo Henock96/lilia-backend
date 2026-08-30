@@ -2,6 +2,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, ProductType, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { availableProductWhere } from './product-availability';
 
 /**
  * Lectures du catalogue produits (extrait de ProductsService — LIL-143).
@@ -34,6 +35,10 @@ export class ProductQueryService {
       ...(restaurantId && { restaurantId }),
       ...(categoryId && { categoryId }),
       ...(productType && { productType }),
+      // Fixes M1 + M2 : produits retirés, marqués indisponibles ou hors de
+      // leur fenêtre horaire ne sont plus servis au catalogue. Le filtre passe
+      // par `AND` pour ne pas écraser un éventuel `OR` de la requête.
+      AND: [availableProductWhere()],
     };
 
     const [products, total] = await Promise.all([
@@ -72,9 +77,23 @@ export class ProductQueryService {
   /**
    * Récupère un produit par son ID
    */
+  /**
+   * Détail public d'un produit.
+   *
+   * Même frontière marketplace que `findAll` : un produit d'un vendeur
+   * suspendu ou non encore validé ne doit pas rester consultable par lien
+   * direct (partage `share_plus`, lien collé, autre consommateur de l'API).
+   */
   async findOne(id: string) {
-    const product = await this.prisma.product.findUnique({
-      where: { id },
+    const product = await this.prisma.product.findFirst({
+      where: {
+        id,
+        restaurant: { isActive: true, adminApproved: true },
+        // Un produit RETIRÉ n'existe plus pour le public (fix M2). En
+        // revanche, un produit simplement indisponible ou hors fenêtre reste
+        // consultable : le client doit pouvoir voir la fiche et l'horaire.
+        deletedAt: null,
+      },
       include: {
         category: true,
         variants: true,
@@ -123,6 +142,7 @@ export class ProductQueryService {
       where: {
         id: { in: productIds },
         restaurant: { isActive: true, adminApproved: true },
+        AND: [availableProductWhere()],
       },
       include: {
         category: true,
@@ -176,6 +196,7 @@ export class ProductQueryService {
             { category: { nom: { contains: searchTerm, mode: 'insensitive' } } },
           ],
           restaurant: { isActive: true, adminApproved: true },
+          AND: [availableProductWhere()],
         },
         include: {
           category: true,
@@ -230,6 +251,7 @@ export class ProductQueryService {
       where: {
         id: { notIn: excludeIds },
         restaurant: { isActive: true, adminApproved: true },
+        AND: [availableProductWhere()],
         OR: [
           ...(categoryIds.length > 0 ? [{ categoryId: { in: categoryIds } }] : []),
           { restaurantId: { in: restaurantIds } },

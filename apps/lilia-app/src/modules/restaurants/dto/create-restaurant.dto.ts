@@ -1,5 +1,13 @@
 /* eslint-disable prettier/prettier */
-import { IsString, IsOptional, IsNumber, IsBoolean, IsArray, IsInt, Min, Max } from 'class-validator';
+import {
+  IsArray,
+  IsBoolean,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
 
 export class CreateRestaurantDto {
     @IsString()
@@ -24,22 +32,22 @@ export class CreateRestaurantDto {
 // DTO pour mettre à jour les paramètres de livraison
 export class UpdateDeliverySettingsDto {
     @IsOptional()
-    @IsNumber()
+    @IsInt({ message: 'Un montant en francs CFA est un nombre entier — le XAF n’a pas de sous-unité.' })
     @Min(0)
     fixedDeliveryFee?: number;
 
     @IsOptional()
-    @IsNumber()
+    @IsInt()
     @Min(0)
     estimatedDeliveryTimeMin?: number;
 
     @IsOptional()
-    @IsNumber()
+    @IsInt()
     @Min(0)
     estimatedDeliveryTimeMax?: number;
 
     @IsOptional()
-    @IsNumber()
+    @IsInt({ message: 'Un montant en francs CFA est un nombre entier — le XAF n’a pas de sous-unité.' })
     @Min(0)
     minimumOrderAmount?: number;
 

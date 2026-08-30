@@ -3,10 +3,14 @@ import type { TDocumentDefinitions } from 'pdfmake/interfaces';
 // pdfmake 0.3 : le module exporte une instance unifiée client/serveur.
 // API serveur = setFonts(...) puis createPdf(doc).getBuffer().
 // Compilation NestJS = CommonJS, donc require est disponible.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+
+// pdfmake 0.3 n'expose pas d'export ESM utilisable côté serveur : un `import`
+// casse la résolution des polices au build webpack. Le require est intentionnel.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const pdfMake = require('pdfmake');
 // Descripteur de polices Roboto bundlé (chemins .ttf absolus dans node_modules).
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- idem ci-dessus
 const robotoFonts = require('pdfmake/fonts/Roboto.js');
 
 pdfMake.setFonts(robotoFonts);

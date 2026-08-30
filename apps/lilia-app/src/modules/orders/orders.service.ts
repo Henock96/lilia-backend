@@ -23,8 +23,16 @@ export class OrdersService {
     private readonly reorderService: OrderReorderService,
   ) {}
 
-  async createOrderFromCart(firebaseUid: string, dto: CreateOrderDto, idempotencyKey?: string) {
-    return this.checkoutService.createOrderFromCart(firebaseUid, dto, idempotencyKey);
+  async createOrderFromCart(
+    firebaseUid: string,
+    dto: CreateOrderDto,
+    idempotencyKey?: string,
+  ) {
+    return this.checkoutService.createOrderFromCart(
+      firebaseUid,
+      dto,
+      idempotencyKey,
+    );
   }
 
   /**
@@ -64,7 +72,11 @@ export class OrdersService {
     firebaseUid: string,
     newStatus: OrderStatus,
   ) {
-    return this.lifecycleService.updateOrderStatusByRestaurateur(orderId, firebaseUid, newStatus);
+    return this.lifecycleService.updateOrderStatusByRestaurateur(
+      orderId,
+      firebaseUid,
+      newStatus,
+    );
   }
 
   /**
@@ -86,7 +98,16 @@ export class OrdersService {
   }
 
   // orders/orders.service.ts — à ajouter
-  async findOrdersByUserId(userId: string, caller?: { role: string }) {
-    return this.queryService.findOrdersByUserId(userId, caller);
+  countUnhandledRestaurantOrders(firebaseUid: string) {
+    return this.queryService.countUnhandledRestaurantOrders(firebaseUid);
+  }
+
+  async findOrdersByUserId(
+    userId: string,
+    caller?: { role: string },
+    page?: number,
+    limit?: number,
+  ) {
+    return this.queryService.findOrdersByUserId(userId, caller, page, limit);
   }
 }

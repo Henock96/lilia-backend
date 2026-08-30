@@ -11,6 +11,7 @@ import { OrderStateMachine } from '../orders/order-state.machine';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { TrackingService } from '../tracking/tracking.service';
+import { LoyaltyService } from '../loyalty/loyalty.service';
 
 /**
  * LIL-54 — convergence des deux paths de tracking.
@@ -39,6 +40,12 @@ describe('DeliveriesService.updateLocation (convergence Redis — LIL-54)', () =
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        {
+          provide: LoyaltyService,
+          useValue: {
+            awardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         DeliveriesService,
         { provide: PrismaService, useValue: prisma },
         { provide: NotificationsService, useValue: {} },
@@ -86,7 +93,11 @@ describe('DeliveriesService.updateLocation (convergence Redis — LIL-54)', () =
 
     const res = await service.updateLocation('d1', -4.2, 15.2, 8, 'uid');
 
-    expect(res).toEqual({ message: 'Position mise à jour', latitude: -4.2, longitude: 15.2 });
+    expect(res).toEqual({
+      message: 'Position mise à jour',
+      latitude: -4.2,
+      longitude: 15.2,
+    });
   });
 
   it('refuse si la livraison n’est pas assignée au livreur', async () => {

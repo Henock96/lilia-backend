@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
@@ -47,10 +46,11 @@ export class DashboardCommonService {
     switch (period) {
       case 'today':
         return today;
-      case 'week':
+      case 'week': {
         const startOfWeek = new Date(today);
         startOfWeek.setDate(today.getDate() - today.getDay());
         return startOfWeek;
+      }
       case 'month':
         return new Date(today.getFullYear(), today.getMonth(), 1);
       case 'year':

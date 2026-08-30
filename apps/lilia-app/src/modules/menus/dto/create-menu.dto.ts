@@ -1,16 +1,16 @@
 /* eslint-disable prettier/prettier */
 import { ApiProperty } from '@nestjs/swagger';
 import {
-  IsString,
-  IsNumber,
-  IsOptional,
-  IsArray,
-  IsDateString,
-  IsBoolean,
-  IsEnum,
-  ValidateNested,
-  ValidateIf,
   ArrayMinSize,
+  IsArray,
+  IsBoolean,
+  IsDateString,
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  ValidateIf,
+  ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { MenuType } from '@prisma/client';
@@ -26,7 +26,7 @@ export class MenuProductDto {
     default: 0,
   })
   @IsOptional()
-  @IsNumber()
+  @IsInt()
   ordre?: number;
 }
 
@@ -59,7 +59,7 @@ export class CreateMenuDto {
     description: 'Prix du menu',
     example: 5000,
   })
-  @IsNumber()
+  @IsInt({ message: 'Un montant en francs CFA est un nombre entier — le XAF n’a pas de sous-unité.' })
   prix: number;
 
   @ApiProperty({

@@ -1,11 +1,21 @@
-import { IsArray, IsNotEmpty, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import {
+  IsArray,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Min,
+} from 'class-validator';
 
 export class CreateDeliveryZoneDto {
   @IsString()
   @IsNotEmpty()
   zoneName: string;
 
-  @IsNumber()
+  @IsInt({
+    message:
+      'Un montant en francs CFA est un nombre entier — le XAF n’a pas de sous-unité.',
+  })
   @Min(0)
   fee: number;
 
@@ -20,7 +30,10 @@ export class UpdateDeliveryZoneDto {
   @IsOptional()
   zoneName?: string;
 
-  @IsNumber()
+  @IsInt({
+    message:
+      'Un montant en francs CFA est un nombre entier — le XAF n’a pas de sous-unité.',
+  })
   @Min(0)
   @IsOptional()
   fee?: number;

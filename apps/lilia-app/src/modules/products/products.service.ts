@@ -66,6 +66,10 @@ export class ProductsService {
     return this.command.remove(id, firebaseUid);
   }
 
+  setAvailability(productId: string, isAvailable: boolean, firebaseUid: string) {
+    return this.command.setAvailability(productId, isAvailable, firebaseUid);
+  }
+
   updateStock(productId: string, stockQuotidien: number | null, firebaseUid: string) {
     return this.command.updateStock(productId, stockQuotidien, firebaseUid);
   }

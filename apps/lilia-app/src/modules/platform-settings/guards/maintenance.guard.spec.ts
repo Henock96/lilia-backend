@@ -14,12 +14,16 @@ describe('MaintenanceGuard', () => {
 
   beforeEach(() => {
     settings = { getSettings: jest.fn() };
-    guard = new MaintenanceGuard(settings as unknown as PlatformSettingsService);
+    guard = new MaintenanceGuard(
+      settings as unknown as PlatformSettingsService,
+    );
   });
 
   it('laisse passer quand le mode maintenance est inactif', async () => {
     settings.getSettings.mockResolvedValue({ maintenanceMode: false });
-    await expect(guard.canActivate(ctx({ role: 'CLIENT' }))).resolves.toBe(true);
+    await expect(guard.canActivate(ctx({ role: 'CLIENT' }))).resolves.toBe(
+      true,
+    );
   });
 
   it('laisse passer un ADMIN même en mode maintenance', async () => {

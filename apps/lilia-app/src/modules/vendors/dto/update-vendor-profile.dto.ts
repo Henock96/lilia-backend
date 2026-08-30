@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 import { IsArray, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class UpdateVendorProfileDto {

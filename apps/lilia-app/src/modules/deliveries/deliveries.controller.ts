@@ -13,10 +13,11 @@ import { ApiBearerAuth, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestj
 import { DecodedIdToken } from 'firebase-admin/auth';
 
 import { DeliveriesService } from './deliveries.service';
-import { AssignDeliveryDto, DeliveryStatus, SetDriverStatusDto, UpdateDeliveryStatusDto } from './dto/update-delivery.dto';
+import { AssignDeliveryDto, DeclineDeliveryDto, DeliveryStatus, SetDriverStatusDto, UpdateDeliveryStatusDto } from './dto/update-delivery.dto';
 import { UpdateLocationDto } from './dto/update-location.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
 
 @ApiTags('Deliveries')
 @ApiBearerAuth()
@@ -36,15 +37,14 @@ export class DeliveriesController {
   @ApiQuery({ name: 'limit', required: false })
   findAllForRestaurant(
     @FirebaseUser() fbUser: DecodedIdToken,
+    @Query() query: PaginationQueryDto,
     @Query('status') status?: DeliveryStatus,
-    @Query('page') page = '1',
-    @Query('limit') limit = '20',
   ) {
     return this.deliveriesService.findAllForRestaurant(
       fbUser.uid,
       status,
-      parseInt(page, 10),
-      parseInt(limit, 10) ,
+      query.page,
+      query.limit,
     );
   }
 
@@ -56,8 +56,17 @@ export class DeliveriesController {
   @Roles('LIVREUR')
   @ApiOperation({ summary: 'Mes livraisons assignées (livreur)' })
   @ApiQuery({ name: 'status', required: false, enum: DeliveryStatus })
-  findMyDeliveries(@FirebaseUser() fbUser: DecodedIdToken, @Query('status') status?: DeliveryStatus) {
-    return this.deliveriesService.findAllForDeliverer(fbUser.uid, status);
+  findMyDeliveries(
+    @FirebaseUser() fbUser: DecodedIdToken,
+    @Query() pagination: PaginationQueryDto,
+    @Query('status') status?: DeliveryStatus,
+  ) {
+    return this.deliveriesService.findAllForDeliverer(
+      fbUser.uid,
+      status,
+      pagination.page,
+      pagination.limit,
+    );
   }
 
   /**
@@ -144,7 +153,12 @@ export class DeliveriesController {
     @Body() dto: UpdateDeliveryStatusDto,
     @FirebaseUser() fbUser: DecodedIdToken,
   ) {
-    return this.deliveriesService.updateStatus(id, dto.status, fbUser.uid);
+    return this.deliveriesService.updateStatus(
+      id,
+      dto.status,
+      fbUser.uid,
+      dto.reason,
+    );
   }
 
   /**
@@ -171,6 +185,44 @@ export class DeliveriesController {
     @FirebaseUser() fbUser: DecodedIdToken,
   ) {
     return this.deliveriesService.acceptDelivery(id, fbUser.uid);
+  }
+
+  /**
+   * PATCH /deliveries/:id/decline
+   *
+   * Le livreur rend une mission qu'il n'a pas encore acceptée. La livraison
+   * redevient assignable et le vendeur est prévenu.
+   */
+  @Patch(':id/decline')
+  @Roles('LIVREUR')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Refuser une mission non encore acceptée' })
+  @ApiParam({ name: 'id' })
+  declineDelivery(
+    @Param('id') id: string,
+    @Body() dto: DeclineDeliveryDto,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return this.deliveriesService.declineDelivery(id, fbUser.uid, dto.reason);
+  }
+
+  /**
+   * PATCH /deliveries/:id/pickup
+   *
+   * Le livreur confirme avoir récupéré le repas au restaurant. C'est ce geste
+   * — et non l'acceptation de la mission — qui fait passer la commande en
+   * EN_ROUTE et déclenche le « votre commande est en route » côté client.
+   */
+  @Patch(':id/pickup')
+  @Roles('LIVREUR')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Confirmer la récupération du repas au restaurant' })
+  @ApiParam({ name: 'id' })
+  confirmPickup(
+    @Param('id') id: string,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return this.deliveriesService.confirmPickup(id, fbUser.uid);
   }
 
   /**

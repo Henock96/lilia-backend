@@ -8,6 +8,7 @@ import {
   Delete,
   HttpCode,
   HttpStatus,
+  Query,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
@@ -16,6 +17,7 @@ import { ReviewsService } from './reviews.service';
 import { CreateReviewDto, UpdateReviewDto } from './dto';
 import { Public } from '../auth/decorators/public.decorator';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
+import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
 
 @ApiTags('Reviews')
 @ApiBearerAuth()
@@ -38,8 +40,15 @@ export class ReviewsController {
   @Public()
   @Get('restaurant/:restaurantId')
   @ApiOperation({ summary: "Récupérer tous les avis d'un restaurant" })
-  findByRestaurant(@Param('restaurantId') restaurantId: string) {
-    return this.reviewsService.findByRestaurant(restaurantId);
+  findByRestaurant(
+    @Param('restaurantId') restaurantId: string,
+    @Query() query: PaginationQueryDto,
+  ) {
+    return this.reviewsService.findByRestaurant(
+      restaurantId,
+      query.page,
+      query.limit,
+    );
   }
 
   @Public()

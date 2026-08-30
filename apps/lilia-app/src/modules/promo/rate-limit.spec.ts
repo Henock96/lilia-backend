@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 /**
  * Garde-fou de régression sur le rate limiting des endpoints sensibles (LFD-6 / CRIT-7).
  *

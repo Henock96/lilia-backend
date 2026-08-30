@@ -15,7 +15,6 @@ import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { DecodedIdToken } from 'firebase-admin/auth';
 
-
 @ApiTags('Panier')
 @ApiBearerAuth()
 @Controller('cart')
@@ -28,12 +27,18 @@ export class CartController {
   }
 
   @Post('add')
-  addItem(@Body() addToCartDto: AddToCartDto, @FirebaseUser() firebaseUser: DecodedIdToken) {
+  addItem(
+    @Body() addToCartDto: AddToCartDto,
+    @FirebaseUser() firebaseUser: DecodedIdToken,
+  ) {
     return this.cartService.addItem(firebaseUser.uid, addToCartDto);
   }
 
   @Post('add-menu')
-  addMenu(@Body() dto: AddMenuToCartDto, @FirebaseUser() firebaseUser: DecodedIdToken) {
+  addMenu(
+    @Body() dto: AddMenuToCartDto,
+    @FirebaseUser() firebaseUser: DecodedIdToken,
+  ) {
     return this.cartService.addMenu(firebaseUser.uid, dto);
   }
 
@@ -60,12 +65,18 @@ export class CartController {
   }
 
   @Delete('items/:id')
-  removeItem(@Param('id') id: string, @FirebaseUser() firebaseUser: DecodedIdToken) {
+  removeItem(
+    @Param('id') id: string,
+    @FirebaseUser() firebaseUser: DecodedIdToken,
+  ) {
     return this.cartService.removeItem(firebaseUser.uid, id);
   }
 
   @Delete('menus/:menuId')
-  removeMenu(@Param('menuId') menuId: string, @FirebaseUser() firebaseUser: DecodedIdToken) {
+  removeMenu(
+    @Param('menuId') menuId: string,
+    @FirebaseUser() firebaseUser: DecodedIdToken,
+  ) {
     return this.cartService.removeMenu(firebaseUser.uid, menuId);
   }
 

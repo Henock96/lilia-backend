@@ -100,7 +100,7 @@ export class ApiResponseInterceptor implements NestInterceptor {
       map((response: unknown) => {
         // 1. null / undefined
         if (response === undefined || response === null) {
-          return { data: null };
+          return this.withSuccess({ data: null });
         }
 
         // 2. Streams binaires — jamais wrappés
@@ -114,10 +114,10 @@ export class ApiResponseInterceptor implements NestInterceptor {
           !Array.isArray(response) &&
           'data' in response &&
           Object.keys(response as Record<string, unknown>).every((k) =>
-            ['data', 'message', 'meta'].includes(k),
+            ['data', 'message', 'meta', 'success'].includes(k),
           )
         ) {
-          return response;
+          return this.withSuccess(response as Record<string, unknown>);
         }
 
         // 3b. Réponse paginée « legacy » `{ data, total?, page?, limit?, count? }` :
@@ -158,13 +158,26 @@ export class ApiResponseInterceptor implements NestInterceptor {
             }
             const out: Record<string, unknown> = { data: rec.data, meta };
             if (typeof rec.message === 'string') out.message = rec.message;
-            return out;
+            return this.withSuccess(out);
           }
         }
 
         // 4. Fallback : on enveloppe
-        return { data: response };
+        return this.withSuccess({ data: response });
       }),
     );
+  }
+
+  /**
+   * Ajoute le discriminant `success: true`.
+   *
+   * `HttpExceptionFilter` produit `success: false` sur le chemin d'erreur ; le
+   * chemin succès ne portait rien, si bien qu'aucun client ne pouvait utiliser
+   * `success` comme discriminant et devait se rabattre sur le code HTTP puis
+   * sonder `message`. Le champ est **additif** : les clients existants qui
+   * lisent `data` / `message` ne voient aucune différence.
+   */
+  private withSuccess(payload: Record<string, unknown>): Record<string, unknown> {
+    return { success: true, ...payload };
   }
 }

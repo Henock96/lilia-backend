@@ -20,6 +20,7 @@ import {
   ApiBearerAuth,
   ApiParam,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { OrdersService } from './orders.service';
 import { OrderReceiptService } from './order-receipt.service';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -30,6 +31,7 @@ import { DecodedIdToken } from 'firebase-admin/auth';
 import { User } from '@prisma/client';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { MaintenanceGuard } from '../platform-settings/guards/maintenance.guard';
+import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
 
 /**
  * Guards globaux actifs sur toutes les routes (via APP_GUARD dans AuthModule) :
@@ -60,6 +62,10 @@ export class OrdersController {
    * On utilise firebaseUid (du token) car le service le requiert pour retrouver le user.
    * firebaseUser.uid est la source de vérité — jamais le body.
    */
+  // Le throttle global (100/min) est trop large pour un endpoint qui crée des
+  // commandes et décrémente du stock. L'idempotence couvre le double-tap, pas
+  // un script qui boucle. Limites alignées sur /promo/validate et /reviews.
+  @Throttle({ short: { limit: 1, ttl: 1000 }, long: { limit: 10, ttl: 60000 } })
   @Post('checkout')
   @UseGuards(MaintenanceGuard)
   @ApiOperation({ summary: 'Créer une commande depuis le panier' })
@@ -87,12 +93,11 @@ export class OrdersController {
   @ApiOperation({ summary: 'Mes commandes (client)' })
   getMyOrders(
     @FirebaseUser() fbUser: DecodedIdToken,
-    @Query('page') page = '1',
-    @Query('limit') limit = '10',
+    @Query() query: PaginationQueryDto,
   ) {
     return this.ordersService.findOrdersClient(
-      parseInt(page, 10),
-      parseInt(limit, 10),
+      query.page,
+      query.limit,
       fbUser.uid,
     );
   }
@@ -105,15 +110,31 @@ export class OrdersController {
   @ApiOperation({ summary: 'Commandes reçues (restaurateur / admin)' })
   getRestaurantOrders(
     @FirebaseUser() fbUser: DecodedIdToken,
-    @Query('page') page = '1',
-    @Query('limit') limit = '20',
+    @Query() query: PaginationQueryDto,
   ) {
     return this.ordersService.findRestaurantOrders(
       fbUser.uid,
-      parseInt(page, 10),
-      parseInt(limit, 10),
+      query.page,
+      query.limit,
     );
   }
+  /**
+   * Badge « commandes non ouvertes » (fix H7).
+   *
+   * Correction minimale au risque n°1 du métier : une commande payée que le
+   * vendeur ne voit jamais parce que le push FCM s'est perdu. L'app vendeur
+   * poll cette route toutes les 30 s et affiche un compteur — la notification
+   * push ne sert plus qu'à la latence, plus à la correction.
+   */
+  @Get('restaurant/pending-count')
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @ApiOperation({
+    summary: 'Nombre de commandes reçues non encore prises en charge',
+  })
+  getPendingOrdersCount(@FirebaseUser() fbUser: DecodedIdToken) {
+    return this.ordersService.countUnhandledRestaurantOrders(fbUser.uid);
+  }
+
   /**
    * Commandes d'un utilisateur spécifique — ADMIN uniquement.
    * Route déplacée depuis UserController où elle n'avait pas sa place.
@@ -122,16 +143,25 @@ export class OrdersController {
   @Roles('ADMIN')
   @ApiOperation({ summary: "Commandes d'un utilisateur (admin)" })
   @ApiParam({ name: 'userId', description: "ID Prisma de l'utilisateur" })
-  getUserOrders(@Param('userId') userId: string, @CurrentUser() caller: User) {
+  getUserOrders(
+    @Param('userId') userId: string,
+    @CurrentUser() caller: User,
+    @Query() query: PaginationQueryDto,
+  ) {
     // findOrdersClient attend un firebaseUid — on ajoute une méthode par ID Prisma
-    return this.ordersService.findOrdersByUserId(userId, caller);
+    return this.ordersService.findOrdersByUserId(
+      userId,
+      caller,
+      query.page,
+      query.limit,
+    );
   }
 
   /**
    * Détail d'une commande — accessible par son propriétaire ou un admin.
    */
   @Get(':id')
-  @ApiOperation({ summary: 'Détail d\'une commande' })
+  @ApiOperation({ summary: "Détail d'une commande" })
   @ApiParam({ name: 'id', description: 'ID de la commande' })
   @ApiResponse({ status: 200, description: 'Commande trouvée' })
   @ApiResponse({ status: 403, description: 'Accès refusé' })

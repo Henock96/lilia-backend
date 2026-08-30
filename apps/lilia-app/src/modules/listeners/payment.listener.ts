@@ -5,6 +5,7 @@ import { OrderStatus } from '@prisma/client';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderPaymentConfirmedEvent, OrderStatusUpdatedEvent } from '../events/order-events';
+import { ReferralService } from '../users/referral.service';
 
 @Injectable()
 export class PaymentListener {
@@ -14,6 +15,7 @@ export class PaymentListener {
     private readonly notificationsService: NotificationsService,
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly referral: ReferralService,
   ) {}
 
   @OnEvent('order.payment.confirmed')
@@ -54,6 +56,16 @@ export class PaymentListener {
 
       // 5. Mettre à jour le statut de la commande
       await this.updateOrderAfterPayment(event.orderId);
+
+      // 6. Récompense de parrainage — versée ICI, et nulle part ailleurs
+      // (fix C3) : elle l'était à la création de la commande, donc sans
+      // qu'un franc soit payé. Non bloquant : un échec ne doit pas empêcher
+      // la confirmation de paiement.
+      await this.referral
+        .rewardIfFirstPaidOrder(event.userId)
+        .catch((err) =>
+          this.logger.error(`Erreur récompense parrainage: ${err}`),
+        );
 
       this.logger.log(`✅ Payment notifications sent for order: ${event.orderId}`);
     } catch (error) {

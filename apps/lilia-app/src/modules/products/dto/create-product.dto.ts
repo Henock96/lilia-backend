@@ -1,4 +1,3 @@
-/* eslint-disable prettier/prettier */
 import { Type } from 'class-transformer';
 import {
   IsArray,
@@ -6,11 +5,11 @@ import {
   IsEnum,
   IsInt,
   IsNotEmpty,
-  IsNumber,
   IsOptional,
   IsString,
   IsUrl,
   Matches,
+  Max,
   MaxLength,
   Min,
   ValidateNested,
@@ -19,13 +18,28 @@ import { ProductType, StockMode } from '@prisma/client';
 
 const TIME_HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+/**
+ * Borne haute de sécurité sur les prix (fix H3 — audit du 28/08/2026).
+ * Aucun plat de Brazzaville ne coûte 10 M XAF ; la borne existe pour qu'une
+ * saisie aberrante ou un bug client soit rejeté au lieu d'être persisté.
+ */
+export const MAX_PRIX_XAF = 10_000_000;
+
 class CreateProductVariantDto {
   @IsString()
   @IsOptional()
   label?: string; // e.g., "30cl", "Grand"
 
-  @IsNumber()
+  // @Min(0) : sans lui, une variante à -50 000 faisait chuter le sous-total du
+  // panier et rendait `serviceFee` négatif — le vendeur pouvait fabriquer une
+  // commande gratuite (fix H3).
+  @IsInt({
+    message:
+      'Un montant en francs CFA est un nombre entier — le XAF n’a pas de sous-unité.',
+  })
   @IsNotEmpty()
+  @Min(0, { message: 'Le prix ne peut pas être négatif.' })
+  @Max(MAX_PRIX_XAF, { message: 'Prix hors limites.' })
   prix: number;
 }
 
@@ -42,8 +56,13 @@ export class CreateProductDto {
   @IsOptional()
   imageUrl?: string;
 
-  @IsNumber()
+  @IsInt({
+    message:
+      'Un montant en francs CFA est un nombre entier — le XAF n’a pas de sous-unité.',
+  })
   @IsNotEmpty()
+  @Min(0, { message: 'Le prix ne peut pas être négatif.' })
+  @Max(MAX_PRIX_XAF, { message: 'Prix hors limites.' })
   prixOriginal: number;
 
   @IsString()

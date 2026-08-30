@@ -43,7 +43,9 @@ export class MenuImagesService {
 
   async create(dto: CreateMenuImageDto, user: { id: string; role: string }) {
     await this.assertMenuOwnership(dto.menuDuJourId, user);
-    await this.common.assertUnderMax('menuImage', { menuDuJourId: dto.menuDuJourId });
+    await this.common.assertUnderMax('menuImage', {
+      menuDuJourId: dto.menuDuJourId,
+    });
 
     return this.prisma.$transaction(async (tx) => {
       if (dto.isCover) {
@@ -88,7 +90,9 @@ export class MenuImagesService {
         where: { id },
         data: {
           ...(dto.alt !== undefined && { alt: dto.alt }),
-          ...(dto.displayOrder !== undefined && { displayOrder: dto.displayOrder }),
+          ...(dto.displayOrder !== undefined && {
+            displayOrder: dto.displayOrder,
+          }),
           ...(dto.isCover !== undefined && { isCover: dto.isCover }),
         },
       });
@@ -118,7 +122,7 @@ export class MenuImagesService {
     const wrongOwner = images.find((p) => p.menuDuJourId !== dto.menuDuJourId);
     if (wrongOwner) {
       throw new BadRequestException(
-        'Certaines images n\'appartiennent pas au menu cible',
+        "Certaines images n'appartiennent pas au menu cible",
       );
     }
 

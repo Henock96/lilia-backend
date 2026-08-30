@@ -1,4 +1,8 @@
-import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { OrderReceiptService } from './order-receipt.service';
 
 // Construit une commande payée valide ; surcharge possible via `over`.
@@ -18,8 +22,22 @@ function makeOrder(over: Record<string, any> = {}) {
     restaurant: { nom: 'Chez Maman Lilia', ownerId: 'resto-owner-1' },
     user: { nom: 'Henok M.' },
     items: [
-      { quantite: 2, prix: 1500, snapshotPrice: 1500, variant: 'Maxi', variantLabel: 'Maxi', product: { nom: 'Poulet braisé' } },
-      { quantite: 1, prix: 500, snapshotPrice: 500, variant: 'Standard', variantLabel: null, product: { nom: 'Jus de gingembre' } },
+      {
+        quantite: 2,
+        prix: 1500,
+        snapshotPrice: 1500,
+        variant: 'Maxi',
+        variantLabel: 'Maxi',
+        product: { nom: 'Poulet braisé' },
+      },
+      {
+        quantite: 1,
+        prix: 500,
+        snapshotPrice: 500,
+        variant: 'Standard',
+        variantLabel: null,
+        product: { nom: 'Jus de gingembre' },
+      },
     ],
     ...over,
   };
@@ -42,22 +60,32 @@ describe('OrderReceiptService', () => {
 
   it('throw NotFound si la commande est absente', async () => {
     prisma.order.findUnique.mockResolvedValue(null);
-    await expect(service.generateReceipt('x', owner)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.generateReceipt('x', owner)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
   });
 
   it('throw Forbidden si le caller n’est ni propriétaire ni admin', async () => {
     prisma.order.findUnique.mockResolvedValue(makeOrder());
-    await expect(service.generateReceipt('x', stranger)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(service.generateReceipt('x', stranger)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
   });
 
   it('throw BadRequest si la commande n’est pas payée (paidAt null)', async () => {
-    prisma.order.findUnique.mockResolvedValue(makeOrder({ paidAt: null, status: 'EN_ATTENTE' }));
-    await expect(service.generateReceipt('x', owner)).rejects.toBeInstanceOf(BadRequestException);
+    prisma.order.findUnique.mockResolvedValue(
+      makeOrder({ paidAt: null, status: 'EN_ATTENTE' }),
+    );
+    await expect(service.generateReceipt('x', owner)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
   });
 
   it('throw BadRequest si la commande est annulée (même payée)', async () => {
     prisma.order.findUnique.mockResolvedValue(makeOrder({ status: 'ANNULER' }));
-    await expect(service.generateReceipt('x', owner)).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.generateReceipt('x', owner)).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
   });
 
   it('renvoie un n° de reçu LF-{année}-{6 derniers car. maj} et un PDF non vide (propriétaire)', async () => {
@@ -81,6 +109,8 @@ describe('OrderReceiptService', () => {
 
   it('refuse un RESTAURATEUR d’un autre restaurant', async () => {
     prisma.order.findUnique.mockResolvedValue(makeOrder());
-    await expect(service.generateReceipt('x', otherVendor)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      service.generateReceipt('x', otherVendor),
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

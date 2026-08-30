@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateAdresseDto } from './dto/create-adresse.dto';
 import { UpdateAdresseDto } from './dto/update-adresse.dto';
@@ -15,6 +19,10 @@ export class AdressesService {
 
   async create(firebaseUid: string, createAdresseDto: CreateAdresseDto) {
     const user = await this.getUserOrThrow(firebaseUid);
+    await this.assertQuartierMatchesCity(
+      createAdresseDto.quartierId,
+      createAdresseDto.ville,
+    );
 
     const adresse = await this.prisma.adresses.create({
       data: {
@@ -24,6 +32,42 @@ export class AdressesService {
       include: { quartier: true },
     });
     return { data: adresse, message: 'Adresse créée avec succès' };
+  }
+
+  /**
+   * Cohérence quartier ↔ ville (atténuation M17 — audit du 28/08/2026).
+   *
+   * En mode `ZONE_BASED`, les frais de livraison dérivent du `quartierId` de
+   * l'adresse — un champ libre du DTO, sans aucun lien vérifié avec `rue` et
+   * `ville`. Le client pouvait donc déclarer le quartier le moins cher.
+   *
+   * On ne peut pas trancher sans géocodage (hors périmètre), mais on peut au
+   * moins refuser un `quartierId` inexistant et un quartier situé dans une
+   * autre ville. Le contrôle final reste humain : le vendeur voit l'adresse
+   * complète **et** le quartier déclaré avant d'accepter la commande.
+   */
+  private async assertQuartierMatchesCity(
+    quartierId: string | undefined,
+    ville: string | undefined,
+  ): Promise<void> {
+    if (!quartierId) return;
+
+    const quartier = await this.prisma.quartier.findUnique({
+      where: { id: quartierId },
+      select: { nom: true, ville: true },
+    });
+    if (!quartier) {
+      throw new BadRequestException('Quartier inconnu.');
+    }
+
+    if (
+      ville &&
+      quartier.ville.trim().toLowerCase() !== ville.trim().toLowerCase()
+    ) {
+      throw new BadRequestException(
+        `Le quartier « ${quartier.nom} » est à ${quartier.ville}, pas à ${ville}.`,
+      );
+    }
   }
 
   async findAll(firebaseUid: string) {
@@ -55,7 +99,13 @@ export class AdressesService {
   }
 
   async update(id: string, firebaseUid: string, dto: UpdateAdresseDto) {
-    await this.findOne(id, firebaseUid); // Vérifie que l'adresse existe et appartient à l'utilisateur
+    const existing = await this.findOne(id, firebaseUid); // Vérifie que l'adresse existe et appartient à l'utilisateur
+    // Même contrôle qu'à la création (M17) : sans lui, il suffisait de créer
+    // une adresse valide puis d'en changer le quartier.
+    await this.assertQuartierMatchesCity(
+      dto.quartierId,
+      dto.ville ?? existing.data?.ville,
+    );
     const updated = await this.prisma.adresses.update({
       where: { id },
       data: dto,

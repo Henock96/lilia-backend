@@ -16,7 +16,11 @@ import { FirebaseService } from '../firebase/firebase.service';
 
 type PrismaMock = {
   user: { findUnique: jest.Mock; findMany: jest.Mock; count: jest.Mock };
-  loyaltyTransaction: { findMany: jest.Mock; count: jest.Mock; aggregate: jest.Mock };
+  loyaltyTransaction: {
+    findMany: jest.Mock;
+    count: jest.Mock;
+    aggregate: jest.Mock;
+  };
   payment: { findMany: jest.Mock; count: jest.Mock; aggregate: jest.Mock };
   delivery: {
     findFirst: jest.Mock;
@@ -30,7 +34,11 @@ type PrismaMock = {
 function createPrismaMock(): PrismaMock {
   return {
     user: { findUnique: jest.fn(), findMany: jest.fn(), count: jest.fn() },
-    loyaltyTransaction: { findMany: jest.fn(), count: jest.fn(), aggregate: jest.fn() },
+    loyaltyTransaction: {
+      findMany: jest.fn(),
+      count: jest.fn(),
+      aggregate: jest.fn(),
+    },
     payment: { findMany: jest.fn(), count: jest.fn(), aggregate: jest.fn() },
     delivery: {
       findFirst: jest.fn(),
@@ -79,12 +87,19 @@ describe('AdminService', () => {
 
   describe('listPayments', () => {
     it('sans status (Tous) — pas de filtre sur le where, include order.paymentMethod', async () => {
-      prisma.payment.findMany.mockResolvedValue([{ id: 'p1', amount: 5000, status: 'PENDING' }]);
+      prisma.payment.findMany.mockResolvedValue([
+        { id: 'p1', amount: 5000, status: 'PENDING' },
+      ]);
       prisma.payment.count.mockResolvedValue(1);
 
       const result = await service.listPayments(1, 20);
 
-      expect(result).toEqual({ data: [{ id: 'p1', amount: 5000, status: 'PENDING' }], total: 1, page: 1, limit: 20 });
+      expect(result).toEqual({
+        data: [{ id: 'p1', amount: 5000, status: 'PENDING' }],
+        total: 1,
+        page: 1,
+        limit: 20,
+      });
       const args = prisma.payment.findMany.mock.calls[0][0];
       expect(args.where).toEqual({});
       expect(args.orderBy).toEqual({ createdAt: 'desc' });
@@ -107,7 +122,9 @@ describe('AdminService', () => {
 
       await service.listPayments(1, 20, 'SUCCESS');
 
-      expect(prisma.payment.findMany.mock.calls[0][0].where).toEqual({ status: 'SUCCESS' });
+      expect(prisma.payment.findMany.mock.calls[0][0].where).toEqual({
+        status: 'SUCCESS',
+      });
     });
 
     it('chaîne vide = vue Tous (pas de filtre)', async () => {
@@ -131,8 +148,21 @@ describe('AdminService', () => {
     it('agrège count + sum pour pending / monthSuccess / last7DaysSuccess', async () => {
       prisma.payment.aggregate
         .mockResolvedValueOnce({ _count: { _all: 3 }, _sum: { amount: 15000 } })
-        .mockResolvedValueOnce({ _count: { _all: 42 }, _sum: { amount: 850000 } })
-        .mockResolvedValueOnce({ _count: { _all: 12 }, _sum: { amount: 240000 } });
+        .mockResolvedValueOnce({
+          _count: { _all: 42 },
+          _sum: { amount: 850000 },
+        })
+        .mockResolvedValueOnce({
+          _count: { _all: 12 },
+          _sum: { amount: 240000 },
+        });
+      // 4e appel Prisma : échantillon du délai de validation (cf. computeValidationDelay)
+      prisma.payment.findMany.mockResolvedValue([
+        {
+          createdAt: new Date('2026-08-01T10:00:00Z'),
+          updatedAt: new Date('2026-08-01T10:30:00Z'),
+        },
+      ]);
 
       const result = await service.getPaymentsStats();
 
@@ -140,6 +170,7 @@ describe('AdminService', () => {
         pending: { count: 3, totalXaf: 15000 },
         monthSuccess: { count: 42, totalXaf: 850000 },
         last7DaysSuccess: { count: 12, totalXaf: 240000 },
+        validationDelay: { avgMinutes: 30, sampleCount: 1 },
       });
       expect(prisma.payment.aggregate).toHaveBeenCalledTimes(3);
     });
@@ -149,9 +180,14 @@ describe('AdminService', () => {
         .mockResolvedValueOnce({ _count: { _all: 0 }, _sum: { amount: null } })
         .mockResolvedValueOnce({ _count: { _all: 0 }, _sum: { amount: null } })
         .mockResolvedValueOnce({ _count: { _all: 0 }, _sum: { amount: null } });
+      prisma.payment.findMany.mockResolvedValue([]);
 
       const result = await service.getPaymentsStats();
       expect(result.pending).toEqual({ count: 0, totalXaf: 0 });
+      expect(result.validationDelay).toEqual({
+        avgMinutes: null,
+        sampleCount: 0,
+      });
     });
   });
 
@@ -164,7 +200,12 @@ describe('AdminService', () => {
 
       const result = await service.getAllClients(1, 20);
 
-      expect(result).toEqual({ data: [{ id: 'c1', nom: 'Awa', loyaltyPoints: 120 }], total: 1, page: 1, limit: 20 });
+      expect(result).toEqual({
+        data: [{ id: 'c1', nom: 'Awa', loyaltyPoints: 120 }],
+        total: 1,
+        page: 1,
+        limit: 20,
+      });
       const args = prisma.user.findMany.mock.calls[0][0];
       expect(args.where).toEqual({ role: 'CLIENT' });
       expect(args.select.loyaltyPoints).toBe(true);
@@ -191,17 +232,23 @@ describe('AdminService', () => {
   describe('getClientReferral', () => {
     it('lève NotFoundException si le client est introuvable', async () => {
       prisma.user.findUnique.mockResolvedValue(null);
-      await expect(service.getClientReferral('missing')).rejects.toThrow(NotFoundException);
+      await expect(service.getClientReferral('missing')).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it('agrège filleuls, conversions et bonus de parrainage', async () => {
       prisma.user.findUnique.mockResolvedValue({
-        id: 'c1', referralCode: 'BRAZZA42', referredByCode: null,
+        id: 'c1',
+        referralCode: 'BRAZZA42',
+        referredByCode: null,
       });
       prisma.user.count
-        .mockResolvedValueOnce(3)  // totalReferrals
+        .mockResolvedValueOnce(3) // totalReferrals
         .mockResolvedValueOnce(2); // convertedReferrals
-      prisma.loyaltyTransaction.aggregate.mockResolvedValue({ _sum: { points: 1000 } });
+      prisma.loyaltyTransaction.aggregate.mockResolvedValue({
+        _sum: { points: 1000 },
+      });
 
       const result = await service.getClientReferral('c1');
 
@@ -219,11 +266,15 @@ describe('AdminService', () => {
       });
     });
 
-    it('renvoie des compteurs à zéro si le client n\'a pas de code de parrainage', async () => {
+    it("renvoie des compteurs à zéro si le client n'a pas de code de parrainage", async () => {
       prisma.user.findUnique.mockResolvedValue({
-        id: 'c1', referralCode: null, referredByCode: 'OTHER123',
+        id: 'c1',
+        referralCode: null,
+        referredByCode: 'OTHER123',
       });
-      prisma.loyaltyTransaction.aggregate.mockResolvedValue({ _sum: { points: null } });
+      prisma.loyaltyTransaction.aggregate.mockResolvedValue({
+        _sum: { points: null },
+      });
 
       const result = await service.getClientReferral('c1');
 
@@ -241,12 +292,25 @@ describe('AdminService', () => {
   describe('getClientLoyalty', () => {
     it('lève NotFoundException si le client est introuvable', async () => {
       prisma.user.findUnique.mockResolvedValue(null);
-      await expect(service.getClientLoyalty('missing')).rejects.toThrow(NotFoundException);
+      await expect(service.getClientLoyalty('missing')).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it('retourne le solde et les transactions paginées', async () => {
-      prisma.user.findUnique.mockResolvedValue({ id: 'c1', loyaltyPoints: 320 });
-      const txns = [{ id: 't1', points: 45, reason: '+45 pts — commande livrée', orderId: 'o1', createdAt: new Date() }];
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'c1',
+        loyaltyPoints: 320,
+      });
+      const txns = [
+        {
+          id: 't1',
+          points: 45,
+          reason: '+45 pts — commande livrée',
+          orderId: 'o1',
+          createdAt: new Date(),
+        },
+      ];
       prisma.loyaltyTransaction.findMany.mockResolvedValue(txns);
       prisma.loyaltyTransaction.count.mockResolvedValue(1);
 
@@ -277,7 +341,7 @@ describe('AdminService', () => {
       );
     });
 
-    it('lève NotFoundException si l\'utilisateur n\'est pas un livreur', async () => {
+    it("lève NotFoundException si l'utilisateur n'est pas un livreur", async () => {
       prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'CLIENT' });
       await expect(service.getDelivererStats('u1')).rejects.toThrow(
         NotFoundException,
@@ -293,8 +357,16 @@ describe('AdminService', () => {
       ]);
       // Revenue : somme order.total des LIVRER
       prisma.delivery.findMany.mockResolvedValueOnce([
-        { order: { total: 5000 }, pickedUpAt: new Date('2026-05-20T10:00:00Z'), deliveredAt: new Date('2026-05-20T10:30:00Z') },
-        { order: { total: 4000 }, pickedUpAt: new Date('2026-05-21T12:00:00Z'), deliveredAt: new Date('2026-05-21T12:45:00Z') },
+        {
+          order: { total: 5000 },
+          pickedUpAt: new Date('2026-05-20T10:00:00Z'),
+          deliveredAt: new Date('2026-05-20T10:30:00Z'),
+        },
+        {
+          order: { total: 4000 },
+          pickedUpAt: new Date('2026-05-21T12:00:00Z'),
+          deliveredAt: new Date('2026-05-21T12:45:00Z'),
+        },
       ]);
       // last30dDeliveries count
       prisma.delivery.count.mockResolvedValueOnce(8);
@@ -315,7 +387,9 @@ describe('AdminService', () => {
       // avg = ((30 + 45) / 2) = 37.5 minutes
       expect(result.data.avgDeliveryMinutes).toBeCloseTo(37.5, 2);
       expect(result.data.last30dDeliveries).toBe(8);
-      expect(result.data.lastDeliveryAt).toEqual(new Date('2026-05-21T12:45:00Z'));
+      expect(result.data.lastDeliveryAt).toEqual(
+        new Date('2026-05-21T12:45:00Z'),
+      );
     });
 
     it('renvoie des compteurs et valeurs nullables à zéro quand aucune livraison', async () => {
@@ -349,7 +423,9 @@ describe('AdminService', () => {
         { order: { total: 1000 }, pickedUpAt: null, deliveredAt: new Date() },
       ]);
       prisma.delivery.count.mockResolvedValueOnce(3);
-      prisma.delivery.findFirst.mockResolvedValueOnce({ deliveredAt: new Date() });
+      prisma.delivery.findFirst.mockResolvedValueOnce({
+        deliveredAt: new Date(),
+      });
 
       const result = await service.getDelivererStats('d1');
 
@@ -369,14 +445,14 @@ describe('AdminService', () => {
       );
     });
 
-    it('lève NotFoundException si l\'utilisateur n\'est pas un livreur', async () => {
+    it("lève NotFoundException si l'utilisateur n'est pas un livreur", async () => {
       prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'CLIENT' });
       await expect(service.getDelivererMissions('u1')).rejects.toThrow(
         NotFoundException,
       );
     });
 
-    it('renvoie l\'historique paginé sous forme de DeliveryMissionSummary', async () => {
+    it("renvoie l'historique paginé sous forme de DeliveryMissionSummary", async () => {
       prisma.user.findUnique.mockResolvedValue(mockDeliverer);
       prisma.delivery.findMany.mockResolvedValue([
         {
@@ -438,7 +514,12 @@ describe('AdminService', () => {
 
       const result = await service.getDelivererMissions('d1', undefined, 2, 10);
 
-      expect(result.meta).toEqual({ total: 40, page: 2, limit: 10, totalPages: 4 });
+      expect(result.meta).toEqual({
+        total: 40,
+        page: 2,
+        limit: 10,
+        totalPages: 4,
+      });
       const args = prisma.delivery.findMany.mock.calls[0][0];
       expect(args.skip).toBe(10);
       expect(args.take).toBe(10);
@@ -475,4 +556,3 @@ describe('AdminService', () => {
     });
   });
 });
-

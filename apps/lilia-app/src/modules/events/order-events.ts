@@ -25,6 +25,12 @@ export class OrderCreatedEvent extends BaseOrderEvent {
       estimatedDeliveryTime?: Date;
     },
     timestamp?: Date,
+    /**
+     * Identifiant de la ligne d'outbox à acquitter une fois les notifications
+     * parties (fix H7). Optionnel : les appels internes qui ne passent pas par
+     * le checkout n'en ont pas.
+     */
+    public readonly outboxId?: string,
   ) {
     super(orderId, userId, restaurantId, timestamp);
   }

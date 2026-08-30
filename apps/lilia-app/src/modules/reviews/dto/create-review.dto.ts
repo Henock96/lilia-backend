@@ -1,4 +1,11 @@
-import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateReviewDto {
@@ -8,9 +15,17 @@ export class CreateReviewDto {
   @Max(5)
   rating: number;
 
-  @ApiPropertyOptional({ description: 'Commentaire optionnel' })
+  // Affiché dans les 3 apps + le web : un commentaire non borné casse
+  // l'affichage partout à la fois.
+  @ApiPropertyOptional({
+    description: 'Commentaire optionnel',
+    maxLength: 1000,
+  })
   @IsOptional()
   @IsString()
+  @MaxLength(1000, {
+    message: 'Le commentaire est limité à 1000 caractères',
+  })
   comment?: string;
 
   @ApiProperty({ description: 'ID du restaurant' })

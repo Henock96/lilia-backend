@@ -18,6 +18,9 @@ import { PromoService } from '../promo/promo.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { PreorderValidatorService } from '../vendors/preorder-validator.service';
 import { QuartiersService } from '../quartiers/quartiers.service';
+import { LoyaltyService } from '../loyalty/loyalty.service';
+import { RefundsService } from '../refunds/refunds.service';
+import { OutboxService } from '../outbox/outbox.service';
 
 /**
  * Tests de CARACTÉRISATION de createOrderFromCart (le checkout) — LIL-134.
@@ -39,6 +42,9 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
     user: { update: jest.fn() },
     loyaltyTransaction: { create: jest.fn() },
     cartItem: { deleteMany: jest.fn() },
+    // Décrément conditionnel des points de fidélité (tagged template SQL).
+    // Retourne le nombre de lignes affectées : 1 = solde suffisant, 0 = course perdue.
+    $executeRaw: jest.fn(),
   };
   const createdOrder = {
     id: 'o1',
@@ -108,7 +114,15 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
       serviceFee: 800,
     });
     calculator.buildOrderItemSnapshots.mockReturnValue([
-      { productId: 'p1', menuId: null, quantite: 1, prix: 10000, variant: '', variantId: null, snapshotPrice: 10000 },
+      {
+        productId: 'p1',
+        menuId: null,
+        quantite: 1,
+        prix: 10000,
+        variant: '',
+        variantId: null,
+        snapshotPrice: 10000,
+      },
     ]);
     platformSettings.getSettings.mockResolvedValue(SETTINGS);
     // findUnique couvre loyalty (loyaltyPoints) ET handleReferralReward (return early)
@@ -118,9 +132,29 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
       referralRewarded: true,
     });
     tx.order.create.mockResolvedValue(createdOrder);
+    tx.$executeRaw.mockResolvedValue(1); // solde suffisant par défaut
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        {
+          provide: OutboxService,
+          useValue: {
+            enqueueInTransaction: jest.fn().mockResolvedValue('outbox-1'),
+            markSent: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: LoyaltyService,
+          useValue: {
+            awardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: RefundsService,
+          useValue: {
+            openForCancelledOrder: jest.fn().mockResolvedValue(null),
+          },
+        },
         OrdersService,
         OrderCheckoutService, // service réel : OrdersService y délègue le checkout
         OrderQueryService, // requis par OrdersService (lectures) — non sollicité ici
@@ -151,10 +185,16 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
   } as any;
 
   it('happy path : crée la commande, retourne { message, data } et émet order.created', async () => {
-    const res = await service.createOrderFromCart('uid', baseDto);
+    const res = await service.createOrderFromCart('uid', baseDto, 'idem-key-1');
 
-    expect(res).toEqual({ message: 'Commande créée avec succès.', data: createdOrder });
-    expect(eventEmitter.emit).toHaveBeenCalledWith('order.created', expect.anything());
+    expect(res).toEqual({
+      message: 'Commande créée avec succès.',
+      data: createdOrder,
+    });
+    expect(eventEmitter.emit).toHaveBeenCalledWith(
+      'order.created',
+      expect.anything(),
+    );
 
     const data = tx.order.create.mock.calls[0][0].data;
     expect(data.subTotal).toBe(10000);
@@ -163,13 +203,19 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
     expect(data.discountAmount).toBe(0);
     expect(data.total).toBe(11800);
     expect(data.status).toBe('EN_ATTENTE');
-    expect(tx.cartItem.deleteMany).toHaveBeenCalledWith({ where: { cartId: 'cart1' } });
+    expect(tx.cartItem.deleteMany).toHaveBeenCalledWith({
+      where: { cartId: 'cart1' },
+    });
     expect(stockService.decrementInTransaction).toHaveBeenCalled();
   });
 
   it('livraison sans adresseId → BadRequestException, pas de transaction', async () => {
     await expect(
-      service.createOrderFromCart('uid', { paymentMethod: 'MTN_MOMO', isDelivery: true } as any),
+      service.createOrderFromCart(
+        'uid',
+        { paymentMethod: 'MTN_MOMO', isDelivery: true } as any,
+        'idem-key-1',
+      ),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
@@ -181,10 +227,29 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
       newDeliveryFee: 1000,
     });
 
-    await service.createOrderFromCart('uid', { ...baseDto, promoCode: 'PROMO' });
+    await service.createOrderFromCart(
+      'uid',
+      {
+        ...baseDto,
+        promoCode: 'PROMO',
+      },
+      'idem-key-1',
+    );
 
-    expect(promoService.validateCode).toHaveBeenCalledWith('PROMO', 'u1', 'resto1', 10000, 1000);
-    expect(promoService.applyCode).toHaveBeenCalledWith(tx, 'pc1', 'u1', 'o1', 2000);
+    expect(promoService.validateCode).toHaveBeenCalledWith(
+      'PROMO',
+      'u1',
+      'resto1',
+      10000,
+      1000,
+    );
+    expect(promoService.applyCode).toHaveBeenCalledWith(
+      tx,
+      'pc1',
+      'u1',
+      'o1',
+      2000,
+    );
     const data = tx.order.create.mock.calls[0][0].data;
     expect(data.discountAmount).toBe(2000);
     expect(data.promoCodeId).toBe('pc1');
@@ -198,18 +263,61 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
       referralRewarded: true,
     });
 
-    await service.createOrderFromCart('uid', { ...baseDto, useLoyaltyPoints: true });
+    await service.createOrderFromCart(
+      'uid',
+      {
+        ...baseDto,
+        useLoyaltyPoints: true,
+      },
+      'idem-key-1',
+    );
 
     // 1000 pts × 5 XAF = 5000 de réduction (plafonné au solde, < montant dû 11800)
-    expect(tx.user.update).toHaveBeenCalledWith({
-      where: { id: 'u1' },
-      data: { loyaltyPoints: { decrement: 1000 } },
-    });
+    // Le décrément passe par un UPDATE … WHERE conditionnel, pas par tx.user.update.
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    const [, ...values] = tx.$executeRaw.mock.calls[0];
+    expect(values).toEqual([1000, 'u1', 1000]); // n points, userId, garde >= n
+    expect(tx.user.update).not.toHaveBeenCalled();
     expect(tx.loyaltyTransaction.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ points: -1000 }) }),
+      expect.objectContaining({
+        data: expect.objectContaining({ points: -1000 }),
+      }),
     );
     const data = tx.order.create.mock.calls[0][0].data;
     expect(data.discountAmount).toBe(5000);
     expect(data.total).toBe(6800); // 11800 - 5000
+  });
+
+  it("points fidélité : checkout concurrent perdant → BadRequestException, rien n'est tracé", async () => {
+    // Scénario : deux checkouts simultanés du même user ont lu le même solde de
+    // 1000 pts hors transaction. Le premier a déjà décrémenté ; pour le second
+    // le UPDATE … WHERE "loyaltyPoints" >= 1000 n'affecte aucune ligne.
+    prisma.user.findUnique.mockResolvedValue({
+      loyaltyPoints: 1000,
+      referredByCode: null,
+      referralRewarded: true,
+    });
+    tx.$executeRaw.mockResolvedValue(0);
+
+    await expect(
+      service.createOrderFromCart(
+        'uid',
+        {
+          ...baseDto,
+          useLoyaltyPoints: true,
+        },
+        'idem-key-1',
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    // La transaction remonte l'exception → rollback : aucune trace de fidélité,
+    // pas de décrément de stock, panier intact.
+    expect(tx.loyaltyTransaction.create).not.toHaveBeenCalled();
+    expect(stockService.decrementInTransaction).not.toHaveBeenCalled();
+    expect(tx.cartItem.deleteMany).not.toHaveBeenCalled();
+    expect(eventEmitter.emit).not.toHaveBeenCalledWith(
+      'order.created',
+      expect.anything(),
+    );
   });
 });

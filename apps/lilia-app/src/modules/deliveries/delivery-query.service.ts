@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DeliveryStatus } from './dto/update-delivery.dto';
+import { ACTIVE_DELIVERY_STATUSES } from './delivery-statuses';
 
 /**
  * Lectures de livraisons (queries) extraites de `DeliveriesService` (LIL-134).
@@ -29,7 +30,10 @@ export class DeliveryQueryService {
     requesterFirebaseUid: string;
   }): Promise<void> {
     // Restaurateur propriétaire du restaurant
-    if (ctx.ownerFirebaseUid && ctx.ownerFirebaseUid === ctx.requesterFirebaseUid) {
+    if (
+      ctx.ownerFirebaseUid &&
+      ctx.ownerFirebaseUid === ctx.requesterFirebaseUid
+    ) {
       return;
     }
 
@@ -43,13 +47,20 @@ export class DeliveryQueryService {
     if (user.id === ctx.orderUserId) return; // client propriétaire de la commande
     if (ctx.delivererId && user.id === ctx.delivererId) return; // livreur assigné
 
-    throw new ForbiddenException("Vous n'êtes pas autorisé à consulter cette livraison.");
+    throw new ForbiddenException(
+      "Vous n'êtes pas autorisé à consulter cette livraison.",
+    );
   }
 
   /**
    * Récupère toutes les livraisons pour un restaurant
    */
-  async findAllForRestaurant(firebaseUid: string, status?: DeliveryStatus, page = 1, limit = 20) {
+  async findAllForRestaurant(
+    firebaseUid: string,
+    status?: DeliveryStatus,
+    page = 1,
+    limit = 20,
+  ) {
     // Trouver le restaurant de l'utilisateur
     const restaurant = await this.prisma.restaurant.findFirst({
       where: { owner: { firebaseUid } },
@@ -112,7 +123,20 @@ export class DeliveryQueryService {
   /**
    * Récupère les livraisons assignées à un livreur
    */
-  async findAllForDeliverer(firebaseUid: string, status?: DeliveryStatus) {
+  /**
+   * Historique du livreur — **paginé** (fix P1, audit du 28/08/2026).
+   *
+   * La méthode ramenait l'intégralité des courses du livreur, avec pour
+   * chacune la commande, ses items et les produits. Sur un livreur actif
+   * depuis six mois, la réponse ne cesse de grossir — et elle est chargée à
+   * l'ouverture de l'app, sur la 4G de Brazzaville.
+   */
+  async findAllForDeliverer(
+    firebaseUid: string,
+    status?: DeliveryStatus,
+    page = 1,
+    limit = 20,
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { firebaseUid },
     });
@@ -157,11 +181,16 @@ export class DeliveryQueryService {
         },
       },
       orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * limit,
+      take: limit,
     });
+
+    const total = await this.prisma.delivery.count({ where });
 
     return {
       data: deliveries,
       count: deliveries.length,
+      meta: { page, limit, total, hasMore: page * limit < total },
     };
   }
 
@@ -229,24 +258,38 @@ export class DeliveryQueryService {
     };
   }
 
+  /**
+   * Livreurs assignables, pour le vendeur qui doit choisir à qui confier une
+   * course.
+   *
+   * Fix L11 : la méthode retournait **tous** les comptes LIVREUR de la
+   * plateforme — nom et téléphone inclus — sans le moindre filtre de
+   * disponibilité, à tout titulaire d'un compte vendeur. On exclut désormais
+   * les comptes hors ligne, bloqués ou supprimés : un vendeur n'a besoin que
+   * des livreurs à qui il peut réellement confier une course.
+   */
   async getAvailableDeliverers() {
     const deliverers = await this.prisma.user.findMany({
       where: {
         role: 'LIVREUR',
+        statusUser: 'ACTIVE',
+        // `driverStatus` est nullable : un livreur qui ne s'est jamais déclaré
+        // reste assignable (comportement historique), seul OFFLINE est exclu.
+        OR: [
+          { driverStatus: { in: ['AVAILABLE', 'ON_DELIVERY'] } },
+          { driverStatus: null },
+        ],
       },
       select: {
         id: true,
         nom: true,
         phone: true,
         imageUrl: true,
+        driverStatus: true,
         _count: {
           select: {
             deliveries: {
-              where: {
-                status: {
-                  in: ['ASSIGNER', 'EN_TRANSIT'],
-                },
-              },
+              where: { status: { in: ACTIVE_DELIVERY_STATUSES } },
             },
           },
         },
@@ -264,14 +307,32 @@ export class DeliveryQueryService {
     return this.prisma.delivery.findMany({
       where: {
         delivererId: user.id,
-        status: { in: ['ASSIGNER', 'EN_TRANSIT'] },
+        // `ACCEPTER` y figure : c'est l'état d'une course prise en charge dont
+        // le repas n'est pas encore récupéré. L'omettre ferait disparaître la
+        // mission de l'écran du livreur entre le moment où il accepte et celui
+        // où il arrive au restaurant.
+        status: { in: ACTIVE_DELIVERY_STATUSES },
       },
       include: {
         order: {
           include: {
             user: { select: { nom: true, phone: true } },
-            restaurant: { select: { id: true, nom: true, adresse: true, phone: true, vendorType: true, acceptsPreorders: true, preorderLeadHours: true } },
-            items: { include: { product: { select: { nom: true, madeToOrder: true } } } },
+            restaurant: {
+              select: {
+                id: true,
+                nom: true,
+                adresse: true,
+                phone: true,
+                vendorType: true,
+                acceptsPreorders: true,
+                preorderLeadHours: true,
+              },
+            },
+            items: {
+              include: {
+                product: { select: { nom: true, madeToOrder: true } },
+              },
+            },
           },
         },
       },
@@ -296,10 +357,14 @@ export class DeliveryQueryService {
         createdAt: true,
         // Champs internes utilisés uniquement pour le contrôle d'accès (retirés
         // de la réponse plus bas).
+        acceptedAt: true,
         delivererId: true,
         deliverer: {
           select: { id: true, nom: true, phone: true, imageUrl: true },
         },
+        // La note déjà laissée : permet au client de savoir s'il peut encore
+        // noter, sans un second appel réseau.
+        review: { select: { id: true, rating: true, createdAt: true } },
         // Coords de l'adresse client + restaurant pour permettre au client
         // de tracking d'afficher le marker destination et le contexte
         // commande sans appel HTTP additionnel.
@@ -323,7 +388,10 @@ export class DeliveryQueryService {
       },
     });
 
-    if (!delivery) throw new NotFoundException('Aucune livraison trouvée pour cette commande.');
+    if (!delivery)
+      throw new NotFoundException(
+        'Aucune livraison trouvée pour cette commande.',
+      );
 
     // Anti-IDOR : la position GPS du livreur et les coordonnées du client ne
     // doivent être visibles que par les parties liées à la commande.

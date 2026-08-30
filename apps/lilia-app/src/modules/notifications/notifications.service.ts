@@ -37,6 +37,21 @@ export class NotificationsService {
       return { status: 'user_not_found' };
     }
 
+    // M18 (audit du 28/08/2026) — comportement ASSUMÉ, documenté ici parce
+    // qu'il surprend à la lecture : `update: { userId }` **transfère** un token
+    // déjà connu vers le compte appelant.
+    //
+    // C'est voulu : sur un même téléphone, quand un utilisateur se déconnecte
+    // et qu'un autre se connecte, le token FCM ne change pas — sans ce
+    // transfert, le nouvel utilisateur ne recevrait rien et l'ancien
+    // continuerait de recevoir les notifications sur un appareil qui n'est plus
+    // le sien.
+    //
+    // Le risque résiduel : quelqu'un qui connaîtrait le token d'un tiers
+    // pourrait le détourner — le priver de ses notifications et en pousser sur
+    // son appareil. Il ne pourrait PAS lire celles d'autrui (l'envoi part du
+    // `userId`, pas du token). L'entropie d'un token FCM le rend non
+    // énumérable, et l'obtenir suppose déjà un accès à l'appareil.
     await this.prisma.fcmToken.upsert({
       where: { token },
       update: { userId: user.id },
