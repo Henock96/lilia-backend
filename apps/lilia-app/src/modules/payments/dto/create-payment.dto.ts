@@ -1,10 +1,12 @@
 import {
+  IsEnum,
   IsNotEmpty,
   IsOptional,
   IsString,
   Matches,
   MaxLength,
 } from 'class-validator';
+import { PaymentMethod } from '@prisma/client';
 
 /**
  * Corps de `POST /payments` (fix H1 — audit du 28/08/2026).
@@ -39,6 +41,20 @@ export class CreatePaymentDto {
     message: 'Le message de paiement ne peut pas dépasser 140 caractères.',
   })
   payerMessage?: string;
+
+  /**
+   * Opérateur visé pour CETTE tentative. Facultatif : à défaut, on reprend
+   * `Order.paymentMethod`, choisi au checkout.
+   *
+   * Le champ existe parce qu'une seconde tentative vise souvent un autre
+   * opérateur — le client n'a plus de solde MTN et paie en Airtel. Sans lui, il
+   * faudrait repasser la commande.
+   */
+  @IsOptional()
+  @IsEnum(PaymentMethod, {
+    message: 'Opérateur invalide (MTN_MOMO ou AIRTEL_MONEY).',
+  })
+  method?: PaymentMethod;
 
   @IsOptional()
   @IsString()

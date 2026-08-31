@@ -1,12 +1,34 @@
-/* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
-import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
-import { OrderStatus } from '@prisma/client';
+import { OnEvent } from '@nestjs/event-emitter';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../../prisma/prisma.service';
-import { OrderPaymentConfirmedEvent, OrderStatusUpdatedEvent } from '../events/order-events';
+import { OrderPaymentConfirmedEvent } from '../events/order-events';
 import { ReferralService } from '../users/referral.service';
 
+/**
+ * Réactions à la confirmation / à l'échec d'un encaissement client.
+ *
+ * ⚠️ Ce listener ne fait **plus avancer la commande** (chantier pawaPay,
+ * août 2026). Il notifiait le client puis forçait `PAYER → EN_PREPARATION`
+ * avec un `order.update` inconditionnel :
+ *
+ *  - hors de la state machine, donc sans vérifier ni la transition ni l'acteur ;
+ *  - sans le verrou optimiste `claimStatus` posé par le fix H6 — une annulation
+ *    vendeur concurrente était donc écrasée, et la commande repartait en
+ *    préparation alors que le stock avait été rendu ;
+ *  - et surtout : **le vendeur n'acceptait jamais rien**. Il découvrait une
+ *    commande déjà « en préparation ». Avec un encaissement manuel (plusieurs
+ *    heures d'écart) le phénomène passait inaperçu ; avec pawaPay, qui confirme
+ *    en une minute, il devenait systématique.
+ *
+ * Le passage `PAYER → EN_PREPARATION` est désormais un geste du vendeur
+ * (`PATCH /orders/:id/status`), que la matrice de transitions autorise déjà et
+ * que l'app d'administration propose déjà.
+ *
+ * La notification du **vendeur** ne part pas d'ici non plus : elle est portée
+ * par l'`OutboxEvent` `order.paid`, écrit dans la transaction de confirmation
+ * du paiement, donc garanti et rattrapable (avec escalade SMS).
+ */
 @Injectable()
 export class PaymentListener {
   private readonly logger = new Logger(PaymentListener.name);
@@ -14,78 +36,62 @@ export class PaymentListener {
   constructor(
     private readonly notificationsService: NotificationsService,
     private readonly prisma: PrismaService,
-    private readonly eventEmitter: EventEmitter2,
     private readonly referral: ReferralService,
   ) {}
 
   @OnEvent('order.payment.confirmed')
   async handlePaymentConfirmed(event: OrderPaymentConfirmedEvent) {
-    this.logger.log(`🎉 Payment confirmed for order: ${event.orderId}`);
-    this.logger.log(`💰 Amount: ${event.amount} ${event.currency}`);
-    this.logger.log(`💳 Payment ID: ${event.paymentId}`);
+    this.logger.log(
+      `🎉 Paiement confirmé — commande ${event.orderId}, ${event.amount} ${event.currency}`,
+    );
 
     try {
-      // 1. Récupérer les détails de la commande
       const order = await this.prisma.order.findUnique({
         where: { id: event.orderId },
-        include: {       
-          restaurant: true,
-          items: {
-            include: {
-              product: true,
-            },
-            
-          },
-          
+        select: {
+          id: true,
+          restaurant: { select: { nom: true } },
         },
       });
 
       if (!order) {
-        this.logger.error(`Order ${event.orderId} not found`);
+        this.logger.error(`Commande ${event.orderId} introuvable`);
         return;
       }
 
-      // 2. Notifier le client (Push Notification)
-      await this.notifyCustomerPaymentSuccess(event, order);
+      // Un seul push client. Il y en avait deux — « Paiement confirmé » puis
+      // « En préparation », émis à une seconde d'intervalle par l'auto-transition
+      // supprimée ci-dessus. Le second annonçait de surcroît une préparation qui
+      // n'avait pas commencé.
+      await this.notifyCustomerPaymentSuccess(event, order.restaurant.nom);
 
-      // 3. Notifier le restaurateur (Push Notification)
-      await this.notifyRestaurantPaymentReceived(event, order);
-
-      // 4. Envoyer les événements SSE
-      //await this.sendPaymentConfirmedSSE(event, order);
-
-      // 5. Mettre à jour le statut de la commande
-      await this.updateOrderAfterPayment(event.orderId);
-
-      // 6. Récompense de parrainage — versée ICI, et nulle part ailleurs
-      // (fix C3) : elle l'était à la création de la commande, donc sans
-      // qu'un franc soit payé. Non bloquant : un échec ne doit pas empêcher
-      // la confirmation de paiement.
+      // Récompense de parrainage — versée ICI, et nulle part ailleurs (fix C3) :
+      // elle l'était à la création de la commande, donc sans qu'un franc soit
+      // payé. Non bloquant.
       await this.referral
         .rewardIfFirstPaidOrder(event.userId)
         .catch((err) =>
           this.logger.error(`Erreur récompense parrainage: ${err}`),
         );
-
-      this.logger.log(`✅ Payment notifications sent for order: ${event.orderId}`);
     } catch (error) {
-      this.logger.error(`❌ Error handling payment confirmed event: ${error.message}`, error.stack);
+      this.logger.error(
+        `Erreur au traitement de order.payment.confirmed : ${(error as Error).message}`,
+        (error as Error).stack,
+      );
     }
   }
 
-  // ===== Notifications Push =====
-
   private async notifyCustomerPaymentSuccess(
     event: OrderPaymentConfirmedEvent,
-    order: any,
+    // ⚠️ `nom`, pas `name` : le champ Prisma s'appelle `nom`. La version
+    // précédente lisait `order.restaurant.name`, donc `undefined` — le client
+    // recevait littéralement « votre commande chez undefined ».
+    vendorName: string,
   ) {
-    const title = '✅ Paiement confirmé !';
-    const body = `Votre paiement de ${event.amount} ${event.currency} a été confirmé. Votre commande chez ${order.restaurant.name} est en cours de préparation.`;
-
     await this.notificationsService.sendPushNotification(
       event.userId,
-      title,
-      body,
+      '✅ Commande confirmée !',
+      `Votre paiement de ${event.amount} ${event.currency} est confirmé. ${vendorName} a reçu votre commande.`,
       {
         orderId: event.orderId,
         paymentId: event.paymentId,
@@ -93,80 +99,11 @@ export class PaymentListener {
         amount: event.amount.toString(),
         currency: event.currency,
         restaurantId: event.restaurantId,
-        restaurantName: order.restaurant.name,
       },
     );
 
-    this.logger.log(`📱 Push notification sent to customer: ${event.userId}`);
+    this.logger.log(`📱 Push de confirmation envoyé au client ${event.userId}`);
   }
-
-  private async notifyRestaurantPaymentReceived(
-    event,
-    order: any,
-  ) {
-    const title = '💰 Paiement reçu';
-  // ✅ Fix : 'nom' pas 'name'
-  const body = `Paiement de ${event.amount} ${event.currency} reçu. ${order.items.length} article(s).`;
-
-  await this.notificationsService.sendPushNotification(
-    order.restaurant.ownerId,
-    title,
-    body,
-    { orderId: event.orderId, type: 'payment_received', amount: event.amount.toString() },
-  );
-}
-
-  // ===== Événements SSE =====
-
-  // ===== Mise à jour de la commande =====
-
-  private async updateOrderAfterPayment(orderId: string) {
-    try {
-      // PaymentService.handleSuccessfulPayment vient de mettre Order.status = PAYER.
-      // On enchaîne PAYER → EN_PREPARATION en émettant `order.status.updated`
-      // pour que le client reçoive la notif "👨‍🍳 En préparation" + broadcast WS.
-      const order = await this.prisma.order.findUnique({
-        where: { id: orderId },
-        select: { userId: true, restaurantId: true, status: true, restaurant: { select: { nom: true } }, total: true },
-      });
-
-      if (!order) {
-        this.logger.warn(`updateOrderAfterPayment: order ${orderId} not found`);
-        return;
-      }
-
-      const previousStatus = order.status;
-
-      await this.prisma.order.update({
-        where: { id: orderId },
-        data: {
-          status: 'EN_PREPARATION',
-          paidAt: new Date(),
-        },
-      });
-
-      // Émet l'event → OrdersListener notifie le client + broadcast WS
-      const statusEvent = new OrderStatusUpdatedEvent(
-        orderId,
-        order.userId,
-        order.restaurantId,
-        previousStatus,
-        OrderStatus.EN_PREPARATION,
-        order.userId, // pas d'acteur explicite (déclenché par PaymentListener) — on attache le user pour le contexte
-        {
-          restaurantName: order.restaurant.nom,
-          totalAmount: order.total,
-        },
-      );
-      this.eventEmitter.emit('order.status.updated', statusEvent);
-
-      this.logger.log(`📝 Order ${orderId} status updated to EN_PREPARATION (event emitted)`);
-    } catch (error) {
-      this.logger.error(`Failed to update order status: ${error.message}`);
-    }
-  }
-
-  // ===== Événement de paiement échoué =====
 
   @OnEvent('order.payment.failed')
   async handlePaymentFailed(event: {
@@ -175,27 +112,21 @@ export class PaymentListener {
     paymentId: string;
     reason: string;
   }) {
-    this.logger.log(`❌ Payment failed for order: ${event.orderId}`);
-    this.logger.log(`Reason: ${event.reason}`);
+    this.logger.warn(
+      `❌ Paiement échoué — commande ${event.orderId} : ${event.reason}`,
+    );
 
     try {
       const order = await this.prisma.order.findUnique({
         where: { id: event.orderId },
-        include: {
-          restaurant: true,
-        },
+        select: { restaurant: { select: { nom: true } } },
       });
-
       if (!order) return;
-
-      // Notifier le client
-      const title = '❌ Paiement échoué';
-      const body = `Le paiement de votre commande chez ${order.restaurant.nom} a échoué. Raison: ${event.reason}`;
 
       await this.notificationsService.sendPushNotification(
         event.userId,
-        title,
-        body,
+        '❌ Paiement non abouti',
+        `Le paiement de votre commande chez ${order.restaurant.nom} n'a pas abouti : ${event.reason}. Vous pouvez réessayer.`,
         {
           orderId: event.orderId,
           paymentId: event.paymentId,
@@ -203,14 +134,12 @@ export class PaymentListener {
           reason: event.reason,
         },
       );
-
-      this.logger.log(`📱 Payment failure notification sent to customer: ${event.userId}`);
     } catch (error) {
-      this.logger.error(`Error handling payment failed event: ${error.message}`);
+      this.logger.error(
+        `Erreur au traitement de order.payment.failed : ${(error as Error).message}`,
+      );
     }
   }
-
-  // ===== Événement de timeout de paiement =====
 
   @OnEvent('order.payment.timeout')
   async handlePaymentTimeout(event: {
@@ -218,36 +147,29 @@ export class PaymentListener {
     userId: string;
     paymentId: string;
   }) {
-    this.logger.log(`⏰ Payment timeout for order: ${event.orderId}`);
+    this.logger.warn(`⏰ Paiement expiré — commande ${event.orderId}`);
 
     try {
       const order = await this.prisma.order.findUnique({
         where: { id: event.orderId },
-        include: {
-          restaurant: true,
-        },
+        select: { restaurant: { select: { nom: true } } },
       });
-
       if (!order) return;
-
-      // Notifier le client
-      const title = '⏰ Délai de paiement expiré';
-      const body = `Le délai de paiement pour votre commande chez ${order.restaurant.nom} a expiré. Veuillez réessayer.`;
 
       await this.notificationsService.sendPushNotification(
         event.userId,
-        title,
-        body,
+        '⏰ Délai de paiement expiré',
+        `Le délai de paiement pour votre commande chez ${order.restaurant.nom} a expiré. Vous pouvez relancer le paiement.`,
         {
           orderId: event.orderId,
           paymentId: event.paymentId,
           type: 'payment_timeout',
         },
       );
-
-      this.logger.log(`📱 Payment timeout notification sent to customer: ${event.userId}`);
     } catch (error) {
-      this.logger.error(`Error handling payment timeout event: ${error.message}`);
+      this.logger.error(
+        `Erreur au traitement de order.payment.timeout : ${(error as Error).message}`,
+      );
     }
   }
 }

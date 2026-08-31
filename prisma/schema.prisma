@@ -220,9 +220,35 @@ model Restaurant {
   supportsPickup   Boolean @default(true)
 
   // Commission prélevée par la plateforme sur ce vendeur, en pourcentage.
-  // `null` = taux plateforme (PlatformSettings). Réservé à l'ADMIN : un vendeur
-  // qui pourrait fixer sa propre commission fixerait la marge de Lilia.
+  // `null` = taux plateforme (`PlatformSettings.restaurantCommissionPercent`).
+  // Réservé à l'ADMIN : un vendeur qui pourrait fixer sa propre commission
+  // fixerait la marge de Lilia.
+  //
+  // ⚠️ À ne pas confondre avec `PlatformSettings.serviceFeePercent` : celui-ci
+  // est un frais payé EN PLUS par le client, celle-là est retenue SUR le
+  // vendeur. Deux flux d'argent opposés — les confondre facturerait deux fois.
   commissionPercent Float?
+
+  // ─── Coordonnées de reversement (payout, août 2026) ────────────────────────
+  //
+  // Distinctes de `Restaurant.phone` (numéro de contact, affiché au client et
+  // au livreur) et du téléphone du compte propriétaire. Rien ne dit que le
+  // numéro sur lequel on appelle le restaurant est celui sur lequel il veut
+  // être payé : c'est souvent un numéro de gérance, parfois un autre opérateur.
+  // Envoyer de l'argent sur un numéro deviné n'est pas rattrapable.
+  //
+  // Les deux doivent être renseignés pour qu'un reversement soit possible ;
+  // `RestaurantPayoutService` refuse en 409 avec un message nominatif sinon.
+  payoutPhoneNumber  String? // MSISDN, chiffres uniquement, indicatif inclus (242…)
+  payoutProvider     PayoutProvider? // opérateur du compte de reversement
+  /// Nom du titulaire du compte mobile money, pour le contrôle humain avant
+  /// envoi. Purement informatif — jamais transmis au prestataire.
+  payoutAccountName  String?
+  /// Vérification humaine des coordonnées par un administrateur.
+  payoutVerifiedAt   DateTime?
+  payoutVerifiedById String? // User.id (pas de FK, comme adminApprovedById)
+
+  payouts RestaurantPayout[]
 
   // Multi-vendeurs (Sprint A — LIL-111)
   vendorType        VendorType     @default(RESTAURANT)
@@ -507,6 +533,12 @@ model Order {
   // Remboursement ouvert si la commande est annulée après paiement (fix H5)
   refund Refund?
 
+  /// Reversement au vendeur — au plus un par commande (`@@unique` côté
+  /// `RestaurantPayout.orderId`). Absent tant qu'un administrateur ne l'a pas
+  /// déclenché : encaisser le client et payer le vendeur sont deux décisions
+  /// distinctes.
+  payout RestaurantPayout?
+
   @@index([restaurantId, status, createdAt(sort: Desc)]) // dashboard resto: commandes par statut, plus recentes (LFD-9)
   @@index([promoCodeId])
   @@index([restaurantId])
@@ -649,7 +681,21 @@ enum StatusUser {
   DELETED
 }
 
+/// Opérateur choisi par le CLIENT pour payer.
 enum PaymentMethod {
+  MTN_MOMO
+  AIRTEL_MONEY
+}
+
+/// Opérateur du compte sur lequel un VENDEUR est reversé.
+///
+/// Enum distinct de `PaymentMethod` bien que les valeurs se ressemblent : les
+/// deux répondent à des questions différentes et n'évolueront pas ensemble (un
+/// reversement pourra un jour se faire par virement bancaire, ce qui n'a aucun
+/// sens comme moyen de paiement client au Congo). Les fondre créerait un
+/// couplage entre l'encaissement et le reversement — exactement ce que ce
+/// chantier sépare.
+enum PayoutProvider {
   MTN_MOMO
   AIRTEL_MONEY
 }
@@ -680,6 +726,10 @@ enum DeliveryStatus {
   ECHEC
 }
 
+/// Encaissement auprès du CLIENT (collection). À ne pas confondre avec
+/// `RestaurantPayout`, qui est le reversement au vendeur : deux mouvements
+/// d'argent opposés, à deux moments différents, avec chacun son identifiant
+/// chez le prestataire (`depositId` ici, `payoutId` là-bas).
 model Payment {
   id                    String        @id @default(cuid())
   orderId               String
@@ -688,17 +738,48 @@ model Payment {
   phoneNumber           String
   status                PaymentStatus @default(PENDING)
   provider              String        @default("MTN_MOMO")
+  /// `depositId` pawaPay / `X-Reference-Id` MTN. Généré par NOUS avant l'appel
+  /// au prestataire : c'est la clé d'idempotence côté PSP (un rejeu du même
+  /// identifiant renvoie `DUPLICATE_IGNORED`, jamais un second débit).
   providerTransactionId String?
   metadata              Json          @default("{}")
-  createdAt             DateTime      @default(now())
-  updatedAt             DateTime      @updatedAt
 
-  order   Order    @relation(fields: [orderId], references: [id])
+  /// Opérateur visé, snapshot du choix fait à cette tentative. `Order.paymentMethod`
+  /// porte l'intention initiale ; une seconde tentative peut viser un autre
+  /// opérateur (plus de solde MTN, le client paie en Airtel).
+  method PaymentMethod?
+
+  /// Code d'échec du prestataire, tel quel. En colonne et non dans `metadata` :
+  /// c'est ce qu'on filtre dans la file d'administration (« combien de PIN
+  /// refusés cette semaine ? ») et un `Json` ne s'indexe pas.
+  failureCode    String?
+  failureMessage String?
+
+  /// Instant de résolution. `updatedAt` servait de proxy pour le KPI « délai de
+  /// validation » (`admin-payments.service.ts`) — il ment dès qu'une autre
+  /// écriture touche la ligne.
+  completedAt DateTime?
+
+  /// Frais facturés par le prestataire sur cet encaissement, en XAF.
+  /// **Charge de Lilia Food** : jamais déduit de ce que touche le vendeur.
+  /// `null` tant que le prestataire ne l'a pas communiqué.
+  collectionFeeXaf Float?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order   Order          @relation(fields: [orderId], references: [id])
   refunds Refund[]
+  events  PaymentEvent[]
 
   @@index([orderId])
   @@index([status]) // dashboard paiements filtrés par statut
   @@index([orderId, status]) // assertNoPendingPayment + cron d'expiration (fix M19)
+  // Deux index UNIQUES PARTIELS complètent ceux-ci ; Prisma ne sait pas les
+  // déclarer, ils sont créés en SQL par la migration `payment_unique_indexes` :
+  //   · payments_order_pending_uq  ON (orderId) WHERE status = 'PENDING'
+  //   · payments_provider_tx_uq    ON (provider, providerTransactionId)
+  //                                WHERE providerTransactionId IS NOT NULL
   @@map("payments")
 }
 
@@ -707,6 +788,155 @@ enum PaymentStatus {
   SUCCESS
   FAILED
   CANCELLED
+}
+
+/// Reversement au VENDEUR (payout), déclenché **manuellement par un
+/// administrateur** quand la commande est prête.
+///
+/// Volontairement une entité distincte de `Payment` plutôt qu'un type de plus
+/// sur celui-ci : les deux n'ont ni le même sens du flux d'argent, ni les mêmes
+/// champs (un payout porte une commission figée et un bénéficiaire vendeur), ni
+/// le même cycle de vie, ni le même identifiant chez le prestataire. Les fondre
+/// obligerait chaque requête à filtrer sur un discriminant, et la première
+/// requête qui l'oublierait mélangerait des encaissements et des reversements
+/// dans un même total.
+///
+/// `@@unique([orderId])` porte **en base** la règle « un vendeur n'est payé
+/// qu'une fois par commande » : c'est elle qui rend deux administrateurs
+/// cliquant simultanément incapables de créer deux reversements. Une ligne
+/// `FAILED` est supprimée avant de réessayer (cf. RestaurantPayoutService), ce
+/// qui garde la contrainte intacte tout en autorisant une nouvelle tentative.
+model RestaurantPayout {
+  id           String     @id @default(cuid())
+  orderId      String     @unique
+  order        Order      @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+
+  // ─── Snapshot financier, figé à la création ────────────────────────────────
+  // Ces cinq valeurs ne sont JAMAIS recalculées. Si le taux de commission passe
+  // de 10 % à 12 % demain, un reversement d'hier doit continuer à dire 10 % —
+  // c'est une pièce comptable, au même titre que `OrderItem.snapshotPrice`.
+  /// Montant des produits revenant au vendeur (= `Order.subTotal`).
+  /// Ni les frais de service client, ni la livraison n'y entrent.
+  grossAmount       Float
+  commissionPercent Float
+  commissionAmount  Float
+  /// `grossAmount - commissionAmount` — c'est CE montant qui part au prestataire.
+  amount            Float
+  currency          String @default("XAF")
+
+  // ─── Destinataire, également figé ──────────────────────────────────────────
+  // Le numéro peut changer dans la fiche du vendeur ; ce reversement-ci est
+  // parti vers celui-ci.
+  phoneNumber  String
+  /// Opérateur du compte crédité, snapshot de `Restaurant.payoutProvider` au
+  /// moment de l'envoi (`MTN_MOMO` / `AIRTEL_MONEY`). Le code technique attendu
+  /// par le prestataire (`MTN_MOMO_COG`…) en est dérivé à l'appel : il dépend de
+  /// la configuration du compte marchand et n'a pas à être figé ici.
+  providerCode String
+
+  status                PayoutStatus @default(PENDING)
+  provider              String       @default("PAWAPAY")
+  /// `payoutId` pawaPay — généré par nous, distinct du `depositId` de l'encaissement.
+  providerPayoutId      String?
+  /// Identifiant de la transaction chez l'opérateur, renvoyé par le prestataire.
+  providerTransactionId String?
+
+  failureCode    String?
+  failureMessage String?
+
+  /// Frais facturés par le prestataire sur ce reversement, en XAF.
+  /// **Charge de Lilia Food** : jamais déduit du montant reversé au vendeur.
+  payoutFeeXaf Float?
+
+  /// `User.id` de l'administrateur qui a déclenché le reversement.
+  requestedBy String
+  requestedAt DateTime  @default(now())
+  completedAt DateTime?
+
+  metadata Json           @default("{}")
+  events   PaymentEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([restaurantId, status])
+  @@index([status, requestedAt])
+  @@index([restaurantId, completedAt])
+  @@map("restaurant_payouts")
+}
+
+/// Cycle de vie d'un reversement.
+///
+/// `PENDING → SUCCESS | FAILED | CANCELLED`, et les états terminaux le sont
+/// vraiment : un reversement réussi ne redevient jamais en attente. La règle
+/// est portée par `PAYOUT_TRANSITIONS` (payout-state.machine.ts) et par les
+/// `updateMany` conditionnés sur `PENDING`.
+enum PayoutStatus {
+  PENDING // envoyé au prestataire, en attente de confirmation
+  SUCCESS // argent reçu par le vendeur — SEUL état où le vendeur est « payé »
+  FAILED // refusé par le prestataire ou l'opérateur ; nouvelle tentative possible
+  CANCELLED // abandonné avant aboutissement (arbitrage administratif)
+}
+
+/// Journal des signaux reçus d'un prestataire de paiement — callbacks et
+/// réponses de réconciliation, pour les encaissements **et** les reversements.
+///
+/// Trois choses qu'aucune autre table ne donne :
+///  · la preuve, en cas de litige, de ce que le prestataire a envoyé et quand —
+///    `metadata` est écrasé à chaque écriture ;
+///  · la détection des callbacks **hors ordre** (un `FAILED` qui arrive après un
+///    `COMPLETED` sur la même transaction) ;
+///  · le rejeu d'un callback perdu sans avoir à le redemander au prestataire.
+///
+/// En écriture seule : aucun endpoint ne la modifie ni ne la supprime.
+model PaymentEvent {
+  id String @id @default(cuid())
+
+  /// L'un des deux est renseigné — jamais les deux. Tous deux nuls quand le
+  /// callback ne correspond à aucune transaction connue (on garde quand même
+  /// la trace : c'est le signal d'une fuite de configuration ou d'une attaque).
+  paymentId String?
+  payment   Payment?          @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  payoutId  String?
+  payout    RestaurantPayout? @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+
+  kind       PaymentEventKind
+  provider   String // 'PAWAPAY', 'MTN_MOMO', 'MANUAL'
+  externalId String // depositId ou payoutId
+  source     PaymentEventSource
+  /// Statut brut annoncé par le prestataire ('COMPLETED', 'FAILED', 'ACCEPTED'…),
+  /// conservé sans traduction : c'est ce qu'il a dit, pas ce qu'on en a compris.
+  rawStatus  String
+  /// Corps complet du signal. **Sans les en-têtes d'authentification.**
+  payload    Json
+  outcome    PaymentEventOutcome @default(APPLIED)
+  receivedAt DateTime            @default(now())
+
+  @@index([provider, externalId])
+  @@index([paymentId, receivedAt])
+  @@index([payoutId, receivedAt])
+  @@index([outcome, receivedAt]) // supervision : compter doublons et incohérences
+}
+
+enum PaymentEventKind {
+  COLLECTION
+  PAYOUT
+}
+
+enum PaymentEventSource {
+  WEBHOOK // callback du prestataire
+  RECONCILIATION // interrogation par le cron
+  CLIENT_POLL // déclenché par GET /payments/:id/status
+  INITIATION // réponse synchrone à la demande d'opération
+}
+
+enum PaymentEventOutcome {
+  APPLIED // a fait avancer la transaction
+  DUPLICATE // état déjà atteint — rejeu sans effet
+  IGNORED // transaction inconnue, ou statut non terminal
+  MISMATCH // montant/devise incohérents ⇒ aucune transition, incident ouvert
 }
 
 enum DayOfWeek {
@@ -1090,6 +1320,13 @@ model AdminAuditLog {
 }
 
 enum AdminAuditAction {
+  // Reversement vendeur déclenché à la main (août 2026). Chaque envoi d'argent
+  // à un tiers doit laisser une trace nominative opposable, au même titre que
+  // PAYMENT_CONFIRMED.
+  PAYOUT_REQUESTED
+  PAYOUT_RETRIED
+  PAYOUT_CANCELLED
+  VENDOR_PAYOUT_ACCOUNT_UPDATED
   USER_ROLE_CHANGED
   USER_BANNED
   USER_UNBANNED
@@ -1139,7 +1376,21 @@ model Incident {
 model PlatformSettings {
   id String @id @default("singleton")
 
+  /// FRAIS DE SERVICE CLIENT — payés **en plus** par le client, ajoutés au
+  /// panier (`total = subTotal + deliveryFee + serviceFee - discount`).
+  /// Couvrent le fonctionnement, la technique, les frais de paiement et le
+  /// support de Lilia Food.
   serviceFeePercent Float @default(8)
+
+  /// COMMISSION VENDEUR par défaut — retenue **sur** le vendeur au moment du
+  /// reversement, jamais payée par le client.
+  /// `Restaurant.commissionPercent` la surcharge par vendeur quand il est non
+  /// nul (Restaurant A à 10 %, B à 8 %, C à 12 %).
+  ///
+  /// ⚠️ Ne jamais écrire ce taux en dur dans le code : il n'est pas arrêté, et
+  /// il est appelé à varier par vendeur. Le calcul passe TOUJOURS par
+  /// `RestaurantPayoutService.resolveCommissionPercent`.
+  restaurantCommissionPercent Float @default(10)
 
   loyaltyPointsPer100Xaf Int @default(1)
   loyaltyPointValueXaf   Int @default(5)

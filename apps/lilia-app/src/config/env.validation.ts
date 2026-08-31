@@ -86,8 +86,59 @@ export const envValidationSchema = Joi.object({
 
   // ─── Paiements ──────────────────────────────────────────────────────────
   PAYMENT_MODE: Joi.string()
-    .valid('MANUAL', 'SANDBOX', 'MTN_PRODUCTION')
+    .valid('MANUAL', 'SANDBOX', 'MTN_PRODUCTION', 'PAWAPAY')
     .default('MANUAL'),
+
+  // Nombre de tentatives d'encaissement autorisées par commande. Chaque
+  // tentative déclenche une opération facturée ET un message sur le téléphone
+  // saisi : sans plafond, l'endpoint devient un outil de harcèlement.
+  // 0 désactive le plafond.
+  PAYMENT_MAX_ATTEMPTS: Joi.number().integer().min(0).default(3),
+
+  // Délai au-delà duquel un encaissement dont le prestataire ne sait rien est
+  // clos (`RECONCILIATION_TIMEOUT`). Ne s'applique PAS aux reversements, qui
+  // demandent un arbitrage humain (cf. PaymentReconciliationService).
+  PAYMENT_RECONCILIATION_TIMEOUT_MINUTES: Joi.number()
+    .integer()
+    .min(5)
+    .default(15),
+
+  // ─── pawaPay ──────────────────────────────────────────────────────────────
+  // Requis dès `PAYMENT_MODE=PAWAPAY` : sans eux, aucun encaissement ni
+  // reversement n'est possible. Échouer au démarrage vaut mieux qu'échouer à la
+  // première transaction, devant un client.
+  PAWAPAY_API_URL: Joi.string()
+    .uri()
+    .when('PAYMENT_MODE', {
+      is: 'PAWAPAY',
+      then: Joi.required(),
+      otherwise: Joi.optional().allow(''),
+    }),
+  PAWAPAY_API_TOKEN: Joi.string().when('PAYMENT_MODE', {
+    is: 'PAWAPAY',
+    then: Joi.required(),
+    otherwise: Joi.optional().allow(''),
+  }),
+
+  // Clé publique pawaPay pour vérifier la signature des callbacks (RFC-9421).
+  // Optionnelle chez le prestataire, mais l'une des deux protections est
+  // OBLIGATOIRE côté Lilia : à défaut de clé, `PAWAPAY_CALLBACK_IPS` doit être
+  // renseignée, sinon le webhook refuse tout (fail-closed). Un endpoint public
+  // qui mute des lignes d'argent ne s'ouvre pas « en attendant ».
+  PAWAPAY_PUBLIC_KEY: Joi.string().allow('').optional(),
+  PAWAPAY_CALLBACK_IPS: Joi.string().allow('').optional(),
+
+  // Codes opérateur, propres au compte marchand. Ils ne figurent dans aucune
+  // énumération publique de la documentation : ils viennent de
+  // `GET /v2/active-conf`. Les défauts suivent la convention `<OPÉRATEUR>_<ISO3>`
+  // observée sur les autres marchés — à CONFIRMER avant la mise en production.
+  PAWAPAY_MTN_PROVIDER: Joi.string().default('MTN_MOMO_COG'),
+  PAWAPAY_AIRTEL_PROVIDER: Joi.string().default('AIRTEL_COG'),
+
+  // Préfixe du libellé lu par le client dans son SMS de reçu. pawaPay borne
+  // `customerMessage` à 22 caractères alphanumériques, référence de commande
+  // comprise — d'où la brièveté.
+  PAWAPAY_STATEMENT_PREFIX: Joi.string().max(12).default('LiliaFood'),
   LILIA_PAYMENT_PHONE: Joi.string().allow('').optional(),
   // Numéro d'encaissement Airtel. Si absent, on retombe sur LILIA_PAYMENT_PHONE
   // (cf. PaymentService) — mais un client Airtel ne peut pas envoyer sur un

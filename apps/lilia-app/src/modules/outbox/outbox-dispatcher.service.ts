@@ -78,7 +78,13 @@ export class OutboxDispatcherService {
   private async dispatchOne(event: OutboxEvent): Promise<void> {
     switch (event.type) {
       case 'order.created':
+        // Conservé pour les lignes écrites AVANT le chantier pawaPay : elles
+        // existent encore en base au déploiement et doivent être dépilées.
+        // Aucune nouvelle n'est créée avec ce type.
         await this.dispatchOrderCreated(event);
+        return;
+      case 'order.paid':
+        await this.dispatchOrderPaid(event);
         return;
       case VENDOR_INVITATION_EVENT:
         await this.dispatchVendorInvitation(event);
@@ -163,6 +169,89 @@ export class OutboxDispatcherService {
       event.id,
       event.attempts,
       'Commande toujours non prise en charge',
+    );
+  }
+
+  /**
+   * Rattrape la notification d'une commande **payée** que le vendeur n'a pas
+   * encore prise en charge.
+   *
+   * Différence avec `dispatchOrderCreated` : seul `PAYER` compte comme « pas
+   * encore pris en charge ». Une commande en `EN_ATTENTE` n'est pas payée, elle
+   * n'a rien à faire dans la file du vendeur — et une commande passée en
+   * `EN_PREPARATION` a été vue, l'obligation est remplie.
+   */
+  private async dispatchOrderPaid(event: OutboxEvent): Promise<void> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: event.aggregateId },
+      select: {
+        id: true,
+        status: true,
+        total: true,
+        createdAt: true,
+        paidAt: true,
+        restaurant: {
+          select: {
+            nom: true,
+            ownerId: true,
+            owner: { select: { phone: true } },
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      await this.outbox.markFailed(event.id, 'Commande introuvable');
+      return;
+    }
+
+    if (order.status !== OrderStatus.PAYER) {
+      // Soit le vendeur l'a acceptée, soit elle a été annulée : dans les deux
+      // cas, le signal a atteint sa cible ou n'a plus lieu d'être.
+      await this.outbox.markSent(event.id);
+      return;
+    }
+
+    await this.notifications.sendPushNotification(
+      order.restaurant.ownerId,
+      '🔔 Commande payée en attente',
+      `${Math.round(order.total)} FCFA — à accepter`,
+      { orderId: order.id, type: 'new_order', source: 'outbox' },
+    );
+
+    // L'ancienneté se mesure depuis le PAIEMENT, pas depuis la création : une
+    // commande créée il y a une heure et payée il y a trente secondes ne doit
+    // pas déclencher une escalade immédiate.
+    const reference = order.paidAt ?? order.createdAt;
+    const ageMinutes = (Date.now() - reference.getTime()) / 60000;
+    const shouldEscalate =
+      !event.escalatedAt &&
+      ageMinutes >= OutboxDispatcherService.ESCALATION_MINUTES;
+
+    if (shouldEscalate) {
+      const phone = order.restaurant.owner?.phone;
+      if (phone) {
+        await this.sms.send(
+          phone,
+          `Lilia Food : une commande payee de ${Math.round(order.total)} FCFA attend depuis ${Math.round(ageMinutes)} min. Ouvrez l'application pour la preparer.`,
+        );
+        await this.outbox.markEscalated(event.id);
+        this.logger.warn(
+          `📨 Escalade SMS au vendeur pour la commande payée ${order.id} (${Math.round(ageMinutes)} min)`,
+        );
+      } else {
+        this.logger.error(
+          `Escalade impossible pour la commande ${order.id} : le vendeur n'a pas de téléphone renseigné.`,
+        );
+      }
+    }
+
+    // On NE marque pas SENT : tant que la commande n'est pas acceptée,
+    // l'obligation demeure. Le backoff espace les rappels.
+    await this.outbox.scheduleRetry(
+      event.id,
+      event.attempts,
+      'Commande payée toujours non acceptée',
     );
   }
 

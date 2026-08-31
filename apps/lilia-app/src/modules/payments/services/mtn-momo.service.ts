@@ -45,12 +45,22 @@ export class MtnMomoService {
 
   // ===== Fonctionnalités de paiement =====
 
-  async requestToPay(request: RequestToPayRequest): Promise<string> {
+  /**
+   * @param externalReferenceId Identifiant de transaction imposé par l'appelant.
+   *   `PaymentService` le génère et le **persiste avant** l'appel : c'est ce qui
+   *   rend un rejeu sûr (l'opérateur reconnaît la référence au lieu de débiter
+   *   une seconde fois). Sans lui, on en fabriquait un ici — donc un nouveau à
+   *   chaque tentative, et un retry réseau valait un second débit.
+   */
+  async requestToPay(
+    request: RequestToPayRequest,
+    externalReferenceId?: string,
+  ): Promise<string> {
     if (!this.token.isReady) {
       await this.token.initialize();
     }
 
-    const referenceId = randomUUID();
+    const referenceId = externalReferenceId ?? randomUUID();
 
     try {
       this.logger.log(`Initiating payment request: ${referenceId}`);

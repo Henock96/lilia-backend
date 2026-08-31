@@ -1,23 +1,32 @@
-/* eslint-disable prettier/prettier */
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
-import { MtnMomoService } from './services/mtn-momo.service';
-import { MtnMomoTokenService } from './services/mtn-momo-token.service';
-import { PaymentService } from './services/payment.service';
+
+import { AdminAuditModule } from '../admin-audit/admin-audit.module';
+import { PaymentCoreModule } from './payment-core.module';
+
 import { PaymentController } from './controllers/payment.controller';
+import { AdminPayoutController } from './controllers/admin-payout.controller';
 import { WebhookController } from './controllers/webhook.controller';
-import { PrismaModule } from '../../prisma/prisma.module';
+import { PawaPayWebhookController } from './controllers/pawapay-webhook.controller';
 
+/**
+ * Façade HTTP des paiements : encaissement client (collection) et reversement
+ * vendeur (payout).
+ *
+ * Toute la logique vit dans `PaymentCoreModule` ; ce module n'ajoute que les
+ * quatre controllers, et n'est donc jamais importé par le worker.
+ *
+ * Les deux flux ne se déclenchent pas l'un l'autre : `RestaurantPayoutService`
+ * n'est appelé que depuis `AdminPayoutController`, sur une action humaine
+ * explicite.
+ */
 @Module({
-  imports: [ConfigModule, PrismaModule],
-  controllers: [PaymentController, WebhookController],
-  providers: [MtnMomoTokenService, MtnMomoService, PaymentService],
-  exports: [PaymentService],
+  imports: [PaymentCoreModule, AdminAuditModule],
+  controllers: [
+    PaymentController,
+    AdminPayoutController,
+    WebhookController,
+    PawaPayWebhookController,
+  ],
+  exports: [PaymentCoreModule],
 })
-export class PaymentModule {
-  constructor(private readonly mtnMomoService: MtnMomoService) {}
-
-  /*async onModuleInit() {
-    await this.mtnMomoService.initialize();
-  }*/
-}
+export class PaymentModule {}

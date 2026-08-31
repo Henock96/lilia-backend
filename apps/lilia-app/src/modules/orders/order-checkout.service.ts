@@ -22,7 +22,6 @@ import { StockService } from './stock.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { PreorderValidatorService } from '../vendors/preorder-validator.service';
 import { QuartiersService } from '../quartiers/quartiers.service';
-import { OutboxService } from '../outbox/outbox.service';
 
 /**
  * Checkout : création d'une commande à partir du panier (LIL-134).
@@ -56,7 +55,6 @@ export class OrderCheckoutService {
     private readonly platformSettings: PlatformSettingsService,
     private readonly preorderValidator: PreorderValidatorService,
     private readonly quartiersService: QuartiersService,
-    private readonly outbox: OutboxService,
     // Client partagé fourni par `RedisModule.forRootAsync` (app.module). On
     // n'ouvre plus une seconde connexion ici : Render plafonne les connexions
     // Redis et `UserCacheService` utilise déjà ce même pool.
@@ -295,7 +293,7 @@ export class OrderCheckoutService {
         loyaltyDiscount,
     );
     // 5. Exécuter la création de la commande et la suppression du panier dans une transaction
-    const { order, outboxId } = await this.prisma.$transaction(async (tx) => {
+    const { order } = await this.prisma.$transaction(async (tx) => {
       const newOrder = await tx.order.create({
         data: {
           userId: user.id,
@@ -399,22 +397,17 @@ export class OrderCheckoutService {
         },
       });
 
-      // 8. Obligation de notifier le vendeur, écrite DANS la transaction
-      // (fix H7). Si la commande existe, l'obligation existe : plus de
-      // notification perdue parce que le process est mort entre le commit et
-      // l'émission de l'événement en mémoire.
-      const outboxId = await this.outbox.enqueueInTransaction(tx, {
-        type: 'order.created',
-        aggregateId: newOrder.id,
-        payload: {
-          orderId: newOrder.id,
-          userId: newOrder.userId,
-          restaurantId: newOrder.restaurantId,
-          totalAmount: newOrder.total,
-        },
-      });
-
-      return { order: newOrder, outboxId };
+      // ⚠️ L'obligation de notifier le VENDEUR n'est plus écrite ici (chantier
+      // pawaPay, août 2026).
+      //
+      // Elle l'était à la création de la commande, donc avant tout paiement.
+      // Le fix H7 reste entier — l'obligation est toujours écrite DANS une
+      // transaction, mais dans celle qui confirme le paiement
+      // (`PaymentService.confirmCollection`, type `order.paid`). Le principe est
+      // le même, le moment est juste : une commande non payée n'a pas à
+      // déranger un vendeur, et avec un prestataire qui tranche en une minute,
+      // notifier plus tôt reviendrait à le prévenir de commandes abandonnées.
+      return { order: newOrder };
     });
     this.logger.log(
       `🔔 Nouvelles commandes:${order.id} au restaurant ${order.restaurantId} pour un total de ${order.total} FCFA.`,
@@ -429,12 +422,6 @@ export class OrderCheckoutService {
         itemCount: order.items.length,
         restaurantName: order.restaurant.nom, // Exemple statique, à remplacer par une vraie estimation si disponible
       },
-      undefined,
-      // Chemin rapide : le listener notifie immédiatement puis acquitte cette
-      // ligne d'outbox. S'il échoue ou si le process meurt, le dispatcher
-      // reprend la main (fix H7). L'identifiant reste interne : il ne figure
-      // pas dans la réponse HTTP.
-      outboxId,
     );
 
     this.eventEmitter.emit('order.created', orderCreatedEvent);
