@@ -4,7 +4,9 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConflictException } from '@nestjs/common';
 
 import { PaymentService } from './services/payment.service';
-import { MtnMomoService } from './services/mtn-momo.service';
+import { PaymentEventService } from './services/payment-event.service';
+import { PaymentProviderRegistry } from './payment-provider.registry';
+import { OutboxService } from '../outbox/outbox.service';
 import { PrismaService } from '../../prisma/prisma.service';
 
 /**
@@ -24,7 +26,9 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
     user: { findUnique: jest.fn() },
     payment: {
       findUniqueOrThrow: jest.fn(),
+      findUnique: jest.fn(),
       findFirst: jest.fn(),
+      count: jest.fn().mockResolvedValue(0),
       updateMany: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
@@ -34,22 +38,57 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
       findUnique: jest.fn(),
       findFirst: jest.fn(),
     },
+    paymentEvent: {
+      findFirst: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+    },
+    incident: { create: jest.fn() },
     $transaction: jest.fn(),
   };
   const eventEmitter = { emit: jest.fn() };
+  const events = {
+    record: jest.fn().mockResolvedValue('evt-1'),
+    setOutcome: jest.fn(),
+  };
+  const outbox = { enqueueInTransaction: jest.fn().mockResolvedValue('ob-1') };
+  /**
+   * Le mode MANUAL n'appelle aucun prestataire : un provider inerte suffit. Les
+   * chemins réseau sont couverts par `pawapay.provider.spec.ts`.
+   */
+  const manualProvider = {
+    name: 'MANUAL',
+    supportsCollection: true,
+    supportsPayout: false,
+    createCollection: jest.fn(),
+    getCollectionStatus: jest.fn().mockResolvedValue(null),
+    createPayout: jest.fn(),
+    getPayoutStatus: jest.fn().mockResolvedValue(null),
+  };
+  const registry = {
+    currentMode: 'MANUAL',
+    forNewTransaction: () => manualProvider,
+    forStoredProvider: () => manualProvider,
+    forPayout: () => null,
+  };
 
   beforeEach(async () => {
     jest.resetAllMocks();
     prisma.$transaction.mockImplementation(async (arg: any) =>
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg),
     );
+    events.record.mockResolvedValue('evt-1');
+    outbox.enqueueInTransaction.mockResolvedValue('ob-1');
+    prisma.paymentEvent.findFirst.mockResolvedValue(null);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         PaymentService,
         { provide: PrismaService, useValue: prisma },
-        { provide: MtnMomoService, useValue: {} },
         { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: PaymentEventService, useValue: events },
+        { provide: PaymentProviderRegistry, useValue: registry },
+        { provide: OutboxService, useValue: outbox },
         {
           provide: ConfigService,
           useValue: {
@@ -65,6 +104,23 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
 
   describe('confirmManualPayment', () => {
     it('confirme un paiement sur une commande EN_ATTENTE', async () => {
+      // `confirmManualPayment` délègue à `applyCollectionProviderStatus`, qui
+      // relit le paiement avec sa commande : les deux lectures sont simulées.
+      prisma.payment.findUnique.mockResolvedValue({
+        id: 'p1',
+        status: 'PENDING',
+        amount: 5000,
+        currency: 'XAF',
+        provider: 'MANUAL',
+        providerTransactionId: null,
+        orderId: 'o1',
+        order: {
+          id: 'o1',
+          status: 'EN_ATTENTE',
+          userId: 'u1',
+          restaurantId: 'r1',
+        },
+      });
       prisma.payment.findUniqueOrThrow.mockResolvedValue({
         id: 'p1',
         status: 'PENDING',
@@ -115,7 +171,34 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
       },
     );
 
-    it('émet l’événement APRÈS le commit, jamais avant', async () => {
+    it("n'annonce jamais un paiement confirmé si la commande a bougé", async () => {
+      // Course entre la vérification et la transaction : la commande était
+      // EN_ATTENTE au contrôle, elle ne l'est plus au moment d'écrire.
+      //
+      // ⚠️ Le comportement a changé avec le chantier pawaPay, délibérément.
+      // Auparavant on levait, ce qui annulait aussi l'écriture du paiement —
+      // donc on perdait la trace d'un encaissement réel. Désormais le paiement
+      // est enregistré SUCCESS (l'argent existe), la commande n'est PAS forcée,
+      // et `payment.orphaned` ouvre un incident pour qu'un remboursement soit
+      // traité.
+      //
+      // La propriété que ce test protège est inchangée : aucune notification de
+      // confirmation ne part pour une commande qui n'a pas été payée.
+      prisma.payment.findUnique.mockResolvedValue({
+        id: 'p1',
+        status: 'PENDING',
+        amount: 5000,
+        currency: 'XAF',
+        provider: 'MANUAL',
+        providerTransactionId: null,
+        orderId: 'o1',
+        order: {
+          id: 'o1',
+          status: 'EN_ATTENTE',
+          userId: 'u1',
+          restaurantId: 'r1',
+        },
+      });
       prisma.payment.findUniqueOrThrow.mockResolvedValue({
         id: 'p1',
         status: 'PENDING',
@@ -129,12 +212,14 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
         },
       });
       prisma.payment.updateMany.mockResolvedValue({ count: 1 });
-      prisma.order.updateMany.mockResolvedValue({ count: 0 }); // statut changé entre-temps
+      prisma.order.updateMany.mockResolvedValue({ count: 0 }); // statut changé
 
-      await expect(service.confirmManualPayment('p1')).rejects.toBeInstanceOf(
-        ConflictException,
-      );
-      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      await service.confirmManualPayment('p1');
+
+      const emitted = eventEmitter.emit.mock.calls.map((c: any[]) => c[0]);
+      expect(emitted).not.toContain('order.payment.confirmed');
+      expect(emitted).not.toContain('order.paid');
+      expect(emitted).toContain('payment.orphaned');
     });
   });
 

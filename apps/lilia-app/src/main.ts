@@ -22,6 +22,17 @@ async function bootstrap() {
   // Pino soit branché via useLogger (LIL-35), pour que TOUT passe par Pino.
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true,
+    // rawBody : conserve les octets exacts du corps de requête dans `req.rawBody`.
+    //
+    // Indispensable pour vérifier une signature de webhook calculée SUR LE CORPS
+    // BRUT (pawaPay signe selon RFC-9421 : `Content-Digest` est un hash du corps
+    // tel qu'envoyé). Sans ce drapeau, Express parse le JSON puis on ne dispose
+    // que de l'objet : le re-sérialiser produit des octets différents (ordre des
+    // clés, espaces, échappement Unicode) et le digest ne correspond jamais.
+    //
+    // Le surcoût est une copie du corps en mémoire ; il est borné par la limite
+    // de taille du body parser et négligeable sur une API JSON.
+    rawBody: true,
   });
   // Remplace le logger natif par Pino (logs structurés JSON en prod).
   app.useLogger(app.get(PinoLogger));

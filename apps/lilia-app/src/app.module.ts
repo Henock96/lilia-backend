@@ -58,6 +58,7 @@ import { OutboxModule } from './modules/outbox/outbox.module';
 import { OrdersListener } from './modules/listeners/orders.listener';
 import { DeliveriesListener } from './modules/listeners/deliveries.listener';
 import { PaymentListener } from './modules/listeners/payment.listener';
+import { PayoutListener } from './modules/listeners/payout.listener';
 import { MenusListener } from './modules/listeners/menus.listener';
 import { UserListener } from './modules/listeners/user.listener';
 import { VendorsListener } from './modules/listeners/vendors.listener';
@@ -227,6 +228,7 @@ import { envValidationSchema } from './config/env.validation';
     OrdersListener,
     DeliveriesListener,
     PaymentListener,
+    PayoutListener,
     MenusListener,
     UserListener,
     VendorsListener,

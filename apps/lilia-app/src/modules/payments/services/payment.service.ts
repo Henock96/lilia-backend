@@ -1,19 +1,49 @@
-/* eslint-disable prettier/prettier */
-import { BadRequestException, ConflictException, ForbiddenException, HttpException, HttpStatus, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../../../prisma/prisma.service';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  HttpException,
+  HttpStatus,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { MtnMomoService } from './mtn-momo.service';
-import { OrderStatus } from '@prisma/client';
-import { OrderPaymentConfirmedEvent } from '../../events/order-events';
 import { ConfigService } from '@nestjs/config';
+import { randomUUID } from 'node:crypto';
+import {
+  OrderStatus,
+  PaymentEventKind,
+  PaymentEventOutcome,
+  PaymentEventSource,
+  Prisma,
+} from '@prisma/client';
+import * as Sentry from '@sentry/nestjs';
+
+import { PrismaService } from '../../../prisma/prisma.service';
+import { OrderPaymentConfirmedEvent } from '../../events/order-events';
+import { OutboxService } from '../../outbox/outbox.service';
 import { CreatePaymentDto } from '../dto/create-payment.dto';
+import { PaymentProviderRegistry } from '../payment-provider.registry';
+import {
+  ManualPaymentInstructions,
+  ProviderTransactionStatus,
+  ProviderUnavailableError,
+} from '../providers/payment-provider.interface';
+import { PaymentEventService } from './payment-event.service';
 
 /** Masque un numéro de téléphone pour les logs : garde les 2 derniers chiffres. */
-function maskPhone(phone?: string): string {
+export function maskPhone(phone?: string): string {
   if (!phone) return 'n/a';
   const trimmed = phone.trim();
   if (trimmed.length <= 2) return '***';
   return `***${trimmed.slice(-2)}`;
+}
+
+/** Masque une référence de transaction : garde les 4 derniers caractères. */
+export function maskRef(ref?: string | null): string {
+  if (!ref) return 'n/a';
+  return ref.length <= 4 ? '****' : `****${ref.slice(-4)}`;
 }
 
 export enum PaymentStatus {
@@ -22,272 +52,341 @@ export enum PaymentStatus {
   FAILED = 'FAILED',
   CANCELLED = 'CANCELLED',
 }
-export enum PaymentMode {
-  SANDBOX = 'SANDBOX',        // MTN MoMo sandbox (tests)
-  MANUAL = 'MANUAL',          // Virement manuel vers numéro Lilia Food
-  MTN_PRODUCTION = 'MTN_PRODUCTION', // Quand agrément obtenu
-}
+
 /**
- * ⚠️ Ne PAS retyper la route sur une interface (fix H1) : une interface
- * n'existe pas au runtime, donc le ValidationPipe global ne valide rien.
- * Le contrat HTTP est porté par `dto/create-payment.dto.ts` ; ce type-ci n'est
- * plus qu'un alias interne pour les appels programmatiques.
+ * ⚠️ Ne PAS retyper la route sur une interface (fix H1) : une interface n'existe
+ * pas au runtime, donc le ValidationPipe global ne valide rien. Le contrat HTTP
+ * est porté par `dto/create-payment.dto.ts` ; ce type-ci n'est qu'un alias
+ * interne pour les appels programmatiques.
  */
 export type CreatePaymentRequest = CreatePaymentDto;
+
+/** Issue d'un signal prestataire appliqué à un encaissement. */
+export type ApplyOutcome = 'APPLIED' | 'DUPLICATE' | 'IGNORED' | 'MISMATCH';
 
 @Injectable()
 export class PaymentService {
   private readonly logger = new Logger(PaymentService.name);
-  private readonly mode: PaymentMode;
-  private readonly manualPaymentNumber: string;
-  private readonly airtelPaymentNumber: string;
+
+  /**
+   * Plafond de tentatives d'encaissement par commande.
+   *
+   * Sans plafond, chaque `POST /payments` déclenche une demande facturée chez le
+   * prestataire, et surtout un push USSD sur le téléphone saisi : un attaquant
+   * pourrait harceler un tiers en boucle. Le throttle (1/s, 10/min) ralentit,
+   * il ne borne pas.
+   */
+  private readonly maxAttempts: number;
+
   constructor(
     private readonly prisma: PrismaService,
-    private readonly mtnMomoService: MtnMomoService,
     private readonly eventEmitter: EventEmitter2,
     private readonly config: ConfigService,
+    private readonly registry: PaymentProviderRegistry,
+    private readonly events: PaymentEventService,
+    private readonly outbox: OutboxService,
   ) {
-    this.mode = this.config.get<PaymentMode>('PAYMENT_MODE', PaymentMode.MANUAL);
-    this.manualPaymentNumber = this.config.get<string>('LILIA_PAYMENT_PHONE', '');
-    // Numéro d'encaissement Airtel. Sans valeur dédiée, on retombe sur le
-    // numéro MTN plutôt que d'afficher un numéro vide au client.
-    this.airtelPaymentNumber =
-      this.config.get<string>('LILIA_AIRTEL_PAYMENT_PHONE', '') ||
-      this.manualPaymentNumber;
+    this.maxAttempts = Number(
+      this.config.get<number>('PAYMENT_MAX_ATTEMPTS', 3),
+    );
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // Initiation
+  // ══════════════════════════════════════════════════════════════════════════
+
   async createPayment(request: CreatePaymentRequest, firebaseUid: string) {
-    // Fix M3 : une commande intégralement réglée en points de fidélité a un
-    // total de 0. On affichait « Envoyez 0 FCFA au … », aucun paiement n'était
-    // possible, et `OrderExpiryService` annulait la commande 45 min plus tard.
-    // Il n'y a rien à encaisser : on la marque payée immédiatement.
     const order = await this.getPayableOrder(request.orderId, firebaseUid);
+
+    // Fix M3 : une commande intégralement réglée en points de fidélité a un
+    // total de 0. Aucun opérateur mobile money n'accepte un transfert nul :
+    // on affichait « Envoyez 0 FCFA au … », rien n'était payable, et le cron
+    // annulait la commande. Il n'y a rien à encaisser — on la marque payée.
     if (order.total <= 0) {
       return this.settleZeroAmountOrder(order);
     }
 
-    switch (this.mode) {
-      case PaymentMode.MANUAL:
-        return this.createManualPayment(request, firebaseUid);
-      case PaymentMode.SANDBOX:
-      case PaymentMode.MTN_PRODUCTION:
-        return this.createMtnPayment(request, firebaseUid);
-      default:
-        throw new BadRequestException(`Mode de paiement invalide: ${this.mode}`);
-    }
-  }
-  async createMtnPayment(request: CreatePaymentRequest, firebaseUid: string): Promise<{ paymentId: string; referenceId: string }> {
-    const order = await this.getPayableOrder(request.orderId, firebaseUid);
-    const amount = order.total;
-    const currency = 'XAF';
+    await this.assertAttemptsRemaining(order.id);
 
-    this.logger.log(`💰 [PAIEMENT] Début - commande: ${request.orderId}, montant: ${amount} ${currency}, tel: ${maskPhone(request.phoneNumber)}`);
+    const provider = this.registry.forNewTransaction();
+    // ⚠️ Le montant vient de `order.total`, JAMAIS du corps de la requête —
+    // `amount` a d'ailleurs été retiré du DTO pour que le contrat ne suggère
+    // même pas le contraire.
+    const amountXaf = Math.round(order.total);
+    const method = request.method ?? order.paymentMethod;
 
-    // Valider le numéro de téléphone
-    if (!this.mtnMomoService.validatePhoneNumber(request.phoneNumber)) {
-      this.logger.warn(`💰 [PAIEMENT] Échec: numéro invalide ${maskPhone(request.phoneNumber)} - commande: ${request.orderId}`);
-      throw new Error('Invalid phone number format');
-    }
-    await this.assertNoPendingPayment(order.id);
-
-    // Créer l'enregistrement de paiement
-    const payment = await this.prisma.payment.create({
-      data: {
-        orderId: request.orderId,
-        amount,
-        currency,
-        phoneNumber: this.mtnMomoService.formatPhoneNumber(request.phoneNumber),
-        status: PaymentStatus.PENDING,
-        provider: 'MTN_MOMO',
-        metadata: {},
-      },
+    // L'identifiant prestataire est généré et PERSISTÉ AVANT l'appel : c'est ce
+    // qui rend un rejeu sûr. Le regénérer à chaque tentative vaudrait un second
+    // débit sur un simple timeout réseau.
+    const payment = await this.acquireOrReusePendingPayment({
+      orderId: order.id,
+      amountXaf,
+      phoneNumber: request.phoneNumber,
+      method,
+      providerName: provider.name,
     });
 
-    try {
-      // Initier le paiement avec MTN MoMo
-      const referenceId = await this.mtnMomoService.requestToPay({
-        amount: amount.toString(),
-        currency,
-        externalId: payment.id,
-        payer: {
-          partyIdType: 'MSISDN',
-          partyId: this.mtnMomoService.formatPhoneNumber(request.phoneNumber),
-        },
-        payerMessage: request.payerMessage || `Paiement commande ${order.id}`,
-        payeeNote: `Paiement chez ${order.restaurant.nom}`,
-      });
-
-      // Mettre à jour avec la référence MTN
-      await this.prisma.payment.update({
-        where: { id: payment.id },
-        data: { 
-          providerTransactionId: referenceId,
-          metadata: { referenceId }
-        },
-      });
-
-      this.logger.log(`Payment created: ${payment.id} with MTN reference: ${referenceId}`);
-
-      return {
-        paymentId: payment.id,
-        referenceId,
-      };
-    } catch (error) {
-      // On NE logge PAS les headers/body de la requête : ils contiennent les
-      // identifiants d'API MTN (Authorization, subscription key) et le numéro
-      // du payeur. On garde uniquement le statut + le code d'erreur côté provider.
-      this.logger.error(
-        `❌ Payment request failed — status: ${error.response?.status ?? 'n/a'}, code: ${error.response?.data?.code ?? error.code ?? 'n/a'}`,
+    // Une ligne réutilisée dont la demande a déjà été acceptée par le
+    // prestataire ne doit pas en déclencher une seconde : le client attend
+    // toujours devant son téléphone, et pawaPay répondrait DUPLICATE_IGNORED.
+    if (payment.reused && payment.alreadySubmitted) {
+      this.logger.log(
+        `💰 Demande déjà en cours pour la commande ${order.id} — pas de nouvel envoi`,
       );
-      // Fix M14 : `details: error.response?.data` était repris tel quel par
-      // HttpExceptionFilter et renvoyé au client — fuite d'informations du
-      // fournisseur (codes internes, messages, parfois identifiants d'appel).
-      // Le diagnostic reste entièrement disponible côté logs ci-dessus.
-      throw new HttpException(
-        {
-          message:
-            "Le paiement n'a pas pu être initié auprès de l'opérateur. Réessayez dans un instant.",
-          code: 'PAYMENT_PROVIDER_ERROR',
-        },
-        error.response?.status && error.response.status < 500
-          ? HttpStatus.BAD_REQUEST
-          : HttpStatus.BAD_GATEWAY,
-      );
+      return this.buildCreateResponse(payment.row, order, null);
     }
-  }
 
-   /**
-   * Mode MANUAL — utilisé en prod Congo jusqu'à agrément obtenu.
-   * Crée un enregistrement PENDING et retourne les instructions de paiement.
-   * Le client paie sur le numéro Lilia Food, l'admin confirme manuellement.
-   */
-  private async createManualPayment(request: CreatePaymentRequest, firebaseUid: string) {
-    const order = await this.getPayableOrder(request.orderId, firebaseUid);
-    const amount = order.total;
-    const currency = 'XAF';
+    let result: Awaited<ReturnType<typeof provider.createCollection>>;
+    try {
+      result = await provider.createCollection({
+        paymentId: payment.row.id,
+        providerTransactionId: payment.row.providerTransactionId!,
+        amountXaf,
+        currency: payment.row.currency,
+        phoneNumber: request.phoneNumber,
+        method,
+        orderRef: this.orderRef(order.id),
+        vendorName: order.restaurant.nom,
+      });
+    } catch (error) {
+      if (error instanceof ProviderUnavailableError) {
+        // La ligne reste PENDING avec son identifiant : le retry rejouera la
+        // MÊME demande. On ne la marque surtout pas en échec — on ne sait pas
+        // si le prestataire l'a reçue.
+        this.logger.error(
+          `💰 Prestataire injoignable — commande ${order.id}, paiement ${payment.row.id}`,
+        );
+        throw new HttpException(
+          {
+            message: error.message,
+            code: 'PAYMENT_PROVIDER_UNAVAILABLE',
+          },
+          HttpStatus.BAD_GATEWAY,
+        );
+      }
+      throw error;
+    }
 
-    // Le numéro d'encaissement dépend de l'opérateur choisi au checkout : on
-    // ne peut pas demander à un client Airtel d'envoyer sur un numéro MTN.
-    const isAirtel = order.paymentMethod === 'AIRTEL_MONEY';
-    const paymentPhone = isAirtel
-      ? this.airtelPaymentNumber
-      : this.manualPaymentNumber;
-    const methodLabel = isAirtel ? 'Airtel Money' : 'MTN MoMo';
+    await this.events.record({
+      kind: PaymentEventKind.COLLECTION,
+      provider: provider.name,
+      externalId: payment.row.providerTransactionId!,
+      source: PaymentEventSource.INITIATION,
+      rawStatus: result.accepted
+        ? result.duplicate
+          ? 'DUPLICATE_IGNORED'
+          : 'ACCEPTED'
+        : 'REJECTED',
+      payload: result.raw,
+      paymentId: payment.row.id,
+      outcome: result.accepted
+        ? PaymentEventOutcome.APPLIED
+        : PaymentEventOutcome.IGNORED,
+    });
 
-    if (!paymentPhone) {
-      // Mieux vaut un message clair qu'une modale affichant un numéro vide.
-      this.logger.error(
-        `LILIA_PAYMENT_PHONE non configuré — paiement ${methodLabel} impossible`,
+    if (!result.accepted) {
+      // Refus définitif du prestataire : la ligne passe FAILED pour libérer
+      // l'index partiel et permettre une nouvelle tentative. La commande, elle,
+      // reste EN_ATTENTE — un échec de paiement n'annule jamais une commande.
+      await this.markPaymentFailed(
+        payment.row.id,
+        result.failureCode,
+        result.failureMessage,
       );
       throw new BadRequestException(
-        'Le paiement est temporairement indisponible. Contactez le support.',
+        result.failureMessage ??
+          "Le paiement n'a pas pu être initié auprès de l'opérateur.",
       );
     }
 
-    // Idempotent : si un paiement est déjà en attente pour cette commande, on
-    // renvoie ses instructions au lieu de lever.
-    //
-    // Le client peut légitimement rejouer cet appel — timeout Render, 4G qui
-    // coupe entre la création de la commande et celle du paiement. Refuser le
-    // retry laissait le client devant des instructions de paiement sans aucune
-    // ligne `Payment` correspondante : il payait, et le virement n'était
-    // rattachable à rien.
-    const existing = await this.prisma.payment.findFirst({
-      where: { orderId: order.id, status: 'PENDING', provider: 'MANUAL' },
-    });
+    this.logger.log(
+      `💰 Encaissement initié — commande ${order.id}, ${amountXaf} XAF, ` +
+        `ref ${maskRef(payment.row.providerTransactionId)}, tel ${maskPhone(request.phoneNumber)}`,
+    );
 
-    const payment =
-      existing ??
-      (await this.prisma.payment.create({
+    return this.buildCreateResponse(
+      payment.row,
+      order,
+      result.instructions ?? null,
+    );
+  }
+
+  /**
+   * Crée la tentative de paiement, ou réutilise celle en cours.
+   *
+   * ⚠️ **C'est ici que se joue l'absence de double débit.** La version
+   * précédente faisait un `findFirst` puis un `create` : deux requêtes
+   * concurrentes lisaient toutes deux « aucun paiement en attente » et créaient
+   * chacune leur ligne — donc deux demandes au prestataire, donc deux débits.
+   *
+   * On tente désormais l'insertion **d'abord** et on rattrape le `P2002` levé
+   * par l'index unique partiel `payments_order_pending_uq`. La base arbitre, et
+   * elle ne peut pas se tromper : une seule des deux transactions gagne.
+   */
+  private async acquireOrReusePendingPayment(input: {
+    orderId: string;
+    amountXaf: number;
+    phoneNumber: string;
+    method: Prisma.PaymentCreateInput['method'];
+    providerName: string;
+  }) {
+    const providerTransactionId = randomUUID();
+
+    try {
+      const row = await this.prisma.payment.create({
         data: {
-          orderId: request.orderId,
-          amount,
-          currency,
-          phoneNumber: request.phoneNumber,
-          status: 'PENDING',
-          provider: 'MANUAL',
-          metadata: {
-            mode: 'manual',
-            paymentPhone,
-            method: order.paymentMethod,
-          },
+          orderId: input.orderId,
+          amount: input.amountXaf,
+          currency: 'XAF',
+          phoneNumber: input.phoneNumber,
+          method: input.method,
+          status: PaymentStatus.PENDING,
+          provider: input.providerName,
+          providerTransactionId,
+          metadata: {},
         },
-      }));
+      });
+      return { row, reused: false, alreadySubmitted: false };
+    } catch (error) {
+      if (
+        !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+        error.code !== 'P2002'
+      ) {
+        throw error;
+      }
 
+      const existing = await this.prisma.payment.findFirst({
+        where: { orderId: input.orderId, status: PaymentStatus.PENDING },
+      });
+      if (!existing) {
+        // La ligne concurrente a été résolue entre le conflit et la relecture.
+        // Un 409 laisse le client réessayer proprement plutôt que de boucler.
+        throw new ConflictException(
+          'Un paiement vient d’être traité pour cette commande. Rechargez-la.',
+        );
+      }
+
+      // Une tentative précédente a-t-elle déjà été soumise au prestataire ?
+      const alreadySubmitted = await this.prisma.paymentEvent
+        .findFirst({
+          where: {
+            paymentId: existing.id,
+            source: PaymentEventSource.INITIATION,
+            outcome: PaymentEventOutcome.APPLIED,
+          },
+          select: { id: true },
+        })
+        .then((event) => event !== null)
+        .catch(() => false);
+
+      this.logger.log(
+        `💰 Paiement PENDING réutilisé pour la commande ${input.orderId} ` +
+          `(soumis au prestataire : ${alreadySubmitted})`,
+      );
+      return { row: existing, reused: true, alreadySubmitted };
+    }
+  }
+
+  private buildCreateResponse(
+    payment: {
+      id: string;
+      amount: number;
+      currency: string;
+      method: string | null;
+      provider: string;
+    },
+    order: { id: string },
+    instructions: ManualPaymentInstructions | null,
+  ) {
     return {
       paymentId: payment.id,
-      mode: 'MANUAL',
-      instructions: {
-        message: `Envoyez ${amount} FCFA au ${paymentPhone} (${methodLabel})`,
-        reference: payment.id.slice(-8).toUpperCase(),
-        phone: paymentPhone,
-        method: order.paymentMethod,
-        methodLabel,
-        amount,
-        currency,
-        note: `Commande ${order.id.slice(-6)} - ${order.restaurant.nom}`,
-      },
+      orderId: order.id,
+      status: PaymentStatus.PENDING,
+      provider: payment.provider,
+      method: payment.method,
+      amount: payment.amount,
+      currency: payment.currency,
+      /**
+       * Délai avant la première interrogation de statut. Le client attend
+       * devant son téléphone : interroger trop tôt ne renvoie que du PENDING et
+       * consomme sa data.
+       */
+      pollAfterMs: 3000,
+      // Présentes uniquement en mode MANUAL.
+      instructions: instructions ?? undefined,
+      mode: this.registry.currentMode,
     };
   }
+
   /**
    * Commande à total nul (100 % points de fidélité) — fix M3.
-   *
-   * Aucun opérateur mobile money n'accepte un transfert de 0 FCFA : la commande
-   * restait donc impayable et finissait annulée par le cron d'expiration. On
-   * trace un `Payment` SUCCESS à 0 (pour que la commande ait bien une pièce
-   * comptable) et on passe la commande à `PAYER` dans la même transaction.
    * Idempotent : rejouer l'appel renvoie le paiement existant.
    */
-  private async settleZeroAmountOrder(order: any) {
+  private async settleZeroAmountOrder(order: {
+    id: string;
+    userId: string;
+    restaurantId: string;
+  }) {
     const existing = await this.prisma.payment.findFirst({
-      where: { orderId: order.id, status: 'SUCCESS' },
+      where: { orderId: order.id, status: PaymentStatus.SUCCESS },
     });
 
-    const payment =
-      existing ??
-      (await this.prisma.$transaction(async (tx) => {
-        const created = await tx.payment.create({
-          data: {
-            orderId: order.id,
-            amount: 0,
-            currency: 'XAF',
-            phoneNumber: '',
-            status: 'SUCCESS',
-            provider: 'MANUAL',
-            metadata: { mode: 'zero_amount', reason: 'loyalty_points_only' },
-          },
-        });
-
-        const claimed = await tx.order.updateMany({
-          where: { id: order.id, status: OrderStatus.EN_ATTENTE },
-          data: { status: OrderStatus.PAYER, paidAt: new Date() },
-        });
-        if (claimed.count === 0) {
-          throw new ConflictException(
-            'Le statut de la commande a changé. Rechargez la commande.',
-          );
-        }
-        return created;
-      }));
-
-    if (!existing) {
-      this.eventEmitter.emit(
-        'order.payment.confirmed',
-        new OrderPaymentConfirmedEvent(
-          order.id,
-          order.userId,
-          order.restaurantId,
-          payment.id,
-          0,
-        ),
-      );
-      this.logger.log(
-        `💰 [PAIEMENT] Commande ${order.id} à 0 FCFA (fidélité) — marquée payée sans opérateur`,
-      );
+    if (existing) {
+      return {
+        paymentId: existing.id,
+        orderId: order.id,
+        status: PaymentStatus.SUCCESS,
+        provider: existing.provider,
+        amount: 0,
+        currency: 'XAF',
+        mode: 'ZERO_AMOUNT',
+        instructions: {
+          message:
+            'Commande intégralement réglée avec vos points de fidélité — rien à payer.',
+          reference: existing.id.slice(-8).toUpperCase(),
+          amount: 0,
+          currency: 'XAF',
+        },
+      };
     }
+
+    const { payment, outboxId } = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.payment.create({
+        data: {
+          orderId: order.id,
+          amount: 0,
+          currency: 'XAF',
+          phoneNumber: '',
+          status: PaymentStatus.SUCCESS,
+          provider: 'MANUAL',
+          completedAt: new Date(),
+          metadata: { mode: 'zero_amount', reason: 'loyalty_points_only' },
+        },
+      });
+
+      const claimed = await tx.order.updateMany({
+        where: { id: order.id, status: OrderStatus.EN_ATTENTE },
+        data: { status: OrderStatus.PAYER, paidAt: new Date() },
+      });
+      if (claimed.count === 0) {
+        throw new ConflictException(
+          'Le statut de la commande a changé. Rechargez la commande.',
+        );
+      }
+
+      const enqueued = await this.enqueueOrderPaid(tx, order, created.id, 0);
+      return { payment: created, outboxId: enqueued };
+    });
+
+    this.emitPaymentConfirmed(order, payment.id, 0, outboxId);
 
     return {
       paymentId: payment.id,
+      orderId: order.id,
+      status: PaymentStatus.SUCCESS,
+      provider: 'MANUAL',
+      amount: 0,
+      currency: 'XAF',
       mode: 'ZERO_AMOUNT',
       instructions: {
         message:
@@ -299,9 +398,410 @@ export class PaymentService {
     };
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // Transition — LE point de passage unique
+  // ══════════════════════════════════════════════════════════════════════════
+
   /**
-   * Confirmation manuelle par l'admin — mode MANUAL uniquement.
-   * L'admin vérifie le virement et confirme via cette méthode.
+   * Applique un statut annoncé par le prestataire.
+   *
+   * **Appelé par les trois sources** : le webhook, l'interrogation du client
+   * (`GET /payments/:id/status`) et le cron de réconciliation. Un seul chemin,
+   * donc un seul comportement — trois implémentations produiraient tôt ou tard
+   * trois résultats différents sur la même transaction.
+   *
+   * Garanties :
+   *  · le journal est écrit AVANT toute décision, y compris quand on refuse ;
+   *  · le montant est contrôlé — un écart n'applique RIEN et ouvre un incident ;
+   *  · la transition est conditionnée sur `status = PENDING` : le premier signal
+   *    terminal gagne, les suivants sont des doublons sans effet, et un `FAILED`
+   *    arrivé après un `COMPLETED` ne peut pas défaire un encaissement ;
+   *  · l'obligation de notifier le vendeur est écrite DANS la transaction.
+   */
+  async applyCollectionProviderStatus(input: {
+    paymentId: string;
+    status: ProviderTransactionStatus;
+    source: PaymentEventSource;
+  }): Promise<ApplyOutcome> {
+    const payment = await this.prisma.payment.findUnique({
+      where: { id: input.paymentId },
+      include: {
+        order: {
+          select: { id: true, userId: true, restaurantId: true, status: true },
+        },
+      },
+    });
+
+    if (!payment) return 'IGNORED';
+
+    const eventId = await this.events.record({
+      kind: PaymentEventKind.COLLECTION,
+      provider: payment.provider,
+      externalId: payment.providerTransactionId ?? payment.id,
+      source: input.source,
+      rawStatus: input.status.rawStatus,
+      payload: input.status.raw,
+      paymentId: payment.id,
+    });
+
+    // ── Statut non terminal : rien à décider ──────────────────────────────────
+    if (input.status.state === 'PENDING') {
+      await this.events.setOutcome(eventId, PaymentEventOutcome.IGNORED);
+      return 'IGNORED';
+    }
+
+    // ── Contrôle du montant et de la devise ───────────────────────────────────
+    const mismatch = this.detectMismatch(payment, input.status);
+    if (mismatch) {
+      await this.events.setOutcome(eventId, PaymentEventOutcome.MISMATCH);
+      this.logger.error(
+        `🚨 [PAIEMENT] Incohérence de montant — paiement ${payment.id}, ${mismatch}`,
+      );
+      Sentry.captureMessage(
+        `payment.mismatch — paiement ${payment.id} : ${mismatch}`,
+        'error',
+      );
+      await this.openMismatchIncident(payment.id, payment.orderId, mismatch);
+      return 'MISMATCH';
+    }
+
+    if (input.status.state === 'FAILED') {
+      const applied = await this.markPaymentFailed(
+        payment.id,
+        input.status.failureCode,
+        input.status.failureMessage,
+      );
+      await this.events.setOutcome(
+        eventId,
+        applied ? PaymentEventOutcome.APPLIED : PaymentEventOutcome.DUPLICATE,
+      );
+      if (applied) {
+        this.eventEmitter.emit('order.payment.failed', {
+          orderId: payment.orderId,
+          userId: payment.order.userId,
+          paymentId: payment.id,
+          reason:
+            input.status.failureMessage ??
+            input.status.failureCode ??
+            'Paiement refusé par l’opérateur',
+        });
+      }
+      return applied ? 'APPLIED' : 'DUPLICATE';
+    }
+
+    // ── Succès ────────────────────────────────────────────────────────────────
+    return this.confirmCollection(payment, input.status, eventId);
+  }
+
+  private async confirmCollection(
+    payment: {
+      id: string;
+      orderId: string;
+      amount: number;
+      providerTransactionId: string | null;
+      order: { id: string; userId: string; restaurantId: string };
+    },
+    status: ProviderTransactionStatus,
+    eventId: string | null,
+  ): Promise<ApplyOutcome> {
+    let outboxId: string | null = null;
+    let orderMoved = false;
+
+    const claimed = await this.prisma.$transaction(async (tx) => {
+      // Seul le premier signal terminal transite. `count === 0` ⇒ rejeu.
+      const payClaim = await tx.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.PENDING },
+        data: {
+          status: PaymentStatus.SUCCESS,
+          completedAt: new Date(),
+          failureCode: null,
+          failureMessage: null,
+          providerTransactionId: payment.providerTransactionId,
+          metadata: {
+            providerTransactionId: status.providerTransactionId ?? null,
+            confirmedFrom: status.rawStatus,
+          },
+        },
+      });
+      if (payClaim.count === 0) return false;
+
+      const orderClaim = await tx.order.updateMany({
+        where: { id: payment.orderId, status: OrderStatus.EN_ATTENTE },
+        data: { status: OrderStatus.PAYER, paidAt: new Date() },
+      });
+      orderMoved = orderClaim.count > 0;
+
+      if (orderMoved) {
+        // L'obligation de prévenir le vendeur est écrite DANS la transaction :
+        // si la commande est payée, la notification est due. C'est aussi le
+        // moment — et non `order.created` — parce qu'une commande non payée
+        // n'a pas à déranger un vendeur.
+        outboxId = await this.enqueueOrderPaid(
+          tx,
+          payment.order,
+          payment.id,
+          payment.amount,
+        );
+      }
+      return true;
+    });
+
+    if (!claimed) {
+      await this.events.setOutcome(eventId, PaymentEventOutcome.DUPLICATE);
+      return 'DUPLICATE';
+    }
+
+    await this.events.setOutcome(eventId, PaymentEventOutcome.APPLIED);
+
+    if (!orderMoved) {
+      // Le paiement a abouti mais la commande n'était plus en attente : expirée
+      // par le cron, ou annulée. On ne force AUCUNE transition — l'argent
+      // existe, la commande non : c'est un litige, pas un cas nominal.
+      this.logger.error(
+        `🚨 [PAIEMENT] Encaissement sur commande non payable — paiement ${payment.id}, commande ${payment.orderId}`,
+      );
+      Sentry.captureMessage(
+        `payment.orphan — encaissement ${payment.id} sur commande ${payment.orderId} hors EN_ATTENTE`,
+        'error',
+      );
+      this.eventEmitter.emit('payment.orphaned', {
+        orderId: payment.orderId,
+        paymentId: payment.id,
+        amount: payment.amount,
+      });
+      return 'APPLIED';
+    }
+
+    this.emitPaymentConfirmed(
+      payment.order,
+      payment.id,
+      payment.amount,
+      outboxId,
+    );
+    this.logger.log(
+      `💰 [PAIEMENT] ✅ Confirmé — commande ${payment.orderId}, ${payment.amount} XAF`,
+    );
+    return 'APPLIED';
+  }
+
+  /**
+   * Écart entre ce qu'on a demandé et ce que le prestataire annonce.
+   *
+   * On compare le montant **et** la devise. Un prestataire qui confirme un autre
+   * montant que celui enregistré signale soit une erreur de son côté, soit une
+   * requête forgée : dans les deux cas, on ne conclut rien.
+   *
+   * Une tolérance d'un franc absorbe les arrondis de représentation (les
+   * montants voyagent en chaîne décimale), sans laisser passer d'écart réel.
+   */
+  private detectMismatch(
+    payment: { amount: number; currency: string },
+    status: ProviderTransactionStatus,
+  ): string | null {
+    if (status.currency && status.currency !== payment.currency) {
+      return `devise attendue ${payment.currency}, reçue ${status.currency}`;
+    }
+    if (status.amountXaf === undefined) {
+      // Le prestataire n'annonce pas de montant : on ne peut pas contrôler, mais
+      // on ne bloque pas — le contrôle est une défense supplémentaire, pas la
+      // seule (l'identifiant de transaction est déjà unique et généré par nous).
+      return null;
+    }
+    const expected = Math.round(payment.amount);
+    if (Math.abs(status.amountXaf - expected) > 1) {
+      return `montant attendu ${expected}, reçu ${status.amountXaf}`;
+    }
+    return null;
+  }
+
+  private async openMismatchIncident(
+    paymentId: string,
+    orderId: string,
+    detail: string,
+  ) {
+    await this.prisma.incident
+      .create({
+        data: {
+          type: 'PAYMENT_FAILED',
+          severity: 'CRITICAL',
+          title: 'Incohérence de montant sur un encaissement',
+          description:
+            `Le prestataire a annoncé un statut terminal avec un montant ou une devise ` +
+            `différents de ceux enregistrés (${detail}). Aucune transition n'a été appliquée. ` +
+            `Vérifier auprès du prestataire avant toute action manuelle.`,
+          orderId,
+          metadata: { paymentId, detail },
+        },
+      })
+      .catch((error) =>
+        this.logger.error(
+          `Incident d'incohérence non créé : ${(error as Error).message}`,
+        ),
+      );
+  }
+
+  /**
+   * Passe un encaissement en échec. Conditionné sur `PENDING` : un paiement déjà
+   * résolu n'est jamais réécrit.
+   *
+   * **La commande n'est pas touchée.** Elle reste `EN_ATTENTE`, donc payable —
+   * c'est ce qui rend le retry possible.
+   */
+  private async markPaymentFailed(
+    paymentId: string,
+    failureCode?: string,
+    failureMessage?: string,
+  ): Promise<boolean> {
+    const claimed = await this.prisma.payment.updateMany({
+      where: { id: paymentId, status: PaymentStatus.PENDING },
+      data: {
+        status: PaymentStatus.FAILED,
+        completedAt: new Date(),
+        failureCode: failureCode ?? null,
+        failureMessage: failureMessage ?? null,
+      },
+    });
+    return claimed.count > 0;
+  }
+
+  private async enqueueOrderPaid(
+    tx: Prisma.TransactionClient,
+    order: { id: string; userId: string; restaurantId: string },
+    paymentId: string,
+    amount: number,
+  ): Promise<string> {
+    return this.outbox.enqueueInTransaction(tx, {
+      type: 'order.paid',
+      aggregateId: order.id,
+      payload: {
+        orderId: order.id,
+        userId: order.userId,
+        restaurantId: order.restaurantId,
+        paymentId,
+        amount,
+      },
+    });
+  }
+
+  private emitPaymentConfirmed(
+    order: { id: string; userId: string; restaurantId: string },
+    paymentId: string,
+    amount: number,
+    outboxId: string | null,
+  ) {
+    this.eventEmitter.emit(
+      'order.payment.confirmed',
+      new OrderPaymentConfirmedEvent(
+        order.id,
+        order.userId,
+        order.restaurantId,
+        paymentId,
+        amount,
+      ),
+    );
+    if (outboxId) {
+      this.eventEmitter.emit('order.paid', {
+        orderId: order.id,
+        userId: order.userId,
+        restaurantId: order.restaurantId,
+        paymentId,
+        amount,
+        outboxId,
+      });
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Consultation
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Statut d'un encaissement.
+   *
+   * Un statut **terminal est lu en base**, sans appeler le prestataire : la
+   * vérité est déjà connue, et l'application interroge cette route toutes les
+   * trois secondes pendant que le client attend.
+   */
+  async checkPaymentStatus(paymentId: string, firebaseUid?: string) {
+    const payment = await this.prisma.payment.findUnique({
+      where: { id: paymentId },
+      include: { order: { select: { userId: true, status: true } } },
+    });
+    if (!payment) throw new NotFoundException('Paiement introuvable.');
+
+    if (firebaseUid) {
+      await this.assertPaymentAccess(payment.order.userId, firebaseUid);
+    }
+
+    if (payment.status !== PaymentStatus.PENDING) {
+      return this.toStatusResponse(payment);
+    }
+
+    const provider = this.registry.forStoredProvider(payment.provider);
+    if (!payment.providerTransactionId || !provider.supportsCollection) {
+      // Mode manuel : la vérité est la ligne en base, que seul un administrateur
+      // fait avancer. Interroger un prestataire n'aurait aucun sens (l'ancienne
+      // implémentation appelait MTN avec une référence nulle et avalait l'erreur).
+      return this.toStatusResponse(payment);
+    }
+
+    try {
+      const status = await provider.getCollectionStatus(
+        payment.providerTransactionId,
+      );
+      if (status) {
+        await this.applyCollectionProviderStatus({
+          paymentId: payment.id,
+          status,
+          source: PaymentEventSource.CLIENT_POLL,
+        });
+      }
+    } catch (error) {
+      // Une interrogation qui échoue ne doit pas casser l'écran d'attente du
+      // client : on rend le dernier état connu.
+      this.logger.warn(
+        `Interrogation du prestataire échouée pour ${paymentId} : ${(error as Error).message}`,
+      );
+    }
+
+    const refreshed = await this.prisma.payment.findUniqueOrThrow({
+      where: { id: paymentId },
+    });
+    return this.toStatusResponse(refreshed);
+  }
+
+  private toStatusResponse(payment: {
+    id: string;
+    status: string;
+    amount: number;
+    currency: string;
+    failureCode: string | null;
+    failureMessage: string | null;
+    completedAt: Date | null;
+    orderId: string;
+  }) {
+    return {
+      paymentId: payment.id,
+      orderId: payment.orderId,
+      status: payment.status,
+      amount: payment.amount,
+      currency: payment.currency,
+      failureCode: payment.failureCode ?? undefined,
+      failureMessage: payment.failureMessage ?? undefined,
+      completedAt: payment.completedAt ?? undefined,
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Chemins d'administration — mode MANUAL
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Confirmation manuelle par un administrateur (mode MANUAL).
+   *
+   * Conservée telle quelle : c'est le chemin de production actuel et le filet en
+   * cas de panne du prestataire. Elle passe désormais par
+   * `applyCollectionProviderStatus`, donc par les mêmes garanties que le webhook.
    */
   async confirmManualPayment(paymentId: string) {
     const payment = await this.prisma.payment.findUniqueOrThrow({
@@ -309,15 +809,13 @@ export class PaymentService {
       include: { order: true },
     });
 
-    if (payment.status !== 'PENDING') {
+    if (payment.status !== PaymentStatus.PENDING) {
       throw new BadRequestException('Paiement déjà traité');
     }
 
-    // Fix H2 : refuser explicitement de confirmer un virement sur une commande
-    // qui n'attend plus de paiement. Sans cette garde, l'admin voyait un
-    // paiement en attente, retrouvait le virement, cliquait « Confirmer » — et
-    // ressuscitait une commande annulée dont le stock avait été rendu, les
-    // points recrédités et le code promo libéré.
+    // Fix H2 : refuser de confirmer un virement sur une commande qui n'attend
+    // plus de paiement. Sans cette garde, l'administrateur ressuscitait une
+    // commande annulée dont le stock avait été rendu et les points recrédités.
     if (payment.order.status !== OrderStatus.EN_ATTENTE) {
       throw new ConflictException(
         `Cette commande n'attend plus de paiement (statut : ${payment.order.status}). ` +
@@ -325,50 +823,28 @@ export class PaymentService {
       );
     }
 
-    // La mise à jour du paiement et celle de la commande doivent tomber
-    // ensemble : mort du process entre les deux ⇒ Payment SUCCESS sur une
-    // commande EN_ATTENTE, qui expirera ensuite.
-    await this.prisma.$transaction(async (tx) => {
-      const claimed = await tx.payment.updateMany({
-        where: { id: paymentId, status: 'PENDING' },
-        data: { status: 'SUCCESS', updatedAt: new Date() },
-      });
-      if (claimed.count === 0) {
-        throw new ConflictException('Paiement déjà traité');
-      }
-
-      const order = await tx.order.updateMany({
-        where: { id: payment.orderId, status: OrderStatus.EN_ATTENTE },
-        data: { status: OrderStatus.PAYER, paidAt: new Date() },
-      });
-      if (order.count === 0) {
-        throw new ConflictException(
-          "Le statut de la commande a changé pendant la confirmation. Rechargez la fiche.",
-        );
-      }
+    const outcome = await this.applyCollectionProviderStatus({
+      paymentId,
+      status: {
+        state: 'SUCCESS',
+        rawStatus: 'MANUAL_CONFIRMED',
+        amountXaf: Math.round(payment.amount),
+        currency: payment.currency,
+        raw: { confirmedBy: 'admin' },
+      },
+      source: PaymentEventSource.WEBHOOK,
     });
 
-    // L'événement part APRÈS le commit : pas de notification fantôme sur
-    // rollback.
-    this.eventEmitter.emit(
-      'order.payment.confirmed',
-      new OrderPaymentConfirmedEvent(
-        payment.orderId,
-        payment.order.userId,
-        payment.order.restaurantId,
-        payment.id,
-        payment.amount,
-      ),
-    );
+    if (outcome === 'DUPLICATE') {
+      throw new ConflictException('Paiement déjà traité');
+    }
 
     return { message: 'Paiement confirmé manuellement' };
   }
 
   /**
-   * Rejet manuel par l'admin — mode MANUAL uniquement.
-   * Utilisé quand l'admin ne trouve pas le virement (montant erroné, virement
-   * jamais reçu, doublon…). Le paiement passe `CANCELLED` et la commande reste
-   * `EN_ATTENTE` pour que le client puisse réessayer un paiement.
+   * Rejet manuel (mode MANUAL) — l'administrateur n'a pas retrouvé le virement.
+   * La commande reste `EN_ATTENTE` : le client peut réessayer.
    */
   async rejectManualPayment(paymentId: string, reason?: string) {
     const payment = await this.prisma.payment.findUniqueOrThrow({
@@ -376,29 +852,25 @@ export class PaymentService {
       include: { order: true },
     });
 
-    if (payment.status !== 'PENDING') {
+    if (payment.status !== PaymentStatus.PENDING) {
       throw new BadRequestException('Paiement déjà traité');
     }
 
     const rejectionReason = reason?.trim() || 'Virement non retrouvé';
 
-    await this.prisma.payment.update({
-      where: { id: paymentId },
+    const claimed = await this.prisma.payment.updateMany({
+      where: { id: paymentId, status: PaymentStatus.PENDING },
       data: {
-        status: 'CANCELLED',
-        metadata: {
-          ...(typeof payment.metadata === 'object' && payment.metadata !== null
-            ? payment.metadata
-            : {}),
-          rejectedAt: new Date(),
-          rejectionReason,
-        },
+        status: PaymentStatus.CANCELLED,
+        completedAt: new Date(),
+        failureCode: 'ADMIN_REJECTED',
+        failureMessage: rejectionReason,
       },
     });
+    if (claimed.count === 0) {
+      throw new ConflictException('Paiement déjà traité');
+    }
 
-    // Réutilise le flux `order.payment.failed` → PaymentListener notifie le
-    // client (FCM "Paiement échoué"). La commande n'est pas touchée : elle reste
-    // EN_ATTENTE, donc payable à nouveau.
     this.eventEmitter.emit('order.payment.failed', {
       orderId: payment.orderId,
       userId: payment.order.userId,
@@ -409,152 +881,9 @@ export class PaymentService {
     return { message: 'Paiement rejeté' };
   }
 
-
-  async checkPaymentStatus(paymentId: string, firebaseUid?: string): Promise<PaymentStatus> {
-    this.logger.log(`💰 [PAIEMENT] Vérification statut - payment: ${paymentId}`);
-    const payment = await this.prisma.payment.findUnique({
-      where: { id: paymentId },
-      include: { order: { include: { restaurant: true } } },
-    });
-
-    if (!payment) {
-      this.logger.warn(`💰 [PAIEMENT] Échec vérification: payment ${paymentId} introuvable`);
-      throw new Error('Payment not found');
-    }
-    if (firebaseUid) {
-      await this.assertPaymentAccess(payment.order.userId, firebaseUid);
-    }
-
-    if (payment.status === PaymentStatus.SUCCESS) {
-      this.logger.log(`💰 [PAIEMENT] Déjà confirmé: ${paymentId} (commande: ${payment.orderId})`);
-      return PaymentStatus.SUCCESS;
-    }
-
-    try {
-      // Vérifier le statut chez MTN
-      this.logger.log(`💰 [PAIEMENT] Interrogation MTN MoMo - ref: ${payment.providerTransactionId}`);
-      const status = await this.mtnMomoService.getTransactionStatus(payment.providerTransactionId);
-      
-      let newStatus: PaymentStatus;
-      switch (status.status) {
-        case 'SUCCESSFUL':
-          newStatus = PaymentStatus.SUCCESS;
-          break;
-        case 'FAILED':
-          newStatus = PaymentStatus.FAILED;
-          break;
-        default:
-          newStatus = PaymentStatus.PENDING;
-      }
-
-      this.logger.log(`💰 [PAIEMENT] Réponse MTN: ${status.status} (actuel: ${payment.status}) - commande: ${payment.orderId}`);
-
-      // Mettre à jour le statut
-      if (newStatus !== payment.status) {
-        await this.prisma.payment.update({
-          where: { id: paymentId },
-          data: {
-            status: newStatus,
-            metadata: { ...(typeof payment.metadata === 'object' && payment.metadata !== null ? payment.metadata : {}), lastStatusCheck: new Date() }
-          },
-        });
-
-        // Si le paiement est confirmé, émettre un événement
-        if (newStatus === PaymentStatus.SUCCESS) {
-          this.logger.log(`💰 [PAIEMENT] ✅ Paiement confirmé - commande: ${payment.orderId}, montant: ${payment.amount} ${payment.currency}`);
-          await this.handleSuccessfulPayment(payment);
-        } else if (newStatus === PaymentStatus.FAILED) {
-          this.logger.warn(`💰 [PAIEMENT] ❌ Paiement échoué - commande: ${payment.orderId}, raison: ${status.reason || 'inconnue'}`);
-          this.eventEmitter.emit('order.payment.failed', {
-            orderId: payment.orderId,
-            userId: payment.order.userId,
-            paymentId: payment.id,
-            reason: status.reason || 'Payment failed',
-          });
-        }
-      }
-
-      return newStatus;
-    } catch (error) {
-      this.logger.error(`💰 [PAIEMENT] Erreur vérification statut - payment: ${paymentId}, erreur: ${error.message}`, error.stack);
-      return payment.status as PaymentStatus;
-    }
-  }
-
-  private async handleSuccessfulPayment(payment: any) {
-    // Idempotence : le webhook MTN et le polling `checkPaymentStatus` peuvent
-    // arriver en parallèle. Le `updateMany` conditionnel garantit qu'UN SEUL
-    // appel effectue réellement la transition et émet l'événement — évite les
-    // doubles notifications / doubles crédits.
-    //
-    // SÉCURITÉ (fix H2, audit du 28/08/2026) : la condition était
-    // `status != PAYER`, ce qui acceptait AUSSI `ANNULER`, `LIVRER`… Une
-    // commande expirée au bout de 6 h — stock rendu, points recrédités, promo
-    // libérée — repassait donc à `PAYER` dès que l'admin retrouvait le
-    // virement le lundi matin. Seule `EN_ATTENTE` est une origine légale.
-    const result = await this.prisma.order.updateMany({
-      where: { id: payment.orderId, status: OrderStatus.EN_ATTENTE },
-      data: { status: OrderStatus.PAYER, paidAt: new Date() },
-    });
-
-    if (result.count === 0) {
-      const current = await this.prisma.order.findUnique({
-        where: { id: payment.orderId },
-        select: { status: true },
-      });
-
-      // Déjà payée : c'est le cas nominal d'un webhook rejoué.
-      if (current && current.status !== OrderStatus.EN_ATTENTE) {
-        this.logger.warn(
-          `Paiement confirmé sur la commande ${payment.orderId} au statut ${current.status} — ` +
-            `transition refusée. Si de l'argent a été encaissé, il relève de la procédure de remboursement.`,
-        );
-      }
-      return;
-    }
-
-    // Émettre l'événement de paiement confirmé
-    const event = new OrderPaymentConfirmedEvent(
-      payment.orderId,
-      payment.order.userId,
-      payment.order.restaurantId,
-      payment.id,
-      payment.amount,
-    );
-
-    this.eventEmitter.emit('order.payment.confirmed', event);
-
-    this.logger.log(`Payment confirmed for order: ${payment.orderId}`);
-  }
-
-  async handlePaymentTimeout(paymentId: string) {
-    this.logger.warn(`💰 [PAIEMENT] Timeout - payment: ${paymentId}`);
-    const payment = await this.prisma.payment.findUnique({
-      where: { id: paymentId },
-      include: { order: true },
-    });
-
-    if (!payment) {
-      this.logger.warn(`💰 [PAIEMENT] Timeout ignoré: payment ${paymentId} introuvable`);
-      return;
-    }
-
-    // Marquer comme timeout
-    await this.prisma.payment.update({
-      where: { id: paymentId },
-      data: {
-        status: PaymentStatus.FAILED,
-        metadata: { ...(typeof payment.metadata === 'object' && payment.metadata !== null ? payment.metadata : {}), timeoutAt: new Date() },
-      },
-    });
-
-    // Émettre l'événement de timeout
-    this.eventEmitter.emit('order.payment.timeout', {
-      orderId: payment.orderId,
-      userId: payment.order.userId,
-      paymentId: payment.id,
-    });
-  }
+  // ══════════════════════════════════════════════════════════════════════════
+  // Garde-fous
+  // ══════════════════════════════════════════════════════════════════════════
 
   private async getPayableOrder(orderId: string, firebaseUid: string) {
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
@@ -562,24 +891,36 @@ export class PaymentService {
 
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
-      include: { restaurant: true },
+      include: { restaurant: { select: { nom: true } } },
     });
     if (!order) throw new NotFoundException('Commande introuvable');
     if (order.userId !== user.id && user.role !== 'ADMIN') {
-      throw new ForbiddenException("Vous n'êtes pas autorisé à payer cette commande");
+      throw new ForbiddenException(
+        "Vous n'êtes pas autorisé à payer cette commande",
+      );
     }
     if (order.status !== OrderStatus.EN_ATTENTE) {
-      throw new BadRequestException(`Commande non payable dans le statut actuel: ${order.status}`);
+      throw new BadRequestException(
+        `Commande non payable dans le statut actuel : ${order.status}`,
+      );
     }
     return order;
   }
 
-  private async assertNoPendingPayment(orderId: string) {
-    const existing = await this.prisma.payment.findFirst({
-      where: { orderId, status: PaymentStatus.PENDING },
+  /** Plafond de tentatives — voir `maxAttempts`. */
+  private async assertAttemptsRemaining(orderId: string) {
+    if (this.maxAttempts <= 0) return;
+    const failed = await this.prisma.payment.count({
+      where: {
+        orderId,
+        status: { in: [PaymentStatus.FAILED, PaymentStatus.CANCELLED] },
+      },
     });
-    if (existing) {
-      throw new BadRequestException('Un paiement est déjà en attente pour cette commande');
+    if (failed >= this.maxAttempts) {
+      throw new BadRequestException(
+        `Trop de tentatives de paiement sur cette commande (${failed}). ` +
+          'Elle sera annulée automatiquement ; vous pourrez la repasser.',
+      );
     }
   }
 
@@ -589,5 +930,21 @@ export class PaymentService {
     if (user.role !== 'ADMIN' && user.id !== orderUserId) {
       throw new ForbiddenException('Accès au paiement refusé');
     }
+  }
+
+  /** Référence courte affichée au client et transmise au prestataire. */
+  private orderRef(orderId: string): string {
+    return orderId.slice(-6).toUpperCase();
+  }
+
+  /**
+   * Retrouve un encaissement par sa référence prestataire — utilisé par le
+   * webhook. L'index unique `(provider, providerTransactionId)` garantit qu'au
+   * plus une ligne correspond.
+   */
+  async findByProviderTransactionId(provider: string, externalId: string) {
+    return this.prisma.payment.findFirst({
+      where: { provider, providerTransactionId: externalId },
+    });
   }
 }

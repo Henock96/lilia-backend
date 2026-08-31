@@ -21,48 +21,106 @@ export class OrdersListener {
 
 
   // ===== CRÉATION DE COMMANDE =====
+  //
+  // ⚠️ Le VENDEUR n'est plus prévenu ici (chantier pawaPay, août 2026).
+  //
+  // Il l'était à `order.created`, donc **avant tout paiement**. Avec
+  // l'encaissement manuel, l'écart entre la commande et le virement se comptait
+  // en heures et le vendeur triait lui-même. Avec un prestataire qui tranche en
+  // une minute, chaque paiement abandonné lui aurait valu un push pour une
+  // commande qui n'existera jamais — et le vendeur aurait appris à les ignorer,
+  // y compris les vraies.
+  //
+  // La notification vendeur part désormais de `order.paid`, dont l'obligation
+  // est écrite dans la transaction de confirmation du paiement (§ PaymentService).
   @OnEvent('order.created')
   async handleOrderCreated(event: OrderCreatedEvent) {
-    this.logger.log(`Handling order created event: ${event.orderId}`);
+    this.logger.log(`Commande créée : ${event.orderId}`);
 
     try {
-       // 1 seule requête pour récupérer l'ownerId du restaurant
-    const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id: event.restaurantId },
-      select: { ownerId: true, nom: true },
-    });
-
-    const [, vendorNotification] = await Promise.allSettled([
-      // Notif client
-      this.notificationsService.sendPushNotification(
+      await this.notificationsService.sendPushNotification(
         event.userId,
-        '🎉 Commande reçue',
-        `Votre commande chez ${event.orderData.restaurantName} est confirmée. Total : ${event.orderData.totalAmount} FCFA`,
+        '🧾 Commande enregistrée',
+        `Votre commande chez ${event.orderData.restaurantName} est enregistrée. Finalisez le paiement pour qu'elle soit préparée.`,
         { orderId: event.orderId, type: 'order_created' },
-      ),
-      // Notif restaurant
-      restaurant
-        ? this.notificationsService.sendPushNotification(
-            restaurant.ownerId,
-            '🔔 Nouvelle commande',
-            `${event.orderData.totalAmount} FCFA — ${event.orderData.itemCount} article(s)`,
-            { orderId: event.orderId, type: 'new_order', customerId: event.userId },
-          )
-        : Promise.resolve(),
-    ]);
+      );
 
-    // Fix H7 : on n'acquitte l'outbox QUE si la notification vendeur est
-    // réellement partie. Sinon la ligne reste PENDING et le dispatcher la
-    // reprend avec retry puis escalade SMS — c'est le signal le plus critique
-    // du métier, il ne doit pas dépendre d'un push best-effort.
-    if (event.outboxId && vendorNotification.status === 'fulfilled') {
-      await this.outbox.markSent(event.outboxId);
-    }
       // Broadcast WebSocket — le client voit le statut EN_ATTENTE en temps réel
-    this.trackingGateway.broadcastOrderStatus(event.orderId, 'EN_ATTENTE');
-      this.logger.log(`Notifications de création de commande envoyées pour: ${event.orderId}`);
+      this.trackingGateway.broadcastOrderStatus(event.orderId, 'EN_ATTENTE');
     } catch (error) {
-      this.logger.error(`Erreur lors de la gestion de l'événement de création de commande: ${error.message}`, error.stack);
+      this.logger.error(
+        `Erreur à la création de commande ${event.orderId} : ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  // ===== COMMANDE PAYÉE — c'est ICI que le vendeur est prévenu =====
+  //
+  // L'obligation de notifier est écrite dans la MÊME transaction que le passage
+  // à `PAYER` (`OutboxEvent` de type `order.paid`) : si la commande est payée,
+  // la notification est due. Ce chemin-ci est le chemin rapide ; s'il échoue ou
+  // si le processus meurt, `OutboxDispatcherService` reprend, avec backoff puis
+  // escalade SMS.
+  @OnEvent('order.paid')
+  async handleOrderPaid(event: {
+    orderId: string;
+    userId: string;
+    restaurantId: string;
+    paymentId: string;
+    amount: number;
+    outboxId?: string;
+  }) {
+    this.logger.log(`Commande payée : ${event.orderId}`);
+
+    try {
+      const order = await this.prisma.order.findUnique({
+        where: { id: event.orderId },
+        select: {
+          total: true,
+          isDelivery: true,
+          scheduledFor: true,
+          _count: { select: { items: true } },
+          restaurant: { select: { ownerId: true, nom: true } },
+        },
+      });
+
+      if (!order) {
+        this.logger.error(`Commande ${event.orderId} introuvable`);
+        return;
+      }
+
+      const sent = await this.notificationsService
+        .sendPushNotification(
+          order.restaurant.ownerId,
+          '🔔 Nouvelle commande payée',
+          `${Math.round(order.total)} FCFA — ${order._count.items} article(s). À accepter.`,
+          {
+            orderId: event.orderId,
+            type: 'new_order',
+            customerId: event.userId,
+          },
+        )
+        .then(() => true)
+        .catch((err) => {
+          this.logger.error(`Push vendeur échoué : ${err.message}`);
+          return false;
+        });
+
+      // Fix H7 : on n'acquitte l'outbox QUE si la notification est réellement
+      // partie. Sinon la ligne reste PENDING et le dispatcher la reprend — c'est
+      // le signal le plus critique du métier, il ne doit pas dépendre d'un push
+      // best-effort.
+      if (event.outboxId && sent) {
+        await this.outbox.markSent(event.outboxId);
+      }
+
+      this.trackingGateway.broadcastOrderStatus(event.orderId, 'PAYER');
+    } catch (error) {
+      this.logger.error(
+        `Erreur au traitement de order.paid ${event.orderId} : ${error.message}`,
+        error.stack,
+      );
     }
   }
 
