@@ -770,14 +770,48 @@ export class PaymentService {
     return this.toStatusResponse(refreshed);
   }
 
+  /**
+   * Dernière tentative d'encaissement d'une commande, ou `null`.
+   *
+   * Existe pour que le client **retrouve** un paiement en cours après un
+   * rechargement de page : sans elle, la seule façon de savoir où en est un
+   * encaissement serait de rejouer `POST /payments`, c'est-à-dire d'utiliser une
+   * écriture pour une lecture. C'est acceptable sur mobile (l'écran d'attente ne
+   * disparaît pas), ça ne l'est pas sur le web, où F5 est un geste ordinaire.
+   *
+   * Lecture pure : ne crée rien, n'interroge pas le prestataire, ne fait avancer
+   * aucun statut. Le rafraîchissement d'un `PENDING` reste le travail de
+   * `GET /payments/:id/status`.
+   */
+  async findLatestForOrder(orderId: string, firebaseUid: string) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, userId: true },
+    });
+    if (!order) throw new NotFoundException('Commande introuvable.');
+    await this.assertPaymentAccess(order.userId, firebaseUid);
+
+    // Le plus récent : une commande peut porter plusieurs tentatives (échec puis
+    // reprise), et c'est la dernière qui décrit l'état courant.
+    const payment = await this.prisma.payment.findFirst({
+      where: { orderId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return payment ? this.toStatusResponse(payment) : null;
+  }
+
   private toStatusResponse(payment: {
     id: string;
     status: string;
     amount: number;
     currency: string;
+    method: string | null;
+    provider: string;
     failureCode: string | null;
     failureMessage: string | null;
     completedAt: Date | null;
+    createdAt: Date;
     orderId: string;
   }) {
     return {
@@ -786,9 +820,16 @@ export class PaymentService {
       status: payment.status,
       amount: payment.amount,
       currency: payment.currency,
+      // `method` et `provider` disent au client CE QU'IL DOIT FAIRE : valider une
+      // demande sur son téléphone, ou composer un virement. Sans eux, l'écran
+      // d'attente devrait le deviner à partir du mode global, qui n'est pas
+      // forcément celui sous lequel CE paiement a été ouvert.
+      method: payment.method ?? undefined,
+      provider: payment.provider,
       failureCode: payment.failureCode ?? undefined,
       failureMessage: payment.failureMessage ?? undefined,
       completedAt: payment.completedAt ?? undefined,
+      createdAt: payment.createdAt,
     };
   }
 
@@ -803,11 +844,42 @@ export class PaymentService {
    * cas de panne du prestataire. Elle passe désormais par
    * `applyCollectionProviderStatus`, donc par les mêmes garanties que le webhook.
    */
+  /**
+   * Interdit les gestes manuels sur un encaissement confié à un prestataire.
+   *
+   * ⚠️ **C'est la garde qui empêche de fabriquer de l'argent.** `confirm` fait
+   * passer la commande à `PAYER` et notifie le vendeur ; l'appliquer à un dépôt
+   * pawaPay encore en vol déclarerait payée une commande pour laquelle rien n'a
+   * été débité, et le `FAILED` qui arriverait ensuite ne pourrait plus rien
+   * défaire (le premier statut terminal gagne, par construction).
+   *
+   * Symétriquement, `reject` sur un dépôt en vol le fige en `CANCELLED` : le
+   * `COMPLETED` suivant serait compté comme doublon, le client aurait payé et sa
+   * commande ne serait jamais confirmée.
+   *
+   * Le discriminant est le **provider stocké sur la ligne**, pas le mode
+   * courant : un paiement ouvert en mode MANUAL reste confirmable à la main
+   * même après bascule en PAWAPAY — c'est exactement ce qu'on veut, sinon la
+   * bascule laisserait des virements réels sans moyen de les acter.
+   */
+  private assertManualPayment(payment: { provider: string }, action: string) {
+    if (payment.provider === 'MANUAL') return;
+    throw new ConflictException({
+      message:
+        `Ce paiement est traité par ${payment.provider} : il ne peut pas être ` +
+        `${action} à la main. Utilisez « Réconcilier » pour interroger ` +
+        `l'opérateur — lui seul sait si l'argent est arrivé.`,
+      code: 'PAYMENT_NOT_MANUAL',
+    });
+  }
+
   async confirmManualPayment(paymentId: string) {
     const payment = await this.prisma.payment.findUniqueOrThrow({
       where: { id: paymentId },
       include: { order: true },
     });
+
+    this.assertManualPayment(payment, 'confirmé');
 
     if (payment.status !== PaymentStatus.PENDING) {
       throw new BadRequestException('Paiement déjà traité');
@@ -851,6 +923,8 @@ export class PaymentService {
       where: { id: paymentId },
       include: { order: true },
     });
+
+    this.assertManualPayment(payment, 'rejeté');
 
     if (payment.status !== PaymentStatus.PENDING) {
       throw new BadRequestException('Paiement déjà traité');

@@ -124,6 +124,7 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
       prisma.payment.findUniqueOrThrow.mockResolvedValue({
         id: 'p1',
         status: 'PENDING',
+        provider: 'MANUAL',
         amount: 5000,
         orderId: 'o1',
         order: {
@@ -156,6 +157,7 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
         prisma.payment.findUniqueOrThrow.mockResolvedValue({
           id: 'p1',
           status: 'PENDING',
+          provider: 'MANUAL',
           orderId: 'o1',
           order: { id: 'o1', status, userId: 'u1', restaurantId: 'r1' },
         });
@@ -202,6 +204,7 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
       prisma.payment.findUniqueOrThrow.mockResolvedValue({
         id: 'p1',
         status: 'PENDING',
+        provider: 'MANUAL',
         amount: 5000,
         orderId: 'o1',
         order: {

@@ -13,6 +13,33 @@ export interface MtnMomoConfig {
 }
 
 /**
+ * En-têtes dont la valeur ne doit jamais atteindre un fichier de log.
+ *
+ * Liste **positive** : tout ce qui n'y figure pas passe en clair, et c'est
+ * voulu — un en-tête inconnu qui porterait un secret serait un défaut à
+ * corriger à la source, pas à masquer par une heuristique de nommage.
+ */
+const SENSITIVE_HEADERS = [
+  'authorization',
+  'ocp-apim-subscription-key',
+  'x-api-key',
+];
+
+/** Remplace la valeur des en-têtes sensibles, sans muter l'objet d'origine. */
+export function redactHeaders(
+  headers: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  if (!headers) return {};
+  return Object.fromEntries(
+    Object.entries(headers).map(([key, value]) =>
+      SENSITIVE_HEADERS.includes(key.toLowerCase())
+        ? [key, '[Redacted]']
+        : [key, value],
+    ),
+  );
+}
+
+/**
  * Gestion de la connexion MTN MoMo (extrait de MtnMomoService — LIL-146).
  *
  * Possède le client HTTP (axios) partagé, ses intercepteurs, la configuration,
@@ -143,9 +170,19 @@ export class MtnMomoTokenService implements OnModuleInit {
           config.headers['Authorization'] = `Bearer ${token}`;
         }
 
-        // Logs de debug
+        // Logs de debug — en-têtes d'authentification MASQUÉS.
+        //
+        // ⚠️ La `redact` de pino ne protège pas ici : elle agit sur les
+        // propriétés d'un objet journalisé, pas sur une valeur interpolée dans
+        // le message. Un `JSON.stringify(config.headers)` écrivait donc la
+        // subscription key et le `Authorization` en clair dans `msg`.
+        //
+        // Ces lignes sont en `debug`, donc muettes en production (`level: info`)
+        // — mais un `LOG_LEVEL=debug` posé pendant un incident suffisait à les
+        // faire apparaître, et c'est précisément lors d'un incident de paiement
+        // qu'on le pose.
         this.logger.debug(`Request: ${config.method?.toUpperCase()} ${config.url}`);
-        this.logger.debug(`Headers: ${JSON.stringify(config.headers, null, 2)}`);
+        this.logger.debug(`Headers: ${JSON.stringify(redactHeaders(config.headers), null, 2)}`);
 
         return config;
       },
@@ -283,7 +320,10 @@ export class MtnMomoTokenService implements OnModuleInit {
       const response = await this.httpClient.post(`/v1_0/apiuser/${this.apiUser}/apikey`);
 
       this.apiKey = response.data.apiKey;
-      this.logger.log(`✅ API key created: ${this.apiKey.substring(0, 10)}...`);
+      // Aucun fragment de la clé : ce log part en `info`, donc jusque dans les
+      // journaux de production. Savoir qu'elle a été créée suffit — ses dix
+      // premiers caractères n'aident personne à diagnostiquer quoi que ce soit.
+      this.logger.log('✅ API key created');
 
     } catch (error) {
       throw new HttpException(

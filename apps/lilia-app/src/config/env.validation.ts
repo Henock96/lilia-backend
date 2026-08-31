@@ -211,4 +211,36 @@ export const envValidationSchema = Joi.object({
   SENTRY_DSN: Joi.string().uri().allow('').optional(),
 })
   // tolère les variables non listées (PATH, etc.) sans les rejeter
-  .unknown(true);
+  .unknown(true)
+  /**
+   * En mode PAWAPAY, l'une des deux authentifications de callback est
+   * **obligatoire**.
+   *
+   * `PawaPayWebhookController` est fail-closed : sans clé publique ni liste
+   * blanche d'IP, il répond 401 à *tout*. Le service démarrerait, encaisserait
+   * de l'argent réel, et aucun callback ne serait jamais accepté. Le cron de
+   * réconciliation finirait par rattraper chaque transaction — mais avec deux
+   * minutes de retard, un client qui attend devant son téléphone, et pawaPay
+   * qui rejoue en vain pendant quinze minutes.
+   *
+   * C'est exactement le raisonnement déjà appliqué à `MTN_MOMO_WEBHOOK_SECRET`
+   * et à `REDIS_URL` : une dégradation **silencieuse** vaut moins qu'un refus
+   * de démarrer bruyant. On refuse ici la seule configuration qui produit une
+   * panne invisible le jour de la mise en service.
+   */
+  .custom((value: Record<string, unknown>, helpers) => {
+    if (value.PAYMENT_MODE !== 'PAWAPAY') return value;
+
+    const isSet = (key: string) => String(value[key] ?? '').trim().length > 0;
+
+    if (!isSet('PAWAPAY_PUBLIC_KEY') && !isSet('PAWAPAY_CALLBACK_IPS')) {
+      return helpers.message({
+        custom:
+          'PAYMENT_MODE=PAWAPAY exige PAWAPAY_PUBLIC_KEY (signature des ' +
+          'callbacks, recommandé) ou PAWAPAY_CALLBACK_IPS (liste blanche, ' +
+          'repli). Sans l’un des deux, le webhook rejette tous les callbacks ' +
+          'en 401 et aucun paiement ne se confirme.',
+      });
+    }
+    return value;
+  }, 'authentification des callbacks pawaPay');

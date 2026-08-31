@@ -111,6 +111,26 @@ export class PaymentController {
   }
 
   /**
+   * Dernière tentative d'encaissement d'une commande, ou `null`.
+   *
+   * ⚠️ Déclarée **avant** `:paymentId/status` : `by-order` serait sinon capturé
+   * comme un identifiant de paiement.
+   *
+   * Elle existe pour le web, où recharger la page est un geste ordinaire :
+   * sans elle, retrouver un paiement en cours imposerait de rejouer
+   * `POST /payments`, c'est-à-dire d'utiliser une écriture — qui peut relancer
+   * une demande chez le prestataire — pour une simple lecture.
+   */
+  @Get('by-order/:orderId')
+  @ApiOperation({ summary: "Dernier paiement d'une commande" })
+  async getPaymentForOrder(
+    @Param('orderId') orderId: string,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return this.paymentService.findLatestForOrder(orderId, fbUser.uid);
+  }
+
+  /**
    * Statut d'un encaissement.
    *
    * Un statut terminal est lu en base sans appeler le prestataire : l'écran

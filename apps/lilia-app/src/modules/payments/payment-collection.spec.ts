@@ -503,4 +503,121 @@ describe('PaymentService — encaissement', () => {
       expect(prisma.order.updateMany).not.toHaveBeenCalled();
     });
   });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  /**
+   * Un administrateur ne doit pas pouvoir déclarer payé — ni refusé — un
+   * encaissement dont un prestataire a la charge. Confirmer un dépôt en vol
+   * fabriquerait une commande payée sans argent ; le rejeter figerait la ligne
+   * et rendrait le `COMPLETED` suivant inopérant, laissant un client débité
+   * avec une commande jamais confirmée.
+   */
+  describe('gestes manuels — réservés aux paiements MANUAL', () => {
+    const providerPayment = (status = 'PENDING') => ({
+      ...pendingPayment,
+      status,
+      provider: 'PAWAPAY',
+      order: { id: 'o1', userId: 'u1', status: 'EN_ATTENTE' },
+    });
+
+    it('refuse de confirmer un encaissement pawaPay', async () => {
+      prisma.payment.findUniqueOrThrow.mockResolvedValue(providerPayment());
+
+      await expect(service.confirmManualPayment('pay-1')).rejects.toMatchObject(
+        {
+          response: { code: 'PAYMENT_NOT_MANUAL' },
+        },
+      );
+
+      expect(prisma.payment.updateMany).not.toHaveBeenCalled();
+      expect(prisma.order.updateMany).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('refuse de rejeter un encaissement pawaPay', async () => {
+      prisma.payment.findUniqueOrThrow.mockResolvedValue(providerPayment());
+
+      await expect(service.rejectManualPayment('pay-1')).rejects.toMatchObject({
+        response: { code: 'PAYMENT_NOT_MANUAL' },
+      });
+
+      expect(prisma.payment.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('laisse confirmer un virement ouvert en mode MANUAL, même après bascule', async () => {
+      // Le discriminant est le provider STOCKÉ, pas le mode courant (ici
+      // PAWAPAY) : sinon la bascule laisserait sans issue les virements réels
+      // déjà reçus.
+      prisma.payment.findUniqueOrThrow.mockResolvedValue({
+        ...providerPayment(),
+        provider: 'MANUAL',
+      });
+      prisma.payment.findUnique.mockResolvedValue({
+        ...pendingPayment,
+        provider: 'MANUAL',
+        order: {
+          id: 'o1',
+          userId: 'u1',
+          restaurantId: 'r1',
+          status: 'EN_ATTENTE',
+        },
+      });
+      prisma.payment.updateMany.mockResolvedValue({ count: 1 });
+      prisma.order.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(service.confirmManualPayment('pay-1')).resolves.toEqual({
+        message: 'Paiement confirmé manuellement',
+      });
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  /**
+   * `GET /payments/by-order/:orderId` — la lecture qui permet à un client web de
+   * retrouver son paiement après un F5 sans rejouer une écriture.
+   */
+  describe('findLatestForOrder', () => {
+    it('rend la tentative la plus récente, sans rien muter', async () => {
+      prisma.order.findUnique.mockResolvedValue({ id: 'o1', userId: 'u1' });
+      prisma.payment.findFirst.mockResolvedValue({
+        ...pendingPayment,
+        failureCode: null,
+        failureMessage: null,
+        completedAt: null,
+        createdAt: new Date('2026-08-31T10:00:00Z'),
+      });
+
+      const result = await service.findLatestForOrder('o1', 'uid-1');
+
+      expect(result).toMatchObject({
+        paymentId: 'pay-1',
+        status: 'PENDING',
+        amount: 6400,
+        provider: 'PAWAPAY',
+        method: 'MTN_MOMO',
+      });
+      expect(prisma.payment.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ orderBy: { createdAt: 'desc' } }),
+      );
+      expect(prisma.payment.create).not.toHaveBeenCalled();
+      expect(prisma.payment.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rend null quand aucune tentative n’a été ouverte', async () => {
+      prisma.order.findUnique.mockResolvedValue({ id: 'o1', userId: 'u1' });
+      prisma.payment.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.findLatestForOrder('o1', 'uid-1'),
+      ).resolves.toBeNull();
+    });
+
+    it('refuse la commande d’un autre client', async () => {
+      prisma.order.findUnique.mockResolvedValue({ id: 'o1', userId: 'autre' });
+
+      await expect(
+        service.findLatestForOrder('o1', 'uid-1'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+  });
 });
