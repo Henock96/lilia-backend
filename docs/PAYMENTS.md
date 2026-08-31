@@ -134,18 +134,81 @@ outbox order.paid → 🔔 vendeur
 
 ### Ce qui rend le double débit impossible
 
-| # | Défense | Où |
+| # | Défense | Où | Prouvé par |
+|---|---|---|---|
+| 1 | `depositId` **généré par nous** et stocké **avant** l'appel — un rejeu renvoie `DUPLICATE_IGNORED` | `PaymentService.acquireOrReusePendingPayment` | `payment-collection.spec` |
+| 2 | Index unique partiel `payments(orderId) WHERE status='PENDING'` — la **base** arbitre le double clic, pas un `if` | migration `payment_unique_indexes` | `payments.int-spec` (PostgreSQL réel) |
+| 3 | Index unique `(provider, providerTransactionId)` — le webhook ne peut pas trouver deux paiements | idem | `payments.int-spec` |
+| 4 | `payment.updateMany WHERE status='PENDING'` — le premier statut terminal gagne | `applyCollectionProviderStatus` | `payment-transitions.spec` + `payments.int-spec` |
+| 5 | `order.updateMany WHERE status='EN_ATTENTE'` — pas de résurrection de commande annulée | idem (fix H2) | `payment-transitions.spec` |
+| 6 | Plafond `PAYMENT_MAX_ATTEMPTS` (3) | `assertAttemptsRemaining` | `payment-collection.spec` |
+
+⚠️ **L'index #2 est partiel, celui des reversements ne l'est pas.**
+`payments(orderId) WHERE status='PENDING'` laisse ouvrir une nouvelle tentative
+après un échec ; `restaurant_payouts.orderId` est unique **sans condition**.
+C'est pour cela que `retryPayout` **supprime** la ligne échouée au lieu d'en
+insérer une seconde. Traiter les deux de la même façon casserait l'un ou
+l'autre.
+
+### Matrice de transitions réellement appliquée
+
+Elle n'est portée par aucune table de constantes côté encaissement : elle
+découle des `updateMany` conditionnés. La voici, telle que
+`payment-transitions.spec.ts` la vérifie cas par cas.
+
+| Depuis | Vers | Résultat |
 |---|---|---|
-| 1 | `depositId` **généré par nous** et stocké **avant** l'appel — un rejeu renvoie `DUPLICATE_IGNORED` | `PaymentService.acquireOrReusePendingPayment` |
-| 2 | Index unique partiel `payments(orderId) WHERE status='PENDING'` — la **base** arbitre le double clic, pas un `if` | migration `payment_unique_indexes` |
-| 3 | Index unique `(provider, providerTransactionId)` — le webhook ne peut pas trouver deux paiements | idem |
-| 4 | `payment.updateMany WHERE status='PENDING'` — le premier statut terminal gagne | `applyCollectionProviderStatus` |
-| 5 | `order.updateMany WHERE status='EN_ATTENTE'` — pas de résurrection de commande annulée | idem (fix H2) |
-| 6 | Plafond `PAYMENT_MAX_ATTEMPTS` (3) | `assertAttemptsRemaining` |
+| `PENDING` | `SUCCESS` | appliqué — commande `PAYER`, outbox `order.paid` |
+| `PENDING` | `FAILED` | appliqué — **commande inchangée**, donc toujours payable |
+| `PENDING` | `PENDING` | ignoré, aucune écriture |
+| `SUCCESS` | quoi que ce soit | `DUPLICATE`, aucune écriture |
+| `FAILED` | quoi que ce soit | `DUPLICATE`, aucune écriture |
+| `CANCELLED` | quoi que ce soit | `DUPLICATE`, aucune écriture |
+| n'importe lequel | montant ou devise divergents | `MISMATCH` — incident `CRITICAL`, **aucune** transition |
+
+Il n'y a **pas** de résurrection : un encaissement terminal ne redevient jamais
+`PENDING`. Une reprise crée une **nouvelle ligne**, jamais une réécriture.
+
+⚠️ Conséquence à connaître : un paiement `CANCELLED` à la main sur lequel le
+prestataire annonce ensuite `COMPLETED` reste `CANCELLED`, et la commande n'est
+jamais confirmée — client débité, commande absente. C'est précisément pourquoi
+`reject` est interdit sur les paiements non-`MANUAL` (voir plus bas).
 
 **Invariant : un échec de paiement n'annule jamais une commande.** C'est ce qui
 rend la reprise possible. Seuls le cron d'expiration et une décision humaine
 annulent.
+
+### Retrouver un encaissement — `GET /payments/by-order/:orderId`
+
+Rend la **dernière** tentative d'une commande, ou `null`. Lecture pure : elle ne
+crée rien, n'interroge pas le prestataire et ne fait avancer aucun statut.
+
+Elle existe pour le web, où recharger la page est un geste ordinaire. Sans elle,
+retrouver un paiement en cours imposerait de rejouer `POST /payments` — une
+écriture, qui peut relancer une demande chez l'opérateur, pour une simple
+lecture. Le rafraîchissement d'un `PENDING` reste le travail de
+`GET /payments/:id/status`.
+
+⚠️ Déclarée **avant** `:paymentId/status` dans le contrôleur, sinon `by-order`
+serait capturé comme un identifiant de paiement.
+
+### Les gestes manuels sont réservés aux paiements `MANUAL`
+
+`POST /payments/:id/confirm` et `.../reject` refusent en **409
+`PAYMENT_NOT_MANUAL`** tout encaissement dont le `provider` stocké n'est pas
+`MANUAL`.
+
+Confirmer un dépôt pawaPay encore en vol déclarerait payée une commande pour
+laquelle rien n'a été débité — et le `FAILED` qui arriverait ensuite ne pourrait
+plus rien défaire, puisque le premier statut terminal gagne par construction.
+Symétriquement, le rejeter le figerait en `CANCELLED` : le `COMPLETED` suivant
+serait compté comme doublon, et un client débité n'aurait jamais sa commande.
+
+Le discriminant est le **provider de la ligne**, jamais le mode courant : un
+virement ouvert en mode `MANUAL` reste confirmable à la main après une bascule
+vers `PAWAPAY`, sinon la bascule laisserait sans issue les virements réels déjà
+reçus. Sur un encaissement confié à un prestataire, le geste disponible est
+`POST /payments/:id/reconcile` — on ne décide pas, on demande à l'opérateur.
 
 ---
 
@@ -266,6 +329,29 @@ Le premier statut terminal gagne. Un `FAILED` arrivant après un `COMPLETED` ne
 peut pas défaire un encaissement — mais il reste dans `PaymentEvent` pour
 l'enquête.
 
+### Ce qui a été vérifié sur un serveur réel
+
+Le 31/08/2026, contre une instance lancée en `PAYMENT_MODE=PAWAPAY` et une base
+PostgreSQL vierge migrée. Ces résultats sont reproductibles avec la procédure
+du §10 ; ils ne remplacent **pas** un vrai paiement (§12).
+
+| Envoi | Réponse | Effet en base |
+|---|---|---|
+| `COMPLETED` sur un `PENDING` | `200 processed` | `SUCCESS`, commande `PAYER`, `paidAt` posé, **1** outbox `order.paid` |
+| le même, rejoué | `200 duplicate` | aucun |
+| `FAILED` **après** le `COMPLETED` | `200 duplicate` | aucun — l'encaissement tient, pas de `failureCode` écrit |
+| `depositId` inconnu | `200 ignored` | trace `IGNORED` dans `PaymentEvent`, `paymentId` nul |
+| corps sans `depositId` | `200 ignored` | aucun |
+| dépôt posté sur `/payouts` | `200 ignored` | aucun — pas de contamination entre les deux flux |
+| `COMPLETED` avec 100 F au lieu de 6 400 | `200 mismatch` | **aucune transition**, incident `CRITICAL` ouvert |
+| `COMPLETED` en `USD` | `200 mismatch` | idem |
+| toutes routes d'argent, sans jeton | `401` | — |
+
+`PaymentEvent` contenait bien une ligne par signal, avec son `outcome`
+(`APPLIED` / `DUPLICATE` / `IGNORED` / `MISMATCH`), et l'outbox exactement un
+`order.paid` — le vendeur n'est prévenu ni deux fois, ni pour la commande dont
+le montant divergeait.
+
 ---
 
 ## 6. Réconciliation
@@ -338,6 +424,14 @@ PAWAPAY_STATEMENT_PREFIX=LiliaFood      # ≤ 12 car. (limite pawaPay : 22 avec 
 PAYMENT_MAX_ATTEMPTS=3
 PAYMENT_RECONCILIATION_TIMEOUT_MINUTES=15
 
+# ⚠️ En PAYMENT_MODE=PAWAPAY, l'UNE des deux lignes ci-dessus
+# (PAWAPAY_PUBLIC_KEY / PAWAPAY_CALLBACK_IPS) est OBLIGATOIRE : le boot échoue
+# sinon. Le webhook est fail-closed — sans l'une d'elles il répondrait 401 à
+# tous les callbacks, et seul le cron de réconciliation confirmerait les
+# paiements, avec deux minutes de retard. Même raisonnement que
+# MTN_MOMO_WEBHOOK_SECRET et REDIS_URL : mieux vaut ne pas démarrer que
+# démarrer à moitié.
+
 # À ramener avec un encaissement instantané (étaient 45 / 360)
 ORDER_PAYMENT_TIMEOUT_MINUTES=15
 ORDER_PENDING_PAYMENT_TIMEOUT_MINUTES=30
@@ -380,6 +474,117 @@ Payouts  : https://lilia-backend.onrender.com/webhooks/pawapay/payouts
    | Double clic administrateur | un seul reversement, 409 sur le second |
 5. **Vérifier le journal** : `GET /payments/:id/events` et
    `GET /admin/payouts/:id/events` doivent contenir une ligne par signal reçu.
+
+## 10 bis. Le premier paiement réel — procédure pas à pas
+
+Écrite pour être suivie par le propriétaire de Lilia Food, sans lecture de code.
+**Rien de technique ne bloque ce test ; seule la configuration du compte
+pawaPay reste à faire.**
+
+### Étape 1 — Vérifier le compte pawaPay (à faire en premier)
+
+```bash
+curl -H "Authorization: Bearer $PAWAPAY_API_TOKEN" \
+     https://api.pawapay.io/v2/active-conf | jq '.countries[] | select(.country=="COG")'
+```
+
+Quatre choses à lire dans la réponse, **avant tout le reste** :
+
+1. le pays `COG` est présent ;
+2. la devise `XAF` est listée ;
+3. `DEPOSIT` **et** `PAYOUT` sont `OPERATIONAL` — le second est souvent une
+   autorisation commerciale **distincte**, à demander explicitement ;
+4. les codes `provider` exacts. `MTN_MOMO_COG` et `AIRTEL_COG` ne sont que des
+   **valeurs par défaut** : s'ils diffèrent, poser `PAWAPAY_MTN_PROVIDER` et
+   `PAWAPAY_AIRTEL_PROVIDER`.
+
+### Étape 2 — Renseigner les variables sur Render
+
+```env
+PAYMENT_MODE=PAWAPAY
+PAWAPAY_API_URL=https://api.pawapay.io
+PAWAPAY_API_TOKEN=<jeton de production>
+PAWAPAY_PUBLIC_KEY=<clé publique pawaPay>     # ou PAWAPAY_CALLBACK_IPS
+ORDER_PAYMENT_TIMEOUT_MINUTES=15
+ORDER_PENDING_PAYMENT_TIMEOUT_MINUTES=30
+```
+
+Si ni la clé ni la liste d'IP n'est renseignée, **le service refusera de
+démarrer** avec un message explicite. C'est voulu.
+
+### Étape 3 — Déclarer les deux URL de callback chez pawaPay
+
+```
+Deposits : https://lilia-backend.onrender.com/webhooks/pawapay/deposits
+Payouts  : https://lilia-backend.onrender.com/webhooks/pawapay/payouts
+```
+
+### Étape 4 — Passer la commande de test
+
+| | |
+|---|---|
+| **Montant** | le plus petit panier possible, **500 à 1 000 F** de produits. Le total réel sera un peu supérieur (livraison + 8 % de frais de service) — c'est normal, et c'est ce total que l'opérateur débitera. |
+| **Numéro** | un téléphone MTN MoMo **réellement approvisionné**, dont vous avez le code secret sous la main. |
+| **Où** | `https://liliafood.com` → un vendeur ouvert → panier → « Commander » → choisir MTN Mobile Money → renseigner le numéro. |
+| **Vendeur** | de préférence un compte de test, pour ne pas déranger un vrai commerçant. |
+
+### Étape 5 — Ce qui doit se passer, dans l'ordre
+
+1. la page bascule sur le détail de la commande, bloc **« Paiement en attente »**
+   avec un chronomètre ;
+2. **une demande arrive sur le téléphone** — c'est le point qui valide le format
+   MSISDN ;
+3. vous saisissez votre code secret ;
+4. sous quelques secondes, le bloc passe à **« Paiement confirmé »** avec le
+   montant, le moyen de paiement, la date et une référence ;
+5. la commande affiche **« Paiement confirmé »** dans son suivi ;
+6. le vendeur reçoit **une** notification « nouvelle commande payée ».
+
+> Si rien n'arrive sur le téléphone après 20 secondes, l'écran propose de
+> composer `*105#` (MTN) ou `*555#` (Airtel) et de valider le paiement en
+> attente. Si vous ne trouvez rien à valider dans ce menu, **c'est le format du
+> numéro qui est en cause** — le point 2 du §12.
+
+### Étape 6 — Où vérifier, dans l'ordre
+
+| Quoi | Où | Ce qu'on doit voir |
+|---|---|---|
+| Le paiement | Admin → **Paiements** | une ligne `Confirmé`, provider `pawaPay`, une référence, le montant, éventuellement les frais |
+| La commande | Admin → **Commandes** | statut `Payé`, et en dépliant la commande le bloc « Argent » avec `Commande payée` |
+| Le signal reçu | `GET /payments/:id/events` (ADMIN) | au moins une ligne `WEBHOOK` / `COMPLETED` / `APPLIED` |
+| Côté pawaPay | tableau de bord pawaPay | le dépôt, au même montant et au même statut |
+| Le vendeur | application vendeur | la commande est arrivée, et **une seule fois** |
+
+### Étape 7 — Le reversement, séparément
+
+Il n'est **jamais** automatique. Une fois la commande passée à `PRET` :
+
+1. Admin → **Commandes** → déplier la commande → bloc « Argent » ;
+2. vérifier le net à reverser et le numéro masqué du vendeur ;
+3. **« Payer le restaurant »** → confirmer dans la modale.
+
+Prérequis souvent oublié : le vendeur doit avoir un compte de reversement
+(`PATCH /admin/vendors/:id/payout-account`) **et** le wallet pawaPay doit être
+approvisionné — un reversement puise dans ce solde, il ne transfère pas l'argent
+du client.
+
+### En cas de problème
+
+| Symptôme | Cause la plus probable | Geste |
+|---|---|---|
+| Rien n'arrive sur le téléphone | format MSISDN | vérifier le numéro tel qu'envoyé, cf. `pawapay.mapper.ts#toMsisdn` |
+| Le paiement reste « en attente » plus de 2 min | callback perdu | il se résout seul (cron, 2 min). Sinon Admin → Paiements → **Réconcilier** |
+| Le paiement reste bloqué et pawaPay le dit `COMPLETED` | callback refusé | vérifier `PAWAPAY_PUBLIC_KEY` / liste d'IP, puis **Réconcilier** |
+| `mismatch` dans les journaux | montant divergent | **ne rien forcer** — un incident `CRITICAL` est ouvert, arbitrage humain |
+| « Payer le restaurant » grisé | commande pas `PRET`, non payée, ou vendeur sans compte | le motif exact est affiché sous le bouton |
+| `PAWAPAY_WALLET_OUT_OF_FUNDS` | wallet à sec | l'approvisionner, puis **Réessayer le reversement** |
+
+> ⚠️ **Ne jamais utiliser « Confirmer » sur un paiement pawaPay** — le bouton
+> n'existe d'ailleurs plus que pour les virements manuels, et le serveur refuse
+> le geste en 409. Confirmer à la main un dépôt en vol déclarerait payée une
+> commande pour laquelle rien n'a été débité.
+
+---
 
 ## 11. Procédure production
 
@@ -436,6 +641,31 @@ le taux de rejeu et repérer une incohérence en supervision.
 **Jamais journalisé** : code secret (on ne le voit jamais — c'est l'intérêt du
 dispositif), jeton d'API, en-têtes `Authorization`, corps de réponse brut du
 prestataire. **Masqués** : numéros (`maskPhone`), références (`maskRef`).
+
+⚠️ **La `redact` de pino ne suffit pas.** Elle agit sur les propriétés d'un
+objet journalisé, pas sur une valeur interpolée dans le message. Le rail MTN
+écrivait `JSON.stringify(config.headers)` : la subscription key et le
+`Authorization` partaient en clair dans `msg`, hors de portée de la redaction.
+Corrigé par `redactHeaders()` (`mtn-momo-token.service.ts`), verrouillé par un
+test. **Règle : ne jamais interpoler d'en-têtes ni de configuration dans un
+message de log — passer un objet, ou masquer explicitement.**
+
+### Retrouver un paiement — ce qui est disponible
+
+| Question | Où |
+|---|---|
+| Que s'est-il passé sur ce paiement ? | `GET /payments/:id/events` (ADMIN) — une ligne par signal |
+| Le prestataire a-t-il répondu ? | même route : `source` = `WEBHOOK` / `RECONCILIATION` / `CLIENT_POLL` |
+| Ce callback a-t-il été appliqué ? | `outcome` = `APPLIED` / `DUPLICATE` / `IGNORED` / `MISMATCH` |
+| Quel montant, quelle référence ? | `GET /admin/orders/:id/financials` |
+| Le vendeur a-t-il été payé ? | idem, `restaurant.paid` — **seul `SUCCESS` compte** |
+
+⚠️ **Angle mort connu.** `PaymentEvent.payoutId` est en `onDelete: SetNull`, et
+`retryPayout` **supprime** la ligne échouée : après une reprise, les événements
+de la tentative précédente ne remontent plus dans
+`GET /admin/payouts/:id/events`. Ils survivent en base et restent retrouvables
+par `(provider, externalId)` — mais pas depuis l'administration. À garder en
+tête lors d'une enquête sur un reversement repris.
 
 **Alertes Sentry** : `payment.mismatch`, `payment.orphan`,
 `payout.mismatch`, `payout.unknown_status`, `payment.reconciliation_timeout`.
