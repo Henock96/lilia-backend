@@ -57,12 +57,32 @@ describe('resolveThrottlerTracker (C4)', () => {
   });
 
   it("utilise l'IP réelle du client sur une route publique", () => {
+    // Derrière Cloudflare, la seule adresse que l'appelant ne choisit pas.
     expect(
       resolveThrottlerTracker({
-        ips: ['41.222.0.9', '10.0.0.1'],
-        ip: '10.0.0.1',
+        headers: { 'cf-connecting-ip': '41.222.0.9' },
+        ip: '162.158.42.108',
       }),
     ).toBe('ip:41.222.0.9');
+  });
+
+  it('sans Cloudflare, retombe sur req.ip', () => {
+    expect(resolveThrottlerTracker({ ip: '41.222.0.9' })).toBe('ip:41.222.0.9');
+  });
+
+  it("⚠️ ne se laisse plus dicter l'IP par X-Forwarded-For", () => {
+    // Ce test remplace une version qui lisait `req.ips[0]` — l'entrée la plus à
+    // GAUCHE de `X-Forwarded-For`, donc fournie par l'appelant. Il suffisait
+    // d'en changer à chaque requête pour n'être jamais compté. Le test
+    // précédent verrouillait ce comportement en croyant vérifier « l'IP
+    // réelle ».
+    expect(
+      resolveThrottlerTracker({
+        headers: { 'x-forwarded-for': '1.1.1.1' },
+        ips: ['1.1.1.1', '162.158.42.108'],
+        ip: '162.158.42.108',
+      }),
+    ).toBe('ip:162.158.42.108');
   });
 
   it.each([

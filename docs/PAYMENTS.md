@@ -192,6 +192,45 @@ lecture. Le rafraîchissement d'un `PENDING` reste le travail de
 ⚠️ Déclarée **avant** `:paymentId/status` dans le contrôleur, sinon `by-order`
 serait capturé comme un identifiant de paiement.
 
+### Compatibilité client — `X-Lilia-Payment-Flow`
+
+`POST /payments` refuse en **426 `CLIENT_UPGRADE_REQUIRED`** tout client qui
+n'annonce pas `X-Lilia-Payment-Flow: provider`, **sauf en mode `MANUAL`**.
+
+**Pourquoi.** Les deux flux ne demandent pas la même chose au client. En mode
+manuel il compose un virement vers un numéro que le serveur lui donne ; avec un
+prestataire il n'a rien à composer — une demande arrive sur son téléphone et il
+saisit son code. Un client écrit pour le premier et branché sur le second
+affiche sa consigne avec `instructions.phone` **vide** : ses libellés sont
+compilés dans le binaire, aucune réponse serveur ne peut les rendre justes.
+
+C'est arrivé en production le 31/08/2026 : le backend est passé en `PAWAPAY`
+alors que l'application publiée et le site attendaient encore un virement. On ne
+peut pas rattraper ces clients, seulement **ne pas les engager** — sans la
+garde, l'appel déclenche une vraie demande USSD dont l'application ne parle
+jamais au client, puis lui montre un numéro vide.
+
+**Une capacité, pas une version** : `provider` dit ce que le client sait faire.
+Un numéro de version imposerait une table de correspondance à tenir pour trois
+applications, et qui se périmerait.
+
+⚠️ **Ce n'est pas un contrôle de sécurité** — l'en-tête est déclaratif et
+falsifiable. Un client qui ment ne casse que son propre écran.
+
+⚠️ **La garde ne se déclenche jamais en mode `MANUAL`.** C'est ce qui rend la
+bascule sûre dans les deux sens : repasser en `MANUAL` débloque instantanément
+tous les clients installés, sans rien publier.
+
+| Client | En-tête | `MANUAL` | `PAWAPAY` |
+|---|---|---|---|
+| App publiée (pré-pawaPay) | absent | ✅ | **426** |
+| App à jour | `provider` | ✅ | ✅ |
+| Site à jour | `provider` | ✅ | ✅ |
+
+Sur un client ancien, le 426 tombe dans sa boîte de dialogue de reprise :
+« votre commande a bien été créée … ne faites aucun virement pour l'instant ».
+La commande reste intacte et le cron d'expiration la libère.
+
 ### Les gestes manuels sont réservés aux paiements `MANUAL`
 
 `POST /payments/:id/confirm` et `.../reject` refusent en **409
@@ -304,6 +343,67 @@ Deux routes **distinctes**, jamais une seule qui devinerait le type :
    signés sont optionnels chez pawaPay.
 3. **Ni l'une ni l'autre configurée ⇒ tout est refusé.** Un endpoint public qui
    mute des lignes d'argent ne s'ouvre pas « en attendant ».
+
+### Obtenir la clé publique pawaPay
+
+Les callbacks signés sont **optionnels** chez pawaPay et **désactivés par
+défaut**. Il faut donc les activer, puis récupérer la clé qui sert à les
+vérifier.
+
+1. Se connecter au **tableau de bord pawaPay**, sur l'environnement voulu —
+   `dashboard.sandbox.pawapay.io` ou `dashboard.pawapay.io`. Les clés sont
+   **propres à chaque environnement** : celle du sandbox ne vérifie pas un
+   callback de production.
+2. Ouvrir la section des **callbacks / webhooks**, y déclarer les deux URL
+   (`/webhooks/pawapay/deposits` et `/webhooks/pawapay/payouts`) et **activer la
+   signature** des callbacks.
+3. pawaPay publie alors sa **clé publique** (PEM, `-----BEGIN PUBLIC KEY-----`).
+   C'est **leur** clé, pas une paire à générer : elle sert uniquement à vérifier
+   ce qu'ils envoient. Rien de secret — mais une clé erronée fait refuser tous
+   les callbacks.
+4. La poser telle quelle dans `PAWAPAY_PUBLIC_KEY` sur Render. Les sauts de
+   ligne échappés (`\n`) sont gérés.
+
+> Si la section n'apparaît pas, la fonctionnalité n'est pas activée sur le
+> compte : la demander au support pawaPay. En attendant, `PAWAPAY_CALLBACK_IPS`
+> est le seul repli — lire l'avertissement ci-dessous avant de l'utiliser.
+
+### ⚠️ Liste blanche d'IP : à ne prendre qu'en dernier recours
+
+L'application est servie par Render, **derrière Cloudflare**. Une requête arrive
+donc avec `X-Forwarded-For: <client>, <edge Cloudflare>`, et
+`TRUST_PROXY_HOPS=1` fait s'arrêter Express sur l'edge : `req.ip` vaut une
+adresse **Cloudflare**, jamais celle de pawaPay. Comparée à la liste blanche,
+elle ne correspond à rien — le repli est inopérant sans que rien ne le signale.
+
+**La correction évidente est un piège.** Passer `TRUST_PROXY_HOPS` à 2 ferait
+retomber `req.ip` sur une entrée de `X-Forwarded-For`, c'est-à-dire sur une
+valeur que l'appelant contrôle. N'importe qui pourrait alors envoyer
+`X-Forwarded-For: 3.64.89.224`, se faire passer pour pawaPay et **fabriquer des
+confirmations de paiement**. Le nombre de sauts reste à **1**.
+
+L'adresse est donc résolue par `common/http/client-ip.ts`, qui lit
+`CF-Connecting-IP` — que Cloudflare écrase à chaque requête, et que l'appelant
+ne peut donc pas choisir. Cette garantie tombe si l'application devient
+joignable sans passer par l'edge : **la signature reste le seul dispositif
+insensible à la topologie réseau.**
+
+Adresses pawaPay, pour mémoire : sandbox `3.64.89.224` ; production
+`18.192.208.15`, `18.195.113.136`, `3.72.212.107`, `54.73.125.42`,
+`54.155.38.214`, `54.73.130.113`. Une liste qui se périme coupe les paiements en
+silence — raison de plus de préférer la signature.
+
+### Un callback refusé n'est plus silencieux
+
+Tout rejet (`401`) déclenche désormais une alerte Sentry
+`pawapay.callback_rejected`, avec son motif : `not-configured`,
+`ip-not-allowlisted` ou `signature:<détail>`.
+
+Sans elle, un webhook fail-closed mal configuré ne se voit pas : il répond 401,
+pawaPay rejoue quinze minutes puis abandonne, et plus aucun encaissement n'est
+confirmé par sa voie normale — seulement par l'interrogation de l'application
+cliente, avec le cron comme dernier filet. C'est précisément ce qui s'est
+produit le 01/09/2026.
 
 ### Convention de réponse
 

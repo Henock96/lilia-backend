@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   HttpCode,
   HttpStatus,
   NotFoundException,
@@ -106,8 +107,18 @@ export class PaymentController {
   async createPayment(
     @Body() request: CreatePaymentDto,
     @FirebaseUser() fbUser: DecodedIdToken,
+    /**
+     * Capacité déclarée par le client — `provider` s'il sait conduire un
+     * paiement piloté par le prestataire (demande sur le téléphone, écran
+     * d'attente, interrogation du statut).
+     *
+     * Absent = client antérieur au prestataire. Le service refuse alors
+     * d'ouvrir l'encaissement plutôt que de le laisser afficher un numéro de
+     * virement vide. Voir `assertClientHandlesProviderFlow`.
+     */
+    @Headers('x-lilia-payment-flow') clientFlow?: string,
   ) {
-    return this.paymentService.createPayment(request, fbUser.uid);
+    return this.paymentService.createPayment(request, fbUser.uid, clientFlow);
   }
 
   /**
