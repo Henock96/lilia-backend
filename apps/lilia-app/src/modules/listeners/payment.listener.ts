@@ -123,15 +123,29 @@ export class PaymentListener {
       });
       if (!order) return;
 
+      // ⚠️ `event.reason` n'est PAS un message client.
+      //
+      // Il vaut `failureMessage ?? failureCode`, c'est-à-dire le texte brut de
+      // l'opérateur. Interpolé ici, il a réellement produit la notification :
+      // « … n'a pas abouti : "Airtel_CG" did not specify a reason for this
+      // faliure » — faute d'orthographe comprise.
+      //
+      // La notification ne dit donc plus la cause. Elle ramène le client dans
+      // l'application, où `mapPaymentFailure` traduit le `failureCode` en une
+      // phrase compréhensible. Une notification n'a de toute façon pas la place
+      // d'expliquer, et se tromper d'explication coûte plus qu'un mot de moins.
+      //
+      // Le motif technique reste dans le journal (ligne ci-dessus), dans
+      // `Payment.failureCode` / `failureMessage` et dans `PaymentEvent`.
       await this.notificationsService.sendPushNotification(
         event.userId,
         '❌ Paiement non abouti',
-        `Le paiement de votre commande chez ${order.restaurant.nom} n'a pas abouti : ${event.reason}. Vous pouvez réessayer.`,
+        `Le paiement de votre commande chez ${order.restaurant.nom} n'a pas pu ` +
+          `être finalisé. Aucun montant n'a été prélevé — vous pouvez réessayer.`,
         {
           orderId: event.orderId,
           paymentId: event.paymentId,
           type: 'payment_failed',
-          reason: event.reason,
         },
       );
     } catch (error) {
