@@ -153,6 +153,41 @@ describe('PawaPayWebhookController', () => {
         controller.handleDepositCallback(depositCallback(), req('1.2.3.4')),
       ).rejects.toBeInstanceOf(UnauthorizedException);
     });
+
+    it('derrière Cloudflare : compare l’IP du client, pas celle de l’edge', async () => {
+      // Le cas réel de production. `req.ip` vaut l'edge Cloudflare parce que
+      // `TRUST_PROXY_HOPS=1` s'arrête là ; comparer cette adresse à la liste
+      // blanche de pawaPay ne matcherait JAMAIS, et le repli serait donc
+      // inopérant sans que rien ne le signale.
+      signatureEnabled = false;
+      allowlist = '3.64.89.224';
+      payments.findByProviderTransactionId.mockResolvedValue({ id: 'pay-1' });
+      payments.applyCollectionProviderStatus.mockResolvedValue('APPLIED');
+
+      const request = req('162.158.42.108');
+      request.headers['cf-connecting-ip'] = '3.64.89.224';
+
+      await expect(
+        controller.handleDepositCallback(depositCallback(), request),
+      ).resolves.toEqual({ status: 'processed' });
+    });
+
+    it('⚠️ X-Forwarded-For forgé ne franchit pas la liste blanche', async () => {
+      // C'est la raison pour laquelle `TRUST_PROXY_HOPS` reste à 1 : le passer
+      // à 2 ferait retomber `req.ip` sur une valeur choisie par l'appelant, qui
+      // pourrait alors se faire passer pour pawaPay et fabriquer des
+      // confirmations de paiement.
+      signatureEnabled = false;
+      allowlist = '3.64.89.224';
+
+      const request = req('162.158.42.108');
+      request.headers['x-forwarded-for'] = '3.64.89.224';
+
+      await expect(
+        controller.handleDepositCallback(depositCallback(), request),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(payments.applyCollectionProviderStatus).not.toHaveBeenCalled();
+    });
   });
 
   // ══════════════════════════════════════════════════════════════════════════

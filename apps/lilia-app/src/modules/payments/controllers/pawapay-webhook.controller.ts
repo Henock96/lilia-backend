@@ -13,7 +13,9 @@ import { ApiExcludeController } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { PaymentEventKind, PaymentEventSource } from '@prisma/client';
 import type { Request } from 'express';
+import * as Sentry from '@sentry/nestjs';
 
+import { resolveClientIp } from '../../../common/http/client-ip';
 import { Public } from '../../auth/decorators/public.decorator';
 import { SkipResponseWrap } from '../../../common/interceptors/api-response.interceptor';
 import { PaymentService, maskRef } from '../services/payment.service';
@@ -224,6 +226,7 @@ export class PawaPayWebhookController {
         this.logger.error(
           `Callback pawaPay/${route} refusé — signature invalide (${failure})`,
         );
+        this.alertRejected(route, `signature:${failure}`);
         throw new UnauthorizedException('Callback non autorisé');
       }
       return;
@@ -239,18 +242,46 @@ export class PawaPayWebhookController {
         'Aucune authentification de callback configurée ' +
           '(ni PAWAPAY_PUBLIC_KEY ni PAWAPAY_CALLBACK_IPS) — callback refusé',
       );
+      this.alertRejected(route, 'not-configured');
       throw new UnauthorizedException('Callback non configuré');
     }
 
-    // `req.ip` est fiable grâce à `trust proxy` (fix C4) : sans lui, ce serait
-    // l'adresse du load balancer Render, la même pour tout le monde.
-    const source = req.ip ?? '';
+    // ⚠️ `req.ip` ne convient pas : derrière Cloudflare + Render, il vaut
+    // l'adresse de l'edge Cloudflare, jamais celle de pawaPay — la liste
+    // blanche ne matcherait donc **jamais**. Et augmenter `TRUST_PROXY_HOPS`
+    // pour « corriger » cela laisserait un appelant forger son adresse via
+    // `X-Forwarded-For`, donc se faire passer pour pawaPay. Voir
+    // `common/http/client-ip.ts`.
+    const source = resolveClientIp(req) ?? '';
     if (!allowlist.includes(source)) {
       this.logger.error(
         `Callback pawaPay/${route} refusé — adresse ${source} hors liste blanche`,
       );
+      this.alertRejected(route, 'ip-not-allowlisted');
       throw new UnauthorizedException('Callback non autorisé');
     }
+  }
+
+  /**
+   * Rend visible un callback refusé.
+   *
+   * **Pourquoi cette alerte existe.** Un webhook fail-closed mal configuré est
+   * silencieux par nature : il répond 401, pawaPay réessaie quinze minutes puis
+   * abandonne, et **rien** dans l'application ne signale que plus aucun
+   * paiement n'est confirmé par sa voie normale. C'est exactement ce qui s'est
+   * produit — les encaissements n'étaient plus confirmés que par
+   * l'interrogation de l'application cliente, avec le cron de réconciliation
+   * comme dernier filet. Le jour où un client ferme son application juste après
+   * avoir payé, il attend jusqu'à cinq minutes.
+   *
+   * Un refus est donc toujours une anomalie : soit la configuration est
+   * incomplète, soit quelqu'un frappe à la porte. Les deux méritent d'être vus.
+   */
+  private alertRejected(route: string, reason: string) {
+    Sentry.captureMessage(
+      `pawapay.callback_rejected — ${route} refusé (${reason})`,
+      'warning',
+    );
   }
 
   private toResponseStatus(

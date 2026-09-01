@@ -137,6 +137,7 @@ describe('PaymentService — encaissement', () => {
           amount: 1, // tentative de payer 1 F au lieu de 6 400
         } as never,
         'uid-1',
+        'provider',
       );
 
       expect(prisma.payment.create).toHaveBeenCalledWith(
@@ -164,6 +165,7 @@ describe('PaymentService — encaissement', () => {
       await service.createPayment(
         { orderId: 'o1', phoneNumber: '061234567' } as never,
         'uid-1',
+        'provider',
       );
 
       // Sans cet ordre, un timeout réseau ferait repartir une NOUVELLE référence
@@ -188,6 +190,7 @@ describe('PaymentService — encaissement', () => {
       const res: any = await service.createPayment(
         { orderId: 'o1', phoneNumber: '061234567' } as never,
         'uid-1',
+        'provider',
       );
 
       expect(res.paymentId).toBe('pay-1');
@@ -208,6 +211,7 @@ describe('PaymentService — encaissement', () => {
       await service.createPayment(
         { orderId: 'o1', phoneNumber: '061234567' } as never,
         'uid-1',
+        'provider',
       );
 
       expect(provider.createCollection).toHaveBeenCalledWith(
@@ -445,6 +449,7 @@ describe('PaymentService — encaissement', () => {
         service.createPayment(
           { orderId: 'o1', phoneNumber: '061234567' } as never,
           'uid-1',
+          'provider',
         ),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(prisma.payment.create).not.toHaveBeenCalled();
@@ -457,6 +462,7 @@ describe('PaymentService — encaissement', () => {
         service.createPayment(
           { orderId: 'o1', phoneNumber: '061234567' } as never,
           'uid-admin',
+          'provider',
         ),
       ).resolves.toMatchObject({ paymentId: 'pay-1' });
     });
@@ -470,6 +476,7 @@ describe('PaymentService — encaissement', () => {
         service.createPayment(
           { orderId: 'o1', phoneNumber: '061234567' } as never,
           'uid-1',
+          'provider',
         ),
       ).rejects.toBeInstanceOf(HttpException);
 
@@ -491,6 +498,7 @@ describe('PaymentService — encaissement', () => {
         service.createPayment(
           { orderId: 'o1', phoneNumber: '061234567' } as never,
           'uid-1',
+          'provider',
         ),
       ).rejects.toBeInstanceOf(BadRequestException);
 
@@ -576,6 +584,74 @@ describe('PaymentService — encaissement', () => {
    * `GET /payments/by-order/:orderId` — la lecture qui permet à un client web de
    * retrouver son paiement après un F5 sans rejouer une écriture.
    */
+  /**
+   * Compatibilité client — défaut B1, trouvé en production.
+   *
+   * Le backend tournait en PAWAPAY pendant que l'application publiée et le site
+   * attendaient encore un virement manuel. Ces clients affichaient leur
+   * consigne avec un numéro **vide**, tandis que le prestataire sollicitait
+   * réellement le téléphone du client.
+   *
+   * On ne peut pas les rattraper — leurs libellés sont compilés dans le
+   * binaire. On peut seulement refuser de les engager, AVANT tout appel au
+   * prestataire.
+   */
+  describe('compatibilité client (X-Lilia-Payment-Flow)', () => {
+    const create = (flow?: string) =>
+      service.createPayment(
+        { orderId: 'o1', phoneNumber: '061234567' } as never,
+        'uid-1',
+        flow,
+      );
+
+    it('refuse un client muet en 426, SANS appeler le prestataire', async () => {
+      await expect(create(undefined)).rejects.toMatchObject({
+        status: 426,
+        response: { code: 'CLIENT_UPGRADE_REQUIRED' },
+      });
+
+      // Le point qui compte : aucune demande n'est partie sur le téléphone du
+      // client, et aucune ligne de paiement n'a été ouverte.
+      expect(provider.createCollection).not.toHaveBeenCalled();
+      expect(prisma.payment.create).not.toHaveBeenCalled();
+    });
+
+    it('refuse une capacité inconnue', async () => {
+      await expect(create('manual')).rejects.toMatchObject({ status: 426 });
+      expect(provider.createCollection).not.toHaveBeenCalled();
+    });
+
+    it('accepte « provider », quelle que soit la casse', async () => {
+      await expect(create('Provider')).resolves.toMatchObject({
+        status: 'PENDING',
+      });
+      expect(provider.createCollection).toHaveBeenCalled();
+    });
+
+    it('la commande reste intacte : le refus ne la consomme pas', async () => {
+      await expect(create(undefined)).rejects.toMatchObject({ status: 426 });
+      expect(prisma.order.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('⚠️ ne se déclenche JAMAIS en mode MANUAL, même sans en-tête', async () => {
+      // C'est la propriété qui rend la bascule sûre dans les deux sens :
+      // repasser la plateforme en MANUAL débloque instantanément tous les
+      // clients existants, sans publier quoi que ce soit. Si cette garde
+      // s'appliquait au virement manuel, elle transformerait un repli en panne.
+      const restore = provider.name;
+      provider.name = 'MANUAL';
+      try {
+        await expect(create(undefined)).resolves.toMatchObject({
+          status: 'PENDING',
+        });
+        expect(provider.createCollection).toHaveBeenCalled();
+      } finally {
+        provider.name = restore;
+      }
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
   describe('findLatestForOrder', () => {
     it('rend la tentative la plus récente, sans rien muter', async () => {
       prisma.order.findUnique.mockResolvedValue({ id: 'o1', userId: 'u1' });

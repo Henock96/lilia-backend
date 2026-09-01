@@ -21,6 +21,8 @@
  * ne peut pas saturer le compteur d'un autre utilisateur sans posséder son
  * jeton. On ne s'en sert jamais pour autoriser quoi que ce soit.
  */
+import { resolveClientIp } from '../http/client-ip';
+
 export function resolveThrottlerTracker(req: {
   headers?: Record<string, unknown>;
   firebaseUser?: { uid?: string };
@@ -35,7 +37,13 @@ export function resolveThrottlerTracker(req: {
   if (claimedUid) return `uid:${claimedUid}`;
 
   // Routes publiques : on retombe sur l'IP réelle du client.
-  return `ip:${req.ips?.[0] ?? req.ip ?? 'unknown'}`;
+  //
+  // ⚠️ Pas `req.ips[0]` : c'est l'entrée la plus à GAUCHE de `X-Forwarded-For`,
+  // donc celle que le client contrôle — il lui suffisait d'en changer à chaque
+  // requête pour ne jamais être compté. `resolveClientIp` prend
+  // `CF-Connecting-IP`, que Cloudflare écrase et que l'appelant ne peut donc
+  // pas choisir. Voir `common/http/client-ip.ts`.
+  return `ip:${resolveClientIp(req) ?? 'unknown'}`;
 }
 
 function extractSubject(authorization: unknown): string | null {

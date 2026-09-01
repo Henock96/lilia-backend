@@ -46,6 +46,16 @@ export function maskRef(ref?: string | null): string {
   return ref.length <= 4 ? '****' : `****${ref.slice(-4)}`;
 }
 
+/**
+ * `426 Upgrade Required` — absent de l'énumération `HttpStatus` de Nest, écrit
+ * ici plutôt qu'en littéral au point d'usage.
+ *
+ * C'est le code exact de la situation : la requête est légitime, l'appelant est
+ * authentifié et autorisé, mais son logiciel ne sait pas mener l'échange. Un
+ * 400 laisserait croire à une saisie fautive, un 409 à un conflit d'état.
+ */
+const HTTP_UPGRADE_REQUIRED = 426;
+
 export enum PaymentStatus {
   PENDING = 'PENDING',
   SUCCESS = 'SUCCESS',
@@ -95,7 +105,16 @@ export class PaymentService {
   // Initiation
   // ══════════════════════════════════════════════════════════════════════════
 
-  async createPayment(request: CreatePaymentRequest, firebaseUid: string) {
+  async createPayment(
+    request: CreatePaymentRequest,
+    firebaseUid: string,
+    /**
+     * Ce que le client déclare savoir faire, lu dans `X-Lilia-Payment-Flow`.
+     * `undefined` = un client qui ne s'est pas annoncé, donc antérieur au
+     * prestataire. Voir `assertClientHandlesProviderFlow`.
+     */
+    clientFlow?: string,
+  ) {
     const order = await this.getPayableOrder(request.orderId, firebaseUid);
 
     // Fix M3 : une commande intégralement réglée en points de fidélité a un
@@ -109,6 +128,7 @@ export class PaymentService {
     await this.assertAttemptsRemaining(order.id);
 
     const provider = this.registry.forNewTransaction();
+    this.assertClientHandlesProviderFlow(provider.name, clientFlow);
     // ⚠️ Le montant vient de `order.total`, JAMAIS du corps de la requête —
     // `amount` a d'ailleurs été retiré du DTO pour que le contrat ne suggère
     // même pas le contraire.
@@ -979,6 +999,62 @@ export class PaymentService {
       );
     }
     return order;
+  }
+
+  /**
+   * Refuse d'ouvrir un encaissement prestataire à un client qui ne sait pas le
+   * conduire.
+   *
+   * **Le problème réel.** Les deux flux ne demandent pas la même chose au
+   * client. En mode `MANUAL`, il compose un virement vers un numéro que le
+   * serveur lui donne. Avec un prestataire, il n'a **rien** à composer : une
+   * demande arrive sur son téléphone et il saisit son code. Un client écrit
+   * pour le premier flux et branché sur le second affiche sa modale de
+   * virement avec `instructions.phone` vide — ses libellés (« Numero MTN
+   * Mobile Money ») sont compilés dans le binaire, aucune réponse serveur ne
+   * peut les rendre justes.
+   *
+   * On ne peut donc pas rattraper ces clients ; on peut seulement **ne pas les
+   * engager**. Sans cette garde, `POST /payments` déclenche une vraie demande
+   * USSD sur le téléphone du client, dont son application ne lui parle jamais,
+   * puis lui affiche un numéro de virement vide. Avec elle, il reçoit une
+   * erreur claire **avant** que le prestataire ne soit appelé — sa commande
+   * reste intacte et le cron d'expiration la libérera.
+   *
+   * **Pourquoi une capacité et non une version.** `X-Lilia-Payment-Flow:
+   * provider` dit ce que le client sait faire ; un numéro de version obligerait
+   * à maintenir une table de correspondance qui se périmerait, et à la tenir à
+   * jour pour trois applications distinctes.
+   *
+   * ⚠️ Ce n'est **pas** un contrôle de sécurité : l'en-tête est déclaratif et
+   * falsifiable. Un client qui ment ne casse que son propre écran.
+   *
+   * **La garde ne se déclenche jamais en mode MANUAL** — les clients existants
+   * y fonctionnent parfaitement. C'est ce qui rend la bascule sûre dans les
+   * deux sens : repasser en `MANUAL` les débloque, passer en `PAWAPAY` les
+   * arrête proprement au lieu de les laisser échouer en silence.
+   */
+  private assertClientHandlesProviderFlow(
+    providerName: string,
+    clientFlow: string | undefined,
+  ) {
+    if (providerName === 'MANUAL') return;
+    if (clientFlow?.trim().toLowerCase() === 'provider') return;
+
+    this.logger.warn(
+      `💰 Encaissement refusé — client sans capacité « provider » ` +
+        `(en-tête reçu : ${clientFlow ?? 'absent'}), rail ${providerName}`,
+    );
+    throw new HttpException(
+      {
+        message:
+          'Votre version de Lilia Food ne gère pas encore ce mode de paiement. ' +
+          'Mettez à jour l’application, puis reprenez le paiement depuis ' +
+          '« Mes commandes ». Ne faites aucun virement.',
+        code: 'CLIENT_UPGRADE_REQUIRED',
+      },
+      HTTP_UPGRADE_REQUIRED,
+    );
   }
 
   /** Plafond de tentatives — voir `maxAttempts`. */
