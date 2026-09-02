@@ -6,7 +6,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { LoyaltyTransactionType } from '@prisma/client';
+import { LocationPrecision, LoyaltyTransactionType } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { InjectRedis } from '@nestjs-modules/ioredis';
 import * as Sentry from '@sentry/nestjs';
@@ -22,6 +22,10 @@ import { StockService } from './stock.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { PreorderValidatorService } from '../vendors/preorder-validator.service';
 import { QuartiersService } from '../quartiers/quartiers.service';
+import {
+  DeliveryDestinationService,
+  ResolvedDestination,
+} from './delivery-destination.service';
 
 /**
  * Checkout : création d'une commande à partir du panier (LIL-134).
@@ -55,6 +59,7 @@ export class OrderCheckoutService {
     private readonly platformSettings: PlatformSettingsService,
     private readonly preorderValidator: PreorderValidatorService,
     private readonly quartiersService: QuartiersService,
+    private readonly destinationService: DeliveryDestinationService,
     // Client partagé fourni par `RedisModule.forRootAsync` (app.module). On
     // n'ouvre plus une seconde connexion ici : Render plafonne les connexions
     // Redis et `UserCacheService` utilise déjà ce même pool.
@@ -164,8 +169,14 @@ export class OrderCheckoutService {
     this.validator.validateCartNotEmpty(cartItems);
     const restaurantId = this.validator.validateSameRestaurant(cartItems);
 
-    // 1. Vérifier l'adresse de livraison (seulement si c'est une livraison)
-    let deliveryAddress: string | null = null;
+    // 1. Résoudre la destination de livraison (seulement si c'est une livraison)
+    //
+    // ⚠️ `deliveryLatitude` / `deliveryLongitude` du DTO ne sont **pas**
+    // utilisés ici. Ils portent la position du téléphone du client, pas celle
+    // de l'adresse qu'il a choisie ; les recopier envoyait le livreur là où le
+    // client se trouvait au moment de payer. Ils ne servent plus qu'à mesurer
+    // l'écart, pour l'observabilité.
+    let destination: ResolvedDestination | null = null;
 
     if (isDelivery) {
       if (!adresseId) {
@@ -176,13 +187,15 @@ export class OrderCheckoutService {
           'Une adresse de livraison est requise pour la livraison à domicile.',
         );
       }
-      deliveryAddress = await this.validator.validateDeliveryAddress(
+      destination = await this.destinationService.resolveForAddress(
         adresseId,
         user.id,
+        { latitude: deliveryLatitude, longitude: deliveryLongitude },
       );
     } else {
       this.logger.log(`📦 [COMMANDE] Mode retrait au restaurant`);
     }
+    const deliveryAddress = destination?.address ?? null;
     const restaurant =
       await this.validator.validateRestaurantOpen(restaurantId);
     await this.validator.validateStock(cartItems);
@@ -199,25 +212,25 @@ export class OrderCheckoutService {
 
     // Frais de livraison : FIXED par défaut, ZONE_BASED selon le quartier de
     // l'adresse de livraison (le mode ZONE_BASED n'était jamais appliqué — B11).
+    //
+    // Le quartier vient désormais de la destination déjà résolue : c'est la
+    // même lecture d'adresse qui sert au calcul des frais et à la position du
+    // livreur, donc les deux ne peuvent plus diverger — et une requête
+    // Prisma de moins.
     let effectiveDeliveryFee = restaurant.fixedDeliveryFee;
-    let deliveryQuartierId: string | null = null;
+    const deliveryQuartierId = isDelivery
+      ? (destination?.quartierId ?? null)
+      : null;
     if (
       isDelivery &&
       restaurant.deliveryPriceMode === 'ZONE_BASED' &&
-      adresseId
+      deliveryQuartierId
     ) {
-      const addr = await this.prisma.adresses.findUnique({
-        where: { id: adresseId },
-        select: { quartierId: true },
-      });
-      if (addr?.quartierId) {
-        deliveryQuartierId = addr.quartierId;
-        const zoneFee = await this.quartiersService.calculateDeliveryFee(
-          restaurantId,
-          addr.quartierId,
-        );
-        effectiveDeliveryFee = zoneFee.fee;
-      }
+      const zoneFee = await this.quartiersService.calculateDeliveryFee(
+        restaurantId,
+        deliveryQuartierId,
+      );
+      effectiveDeliveryFee = zoneFee.fee;
     }
 
     // 2. Calcul — isolé, testable unitairement
@@ -309,9 +322,15 @@ export class OrderCheckoutService {
           isDelivery,
           notes,
           contactPhone,
+          // Snapshot de la destination : figé ici, jamais recalculé. Le client
+          // peut corriger son adresse demain, cette commande continuera de
+          // pointer là où elle a été livrée.
           deliveryAddress,
-          deliveryLatitude: deliveryLatitude ?? null,
-          deliveryLongitude: deliveryLongitude ?? null,
+          deliveryLatitude: destination?.latitude ?? null,
+          deliveryLongitude: destination?.longitude ?? null,
+          deliveryPrecision:
+            destination?.precision ?? LocationPrecision.UNKNOWN,
+          deliveryLandmark: destination?.landmark ?? null,
           deliveryQuartierId,
           paymentMethod,
           status: 'EN_ATTENTE',

@@ -374,6 +374,13 @@ export class DeliveryQueryService {
             userId: true,
             deliveryLatitude: true,
             deliveryLongitude: true,
+            // La précision voyage avec les coordonnées, sans exception : une
+            // position sans sa fiabilité serait affichée avec le même aplomb
+            // qu'un point posé à la main, et c'est précisément ce qu'on
+            // cherche à ne plus faire.
+            deliveryPrecision: true,
+            deliveryAddress: true,
+            deliveryLandmark: true,
             restaurant: {
               select: {
                 id: true,

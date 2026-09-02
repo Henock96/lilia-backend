@@ -18,6 +18,7 @@ import { PromoService } from '../promo/promo.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { PreorderValidatorService } from '../vendors/preorder-validator.service';
 import { QuartiersService } from '../quartiers/quartiers.service';
+import { DeliveryDestinationService } from './delivery-destination.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
 import { RefundsService } from '../refunds/refunds.service';
 import { OutboxService } from '../outbox/outbox.service';
@@ -64,7 +65,6 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
     validateAndGetUser: jest.fn(),
     validateCartNotEmpty: jest.fn(),
     validateSameRestaurant: jest.fn(),
-    validateDeliveryAddress: jest.fn(),
     validateRestaurantOpen: jest.fn(),
     validateStock: jest.fn(),
     validateMinimumOrderAmount: jest.fn(),
@@ -81,6 +81,12 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
   const stockService = { decrementInTransaction: jest.fn() };
   const platformSettings = { getSettings: jest.fn() };
   const eventEmitter = { emit: jest.fn() };
+  // Destination résolue côté serveur : les specs de checkout n'ont pas à
+  // rejouer la logique de repli (elle a sa propre suite), seulement à fournir
+  // une destination plausible.
+  const destinationService = {
+    resolveForAddress: jest.fn(),
+  };
 
   const SETTINGS = {
     serviceFeePercent: 8,
@@ -100,7 +106,15 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
       cart: { id: 'cart1', items: [{ id: 'ci1', quantite: 1 }] },
     });
     validator.validateSameRestaurant.mockReturnValue('resto1');
-    validator.validateDeliveryAddress.mockResolvedValue('Adresse 1');
+    destinationService.resolveForAddress.mockResolvedValue({
+      address: 'Adresse 1, Poto-Poto, Brazzaville',
+      latitude: -4.274,
+      longitude: 15.2678,
+      precision: 'EXACT',
+      quartierId: null,
+      quartierNom: 'Poto-Poto',
+      landmark: null,
+    });
     validator.validateRestaurantOpen.mockResolvedValue({
       id: 'resto1',
       nom: 'Resto',
@@ -172,6 +186,10 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
         { provide: PaginationService, useValue: {} },
         { provide: OrderStateMachine, useValue: {} },
         { provide: QuartiersService, useValue: {} },
+        {
+          provide: DeliveryDestinationService,
+          useValue: destinationService,
+        },
       ],
     }).compile();
 

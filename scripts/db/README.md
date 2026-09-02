@@ -45,6 +45,51 @@ node scripts/db/dry-run-fk-migration.js
 C'est la seule façon de savoir si `prisma migrate deploy` passera, sans le
 jouer pour de bon. Dernier résultat : **45 contraintes créées en 706 ms**.
 
+## `delete-vendor.js` — suppression physique d'un vendeur de test
+
+Supprime un `Restaurant` **et tout ce qui en dépend** : commandes, items,
+paiements, reversements, livraisons, avis, catalogue, promos. Réservé aux
+vendeurs de test — pour un vendeur réel, la bonne opération est
+`PATCH /admin/vendors/:id/suspend`.
+
+```bash
+node scripts/db/delete-vendor.js --list                 # inventaire, lecture seule
+node scripts/db/delete-vendor.js <id>                   # répétition à blanc (ROLLBACK)
+node scripts/db/delete-vendor.js <id> --commit          # suppression réelle
+node scripts/db/delete-vendor.js <id> --commit --force  # outrepasse les garde-fous
+node scripts/db/delete-vendor.js <id> --commit --with-owner
+```
+
+Sans `--commit`, tout est joué dans une transaction annulée : les décomptes
+affichés sont ceux que PostgreSQL a réellement calculés, la base ressort
+inchangée. Plusieurs ids peuvent être passés d'un coup.
+
+**Garde-fous** (refus sauf `--force`) : commande non terminale, paiement
+`SUCCESS`, reversement `PENDING`/`SUCCESS`. Un vendeur qui a encaissé de
+l'argent n'est pas un vendeur de test.
+
+**Ce que le script ne fait pas** — il l'affiche en fin d'exécution :
+- **Cloudinary** : les `public_id` (logo, galerie, photos produits et menus)
+  sont relevés **avant** suppression et listés ; après, ils sont introuvables ;
+- **Firebase Auth** : le compte du propriétaire est à supprimer à la main ;
+- **`AdminAuditLog`** : volontairement conservé — c'est un journal opposable en
+  écriture seule, la trace doit survivre à la suppression.
+
+`--with-owner` supprime le compte propriétaire, **avec repli en anonymisation**
+(`SAVEPOINT`) quand il est en RESTRICT — journal d'audit, ou commandes passées
+en tant que client. Mêmes champs que `UserDeletionService` (`DELETE /users/me`).
+
+⚠️ **Deux pièges que l'ordre des `DELETE` traite** et qu'un `DELETE` manuel
+raterait :
+1. `PromoCode.restaurantId` est en **SET NULL** : sans suppression explicite,
+   un code promo réservé au vendeur devient valable sur toute la plateforme ;
+2. `PromoUsage`, `LoyaltyTransaction`, `OutboxEvent` et `Incident` portent un
+   `orderId` / `restaurantId` en simple `String`, **hors relation Prisma** :
+   rien ne les supprime, et `audit-orphans.js` ne les voit pas.
+
+Validé de bout en bout sur une base PostgreSQL réelle avec une fixture couvrant
+les 33 tables concernées : après `--commit`, seul `AdminAuditLog` subsiste.
+
 ## Déploiement réel
 
 ```bash

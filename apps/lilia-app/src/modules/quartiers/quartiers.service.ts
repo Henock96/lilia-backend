@@ -1,10 +1,11 @@
 /* eslint-disable prettier/prettier */
 import {
+  BadRequestException,
   Injectable,
-  NotFoundException ,
-
+  NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { checkCongoCoordinates } from '../../common/geo/congo-geo';
 
 // Liste des quartiers de Brazzaville
 export const QUARTIERS_BRAZZAVILLE = [
@@ -109,6 +110,28 @@ export class QuartiersService {
       message: 'Quartiers initialisés avec succès',
       count: quartiers.count,
     };
+  }
+
+  /**
+   * Pose le centroïde d'un quartier — repli de position pour les adresses
+   * clients qui n'en ont pas.
+   *
+   * Les coordonnées passent par le même contrôle que les vendeurs et les
+   * adresses : hors du Congo, inversées ou `(0, 0)` sont refusées. Un
+   * centroïde faux se propagerait à **toutes** les commandes du quartier.
+   */
+  async setCentroid(id: string, latitude: number, longitude: number) {
+    const check = checkCongoCoordinates(latitude, longitude);
+    if (!check.ok) throw new BadRequestException(check.message);
+
+    const quartier = await this.prisma.quartier.findUnique({ where: { id } });
+    if (!quartier) throw new NotFoundException('Quartier non trouvé');
+
+    const updated = await this.prisma.quartier.update({
+      where: { id },
+      data: { latitude, longitude },
+    });
+    return { data: updated, message: `Centroïde de ${updated.nom} enregistré` };
   }
 
   /**

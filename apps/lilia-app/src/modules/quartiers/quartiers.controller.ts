@@ -11,6 +11,7 @@ import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Public } from '../auth/decorators/public.decorator';
 import { AddQuartiersToZoneDto, CreateDeliveryZoneDto, UpdateDeliveryZoneDto } from './dto/delivery-zone.dto';
+import { SetQuartierCentroidDto } from './dto/quartier-centroid.dto';
 
 @ApiTags('Quartiers')
 @ApiBearerAuth()
@@ -45,6 +46,28 @@ export class QuartiersController {
   @ApiOperation({ summary: 'Initialiser les quartiers (admin, une fois)' })
   async seedQuartiers() {
     return this.quartiersService.seedQuartiers();
+  }
+
+  /**
+   * PATCH /quartiers/:id/centroid
+   *
+   * Pose ou corrige le centroïde d'un quartier. C'est un geste **humain** :
+   * le géocodage de Google ne reconnaît pas tous les quartiers de Brazzaville
+   * et renvoie alors le centre-ville générique, ce qui les rendrait tous
+   * superposés. Un administrateur qui connaît la ville tranche mieux qu'un
+   * service qui répond toujours quelque chose.
+   *
+   * Ce centroïde sert de repli quand une adresse client n'a pas de position :
+   * la commande est alors marquée `APPROXIMATE`, jamais `EXACT`.
+   */
+  @Patch(':id/centroid')
+  @Roles('ADMIN')
+  @ApiOperation({ summary: "Définir le centroïde d'un quartier (admin)" })
+  async setCentroid(
+    @Param('id') id: string,
+    @Body() dto: SetQuartierCentroidDto,
+  ) {
+    return this.quartiersService.setCentroid(id, dto.latitude, dto.longitude);
   }
 
   /**
