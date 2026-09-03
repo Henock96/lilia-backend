@@ -21,7 +21,13 @@ export interface InvitationResult {
 }
 
 /**
- * Invitation d'activation du compte vendeur.
+ * Public visé par l'invitation. Change le message, jamais le mécanisme.
+ */
+export type InvitationAudience = 'vendor' | 'driver';
+
+/**
+ * Invitation d'activation d'un compte créé par un administrateur — vendeur
+ * **ou livreur**.
  *
  * Remplace la transmission manuelle d'un mot de passe choisi par
  * l'administrateur. Le principe : l'admin crée le compte, il n'en détient
@@ -30,6 +36,12 @@ export interface InvitationResult {
  *
  * ⚠️ Le SDK Admin **génère** le lien, il ne l'envoie pas : l'acheminement est à
  * notre charge, d'où l'appel explicite à `EmailService`.
+ *
+ * Le livreur (septembre 2026) réutilise ce service plutôt qu'une copie : le
+ * problème — créer un compte dont l'admin ignore le secret, avec un repli
+ * lisible quand l'e-mail ne part pas — est exactement le même, et deux
+ * implémentations d'un repli divergent toujours. Seuls le sujet du message et
+ * le gabarit changent, via `audience`.
  */
 @Injectable()
 export class VendorInvitationService {
@@ -60,12 +72,31 @@ export class VendorInvitationService {
     });
   }
 
+  /** Invitation d'un compte LIVREUR, à partir de son `User.id`. */
+  async sendForDriver(userId: string): Promise<InvitationResult> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, nom: true, phone: true },
+    });
+    if (!user) throw new NotFoundException('Livreur introuvable.');
+
+    return this.send({
+      audience: 'driver',
+      email: user.email,
+      nom: user.nom ?? 'Livreur',
+      phone: user.phone,
+    });
+  }
+
   async send(params: {
     email: string;
     nom: string;
     phone?: string | null;
-    boutique: string;
+    /** Requis pour `vendor`, ignoré pour `driver`. */
+    boutique?: string;
+    audience?: InvitationAudience;
   }): Promise<InvitationResult> {
+    const audience: InvitationAudience = params.audience ?? 'vendor';
     let link: string;
     try {
       link = await this.firebase.generatePasswordResetLink(params.email);
@@ -78,34 +109,39 @@ export class VendorInvitationService {
           (err as Error).message
         }`,
       );
+      const qui = audience === 'driver' ? 'Le livreur' : 'Le vendeur';
       return {
         emailSent: false,
         smsSent: false,
-        detail:
-          "Le lien d'activation n'a pas pu être généré. Le vendeur ne peut pas encore se connecter — réessayez depuis sa fiche.",
+        detail: `Le lien d'activation n'a pas pu être généré. ${qui} ne peut pas encore se connecter — réessayez depuis sa fiche.`,
       };
     }
 
-    const emailSent = await this.email.sendVendorInvitation(
-      params.email,
-      params.nom,
-      params.boutique,
-      link,
-    );
+    const emailSent =
+      audience === 'driver'
+        ? await this.email.sendDriverInvitation(params.email, params.nom, link)
+        : await this.email.sendVendorInvitation(
+            params.email,
+            params.nom,
+            params.boutique ?? '',
+            link,
+          );
 
     // Le SMS ne porte pas le lien : une URL Firebase dépasse 200 caractères,
     // soit deux à trois segments facturés, et se tronque dans plusieurs clients
     // SMS. Il sert d'accusé — « votre espace existe, regardez vos e-mails » —
     // sur le canal qui arrive le plus sûrement à Brazzaville.
+    const smsBody =
+      audience === 'driver'
+        ? `Lilia Food : votre compte livreur est cree. Consultez votre email (${params.email}) pour definir votre mot de passe.`
+        : `Lilia Food : votre espace vendeur "${(params.boutique ?? '').slice(0, 30)}" est cree. Consultez votre email (${params.email}) pour definir votre mot de passe.`;
+
     const smsSent = params.phone
-      ? await this.sms.send(
-          params.phone,
-          `Lilia Food : votre espace vendeur "${params.boutique.slice(0, 30)}" est cree. Consultez votre email (${params.email}) pour definir votre mot de passe.`,
-        )
+      ? await this.sms.send(params.phone, smsBody)
       : false;
 
     if (emailSent) {
-      this.logger.log(`Invitation vendeur envoyée à ${params.email}`);
+      this.logger.log(`Invitation ${audience} envoyée à ${params.email}`);
       return {
         emailSent,
         smsSent,

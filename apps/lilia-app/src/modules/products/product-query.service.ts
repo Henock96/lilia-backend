@@ -3,7 +3,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, ProductType, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
-import { availableProductWhere } from './product-availability';
+import { catalogProductWhere } from './product-availability';
 
 /**
  * Lectures du catalogue produits (extrait de ProductsService — LIL-143).
@@ -39,7 +39,7 @@ export class ProductQueryService {
       // Fixes M1 + M2 : produits retirés, marqués indisponibles ou hors de
       // leur fenêtre horaire ne sont plus servis au catalogue. Le filtre passe
       // par `AND` pour ne pas écraser un éventuel `OR` de la requête.
-      AND: [availableProductWhere()],
+      AND: [catalogProductWhere()],
     };
 
     const [products, total] = await Promise.all([
@@ -143,7 +143,7 @@ export class ProductQueryService {
       where: {
         id: { in: productIds },
         restaurant: PUBLIC_VENDOR_WHERE,
-        AND: [availableProductWhere()],
+        AND: [catalogProductWhere()],
       },
       include: {
         category: true,
@@ -175,8 +175,13 @@ export class ProductQueryService {
 
     const [restaurants, products] = await Promise.all([
       this.prisma.restaurant.findMany({
+        // Fix SEC-01 : cette branche ne contrôlait que `isActive`, alors que la
+        // branche `products` juste en dessous applique PUBLIC_VENDOR_WHERE. Un
+        // vendeur en DRAFT ou non approuvé était donc énumérable par la
+        // recherche publique — constaté en production sur « Le First Restaurant
+        // Brazzaville », absent de GET /restaurants mais rendu par /search.
         where: {
-          isActive: true,
+          ...PUBLIC_VENDOR_WHERE,
           OR: [
             { nom: { contains: searchTerm, mode: 'insensitive' } },
             { specialties: { some: { name: { contains: searchTerm, mode: 'insensitive' } } } },
@@ -197,7 +202,7 @@ export class ProductQueryService {
             { category: { nom: { contains: searchTerm, mode: 'insensitive' } } },
           ],
           restaurant: PUBLIC_VENDOR_WHERE,
-          AND: [availableProductWhere()],
+          AND: [catalogProductWhere()],
         },
         include: {
           category: true,
@@ -252,7 +257,7 @@ export class ProductQueryService {
       where: {
         id: { notIn: excludeIds },
         restaurant: PUBLIC_VENDOR_WHERE,
-        AND: [availableProductWhere()],
+        AND: [catalogProductWhere()],
         OR: [
           ...(categoryIds.length > 0 ? [{ categoryId: { in: categoryIds } }] : []),
           { restaurantId: { in: restaurantIds } },

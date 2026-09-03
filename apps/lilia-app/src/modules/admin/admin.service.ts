@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
-import { Role } from '@prisma/client';
+import { Role, StatusUser } from '@prisma/client';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 import { DelivererMissionStatus } from './dto/get-deliverer-missions.dto';
 import { UserCacheService } from '../auth/services/user-cache.service';
@@ -81,13 +81,30 @@ export class AdminService {
     return this.adminClientsService.getAllClients(page, limit, search);
   }
 
-  async getAllUsers(page = 1, limit = 20, role?: Role) {
-    return this.adminUsersService.getAllUsers(page, limit, role);
+  async getAllUsers(
+    page = 1,
+    limit = 20,
+    role?: Role,
+    statusUser?: StatusUser,
+    search?: string,
+  ) {
+    return this.adminUsersService.getAllUsers(
+      page,
+      limit,
+      role,
+      statusUser,
+      search,
+    );
   }
   /**
    * Change le rôle d'un utilisateur.
    * Protège contre la rétrogradation d'un ADMIN.
    */
+  /** Fiche complète d'un compte (boutique et profil livreur inclus). */
+  async getUserById(userId: string) {
+    return this.adminUsersService.getUserById(userId);
+  }
+
   async updateUserRole(userId: string, dto: UpdateUserRoleDto) {
     return this.adminUsersService.updateUserRole(userId, dto);
   }

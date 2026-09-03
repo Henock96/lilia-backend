@@ -5,7 +5,13 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { DeliveryStatus, DriverStatus, OrderStatus } from '@prisma/client';
+import {
+  DeliveryStatus,
+  DriverStatus,
+  OrderStatus,
+  Role,
+  StatusUser,
+} from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { PrismaService } from '../../prisma/prisma.service';
@@ -42,6 +48,71 @@ export class DeliveryAssignmentService {
       throw new NotFoundException('Utilisateur non trouvé.');
     }
     return user;
+  }
+
+  /**
+   * Quatre conditions pour qu'une course puisse être confiée à quelqu'un.
+   *
+   * Elles étaient toutes présentes dans `getAvailableDeliverers` — c'est-à-dire
+   * dans la **lecture** qui alimente la liste déroulante — et aucune dans
+   * l'**écriture**. Un `delivererId` connu (ils circulent : la liste
+   * d'assignation est ouverte à tout compte vendeur) permettait donc de confier
+   * une commande à un livreur banni, désactivé ou hors ligne, par un simple
+   * appel HTTP direct. Filtrer un menu déroulant n'est pas une autorisation.
+   *
+   * Les trois notions restent distinctes, et chacune a son message : un
+   * administrateur qui voit « profil désactivé » sait quoi faire, un
+   * « impossible d'assigner » ne dit rien.
+   */
+  private async assertAssignable(delivererId: string): Promise<void> {
+    const deliverer = await this.prisma.user.findUnique({
+      where: { id: delivererId },
+      select: {
+        nom: true,
+        role: true,
+        statusUser: true,
+        driverStatus: true,
+        driverProfile: { select: { isActive: true } },
+      },
+    });
+
+    if (!deliverer) throw new NotFoundException('Livreur non trouvé.');
+
+    if (deliverer.role !== Role.LIVREUR) {
+      throw new ForbiddenException(
+        "L'utilisateur sélectionné n'est pas un livreur.",
+      );
+    }
+
+    const qui = deliverer.nom ?? 'Ce livreur';
+
+    if (deliverer.statusUser !== StatusUser.ACTIVE) {
+      throw new ForbiddenException(
+        `${qui} a un compte ${deliverer.statusUser} : il ne peut pas recevoir de course.`,
+      );
+    }
+
+    // Un livreur sans profil ne peut plus exister depuis la migration du
+    // 03/09 (elle en a rétro-créé un pour chaque compte existant). Le cas
+    // reste traité : une écriture hors application pourrait en fabriquer un,
+    // et l'assignation est le dernier endroit où l'on peut encore refuser.
+    if (!deliverer.driverProfile) {
+      throw new ForbiddenException(
+        `${qui} n'a pas de profil livreur. Complétez sa fiche avant de lui confier une course.`,
+      );
+    }
+
+    if (!deliverer.driverProfile.isActive) {
+      throw new ForbiddenException(
+        `${qui} n'est pas en service. Activez son profil avant de lui confier une course.`,
+      );
+    }
+
+    if (deliverer.driverStatus === DriverStatus.OFFLINE) {
+      throw new ForbiddenException(
+        `${qui} est hors ligne. Choisissez un livreur disponible.`,
+      );
+    }
   }
 
   async assignDeliverer(id: string, delivererId: string, firebaseUid: string) {
@@ -136,15 +207,7 @@ export class DeliveryAssignmentService {
       );
     }
 
-    const deliverer = await this.prisma.user.findUnique({
-      where: { id: delivererId },
-    });
-    if (!deliverer) throw new NotFoundException('Livreur non trouvé.');
-    if (deliverer.role !== 'LIVREUR') {
-      throw new ForbiddenException(
-        "L'utilisateur sélectionné n'est pas un livreur.",
-      );
-    }
+    await this.assertAssignable(delivererId);
 
     // Livreur qui tenait la mission avant ce changement. On le mémorise
     // AVANT l'update : sans lui, une réassignation laissait l'ancien livreur
@@ -182,7 +245,7 @@ export class DeliveryAssignmentService {
         updated.id,
         delivery.orderId,
         delivery.order.restaurantId,
-        deliverer.id,
+        delivererId,
         delivery.order.restaurant.nom,
         delivery.order.status,
         isPreorder,

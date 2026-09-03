@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { CreateDeliveryZoneDto, UpdateDeliveryZoneDto } from './dto/delivery-zone.dto';
 
 @Injectable()
@@ -14,9 +15,14 @@ export class DeliveryZonesService {
   /**
    * Récupère les zones de livraison d'un restaurant
    */
+  /**
+   * Route PUBLIQUE (`GET /quartiers/restaurant-zones`). La grille tarifaire
+   * d'un vendeur non publié n'a pas à être consultable : même frontière que sa
+   * fiche.
+   */
   async getRestaurantDeliveryZones(restaurantId: string) {
-    const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id: restaurantId },
+    const restaurant = await this.prisma.restaurant.findFirst({
+      where: { id: restaurantId, ...PUBLIC_VENDOR_WHERE },
       select: {
         id: true,
         nom: true,

@@ -6,6 +6,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { CreateReviewDto, UpdateReviewDto } from './dto';
 
 @Injectable()
@@ -111,9 +112,14 @@ export class ReviewsService {
    * La route est publique : sans `take`, un vendeur populaire renvoyait
    * l'intégralité de ses avis à chaque ouverture de fiche.
    */
+  /**
+   * Route PUBLIQUE. Le filtre de visibilité manquait : les avis d'un vendeur
+   * non publié ou suspendu restaient lisibles par lien direct — avec le `nom`
+   * et la photo de profil des clients qui les avaient laissés.
+   */
   async findByRestaurant(restaurantId: string, page = 1, limit = 20) {
-    const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id: restaurantId },
+    const restaurant = await this.prisma.restaurant.findFirst({
+      where: { id: restaurantId, ...PUBLIC_VENDOR_WHERE },
     });
 
     if (!restaurant) {
@@ -155,7 +161,20 @@ export class ReviewsService {
   /**
    * Récupérer les statistiques d'un restaurant
    */
-  async getRestaurantStats(restaurantId: string) {
+  /**
+   * @param assertVisible contrôle la frontière de visibilité publique. Vrai
+   *   quand l'appel vient de la route `@Public()` ; faux quand l'appelant l'a
+   *   déjà fait (`findByRestaurant`) ou n'y est pas soumis.
+   */
+  async getRestaurantStats(restaurantId: string, assertVisible = false) {
+    if (assertVisible) {
+      const visible = await this.prisma.restaurant.findFirst({
+        where: { id: restaurantId, ...PUBLIC_VENDOR_WHERE },
+        select: { id: true },
+      });
+      if (!visible) throw new NotFoundException('Restaurant non trouvé');
+    }
+
     // PERFORMANCE (fix P0, audit du 28/08/2026) : la méthode chargeait **tous**
     // les avis du vendeur en mémoire pour calculer une moyenne et un
     // histogramme. À 10 000 avis, c'est 10 000 lignes transférées à chaque

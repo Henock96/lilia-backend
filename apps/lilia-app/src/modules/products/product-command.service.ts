@@ -31,14 +31,7 @@ export class ProductCommandService {
       dto.restaurantId,
     );
 
-    if (dto.categoryId) {
-      const categoryExists = await this.prisma.category.findUnique({
-        where: { id: dto.categoryId },
-      });
-      if (!categoryExists) {
-        throw new NotFoundException("La catégorie spécifiée n'existe pas.");
-      }
-    }
+    await this.assertCategoryBelongsTo(restaurant.id, dto.categoryId);
 
     // Multi-vendeurs : valider que le vendorType accepte ce productType.
     // FOOD est le défaut historique et reste compatible avec RESTAURANT.
@@ -116,6 +109,35 @@ export class ProductCommandService {
     }
   }
 
+  /**
+   * Une catégorie ne s'utilise que chez son propre vendeur.
+   *
+   * La clé étrangère **composite** `(categoryId, restaurantId)` porte déjà cette
+   * règle en base : une écriture qui passerait outre serait refusée par
+   * PostgreSQL, y compris hors Prisma. Ce contrôle applicatif existe pour rendre
+   * un message utile — un P2003 brut ne dit pas au vendeur *ce qu'il doit
+   * corriger* — et non pour tenir la garantie, qui n'a pas à dépendre d'un `if`.
+   */
+  private async assertCategoryBelongsTo(
+    restaurantId: string,
+    categoryId?: string | null,
+  ): Promise<void> {
+    if (!categoryId) return;
+
+    const category = await this.prisma.category.findUnique({
+      where: { id: categoryId },
+      select: { restaurantId: true },
+    });
+    if (!category) {
+      throw new NotFoundException("La catégorie spécifiée n'existe pas.");
+    }
+    if (category.restaurantId !== restaurantId) {
+      throw new BadRequestException(
+        "Cette catégorie appartient à un autre vendeur. Choisissez une de vos propres sections de menu.",
+      );
+    }
+  }
+
   /** Trace une écriture faite par un ADMIN au nom d'un vendeur. */
   private async recordAdminCatalogEdit(
     firebaseUid: string,
@@ -159,15 +181,9 @@ export class ProductCommandService {
       throw new ForbiddenException('Vous n\'êtes pas autorisé à modifier ce produit.');
     }
 
-    // Vérifier la catégorie si fournie
-    if (dto.categoryId) {
-      const categoryExists = await this.prisma.category.findUnique({
-        where: { id: dto.categoryId },
-      });
-      if (!categoryExists) {
-        throw new NotFoundException("La catégorie spécifiée n'existe pas.");
-      }
-    }
+    // La catégorie doit appartenir au vendeur DU PRODUIT — pas à celui de
+    // l'appelant, qui peut être un ADMIN agissant pour un tiers.
+    await this.assertCategoryBelongsTo(product.restaurantId, dto.categoryId);
 
     // Multi-vendeurs : si changement de productType, revalider la compat.
     if (dto.productType && dto.productType !== product.productType) {

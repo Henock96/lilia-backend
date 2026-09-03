@@ -27,25 +27,32 @@ datasource db {
 }
 
 model User {
-  id           String        @id @default(cuid())
-  firebaseUid  String        @unique
-  email        String        @unique
-  nom          String?
-  phone        String?
-  imageUrl     String?
-  role         Role          @default(CLIENT)
-  driverStatus DriverStatus? // Statut du livreur, null pour les non-livreurs
-  lastLogin    DateTime?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  restaurant   Restaurant?
-  deliveries   Delivery[]
-  cart         Cart?
-  adresses     Adresses[] // Ajout de la relation aux adresses
-  fcmTokens    FcmToken[]
-  reviews      Review[]
-  orders       Order[] // Commandes passées par l'utilisateur
-  promoUsages  PromoUsage[]  @relation("UserPromoUsages")
+  id            String         @id @default(cuid())
+  firebaseUid   String         @unique
+  email         String         @unique
+  nom           String?
+  phone         String?
+  imageUrl      String?
+  role          Role           @default(CLIENT)
+  /// Disponibilité **du moment**, changée plusieurs fois par jour par le livreur
+  /// lui-même. À ne pas confondre avec `DriverProfile.isActive` (le livreur
+  /// est-il en service sur la plateforme ?) ni avec `statusUser` (son compte
+  /// est-il valide ?). Reste sur `User` et non sur `DriverProfile` : c'est un
+  /// état volatil, déjà indexé et lu à chaque assignation.
+  driverStatus  DriverStatus?
+  /// Profil métier du livreur. `null` pour tous les autres rôles.
+  driverProfile DriverProfile?
+  lastLogin     DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  restaurant    Restaurant?
+  deliveries    Delivery[]
+  cart          Cart?
+  adresses      Adresses[] // Ajout de la relation aux adresses
+  fcmTokens     FcmToken[]
+  reviews       Review[]
+  orders        Order[] // Commandes passées par l'utilisateur
+  promoUsages   PromoUsage[]   @relation("UserPromoUsages")
 
   // Ajout recent 04/04/2026
   statusUser StatusUser @default(ACTIVE)
@@ -212,12 +219,47 @@ model Restaurant {
   orders      Order[]
   reviews     Review[]
   favorites   Favorite[]
+  categories  Category[] // Sections de menu propres à ce vendeur
   specialties Specialty[] // Spécialités du restaurant
   banners     Banner[] // Bannières du restaurant
   photos      VendorPhoto[] // Galerie photos vendeur
 
   // Statut d'activité (contrôlé par l'admin)
   isActive Boolean @default(true) // Restaurant actif/désactivé par l'admin
+
+  // ─── Mise en ordre et mise en avant (septembre 2026) ───────────────────────
+  //
+  // ⚠️ Ni l'un ni l'autre ne décide de la VISIBILITÉ. Celle-ci reste portée par
+  // `PUBLIC_VENDOR_WHERE` (onboardingStatus + adminApproved + isActive), qui
+  // vit dans le `where` ; ces deux colonnes vivent dans l'`orderBy` et le
+  // `select`. Deux clauses SQL différentes, qui ne peuvent structurellement pas
+  // se contaminer : un vendeur DRAFT avec `displayOrder = 1` reste invisible.
+  //
+  /// Position voulue par l'administrateur. Plus petit = plus haut.
+  ///
+  /// Défaut volontairement élevé, et non `0` : avec `0`, « pas encore classé »
+  /// et « tout premier » seraient la même valeur, et chaque nouveau vendeur
+  /// atterrirait en tête du catalogue par accident. À 1000, il se range
+  /// derrière ceux qu'on a explicitement classés, et le départage se fait par
+  /// date de création comme avant.
+  ///
+  /// Les doublons sont autorisés : « ces deux-là en premier, l'ordre entre eux
+  /// m'est égal » est une intention légitime, et un `@@unique` obligerait à
+  /// réécrire toute la colonne à chaque insertion.
+  displayOrder Int @default(1000)
+
+  /// Mise en avant éditoriale, décidée par un administrateur.
+  ///
+  /// **Indépendante de `displayOrder`** : l'une dit « où », l'autre « avec un
+  /// badge ». Un vendeur peut être mis en avant en 10e position, ou premier
+  /// sans badge.
+  ///
+  /// Un booléen et non un enum de badges : « Nouveau » se dérive de
+  /// `createdAt`, « Populaire » du nombre de commandes — les stocker en
+  /// colonne créerait des données qui deviennent fausses toutes seules. Il ne
+  /// reste qu'une seule décision proprement humaine, et un enum à une valeur
+  /// utile est un booléen avec plus de cérémonie.
+  isFeatured Boolean @default(false)
 
   // Avancement de la configuration — orthogonal aux trois booléens ci-dessus.
   //
@@ -249,11 +291,11 @@ model Restaurant {
 
   // Configuration de la livraison
   deliveryPriceMode        DeliveryPriceMode @default(FIXED)
-  fixedDeliveryFee         Float             @default(1000) // Prix fixe si mode FIXED
+  fixedDeliveryFee         Int               @default(1000) // Prix fixe si mode FIXED, en XAF entiers
   deliveryZones            DeliveryZone[] // Zones de livraison si mode ZONE_BASED
   estimatedDeliveryTimeMin Int               @default(15) // Temps de livraison min (minutes)
   estimatedDeliveryTimeMax Int               @default(30) // Temps de livraison max (minutes)
-  minimumOrderAmount       Float             @default(0) // Montant minimum de commande
+  minimumOrderAmount       Int               @default(0) // Montant minimum de commande, en XAF entiers
 
   // Modes de service acceptés. `Order.isDelivery` existait déjà, mais c'est un
   // choix du client par commande : rien n'exprimait qu'un vendeur ne livre pas,
@@ -315,6 +357,9 @@ model Restaurant {
   @@index([vendorType, isActive, adminApproved]) // marketplace filtering
   @@index([vendorType, isOpen]) // vendeurs ouverts par type
   @@index([onboardingStatus, adminApproved, isActive]) // frontière de visibilité publique
+  // Frontière de visibilité + tri : couvre la requête du catalogue public, qui
+  // filtre sur les trois premières colonnes puis trie sur la quatrième.
+  @@index([onboardingStatus, adminApproved, isActive, displayOrder])
   @@index([quartierId])
 }
 
@@ -361,12 +406,57 @@ model Specialty {
   @@index([restaurantId])
 }
 
+/// Section de la carte d'un vendeur — « Plats », « Accompagnements »,
+/// « Spécialités Maison ».
+///
+/// **Appartient à un vendeur, et à un seul.** Jusqu'au 3 septembre 2026 cette
+/// table était globale (`nom @unique`, aucun `restaurantId`) tout en étant
+/// **ouverte en écriture au rôle RESTAURATEUR** : n'importe quel commerçant
+/// pouvait créer ou renommer une entrée du vocabulaire de toute la plateforme,
+/// affichée sur l'accueil de chaque client. C'était la seule table sans
+/// propriétaire, et la seule modifiable par des tiers.
+///
+/// La taxonomie **plateforme** n'a pas disparu pour autant : elle est portée
+/// par les enums `VendorType` et `ProductType`, possédés par le code, validés
+/// par une matrice, et déjà consommés par les deux clients pour la découverte.
+/// Il n'y a donc pas de troisième taxonomie à inventer — seulement un
+/// propriétaire à donner à celle-ci.
 model Category {
-  id        String    @id @default(cuid())
-  nom       String    @unique
+  id           String     @id @default(cuid())
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  restaurantId String
+
+  /// Libellé affiché, tel que saisi par le vendeur.
+  nom         String
+  /// Dérivé de `nom` (minuscules, sans accent ni ponctuation). C'est LUI qui
+  /// porte l'unicité : « Boissons » et « boissons » désignent la même section,
+  /// alors que l'ancien `nom @unique` les acceptait toutes deux — une
+  /// contrainte à la fois trop rigide entre vendeurs et inopérante chez un seul.
+  slug        String
+  description String?
+  imageUrl    String?
+
+  /// Ordre voulu par le vendeur. Sans lui, les clients triaient
+  /// alphabétiquement (mobile) ou par date de création des produits (web) :
+  /// aucun commerçant ne maîtrisait l'ordre de sa propre carte.
+  displayOrder Int     @default(0)
+  /// Masquée au client sans être supprimée. Ses produits restent vendables et
+  /// remontent dans « Autres ».
+  isActive     Boolean @default(true)
+
   products  Product[]
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
+
+  /// Deux vendeurs peuvent avoir « Boissons ». Un vendeur ne peut pas l'avoir
+  /// deux fois.
+  @@unique([restaurantId, slug])
+  /// Cible de la clé étrangère **composite** portée par `Product` : c'est elle
+  /// qui rend structurellement impossible qu'un produit du vendeur A référence
+  /// une catégorie du vendeur B. Sans elle, l'isolation ne tiendrait qu'à un
+  /// `if` dans un service — et la première écriture hors service la percerait.
+  @@unique([id, restaurantId])
+  @@index([restaurantId, displayOrder])
 }
 
 model MenuDuJour {
@@ -374,7 +464,8 @@ model MenuDuJour {
   nom            String
   description    String?
   imageUrl       String?
-  prix           Float
+  /// Montant en francs CFA — entier (voir `Product.prixOriginal`).
+  prix           Int
   type           MenuType      @default(COMBO) // COMBO = multi-produits, PLAT_SPECIAL = plat unique
   ingredients    String? // Composition du plat special (texte libre, ex: "Riz, poulet, legumes")
   stockQuotidien Int? // Quantite disponible par jour (null = illimite)
@@ -415,12 +506,24 @@ model Product {
   nom            String
   description    String?
   imageUrl       String?
-  prixOriginal   Float
+  /// Montant en francs CFA. `Int` depuis le 03/09/2026 : le XAF n'a pas de
+  /// sous-unité, et les DTO imposaient déjà `@IsInt` (fix B-6) — la colonne
+  /// était le dernier endroit où « 1 250,5 FCFA » restait représentable.
+  prixOriginal   Int
   stockQuotidien Int? // Quantite disponible par jour (null = illimite)
   stockRestant   Int? // Quantite restante aujourd'hui (null = illimite)
   restaurant     Restaurant       @relation(fields: [restaurantId], references: [id])
   restaurantId   String
-  category       Category?        @relation(fields: [categoryId], references: [id])
+  /// Section de menu du vendeur. Optionnelle : **une catégorie ne doit jamais
+  /// empêcher de créer un produit.**
+  ///
+  /// La relation est **composite** — elle joint sur `(categoryId, restaurantId)`
+  /// — pour que PostgreSQL refuse lui-même un produit du vendeur A rattaché à
+  /// une catégorie du vendeur B. `onDelete` est en `Restrict` et non `SetNull` :
+  /// `restaurantId` étant obligatoire, un `SET NULL` sur les deux colonnes
+  /// serait invalide. Le détachement des produits est donc fait explicitement,
+  /// dans la transaction de suppression (`CategoriesService.remove`).
+  category       Category?        @relation(fields: [categoryId, restaurantId], references: [id, restaurantId], onDelete: Restrict)
   categoryId     String?
   variants       ProductVariant[]
   menus          MenuProduct[] // Relation many-to-many avec MenuDuJour
@@ -476,7 +579,8 @@ model Product {
 model ProductVariant {
   id        String     @id @default(cuid())
   label     String? // e.g., "30cl", "1.5L", "Normal", "Grand"
-  prix      Float
+  /// Montant en francs CFA — entier (voir `Product.prixOriginal`).
+  prix      Int
   product   Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
   productId String
   cartItems CartItem[]
@@ -528,10 +632,16 @@ model Order {
   restaurantId       String
   user               User              @relation(fields: [userId], references: [id])
   userId             String
-  subTotal           Float // Sous-total des articles
-  deliveryFee        Float // Frais de livraison (0 si retrait)
-  serviceFee         Float             @default(0) // ← nouveau : commission 10%
-  total              Float // subTotal + deliveryFee + serviceFee        // Montant total (subTotal + deliveryFee)
+  /// Montants en francs CFA — **entiers** (dette M12 soldée le 03/09/2026).
+  ///
+  /// Le XAF n'a pas de sous-unité : « 1 250,5 FCFA » ne veut rien dire. Tous
+  /// les calculs passaient déjà par `Math.round` ou `money.util.ts` ; la
+  /// colonne restait le dernier endroit où une décimale était représentable —
+  /// et donc où une écriture hors service pouvait en introduire une.
+  subTotal           Int // Sous-total des articles
+  deliveryFee        Int // Frais de livraison (0 si retrait)
+  serviceFee         Int               @default(0) // frais de service payés par le client
+  total              Int // subTotal + deliveryFee + serviceFee - discountAmount
   isDelivery         Boolean           @default(true) // true = livraison, false = retrait au restaurant
   deliveryAddress    String? // Adresse de livraison (null si retrait)
   // 04/04/2026
@@ -569,15 +679,17 @@ model Order {
   Payment        Payment[]
   promoCodeId    String?
   promoCode      PromoCode? @relation(fields: [promoCodeId], references: [id])
-  discountAmount Float      @default(0) // montant déduit par le code promo
+  discountAmount Int        @default(0) // remise totale (promo + fidélité), en XAF
 
   // Commission plateforme figée au moment de la commande (onboarding, août
   // 2026). `Restaurant.commissionPercent` peut changer ; sans ce snapshot, un
   // changement de taux réécrirait rétroactivement ce que Lilia a prélevé sur
   // des commandes déjà encaissées — un chiffre comptable ne se recalcule pas.
   // Même raison que `OrderItem.snapshotPrice`.
-  commissionPercent Float @default(0) // taux appliqué, en %
-  commissionAmount  Float @default(0) // montant retenu sur subTotal, en XAF
+  /// Taux, en pourcentage — reste `Float` : c'est une proportion, pas un
+  /// montant. Un taux de 8,5 % est parfaitement légitime.
+  commissionPercent Float @default(0)
+  commissionAmount  Int   @default(0) // montant retenu sur subTotal, en XAF
 
   // Précommandes (Sprint A — LIL-111)
   isPreorder          Boolean   @default(false)
@@ -617,13 +729,13 @@ model OrderItem {
   menuId    String?
   variant   String // e.g., "1.5L"
   quantite  Int
-  prix      Float
+  prix      Int // XAF entiers
   createdAt DateTime    @default(now())
 
   // 04/04/2026
   variantId     String? // nullable pour les commandes existantes
   variantLabel  String? // snapshot du label au moment de la commande
-  snapshotPrice Float? // snapshot du prix au moment de la commande
+  snapshotPrice Int? // snapshot du prix à la commande, en XAF
 
   @@index([orderId])
   @@index([productId])
@@ -647,6 +759,75 @@ enum DriverStatus {
   AVAILABLE
   ON_DELIVERY
   OFFLINE
+}
+
+/// Moyen de locomotion du livreur.
+///
+/// Ce n'est pas une information décorative : elle décide de ce qu'on peut lui
+/// confier. Une moto et un vélo n'ont ni le même rayon d'action ni la même
+/// capacité, et `PIETON` n'a pas de plaque à saisir — c'est ce champ qui rend
+/// `plateNumber` pertinent ou non.
+enum VehicleType {
+  MOTO
+  VELO
+  VOITURE
+  PIETON
+}
+
+/// Informations métier du livreur.
+///
+/// Séparé de `User` plutôt que fondu dedans, pour deux raisons :
+///
+/// 1. ces colonnes n'ont de sens que pour un livreur — les porter sur `User`
+///    ferait traîner à chaque client une demi-douzaine de colonnes nulles ;
+/// 2. et surtout, l'existence de la ligne **est** la règle : `role = LIVREUR`
+///    sans profil n'est plus un état atteignable. Avant septembre 2026, c'était
+///    l'état nominal, et rien dans le système ne savait quel véhicule conduisait
+///    un livreur, ni s'il avait le droit de rouler.
+///
+/// ⚠️ Trois notions distinctes ne doivent jamais être confondues :
+///   · `User.statusUser`         — le compte est-il valide ? (ACTIVE / BLOCKED / DELETED)
+///   · `DriverProfile.isActive`  — le livreur est-il en service sur la plateforme ?
+///   · `User.driverStatus`       — est-il disponible **maintenant** ?
+/// Un compte ACTIVE, un profil ACTIF et une disponibilité OFFLINE est un état
+/// parfaitement normal : le livreur a fini sa journée.
+model DriverProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+  /// `Cascade` : le profil n'a aucune valeur comptable et aucun sens sans son
+  /// compte. Il est aussi supprimé explicitement par `UserDeletionService`
+  /// (plaque et permis sont des données personnelles).
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  vehicleType   VehicleType @default(MOTO)
+  /// Immatriculation. Vide pour `VELO` et `PIETON` — la validation métier vit
+  /// dans le DTO, pas ici : une colonne ne peut pas exprimer « requis selon la
+  /// valeur d'une autre colonne ».
+  plateNumber   String?
+  licenseNumber String?
+  licenseExpiry DateTime?
+
+  /// Quartiers d'affectation. Vide = toute la ville, ce qui est le comportement
+  /// historique et reste le défaut : restreindre par défaut rendrait
+  /// inassignables tous les livreurs existants au déploiement.
+  zones Quartier[] @relation("DriverZones")
+
+  /// Le livreur est-il en service ? Décidé par un administrateur.
+  /// Défaut `false` : un livreur qu'on vient de créer n'a pas encore été
+  /// contrôlé. Les profils rétro-créés par la migration naissent `true`, sans
+  /// quoi les livreurs en activité disparaîtraient de la file d'assignation.
+  isActive      Boolean   @default(false)
+  activatedAt   DateTime?
+  /// `User.id` de l'admin qui a activé — pas de FK, comme `adminApprovedById`.
+  activatedById String?
+
+  /// Motif de la dernière désactivation, pour que la décision reste lisible.
+  deactivationReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive])
 }
 
 model Delivery {
@@ -791,7 +972,7 @@ enum DeliveryStatus {
 model Payment {
   id                    String        @id @default(cuid())
   orderId               String
-  amount                Float
+  amount                Int // XAF entiers
   currency              String        @default("XAF")
   phoneNumber           String
   status                PaymentStatus @default(PENDING)
@@ -821,7 +1002,11 @@ model Payment {
   /// Frais facturés par le prestataire sur cet encaissement, en XAF.
   /// **Charge de Lilia Food** : jamais déduit de ce que touche le vendeur.
   /// `null` tant que le prestataire ne l'a pas communiqué.
-  collectionFeeXaf Float?
+  ///
+  /// ⚠️ `Int` : les prestataires annoncent leurs frais en décimal (« 12.50 »).
+  /// L'arrondi doit se faire **à l'ingestion**, via `toXaf()`. La colonne le
+  /// rend obligatoire au lieu de le laisser à la vigilance de l'appelant.
+  collectionFeeXaf Int?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -877,11 +1062,12 @@ model RestaurantPayout {
   // c'est une pièce comptable, au même titre que `OrderItem.snapshotPrice`.
   /// Montant des produits revenant au vendeur (= `Order.subTotal`).
   /// Ni les frais de service client, ni la livraison n'y entrent.
-  grossAmount       Float
+  grossAmount       Int
+  /// Proportion, pas un montant : reste `Float`.
   commissionPercent Float
-  commissionAmount  Float
+  commissionAmount  Int
   /// `grossAmount - commissionAmount` — c'est CE montant qui part au prestataire.
-  amount            Float
+  amount            Int
   currency          String @default("XAF")
 
   // ─── Destinataire, également figé ──────────────────────────────────────────
@@ -906,7 +1092,9 @@ model RestaurantPayout {
 
   /// Frais facturés par le prestataire sur ce reversement, en XAF.
   /// **Charge de Lilia Food** : jamais déduit du montant reversé au vendeur.
-  payoutFeeXaf Float?
+  /// `Int` pour la même raison que `Payment.collectionFeeXaf` : arrondir à
+  /// l'ingestion, jamais au moment de lire.
+  payoutFeeXaf Int?
 
   /// `User.id` de l'administrateur qui a déclenché le reversement.
   requestedBy String
@@ -1070,7 +1258,7 @@ model DeliveryZone {
   restaurant   Restaurant     @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
   restaurantId String
   zoneName     String // Ex: "Zone 1", "Centre-ville", etc.
-  fee          Float // Prix de livraison pour cette zone
+  fee          Int // Prix de livraison pour cette zone, en XAF entiers
   quartiers    QuartierZone[] // Quartiers inclus dans cette zone
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
@@ -1080,13 +1268,15 @@ model DeliveryZone {
 
 // Liste des quartiers de Brazzaville
 model Quartier {
-  id          String         @id @default(cuid())
-  nom         String         @unique // Ex: "Bacongo", "Poto-Poto", "Talangaï"
-  ville       String         @default("Brazzaville")
+  id          String          @id @default(cuid())
+  nom         String          @unique // Ex: "Bacongo", "Poto-Poto", "Talangaï"
+  ville       String          @default("Brazzaville")
   zones       QuartierZone[]
   adresses    Adresses[]
   restaurants Restaurant[] // Vendeurs implantés dans ce quartier
-  createdAt   DateTime       @default(now())
+  /// Livreurs affectés à ce quartier (many-to-many implicite).
+  drivers     DriverProfile[] @relation("DriverZones")
+  createdAt   DateTime        @default(now())
 
   /// Centroïde du quartier — repli quand une adresse n'a pas de position.
   ///
@@ -1206,12 +1396,22 @@ model PromoCode {
   description String? // affiché dans l'app : "500 FCFA offerts sur ta 1ère commande"
 
   discountType  DiscountType
-  discountValue Float // 500 si FIXED, 10 si PERCENT (= 10%), 0 si FREE_DELIVERY
-  maxDiscount   Float? // plafond si PERCENT : max 2000 FCFA de réduction
+  /// ⚠️ **Volontairement `Float`, contrairement à tous les autres montants.**
+  ///
+  /// Cette colonne porte deux choses selon `discountType` : un montant XAF si
+  /// `FIXED` (500), un **pourcentage** si `PERCENT` (10, ou 7,5). La passer en
+  /// `Int` interdirait silencieusement une campagne à 7,5 % — une capacité
+  /// commerciale réelle, supprimée au nom d'une règle qui ne vaut que pour la
+  /// moitié des lignes.
+  ///
+  /// L'intégrité du cas `FIXED` est tenue par le DTO (`@ValidateIf` + `@IsInt`),
+  /// là où le discriminant est connu.
+  discountValue Float
+  maxDiscount   Int? // plafond si PERCENT, en XAF
 
-  minOrderAmount  Float @default(0) // montant minimum pour activer le code
+  minOrderAmount  Int  @default(0) // montant minimum pour activer le code, en XAF
   maxUsageTotal   Int? // null = illimité — ex: 100 pour une campagne limitée
-  maxUsagePerUser Int   @default(1) // 1 = 1 fois par utilisateur
+  maxUsagePerUser Int  @default(1) // 1 = 1 fois par utilisateur
 
   firstOrderOnly Boolean @default(false) // réservé aux nouveaux clients
   isActive       Boolean @default(true)
@@ -1219,7 +1419,11 @@ model PromoCode {
   // Restriction par restaurant (null = toute la plateforme)
   restaurantId   String?
   restaurant     Restaurant? @relation("RestaurantPromoCodes", fields: [restaurantId], references: [id])
-  discountAmount Float       @default(0) // montant déduit par le code promo
+  // `discountAmount` a été SUPPRIMÉ de ce modèle (03/09/2026). Dupliqué depuis
+  // `Order.discountAmount`, il n'était NI lu NI écrit depuis sa création :
+  // toutes les lignes portaient le défaut `0`. Une colonne qui ressemble à un
+  // montant sans en être un finit par être lue de bonne foi — c'est un piège,
+  // pas une donnée.
   startsAt       DateTime    @default(now())
   expiresAt      DateTime? // null = pas d'expiration
 
@@ -1240,7 +1444,7 @@ model PromoUsage {
   userId          String
   user            User      @relation("UserPromoUsages", fields: [userId], references: [id])
   orderId         String    @unique // 1 promo max par commande
-  discountApplied Float // montant réellement déduit (snapshot)
+  discountApplied Int // montant réellement déduit (snapshot), en XAF
   usedAt          DateTime  @default(now())
 
   @@index([promoCodeId])
@@ -1344,7 +1548,7 @@ model Refund {
   order       Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
   paymentId   String?
   payment     Payment?     @relation(fields: [paymentId], references: [id], onDelete: SetNull)
-  amount      Float // montant dû au client, en XAF
+  amount      Int // montant dû au client, en XAF
   status      RefundStatus @default(PENDING)
   reason      String       @db.Text
   requestedBy String? // User.id à l'origine de l'annulation
@@ -1399,6 +1603,17 @@ enum AdminAuditAction {
   USER_ROLE_CHANGED
   USER_BANNED
   USER_UNBANNED
+  // Cycle de vie d'un compte livreur (septembre 2026). Créer un livreur, c'est
+  // donner à quelqu'un l'accès aux adresses et aux téléphones des clients :
+  // au même titre qu'un changement de rôle, la décision doit rester nominative.
+  DRIVER_CREATED
+  DRIVER_UPDATED
+  DRIVER_ACTIVATED
+  DRIVER_DEACTIVATED
+  // Mise en ordre et mise en avant du catalogue — décisions éditoriales qui
+  // changent ce que voit chaque client sur la page d'accueil.
+  VENDOR_DISPLAY_ORDER_CHANGED
+  VENDOR_FEATURED_TOGGLED
   VENDOR_CREATED
   VENDOR_ACTIVATED
   VENDOR_COMMISSION_CHANGED

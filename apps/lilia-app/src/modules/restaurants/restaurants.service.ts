@@ -18,6 +18,7 @@ import {
 import { DayOfWeek, SetOperatingHoursDto, UpdateOperatingHourDto } from './dto/operating-hours.dto';
 import { RESTAURANT_INCLUDE } from './restaurant.includes';
 import { RestaurantAccessService } from './restaurant-access.service';
+import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { RestaurantQueryService } from './restaurant-query.service';
 import { RestaurantHoursService } from './restaurant-hours.service';
 
@@ -187,7 +188,21 @@ export class RestaurantsService {
 
     // ─── SPÉCIALITÉS ───────────────────────────────────────────────────────────
 
+    /**
+     * Route PUBLIQUE : elle doit donc respecter la frontière de visibilité.
+     *
+     * Sans le filtre, les spécialités d'un vendeur en cours de configuration ou
+     * suspendu restaient lisibles par lien direct — le même défaut que celui
+     * corrigé sur `GET /vendor-photos` en août, et la raison d'être de la
+     * constante partagée.
+     */
     async getSpecialties(restaurantId: string) {
+        const visible = await this.prisma.restaurant.findFirst({
+            where: { id: restaurantId, ...PUBLIC_VENDOR_WHERE },
+            select: { id: true },
+        });
+        if (!visible) throw new NotFoundException('Restaurant non trouvé.');
+
         const specialties = await this.prisma.specialty.findMany({
         where: { restaurantId },
         orderBy: { name: 'asc' },

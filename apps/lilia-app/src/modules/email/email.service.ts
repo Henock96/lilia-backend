@@ -386,6 +386,66 @@ export class EmailService implements OnModuleInit {
     });
   }
 
+  /**
+   * Invitation d'un LIVREUR à définir son mot de passe.
+   *
+   * Template distinct de celui du vendeur, et non un paramétrage du même : le
+   * corps du message parle d'horaires, de photos et de catalogue, ce qui n'a
+   * aucun sens pour un livreur. Un template « générique » qui satisferait les
+   * deux ne dirait rien d'utile à personne.
+   */
+  async sendDriverInvitation(
+    email: string,
+    nom: string,
+    activationLink: string,
+  ): Promise<boolean> {
+    return this.sendEmail({
+      to: email,
+      subject: 'Activez votre compte livreur — Lilia Food',
+      html: this.getDriverInvitationTemplate(nom, activationLink),
+    });
+  }
+
+  private getDriverInvitationTemplate(nom: string, link: string): string {
+    return `
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Votre compte livreur Lilia Food</title></head>
+<body style="margin:0;padding:0;background:#f5f5f5;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f5;padding:24px 0;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:12px;padding:32px;">
+        <tr><td>
+          <h1 style="margin:0 0 16px;font-size:22px;color:#1a1a1a;">Bienvenue dans l'équipe, ${this.escape(nom)}</h1>
+          <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#444;">
+            Votre compte livreur Lilia Food a été créé. Pour accéder à l'application,
+            définissez votre mot de passe :
+          </p>
+          <p style="margin:24px 0;text-align:center;">
+            <a href="${link}" style="display:inline-block;background:#e85d04;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:8px;font-size:16px;font-weight:bold;">
+              Définir mon mot de passe
+            </a>
+          </p>
+          <p style="margin:0 0 8px;font-size:13px;color:#777;">
+            Ce lien est personnel et à usage unique. Si le bouton ne fonctionne pas,
+            copiez cette adresse dans votre navigateur :
+          </p>
+          <p style="margin:0 0 24px;font-size:12px;color:#999;word-break:break-all;">${link}</p>
+          <p style="margin:0;font-size:14px;line-height:1.6;color:#444;">
+            Une fois connecté, vous verrez les courses qui vous sont confiées et pourrez
+            indiquer votre disponibilité.
+          </p>
+        </td></tr>
+      </table>
+      <p style="margin:16px 0 0;font-size:12px;color:#999;">Lilia Food — Brazzaville</p>
+    </td></tr>
+  </table>
+</body>
+</html>
+    `.trim();
+  }
+
   private getVendorInvitationTemplate(
     nom: string,
     boutique: string,

@@ -31,6 +31,13 @@ describe('AdminService (caractérisation — clients/users/reviews)', () => {
       count: jest.fn(),
       update: jest.fn(),
     },
+    // `updateUserRole` s'exécute dans une transaction depuis septembre 2026 :
+    // quitter le rôle LIVREUR retire aussi la disponibilité et met le profil
+    // hors service, et les deux écritures doivent réussir ou échouer ensemble.
+    // Le mock exécute simplement le callback avec le même client.
+    $transaction: jest.fn((cb: any) => cb(prisma)),
+    driverProfile: { update: jest.fn() },
+    delivery: { findFirst: jest.fn().mockResolvedValue(null) },
     loyaltyTransaction: {
       findMany: jest.fn(),
       count: jest.fn(),
@@ -157,6 +164,10 @@ describe('AdminService (caractérisation — clients/users/reviews)', () => {
         id: 'u1',
         role: 'CLIENT',
         firebaseUid: 'fb1',
+        // Ni boutique ni profil livreur : aucun des garde-fous de cohérence
+        // ajoutés en septembre 2026 ne s'applique à ce compte.
+        restaurant: null,
+        driverProfile: null,
       });
       prisma.user.update.mockResolvedValue({ id: 'u1', role: 'LIVREUR' });
       const res = await service.updateUserRole('u1', {

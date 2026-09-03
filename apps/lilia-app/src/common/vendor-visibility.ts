@@ -34,3 +34,31 @@ export const PUBLIC_VENDOR_WHERE = {
 export const PUBLIC_VENDOR_RELATION_WHERE = {
   restaurant: PUBLIC_VENDOR_WHERE,
 } as const satisfies Prisma.ProductWhereInput;
+
+/**
+ * Ordre d'affichage **unique** du catalogue public.
+ *
+ * `GET /restaurants` triait par `createdAt` et `GET /vendors` par
+ * `[isOpen, createdAt]` : deux listes de la même entité, deux ordres, et rien
+ * pour dire lequel était le bon. Les deux consomment désormais cette constante.
+ *
+ * Les trois critères, dans cet ordre et pour ces raisons :
+ *
+ * 1. `isOpen desc` — un commerce fermé ne remonte pas devant un commerce
+ *    ouvert, quelle que soit la mise en ordre voulue. Un client qui ne peut
+ *    pas commander maintenant n'a que faire d'un vendeur bien classé ;
+ * 2. `displayOrder asc` — la volonté de l'administrateur ;
+ * 3. `createdAt desc` — départage stable, et comportement historique pour tous
+ *    les vendeurs qui partagent le `displayOrder` par défaut. C'est ce qui
+ *    rend l'ajout de la colonne invisible tant que personne n'a rien classé.
+ *
+ * ⚠️ Cette constante décide de l'**ordre**, jamais de la **visibilité** : elle
+ * s'emploie dans `orderBy`, `PUBLIC_VENDOR_WHERE` dans `where`. Deux clauses
+ * SQL distinctes — un vendeur `DRAFT` avec `displayOrder = 1` reste invisible,
+ * structurellement et pas par convention.
+ */
+export const PUBLIC_VENDOR_ORDER_BY = [
+  { isOpen: 'desc' },
+  { displayOrder: 'asc' },
+  { createdAt: 'desc' },
+] as const satisfies Prisma.RestaurantOrderByWithRelationInput[];

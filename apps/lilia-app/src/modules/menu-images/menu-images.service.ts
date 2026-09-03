@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PhotosCommonService } from '../photos-common/photos-common.service';
+import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import {
   CreateMenuImageDto,
   UpdateMenuImageDto,
@@ -18,10 +19,17 @@ export class MenuImagesService {
     private readonly common: PhotosCommonService,
   ) {}
 
+  /** Route PUBLIQUE — même frontière de visibilité que la fiche vendeur. */
   async list(menuDuJourId: string) {
     if (!menuDuJourId) {
       throw new BadRequestException('menuDuJourId requis');
     }
+    const visible = await this.prisma.menuDuJour.findFirst({
+      where: { id: menuDuJourId, restaurant: PUBLIC_VENDOR_WHERE },
+      select: { id: true },
+    });
+    if (!visible) throw new NotFoundException('Menu introuvable');
+
     return this.prisma.menuImage.findMany({
       where: { menuDuJourId },
       orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],

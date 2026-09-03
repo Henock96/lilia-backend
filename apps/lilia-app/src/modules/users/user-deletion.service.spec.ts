@@ -33,6 +33,9 @@ describe('UserDeletionService', () => {
     favorite: { deleteMany: jest.fn() },
     review: { deleteMany: jest.fn() },
     loyaltyTransaction: { deleteMany: jest.fn() },
+    // Plaque et permis sont des données personnelles : le profil livreur est
+    // purgé au même titre que les adresses.
+    driverProfile: { deleteMany: jest.fn() },
     user: { update: jest.fn() },
   };
 
@@ -89,6 +92,9 @@ describe('UserDeletionService', () => {
     expect(tx.favorite.deleteMany).toHaveBeenCalled();
     expect(tx.review.deleteMany).toHaveBeenCalled();
     expect(tx.loyaltyTransaction.deleteMany).toHaveBeenCalled();
+    expect(tx.driverProfile.deleteMany).toHaveBeenCalledWith({
+      where: { userId: 'u1' },
+    });
     // Aucun delegate order/payment n'est même exposé sur le tx mocké :
     // s'il était appelé, le test planterait.
     expect(Object.keys(tx)).not.toContain('order');

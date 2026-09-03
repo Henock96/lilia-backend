@@ -1,7 +1,12 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
+import {
+  PUBLIC_VENDOR_ORDER_BY,
+  PUBLIC_VENDOR_WHERE,
+} from '../../common/vendor-visibility';
+import { catalogProductWhere } from '../products/product-availability';
+import { PUBLIC_CATEGORIES_ARGS } from '../categories/category.includes';
 import {
   PHOTOS_GALLERY,
   RESTAURANT_INCLUDE,
@@ -38,7 +43,9 @@ export class RestaurantQueryService {
       this.prisma.restaurant.findMany({
         where: PUBLIC_VENDOR_WHERE,
         include: RESTAURANT_LIST_INCLUDE,
-        orderBy: { createdAt: 'desc' },
+        // Ordre partagé avec `GET /vendors` (cf. PUBLIC_VENDOR_ORDER_BY) : les
+        // deux routes listent la même entité et divergeaient jusqu'ici.
+        orderBy: [...PUBLIC_VENDOR_ORDER_BY],
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -72,10 +79,19 @@ export class RestaurantQueryService {
    * `PRODUCTS_PREVIEW_LIMIT`, le client pagine via `GET /products?restaurantId=`.
    */
   async findOne(id: string) {
+    // Fix PRD-03 : les produits embarqués n'étaient filtrés ni sur `deletedAt`
+    // ni sur `isAvailable`. Le soft delete (fix M2) n'avait donc atteint que
+    // `GET /products` — pas les deux routes que les clients ouvrent réellement,
+    // où un produit retiré du catalogue restait affiché et compté.
+    const visibleProducts = catalogProductWhere();
+
     const restaurant = await this.prisma.restaurant.findFirst({
       where: { id, ...PUBLIC_VENDOR_WHERE },
       include: {
+        // Sections de menu du vendeur — actives uniquement, dans SON ordre.
+        categories: PUBLIC_CATEGORIES_ARGS,
         products: {
+          where: visibleProducts,
           include: {
             category: true,
             variants: true,
@@ -84,7 +100,7 @@ export class RestaurantQueryService {
           orderBy: { createdAt: 'desc' },
           take: RestaurantQueryService.PRODUCTS_PREVIEW_LIMIT,
         },
-        _count: { select: { products: true } },
+        _count: { select: { products: { where: visibleProducts } } },
         ...RESTAURANT_INCLUDE,
       },
     });

@@ -8,6 +8,7 @@ import { Prisma, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
 import { FirebaseService } from '../firebase/firebase.service';
+import { defaultCategoriesCreateInput } from '../categories/category.includes';
 
 /**
  * Gestion des restaurants/vendeurs côté admin (LIL-134) : création d'un
@@ -144,6 +145,9 @@ export class AdminRestaurantsService {
             preorderLeadHours,
             maxOrdersPerDay,
             owner: { connect: { id: owner.id } },
+            // Sections de menu par défaut — le troisième chemin de création
+            // doit produire un vendeur identique aux deux autres.
+            categories: { create: defaultCategoriesCreateInput(effectiveType) },
             ...(hasProfile && {
               vendorProfile: { create: profileFields },
             }),

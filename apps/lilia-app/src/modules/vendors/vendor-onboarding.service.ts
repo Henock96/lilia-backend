@@ -21,6 +21,7 @@ import { FirebaseService } from '../firebase/firebase.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { PhotosCommonService } from '../photos-common/photos-common.service';
+import { defaultCategoriesCreateInput } from '../categories/category.includes';
 import {
   VendorReadinessService,
   ReadinessReport,
@@ -161,6 +162,13 @@ export class VendorOnboardingService {
                 closeTime: '20:00',
                 isClosed: true,
               })),
+            },
+            // Sections de menu par défaut — même raison que la grille
+            // d'horaires ci-dessus : une carte pré-remplie à ajuster vaut mieux
+            // qu'un écran vide, et le catalogue est un critère bloquant de
+            // l'activation.
+            categories: {
+              create: defaultCategoriesCreateInput(dto.vendorType),
             },
           },
         });

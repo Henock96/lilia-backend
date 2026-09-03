@@ -3,7 +3,9 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { CreateBannerDto } from './dto/create-banner.dto';
 import { UpdateBannerDto } from './dto/update-banner.dto';
 
@@ -11,10 +13,18 @@ import { UpdateBannerDto } from './dto/update-banner.dto';
 export class BannersService {
   constructor(private prisma: PrismaService) {}
 
+  /**
+   * Route PUBLIQUE. Une bannière rattachée à un vendeur ne doit être servie que
+   * si ce vendeur est lui-même visible ; les bannières de plateforme
+   * (`restaurantId = null`) ne sont soumises à aucune condition de ce genre.
+   */
   async findAll(restaurantId?: string) {
-    const where: any = { isActive: true };
+    const where: Prisma.BannerWhereInput = { isActive: true };
     if (restaurantId) {
       where.restaurantId = restaurantId;
+      where.restaurant = PUBLIC_VENDOR_WHERE;
+    } else {
+      where.OR = [{ restaurantId: null }, { restaurant: PUBLIC_VENDOR_WHERE }];
     }
 
     const banners = await this.prisma.banner.findMany({
