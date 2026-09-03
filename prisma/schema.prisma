@@ -112,6 +112,13 @@ model FcmToken {
   @@index([userId])
 }
 
+/// Une adresse enregistrée par un client.
+///
+/// Elle porte depuis septembre 2026 sa **propre** position géographique. Sans
+/// elle, la seule coordonnée disponible au moment de commander était le GPS du
+/// téléphone : commander depuis son bureau pour une livraison à domicile
+/// envoyait le livreur au bureau. « Où je suis » et « où on me livre » sont
+/// deux informations distinctes, et seule la seconde appartient à l'adresse.
 model Adresses {
   id         String    @id @default(cuid())
   rue        String
@@ -126,8 +133,44 @@ model Adresses {
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
+  /// Position posée par le client sur la carte. `null` tant qu'il ne l'a pas
+  /// fait — les adresses créées avant cette évolution n'en ont pas, et on
+  /// n'en invente pas : `locationPrecision` dit la vérité à leur sujet.
+  latitude          Float?
+  longitude         Float?
+  /// Qualité de la position ci-dessus. Portée par la donnée elle-même plutôt
+  /// que déduite d'un `latitude == null` : le repli sur le centroïde du
+  /// quartier produit des coordonnées bien réelles mais approximatives, et
+  /// rien ne les distinguerait sinon d'un point posé à la main.
+  locationPrecision LocationPrecision @default(UNKNOWN)
+  /// Repères pour le livreur : « portail bleu face à la pharmacie ». À
+  /// Brazzaville, cette phrase vaut souvent mieux qu'un numéro de rue.
+  landmark          String?
+  /// Nom donné par le client : « Maison », « Bureau ».
+  label             String?
+
   @@index([userId])
   @@index([quartierId])
+  // Tableau de bord « adresses à compléter » : sans lui, la seule façon de
+  // lister les adresses sans position est un scan complet de la table.
+  @@index([locationPrecision])
+}
+
+/// Fiabilité d'une position de livraison.
+///
+/// Trois valeurs, pas plus : ce sont les trois seules situations qui appellent
+/// une **conduite différente** de la part du livreur et de l'interface.
+enum LocationPrecision {
+  /// Point posé par le client sur la carte. Le livreur peut s'y fier.
+  EXACT
+
+  /// Centroïde du quartier, faute de mieux. Le livreur doit appeler.
+  /// ⚠️ Ne jamais l'afficher comme une position exacte.
+  APPROXIMATE
+
+  /// Aucune coordonnée. On n'affiche **aucun** marqueur — un faux point est
+  /// pire que pas de point du tout.
+  UNKNOWN
 }
 
 model Restaurant {
@@ -480,33 +523,48 @@ model CartItem {
 // 04/04/2026 ÉTAPE 1 — Ajouter les nouveaux enums (non-breaking)
 
 model Order {
-  id                 String         @id @default(cuid())
-  restaurant         Restaurant     @relation(fields: [restaurantId], references: [id])
+  id                 String            @id @default(cuid())
+  restaurant         Restaurant        @relation(fields: [restaurantId], references: [id])
   restaurantId       String
-  user               User           @relation(fields: [userId], references: [id])
+  user               User              @relation(fields: [userId], references: [id])
   userId             String
   subTotal           Float // Sous-total des articles
   deliveryFee        Float // Frais de livraison (0 si retrait)
-  serviceFee         Float          @default(0) // ← nouveau : commission 10%
+  serviceFee         Float             @default(0) // ← nouveau : commission 10%
   total              Float // subTotal + deliveryFee + serviceFee        // Montant total (subTotal + deliveryFee)
-  isDelivery         Boolean        @default(true) // true = livraison, false = retrait au restaurant
+  isDelivery         Boolean           @default(true) // true = livraison, false = retrait au restaurant
   deliveryAddress    String? // Adresse de livraison (null si retrait)
   // 04/04/2026
   orderHistory       OrderHistory[] // Historique des changements de statut
+  // ── Destination de livraison, figée à la commande ──────────────────────
+  // Snapshot délibéré : le client peut corriger son adresse le lendemain, la
+  // commande d'hier doit continuer à pointer là où elle a été livrée. Même
+  // raison que `OrderItem.snapshotPrice` et `Order.commissionPercent`.
+  //
+  // ⚠️ Depuis septembre 2026 ces coordonnées sont **résolues par le serveur**
+  // à partir de `Adresses`, jamais reprises du corps de la requête : le client
+  // envoyait le GPS de son téléphone, donc l'endroit où il se trouvait au
+  // moment de payer et non celui où il voulait être livré.
+  /// Fiabilité de la destination, figée elle aussi. Sans elle, l'app livreur
+  /// ne peut pas distinguer un point posé à la main d'un centroïde de
+  /// quartier — et afficherait les deux avec le même aplomb.
+  deliveryPrecision  LocationPrecision @default(UNKNOWN)
+  /// Repères du client, recopiés de l'adresse au moment de la commande.
+  deliveryLandmark   String?
   deliveryLatitude   Float? // nouveau
   deliveryLongitude  Float? // nouveau  
   deliveryQuartierId String? // nouveau — pour les frais de zone
-  deleteCommande     Boolean        @default(false)
+  deleteCommande     Boolean           @default(false)
   paymentMethod      PaymentMethod // Méthode de paiement
-  status             OrderStatus    @default(EN_ATTENTE)
+  status             OrderStatus       @default(EN_ATTENTE)
   paidAt             DateTime? // Date de paiement
   notes              String? // Notes optionnelles du client pour le restaurant
   contactPhone       String? // Numéro de téléphone saisi lors de la commande
   items              OrderItem[]
   reviews            Review[]
   delivery           Delivery?
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
 
   Payment        Payment[]
   promoCodeId    String?
@@ -1029,6 +1087,17 @@ model Quartier {
   adresses    Adresses[]
   restaurants Restaurant[] // Vendeurs implantés dans ce quartier
   createdAt   DateTime       @default(now())
+
+  /// Centroïde du quartier — repli quand une adresse n'a pas de position.
+  ///
+  /// `null` est un état **normal et assumé** : le géocodage de Google ne
+  /// reconnaît pas tous les quartiers de Brazzaville (7 des 26 renvoient le
+  /// centre-ville générique, ce qui les rendrait tous identiques). Plutôt que
+  /// de semer un point faux, on laisse vide et un administrateur complète via
+  /// `PATCH /quartiers/:id/centroid`. Un centroïde absent dégrade proprement
+  /// en `LocationPrecision.UNKNOWN`.
+  latitude  Float?
+  longitude Float?
 }
 
 // Table de liaison entre quartiers et zones de livraison

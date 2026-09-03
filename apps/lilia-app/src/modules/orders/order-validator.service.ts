@@ -2,7 +2,6 @@
 // orders/order-validator.service.ts
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -34,16 +33,6 @@ export class OrderValidatorService {
     });
     if (!user) throw new NotFoundException('Utilisateur non trouvé.');
     return user;
-  }
-
-  async validateDeliveryAddress(adresseId: string, userId: string) {
-    const address = await this.prisma.adresses.findUnique({
-      where: { id: adresseId },
-    });
-    if (!address) throw new NotFoundException("Adresse de livraison introuvable.");
-    if (address.userId !== userId)
-      throw new ForbiddenException('Cette adresse ne vous appartient pas.');
-    return `${address.rue}, ${address.ville}, ${address.country}`;
   }
 
   validateCartNotEmpty(cartItems: any[]) {

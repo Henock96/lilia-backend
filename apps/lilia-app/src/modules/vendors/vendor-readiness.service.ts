@@ -1,22 +1,17 @@
 import { Injectable } from '@nestjs/common';
 import { DeliveryPriceMode, OnboardingStatus, Role } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { checkCongoCoordinates } from '../../common/geo/congo-geo';
 
 /**
- * Bornes géographiques de la République du Congo, marge incluse.
+ * Bornes géographiques de la République du Congo.
  *
- * Une latitude de Paris sur un vendeur de Brazzaville n'est pas une donnée
- * légèrement fausse : elle produit une distance de 6 000 km, donc une ETA
- * absurde et un itinéraire livreur inutilisable. Le contrôle de plage attrape
- * l'inversion lat/lng et le copier-coller malheureux, qui sont les deux erreurs
- * réelles ; il ne prétend pas vérifier que le point est la bonne devanture.
+ * Réexport de compatibilité : la définition vit désormais dans
+ * `common/geo/congo-geo.ts`, partagée avec les adresses clients. Une latitude
+ * de Paris sur un vendeur de Brazzaville produit une distance de 6 000 km,
+ * donc une ETA absurde et un itinéraire livreur inutilisable.
  */
-export const CONGO_BOUNDS = {
-  minLat: -5.5,
-  maxLat: 3.8,
-  minLng: 10.5,
-  maxLng: 19.0,
-} as const;
+export { CONGO_BOUNDS } from '../../common/geo/congo-geo';
 
 export type ReadinessStatus = 'OK' | 'MISSING' | 'INVALID';
 
@@ -220,23 +215,15 @@ export class VendorReadinessService {
           "Sans GPS, l'ETA de livraison et le trajet du livreur sont faux.",
       };
     }
-    if (!isFinite(v.latitude) || !isFinite(v.longitude)) {
+    // Contrôle délégué à `common/geo` : les mêmes règles servent désormais aux
+    // adresses clients, pour que les deux extrémités de la course soient
+    // tenues au même standard.
+    const check = checkCongoCoordinates(v.latitude, v.longitude);
+    if (!check.ok) {
       return {
         ...base,
         status: 'INVALID',
-        detail: 'Coordonnées non numériques.',
-      };
-    }
-    const inBounds =
-      v.latitude >= CONGO_BOUNDS.minLat &&
-      v.latitude <= CONGO_BOUNDS.maxLat &&
-      v.longitude >= CONGO_BOUNDS.minLng &&
-      v.longitude <= CONGO_BOUNDS.maxLng;
-    if (!inBounds) {
-      return {
-        ...base,
-        status: 'INVALID',
-        detail: `Coordonnées hors du Congo (${v.latitude}, ${v.longitude}) — latitude et longitude sont peut-être inversées.`,
+        detail: `${check.message} (${v.latitude}, ${v.longitude})`,
       };
     }
     return { ...base, status: 'OK' };

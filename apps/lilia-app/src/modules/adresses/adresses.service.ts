@@ -3,9 +3,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { LocationPrecision } from '@prisma/client';
+
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateAdresseDto } from './dto/create-adresse.dto';
 import { UpdateAdresseDto } from './dto/update-adresse.dto';
+import { checkCongoCoordinates } from '../../common/geo/congo-geo';
 
 @Injectable()
 export class AdressesService {
@@ -23,15 +26,52 @@ export class AdressesService {
       createAdresseDto.quartierId,
       createAdresseDto.ville,
     );
+    const precision = this.assertCoordinates(
+      createAdresseDto.latitude,
+      createAdresseDto.longitude,
+    );
 
     const adresse = await this.prisma.adresses.create({
       data: {
         ...createAdresseDto,
         userId: user.id,
+        locationPrecision: precision,
       },
       include: { quartier: true },
     });
     return { data: adresse, message: 'Adresse créée avec succès' };
+  }
+
+  /**
+   * Contrôle les coordonnées d'une adresse et en déduit la précision.
+   *
+   * Le serveur ne fait pas confiance au client : un couple hors du Congo, une
+   * latitude et une longitude inversées, ou le fameux `(0, 0)` d'un GPS non
+   * initialisé sont refusés ici. C'est le même contrôle que celui appliqué aux
+   * vendeurs depuis l'onboarding — il n'y a aucune raison d'être plus laxiste
+   * sur la destination que sur le point de départ.
+   *
+   * Absence de coordonnées ⇒ `UNKNOWN`, sans erreur : l'adresse reste créable
+   * et sera livrable via le centroïde de son quartier.
+   */
+  private assertCoordinates(
+    latitude: number | undefined,
+    longitude: number | undefined,
+  ): LocationPrecision {
+    const hasLat = latitude !== undefined && latitude !== null;
+    const hasLng = longitude !== undefined && longitude !== null;
+
+    if (!hasLat && !hasLng) return LocationPrecision.UNKNOWN;
+    if (hasLat !== hasLng) {
+      throw new BadRequestException(
+        'Latitude et longitude doivent être fournies ensemble.',
+      );
+    }
+
+    const check = checkCongoCoordinates(latitude, longitude);
+    if (!check.ok) throw new BadRequestException(check.message);
+
+    return LocationPrecision.EXACT;
   }
 
   /**
@@ -106,9 +146,18 @@ export class AdressesService {
       dto.quartierId,
       dto.ville ?? existing.data?.ville,
     );
+
+    // La précision suit les coordonnées. Une mise à jour qui ne les touche pas
+    // ne doit pas la réécrire : `undefined` laisse Prisma ignorer le champ.
+    const touchesPosition =
+      dto.latitude !== undefined || dto.longitude !== undefined;
+    const precision = touchesPosition
+      ? this.assertCoordinates(dto.latitude, dto.longitude)
+      : undefined;
+
     const updated = await this.prisma.adresses.update({
       where: { id },
-      data: dto,
+      data: { ...dto, locationPrecision: precision },
       include: { quartier: true },
     });
     return { data: updated, message: 'Adresse mise à jour' };

@@ -10,6 +10,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { PaginationService } from '../../common/pagination/pagination.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
+import { DeliveryDestinationService } from './delivery-destination.service';
 import { PromoService } from '../promo/promo.service';
 import { TrackingModule } from '../tracking/tracking.module';
 import { PlatformSettingsModule } from '../platform-settings/platform-settings.module';
@@ -36,6 +37,7 @@ import { OrdersCoreModule } from './orders-core.module';
     PaginationService,
     OrderValidatorService,
     OrderCalculatorService,
+    DeliveryDestinationService,
     PromoService,
     OrderReceiptService,
   ],

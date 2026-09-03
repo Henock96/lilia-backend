@@ -18,6 +18,7 @@ import { PromoService } from '../promo/promo.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { PreorderValidatorService } from '../vendors/preorder-validator.service';
 import { QuartiersService } from '../quartiers/quartiers.service';
+import { DeliveryDestinationService } from './delivery-destination.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
 import { RefundsService } from '../refunds/refunds.service';
 import { OutboxService } from '../outbox/outbox.service';
@@ -94,6 +95,10 @@ describe('OrdersService (caractérisation — lectures)', () => {
         { provide: PlatformSettingsService, useValue: {} },
         { provide: PreorderValidatorService, useValue: {} },
         { provide: QuartiersService, useValue: {} },
+        {
+          provide: DeliveryDestinationService,
+          useValue: {},
+        },
       ],
     }).compile();
 
