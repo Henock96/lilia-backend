@@ -17,7 +17,7 @@ import {
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
-import { Role, User } from '@prisma/client';
+import { Role, StatusUser, User } from '@prisma/client';
 
 import { AdminService } from './admin.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
@@ -186,12 +186,40 @@ export class AdminController {
   // ─── UTILISATEURS ──────────────────────────────────────────────────────────
 
   @Get('users')
-  @ApiOperation({ summary: 'Tous les utilisateurs, filtrables par rôle' })
+  @ApiOperation({
+    summary: 'Tous les utilisateurs, filtrables par rôle et statut',
+  })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'role', required: false, enum: Role })
-  getAllUsers(@Query() query: PaginationQueryDto, @Query('role') role?: Role) {
-    return this.adminService.getAllUsers(query.page, query.limit, role);
+  @ApiQuery({ name: 'statusUser', required: false, enum: StatusUser })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    description: 'Nom, e-mail ou téléphone',
+  })
+  getAllUsers(
+    @Query() query: PaginationQueryDto,
+    @Query('role') role?: Role,
+    @Query('statusUser') statusUser?: StatusUser,
+    @Query('search') search?: string,
+  ) {
+    return this.adminService.getAllUsers(
+      query.page,
+      query.limit,
+      role,
+      statusUser,
+      search,
+    );
+  }
+
+  @Get('users/:id')
+  @ApiOperation({
+    summary: "Fiche d'un utilisateur — compte, boutique et profil livreur",
+  })
+  @ApiParam({ name: 'id', description: "ID Prisma de l'utilisateur" })
+  getUserById(@Param('id') id: string) {
+    return this.adminService.getUserById(id);
   }
 
   @Get('clients')

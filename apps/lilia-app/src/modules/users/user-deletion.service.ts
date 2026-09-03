@@ -78,6 +78,13 @@ export class UserDeletionService {
       await tx.favorite.deleteMany({ where: { userId } });
       await tx.review.deleteMany({ where: { userId } });
       await tx.loyaltyTransaction.deleteMany({ where: { userId } });
+      // Profil livreur : `plateNumber` et `licenseNumber` sont des données
+      // personnelles au même titre qu'une adresse. La cascade PostgreSQL ne
+      // s'applique pas ici — on anonymise le `User`, on ne le supprime pas —
+      // donc la purge doit être explicite. `deleteMany` et non `delete` :
+      // l'immense majorité des comptes n'a pas de profil, et `delete` lèverait
+      // un P2025 sur chacun d'eux.
+      await tx.driverProfile.deleteMany({ where: { userId } });
 
       await tx.user.update({
         where: { id: userId },

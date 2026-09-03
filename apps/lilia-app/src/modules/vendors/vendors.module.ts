@@ -4,6 +4,7 @@ import { PaginationService } from '../../common/pagination/pagination.service';
 import { IdempotencyService } from '../../common/idempotency/idempotency.service';
 import { FirebaseModule } from '../firebase/firebase.module';
 import { PhotosCommonModule } from '../photos-common/photos-common.module';
+import { AdminAuditModule } from '../admin-audit/admin-audit.module';
 import { RestaurantsModule } from '../restaurants/restaurants.module';
 import { VendorsCoreModule } from './vendors-core.module';
 import { VendorsController } from './vendors.controller';
@@ -20,6 +21,7 @@ import { PreorderValidatorService } from './preorder-validator.service';
     PrismaModule,
     FirebaseModule,
     PhotosCommonModule,
+    AdminAuditModule,
     RestaurantsModule,
     // Fournit VendorInvitationService et VendorReadinessService, tous deux
     // partagés avec le worker via OutboxModule.

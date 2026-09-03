@@ -7,10 +7,19 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma, User, VendorType } from '@prisma/client';
+import { AdminAuditAction, Prisma, User, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
+import {
+  PUBLIC_VENDOR_ORDER_BY,
+  PUBLIC_VENDOR_WHERE,
+} from '../../common/vendor-visibility';
 import { PaginationService } from '../../common/pagination/pagination.service';
+import { catalogProductWhere } from '../products/product-availability';
+import {
+  defaultCategoriesCreateInput,
+  PUBLIC_CATEGORIES_ARGS,
+} from '../categories/category.includes';
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { CreateVendorDto } from './dto/create-vendor.dto';
 import { FilterVendorsDto } from './dto/filter-vendors.dto';
 import { UpdateVendorProfileDto } from './dto/update-vendor-profile.dto';
@@ -31,14 +40,23 @@ const VENDOR_PUBLIC_INCLUDE = {
 function vendorDetailInclude(now = new Date()) {
   return {
     ...VENDOR_PUBLIC_INCLUDE,
+    // Sections de menu du vendeur — actives uniquement, dans SON ordre.
+    categories: PUBLIC_CATEGORIES_ARGS,
     products: {
       // Convention stock : null = illimité, 0 = épuisé, > 0 = quantité réelle.
       // `{ not: 0 }` exclut aussi les NULL (sémantique SQL : NULL != 0 →
       // UNKNOWN, pas TRUE). Sans cette branche OR, les produits HOME_COOK /
       // BAKERY créés sans stockQuotidien (= illimité) n'apparaissaient jamais
       // sur le détail vendeur (LIL-120).
+      //
+      // Fix PRD-03 : seul le stock était filtré. Un produit retiré du catalogue
+      // (`deletedAt`) ou marqué indisponible restait servi ici, alors que
+      // `GET /products` l'excluait depuis le fix M2. Le `AND` combine les deux
+      // conditions sans que le `OR` du stock n'écrase celui de la fenêtre
+      // horaire porté par `availableProductWhere()`.
       where: {
         OR: [{ stockRestant: null }, { stockRestant: { gt: 0 } }],
+        AND: [catalogProductWhere(now)],
       },
       include: {
         category: true,
@@ -75,6 +93,7 @@ export class VendorsService {
     private readonly prisma: PrismaService,
     private readonly pagination: PaginationService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly audit: AdminAuditService,
   ) {}
 
   async createVendor(dto: CreateVendorDto, adminUserId: string) {
@@ -117,6 +136,9 @@ export class VendorsService {
           acceptsPreorders: dto.acceptsPreorders ?? false,
           preorderLeadHours: dto.preorderLeadHours,
           maxOrdersPerDay: dto.maxOrdersPerDay,
+          // Sections de menu par défaut, créées dans la MÊME transaction : un
+          // vendeur ne naît jamais sans carte à remplir.
+          categories: { create: defaultCategoriesCreateInput(dto.vendorType) },
           ...(hasProfile && {
             vendorProfile: { create: profileFields },
           }),
@@ -142,6 +164,10 @@ export class VendorsService {
       ...PUBLIC_VENDOR_WHERE,
       ...(dto.vendorType && { vendorType: dto.vendorType }),
       ...(dto.isOpen !== undefined && { isOpen: dto.isOpen }),
+      // Filtre éditorial, appliqué APRÈS la frontière de visibilité (il
+      // s'ajoute à `PUBLIC_VENDOR_WHERE`, il ne s'y substitue pas) : un vendeur
+      // mis en avant mais non publié reste invisible.
+      ...(dto.isFeatured !== undefined && { isFeatured: dto.isFeatured }),
     };
 
     const page = dto.page ?? 1;
@@ -151,7 +177,7 @@ export class VendorsService {
       this.prisma.restaurant.findMany({
         where,
         include: VENDOR_PUBLIC_INCLUDE,
-        orderBy: [{ isOpen: 'desc' }, { createdAt: 'desc' }],
+        orderBy: [...PUBLIC_VENDOR_ORDER_BY],
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -176,6 +202,78 @@ export class VendorsService {
     });
     if (!vendor) throw new NotFoundException(`Vendeur "${id}" introuvable.`);
     return { data: vendor };
+  }
+
+  /**
+   * Range un vendeur dans les listes publiques.
+   *
+   * Ne touche **aucun** des trois champs de visibilité : classer un vendeur ne
+   * le publie pas, et un `DRAFT` classé premier reste invisible. Les doublons
+   * sont acceptés — « ces deux-là devant, l'ordre entre eux m'est égal » est
+   * une intention légitime, que le tri secondaire départage.
+   */
+  async setDisplayOrder(id: string, displayOrder: number, adminUserId: string) {
+    const vendor = await this.prisma.restaurant.findUnique({
+      where: { id },
+      select: { id: true, nom: true, displayOrder: true },
+    });
+    if (!vendor) throw new NotFoundException('Vendeur introuvable.');
+
+    const updated = await this.prisma.restaurant.update({
+      where: { id },
+      data: { displayOrder },
+      select: { id: true, nom: true, displayOrder: true, isFeatured: true },
+    });
+
+    await this.audit.record({
+      actorId: adminUserId,
+      action: AdminAuditAction.VENDOR_DISPLAY_ORDER_CHANGED,
+      targetType: 'Restaurant',
+      targetId: id,
+      metadata: { from: vendor.displayOrder, to: displayOrder },
+    });
+
+    return {
+      data: updated,
+      message: `« ${updated.nom} » est désormais en position ${displayOrder}.`,
+    };
+  }
+
+  /** Met un vendeur en avant, ou l'en retire. Indépendant de `displayOrder`. */
+  async setFeatured(id: string, isFeatured: boolean, adminUserId: string) {
+    const vendor = await this.prisma.restaurant.findUnique({
+      where: { id },
+      select: { id: true, nom: true, isFeatured: true },
+    });
+    if (!vendor) throw new NotFoundException('Vendeur introuvable.');
+    if (vendor.isFeatured === isFeatured) {
+      throw new BadRequestException(
+        isFeatured
+          ? `« ${vendor.nom} » est déjà mis en avant.`
+          : `« ${vendor.nom} » n'est pas mis en avant.`,
+      );
+    }
+
+    const updated = await this.prisma.restaurant.update({
+      where: { id },
+      data: { isFeatured },
+      select: { id: true, nom: true, displayOrder: true, isFeatured: true },
+    });
+
+    await this.audit.record({
+      actorId: adminUserId,
+      action: AdminAuditAction.VENDOR_FEATURED_TOGGLED,
+      targetType: 'Restaurant',
+      targetId: id,
+      metadata: { isFeatured },
+    });
+
+    return {
+      data: updated,
+      message: isFeatured
+        ? `« ${updated.nom} » est mis en avant.`
+        : `« ${updated.nom} » n'est plus mis en avant.`,
+    };
   }
 
   async approveVendor(id: string, adminUserId: string) {

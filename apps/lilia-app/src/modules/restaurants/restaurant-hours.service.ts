@@ -3,6 +3,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DayOfWeek, SetOperatingHoursDto, UpdateOperatingHourDto } from './dto/operating-hours.dto';
 import { RestaurantAccessService } from './restaurant-access.service';
+import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 
 /**
  * Gestion des horaires d'ouverture (extrait de RestaurantsService — LIL-145).
@@ -69,9 +70,14 @@ export class RestaurantHoursService {
   /**
    * Récupère les horaires d'ouverture d'un restaurant
    */
+  /**
+   * Route PUBLIQUE (`GET /restaurants/:id/operating-hours`) : soumise à la même
+   * frontière de visibilité que la fiche vendeur. Les horaires d'une boutique
+   * non publiée n'ont pas à être consultables par lien direct.
+   */
   async getOperatingHours(restaurantId: string) {
-    const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id: restaurantId },
+    const restaurant = await this.prisma.restaurant.findFirst({
+      where: { id: restaurantId, ...PUBLIC_VENDOR_WHERE },
     });
 
     if (!restaurant) {

@@ -50,12 +50,14 @@ export class MenusService {
     restaurantId?: string;
     isActive?: boolean;
     includeExpired?: boolean;
+    page?: number;
+    limit?: number;
   }) {
     return this.query.findAll(filters);
   }
 
-  getActiveMenus(restaurantId?: string) {
-    return this.query.getActiveMenus(restaurantId);
+  getActiveMenus(restaurantId?: string, page?: number, limit?: number) {
+    return this.query.getActiveMenus(restaurantId, page, limit);
   }
 
   findOne(id: string) {
@@ -64,5 +66,9 @@ export class MenusService {
 
   findByRestaurant(firebaseUid: string) {
     return this.query.findByRestaurant(firebaseUid);
+  }
+
+  findAllForAdmin(restaurantId: string) {
+    return this.query.findAllForAdmin(restaurantId);
   }
 }

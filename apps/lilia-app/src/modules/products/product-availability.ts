@@ -91,6 +91,34 @@ export function availableProductWhere(
   };
 }
 
+/**
+ * Filtre du **catalogue** : disponibilité, plus exclusion des produits fantômes.
+ *
+ * Créer un menu `PLAT_SPECIAL` fabrique au passage un `Product` porteur du plat
+ * (`MenuCommandService.create`) : c'est lui qui reçoit les lignes de commande,
+ * le menu ne pouvant pas en porter directement. Mais ce produit n'est pas un
+ * article du catalogue — c'est le corps d'un menu. Sans cette exclusion, le
+ * même plat apparaissait **deux fois** au client : une fois comme menu, une
+ * fois comme produit sans section rangé dans « Autres ».
+ *
+ * ⚠️ À ne PAS confondre avec `availableProductWhere`, qui filtre aussi le
+ * **contenu** d'un menu (`MenuQueryService`). L'y ajouter viderait les menus
+ * `PLAT_SPECIAL` de leur unique composant.
+ *
+ * Le fantôme est reconnu par sa relation, pas par une colonne : un produit
+ * n'est fantôme que parce qu'il compose un plat spécial, et cette vérité vit
+ * déjà dans `MenuProduct`. Une colonne `isPhantom` serait une seconde source
+ * qui se désynchroniserait.
+ */
+export function catalogProductWhere(
+  now: Date = new Date(),
+): Prisma.ProductWhereInput {
+  return {
+    ...availableProductWhere(now),
+    menus: { none: { menu: { type: 'PLAT_SPECIAL' } } },
+  };
+}
+
 /** Raison lisible du refus, ou `null` si le produit est commandable. */
 export function unavailabilityReason(
   product: {

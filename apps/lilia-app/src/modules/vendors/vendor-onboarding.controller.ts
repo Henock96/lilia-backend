@@ -20,6 +20,7 @@ import { User } from '@prisma/client';
 
 import { VendorOnboardingService } from './vendor-onboarding.service';
 import { VendorInvitationService } from './vendor-invitation.service';
+import { VendorsService } from './vendors.service';
 import { RestaurantHoursService } from '../restaurants/restaurant-hours.service';
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -33,6 +34,10 @@ import {
   UpdateVendorIdentityDto,
   UpdateVendorLocationDto,
 } from './dto/onboarding.dto';
+import {
+  UpdateDisplayOrderDto,
+  UpdateFeaturedDto,
+} from './dto/vendor-showcase.dto';
 
 /**
  * Onboarding vendeur — configuration partagée entre l'administrateur et le
@@ -153,6 +158,7 @@ export class AdminVendorOnboardingController {
   constructor(
     private readonly onboarding: VendorOnboardingService,
     private readonly invitation: VendorInvitationService,
+    private readonly vendors: VendorsService,
   ) {}
 
   @Post()
@@ -220,5 +226,40 @@ export class AdminVendorOnboardingController {
   async resendInvitation(@Param('id') id: string) {
     const result = await this.invitation.sendForVendor(id);
     return { data: result, message: 'Invitation renvoyée.' };
+  }
+
+  // ─── Mise en ordre et mise en avant du catalogue ───────────────────────────
+  //
+  // Deux gestes distincts, deux routes. `displayOrder` dit OÙ le vendeur
+  // apparaît, `isFeatured` dit s'il porte un badge : les fondre en une seule
+  // route obligerait à envoyer l'un pour changer l'autre.
+  //
+  // ⚠️ Ni l'un ni l'autre ne publie quoi que ce soit — la visibilité reste
+  // `POST /admin/vendors/:id/activate` + `approve`.
+
+  @Patch(':id/display-order')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Ranger le vendeur dans les listes publiques (1 = premier)',
+  })
+  @ApiParam({ name: 'id', description: 'ID du vendeur (Restaurant)' })
+  setDisplayOrder(
+    @Param('id') id: string,
+    @Body() dto: UpdateDisplayOrderDto,
+    @CurrentUser() admin: User,
+  ) {
+    return this.vendors.setDisplayOrder(id, dto.displayOrder, admin.id);
+  }
+
+  @Patch(':id/feature')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Mettre le vendeur en avant, ou l’en retirer' })
+  @ApiParam({ name: 'id', description: 'ID du vendeur (Restaurant)' })
+  setFeatured(
+    @Param('id') id: string,
+    @Body() dto: UpdateFeaturedDto,
+    @CurrentUser() admin: User,
+  ) {
+    return this.vendors.setFeatured(id, dto.isFeatured, admin.id);
   }
 }

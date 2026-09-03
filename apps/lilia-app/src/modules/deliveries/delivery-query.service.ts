@@ -273,6 +273,11 @@ export class DeliveryQueryService {
       where: {
         role: 'LIVREUR',
         statusUser: 'ACTIVE',
+        // Le profil métier doit exister ET être en service. Cette condition
+        // reprend mot pour mot celle de `assertAssignable` côté écriture : les
+        // deux doivent dire la même chose, sinon la liste propose des livreurs
+        // que l'assignation refuse ensuite — ou l'inverse, ce qui est pire.
+        driverProfile: { isActive: true },
         // `driverStatus` est nullable : un livreur qui ne s'est jamais déclaré
         // reste assignable (comportement historique), seul OFFLINE est exclu.
         OR: [

@@ -90,10 +90,22 @@ export class RestaurantsController {
 
   // ─── CRÉATION ──────────────────────────────────────────────────────────────
 
-    // Endpoint protégé pour créer un restaurant
+    /**
+     * Création directe d'un vendeur — **réservée à l'ADMIN** depuis septembre 2026.
+     *
+     * Elle était ouverte au RESTAURATEUR et posait `adminApproved = true` en
+     * dur. Un commerçant pouvait donc se délivrer à lui-même la validation
+     * marketplace, qui est une décision de plateforme. Le garde-fou
+     * d'onboarding le laissait certes en `DRAFT`, donc invisible — mais faire
+     * reposer une frontière d'autorisation sur un garde-fou voisin, c'est
+     * attendre que l'un des deux bouge.
+     *
+     * Le parcours normal reste `POST /admin/vendors`, qui crée aussi le compte
+     * du propriétaire et lui envoie son invitation.
+     */
     @Post()
-    @Roles('ADMIN', 'RESTAURATEUR')
-    @ApiOperation({ summary: 'Créer un restaurant' })
+    @Roles('ADMIN')
+    @ApiOperation({ summary: 'Créer un restaurant (ADMIN — préférer POST /admin/vendors)' })
     create(@Body() dto: CreateRestaurantDto, @FirebaseUser() fbUser: DecodedIdToken,){
         return this.service.create(dto, fbUser.uid)
     }

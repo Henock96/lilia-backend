@@ -82,9 +82,26 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
   });
 
   // user lookups : firebaseUid → demandeur (owner/admin) ; id → livreur cible
+  //
+  // Le livreur reçoit par défaut un compte actif, un profil métier actif et une
+  // disponibilité : ce sont les quatre conditions qu'`assertAssignable` exige
+  // depuis septembre 2026. Les tests qui veulent éprouver un refus passent
+  // explicitement la valeur fautive — ainsi ce qui est testé reste lisible dans
+  // le test lui-même, plutôt que caché dans une fixture partagée.
+  const assignableDriver = (over: any = {}) => ({
+    id: 'liv1',
+    nom: 'Livreur',
+    role: 'LIVREUR',
+    statusUser: 'ACTIVE',
+    driverStatus: 'AVAILABLE',
+    driverProfile: { isActive: true },
+    ...over,
+  });
+
   const mockUsers = (requester: any, deliverer: any) => {
+    const full = deliverer ? assignableDriver(deliverer) : deliverer;
     prisma.user.findUnique.mockImplementation(({ where }: any) =>
-      Promise.resolve(where.firebaseUid ? requester : deliverer),
+      Promise.resolve(where.firebaseUid ? requester : full),
     );
   };
 

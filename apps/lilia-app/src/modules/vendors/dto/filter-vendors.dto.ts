@@ -15,6 +15,19 @@ export class FilterVendorsDto {
   @Transform(({ value }) => value === 'true' || value === true)
   isOpen?: boolean;
 
+  /**
+   * Vendeurs mis en avant par l'administration.
+   *
+   * C'est ce filtre que consomme la section « Les plus courus » du site, qui
+   * prenait jusqu'ici les quatre premiers de la liste — c'est-à-dire les quatre
+   * derniers créés. L'interface annonçait une sélection éditoriale que personne
+   * ne pouvait produire.
+   */
+  @IsBoolean()
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  isFeatured?: boolean;
+
   @IsInt()
   @IsOptional()
   @Min(1)

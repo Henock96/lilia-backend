@@ -166,9 +166,15 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
       const res = await service.getAvailableDeliverers();
       // Fix L11 : la requête ne ramène plus tous les comptes LIVREUR de la
       // plateforme — les comptes bloqués/supprimés et hors ligne sont exclus.
+      //
+      // `driverProfile: { isActive: true }` (septembre 2026) doit dire EXACTEMENT
+      // la même chose que `assertAssignable` côté écriture. Si l'une des deux
+      // bouge sans l'autre, la liste propose des livreurs que l'assignation
+      // refuse — ou, pire, en cache que l'assignation accepterait.
       expect(prisma.user.findMany.mock.calls[0][0].where).toEqual({
         role: 'LIVREUR',
         statusUser: 'ACTIVE',
+        driverProfile: { isActive: true },
         OR: [
           { driverStatus: { in: ['AVAILABLE', 'ON_DELIVERY'] } },
           { driverStatus: null },

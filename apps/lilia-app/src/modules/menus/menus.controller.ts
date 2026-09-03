@@ -20,6 +20,7 @@ import {
 } from '@nestjs/swagger';
 import { MenusService } from './menus.service';
 import { CreateMenuDto, UpdateMenuDto } from './dto';
+import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Public } from '../auth/decorators/public.decorator';
@@ -64,6 +65,7 @@ export class MenusController {
   })
   @ApiResponse({ status: 200, description: 'Liste des menus récupérée' })
   findAll(
+    @Query() pagination: PaginationQueryDto,
     @Query('restaurantId') restaurantId?: string,
     @Query('isActive') isActive?: string,
     @Query('includeExpired') includeExpired?: string,
@@ -72,6 +74,8 @@ export class MenusController {
       restaurantId,
       ...(isActive !== undefined && { isActive: isActive === 'true' }),
       ...(includeExpired !== undefined && { includeExpired: includeExpired === 'true' }),
+      page: pagination.page,
+      limit: pagination.limit,
     });
   }
 
@@ -84,8 +88,28 @@ export class MenusController {
     description: 'Filtrer par ID de restaurant',
   })
   @ApiResponse({ status: 200, description: 'Menus actifs récupérés' })
-  getActiveMenus(@Query('restaurantId') restaurantId?: string) {
-    return this.menusService.getActiveMenus(restaurantId);
+  getActiveMenus(
+    @Query() pagination: PaginationQueryDto,
+    @Query('restaurantId') restaurantId?: string,
+  ) {
+    return this.menusService.getActiveMenus(
+      restaurantId,
+      pagination.page,
+      pagination.limit,
+    );
+  }
+
+  /**
+   * Vue d'administration : tous les menus d'un vendeur, **y compris** ceux d'un
+   * commerce non encore publié. `GET /menus` étant public et filtré par la
+   * frontière marketplace (fix SEC-02), l'admin n'y voit plus les vendeurs en
+   * onboarding — ceux dont il doit précisément remplir le catalogue.
+   */
+  @Get('admin/by-restaurant/:restaurantId')
+  @Roles('ADMIN')
+  @ApiOperation({ summary: "Menus d'un vendeur (ADMIN, sans filtre de visibilité)" })
+  findAllForAdmin(@Param('restaurantId') restaurantId: string) {
+    return this.menusService.findAllForAdmin(restaurantId);
   }
 
   @Get('restaurant/mine')

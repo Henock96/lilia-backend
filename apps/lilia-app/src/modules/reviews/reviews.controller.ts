@@ -55,7 +55,11 @@ export class ReviewsController {
   @Get('restaurant/:restaurantId/stats')
   @ApiOperation({ summary: "Récupérer les statistiques d'un restaurant" })
   getStats(@Param('restaurantId') restaurantId: string) {
-    return this.reviewsService.getRestaurantStats(restaurantId);
+    // `assertVisible: true` — route publique, donc soumise à la frontière de
+    // visibilité. `getRestaurantStats` est aussi appelée en interne par
+    // `findByRestaurant`, qui a déjà fait le contrôle : le paramètre évite d'y
+    // refaire la même requête.
+    return this.reviewsService.getRestaurantStats(restaurantId, true);
   }
 
   @Get('restaurant/:restaurantId/my-review')

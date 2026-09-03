@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PhotosCommonService } from '../photos-common/photos-common.service';
+import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import {
   CreateProductImageDto,
   UpdateProductImageDto,
@@ -18,10 +19,24 @@ export class ProductImagesService {
     private readonly common: PhotosCommonService,
   ) {}
 
+  /**
+   * Route PUBLIQUE. Le filtre de visibilité manquait : les photos des produits
+   * d'un vendeur en cours de configuration ou suspendu restaient accessibles à
+   * qui connaissait l'identifiant du produit.
+   *
+   * `VendorPhotosService` applique déjà cette règle depuis août ; les deux
+   * autres galeries — celle-ci et `MenuImagesService` — l'avaient oubliée.
+   */
   async list(productId: string) {
     if (!productId) {
       throw new BadRequestException('productId requis');
     }
+    const visible = await this.prisma.product.findFirst({
+      where: { id: productId, restaurant: PUBLIC_VENDOR_WHERE },
+      select: { id: true },
+    });
+    if (!visible) throw new NotFoundException('Produit introuvable');
+
     return this.prisma.productImage.findMany({
       where: { productId },
       orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
