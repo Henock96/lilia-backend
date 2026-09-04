@@ -11,6 +11,7 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
 import { AdminAuditAction, PayoutStatus, User } from '@prisma/client';
 
@@ -27,6 +28,8 @@ import {
   UpdatePayoutAccountDto,
 } from '../dto/payout.dto';
 import { toMsisdn } from '../providers/pawapay/pawapay.mapper';
+import { PawaPaySignatureService } from '../providers/pawapay/pawapay-signature.service';
+import { PlatformSettingsService } from '../../platform-settings/platform-settings.service';
 
 /**
  * Reversement des vendeurs — **réservé à l'ADMIN**.
@@ -50,6 +53,9 @@ export class AdminPayoutController {
     private readonly events: PaymentEventService,
     private readonly audit: AdminAuditService,
     private readonly prisma: PrismaService,
+    private readonly signature: PawaPaySignatureService,
+    private readonly config: ConfigService,
+    private readonly settingsService: PlatformSettingsService,
   ) {}
 
   /**
@@ -252,5 +258,140 @@ export class AdminPayoutController {
       _sum: { amount: true },
     });
     return { data: pending };
+  }
+
+  /**
+   * Qui peut être payé, et qui ne peut pas.
+   *
+   * **Pourquoi cette liste existe.** `PATCH /admin/vendors/:id/payout-account`
+   * existait déjà, avec son écran dans les deux administrations. Ce qui
+   * manquait, c'était de savoir *sur quels vendeurs* l'utiliser : rien
+   * n'affichait qu'un vendeur n'avait pas de compte de reversement, et les six
+   * de production sont restés à `NULL` pendant des mois pendant que les
+   * commandes s'encaissaient.
+   *
+   * Un vendeur en tête de liste ici est un vendeur qui accumule une dette :
+   * `pendingPayouts` chiffre ce qu'on lui doit déjà.
+   */
+  @Get('payouts/vendor-accounts')
+  @ApiOperation({ summary: 'Comptes de reversement des vendeurs (état)' })
+  async vendorPayoutAccounts() {
+    const vendors = await this.prisma.restaurant.findMany({
+      select: {
+        id: true,
+        nom: true,
+        isActive: true,
+        adminApproved: true,
+        onboardingStatus: true,
+        payoutPhoneNumber: true,
+        payoutProvider: true,
+        payoutAccountName: true,
+        payoutVerifiedAt: true,
+        commissionPercent: true,
+      },
+      orderBy: { nom: 'asc' },
+    });
+
+    // Commandes payées, non annulées, sans reversement abouti — la dette réelle.
+    const owed = await this.prisma.order.groupBy({
+      by: ['restaurantId'],
+      where: {
+        paidAt: { not: null },
+        status: { not: 'ANNULER' },
+        payout: { is: null },
+      },
+      _count: { _all: true },
+      _sum: { subTotal: true },
+    });
+    const owedBy = new Map(owed.map((o) => [o.restaurantId, o]));
+
+    const settings = await this.settingsService.getSettings();
+
+    return {
+      data: vendors.map((v) => {
+        const debt = owedBy.get(v.id);
+        return {
+          id: v.id,
+          nom: v.nom,
+          isActive: v.isActive,
+          adminApproved: v.adminApproved,
+          onboardingStatus: v.onboardingStatus,
+          payable: Boolean(v.payoutPhoneNumber && v.payoutProvider),
+          payoutPhoneNumber: maskPhone(v.payoutPhoneNumber ?? undefined),
+          payoutProvider: v.payoutProvider,
+          payoutAccountName: v.payoutAccountName,
+          payoutVerifiedAt: v.payoutVerifiedAt,
+          // `null` n'est pas un trou : c'est « taux plateforme ». On rend les
+          // deux pour que l'écran n'ait pas à connaître cette convention.
+          commissionPercent:
+            v.commissionPercent ?? settings.restaurantCommissionPercent,
+          commissionIsPlatformDefault: v.commissionPercent === null,
+          unpaidOrders: debt?._count._all ?? 0,
+          unpaidSubTotal: debt?._sum.subTotal ?? 0,
+        };
+      }),
+    };
+  }
+
+  /**
+   * Santé de la chaîne d'encaissement, du point de vue des signaux reçus.
+   *
+   * **Ce que cette route rend visible.** Un callback prestataire non configuré
+   * ne casse rien de visible : l'application cliente sonde le statut, le cron
+   * de réconciliation rattrape le reste, et les commandes finissent par
+   * basculer. Le défaut ne se manifeste que sur le client qui ferme son
+   * application juste après avoir payé — et il est alors impossible de
+   * distinguer « le callback n'arrive pas » de « ce paiement-là a échoué ».
+   *
+   * L'audit du 4 septembre 2026 a dû interroger la base de production en SQL
+   * pour établir que `PaymentEvent WHERE source='WEBHOOK'` valait **0 depuis le
+   * premier jour**. Aucune interface ne pouvait le dire. C'est ce trou-là que
+   * cette route ferme : elle ne corrige rien, elle rend l'anomalie lisible.
+   *
+   * `authentication` décrit le dispositif **effectivement armé** : sans clé
+   * publique ni liste blanche d'IP, le webhook est fail-closed et répond 401 à
+   * tout — cas dans lequel l'absence de signal est garantie, pas probable.
+   */
+  @Get('payments/webhook-health')
+  @ApiOperation({ summary: 'Réception des callbacks prestataire (diagnostic)' })
+  async webhookHealth(@Query('days') daysRaw?: string) {
+    const days = Math.min(Math.max(Number(daysRaw) || 7, 1), 90);
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const [bySource, lastWebhookAt, allTimeWebhooks] = await Promise.all([
+      this.events.countBySource(since),
+      this.events.lastWebhookAt(),
+      this.prisma.paymentEvent.count({ where: { source: 'WEBHOOK' } }),
+    ]);
+
+    const signatureConfigured = this.signature.isEnabled;
+    const allowlist = (this.config.get<string>('PAWAPAY_CALLBACK_IPS') ?? '')
+      .split(',')
+      .map((ip) => ip.trim())
+      .filter(Boolean);
+
+    return {
+      data: {
+        paymentMode: this.config.get<string>('PAYMENT_MODE') ?? 'MANUAL',
+        authentication: {
+          // Fail-closed : sans l'un des deux, tout callback est refusé en 401.
+          configured: signatureConfigured || allowlist.length > 0,
+          signature: signatureConfigured,
+          ipAllowlistEntries: allowlist.length,
+        },
+        callbackUrls: {
+          deposits: '/webhooks/pawapay/deposits',
+          payouts: '/webhooks/pawapay/payouts',
+        },
+        windowDays: days,
+        eventsBySource: bySource,
+        lastWebhookAt,
+        /**
+         * Le critère de sortie du blocker P0-3 : tant qu'il vaut 0, la chaîne
+         * de paiement n'a jamais été bouclée par sa voie nominale.
+         */
+        webhooksEverReceived: allTimeWebhooks,
+      },
+    };
   }
 }

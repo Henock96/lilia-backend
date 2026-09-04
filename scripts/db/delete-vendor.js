@@ -15,8 +15,9 @@
  * affichés sont ceux que PostgreSQL a réellement calculés, mais la base ressort
  * inchangée. C'est le même protocole que `dry-run-fk-migration.js`.
  */
-require('dotenv').config();
+require('../load-env').loadEnv();
 const { Client } = require('pg');
+const { assertLocalDatabase, describeTarget } = require('./target-database');
 
 const args = process.argv.slice(2);
 const LIST = args.includes('--list');
@@ -221,6 +222,15 @@ async function cloudinary(client, ids) {
       return;
     }
 
+    // La répétition à blanc reste ouverte sur n'importe quelle base : elle
+    // n'écrit rien (ROLLBACK final) et sert précisément à mesurer l'existant.
+    // Seul le `--commit` est gardé — `--force` ne lève PAS cette garde-là :
+    // il concerne les règles métier, pas la base visée.
+    if (COMMIT) {
+      assertLocalDatabase('suppression physique de vendeur (--commit)');
+    }
+
+    console.log(`🎯 Base : ${describeTarget().label}`);
     console.log(COMMIT ? '🔴 SUPPRESSION RÉELLE' : '🧪 RÉPÉTITION À BLANC (ROLLBACK final)');
     console.table(cibles.map(({ id, nom, email }) => ({ id, nom, proprietaire: email })));
 

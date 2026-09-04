@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
+import { AdminAlertService } from './admin-alert.service';
 import { PrismaModule } from '../../prisma/prisma.module';
+import { EmailModule } from '../email/email.module';
 import { FirebaseService } from '../firebase/firebase.service';
 
 /**
@@ -18,8 +20,10 @@ import { FirebaseService } from '../firebase/firebase.service';
  * aurait pu associer un token FCM à un compte, ou détruire celui d'un autre.
  */
 @Module({
-  imports: [PrismaModule],
-  providers: [NotificationsService, FirebaseService],
-  exports: [NotificationsService],
+  // `EmailModule` n'expose aucun controller : l'importer ici n'ajoute donc
+  // aucune route au graphe du worker, qui consomme ce module.
+  imports: [PrismaModule, EmailModule],
+  providers: [NotificationsService, AdminAlertService, FirebaseService],
+  exports: [NotificationsService, AdminAlertService],
 })
 export class NotificationsCoreModule {}

@@ -3,7 +3,7 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
-import { OrderReceiptService } from './order-receipt.service';
+import { OrderReceiptService, serviceFeeLabel } from './order-receipt.service';
 
 // Construit une commande payée valide ; surcharge possible via `over`.
 function makeOrder(over: Record<string, any> = {}) {
@@ -112,5 +112,28 @@ describe('OrderReceiptService', () => {
     await expect(
       service.generateReceipt('x', otherVendor),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+describe('serviceFeeLabel (J-6)', () => {
+  it('annonce le taux réellement appliqué, pas 8 % en dur', () => {
+    // 10 000 au taux plateforme de production (15 %).
+    expect(serviceFeeLabel(10_000, 1500)).toBe('Frais service (15%)');
+  });
+
+  it('suit un taux plus ancien sur un reçu réédité', () => {
+    expect(serviceFeeLabel(10_000, 800)).toBe('Frais service (8%)');
+  });
+
+  it('affiche au plus une décimale', () => {
+    // round(3333 * 0.15) = 500 → 15,0015 % → « 15% ».
+    expect(serviceFeeLabel(3333, 500)).toBe('Frais service (15%)');
+    // 2,5 % doit rester lisible, pas arrondi à 3.
+    expect(serviceFeeLabel(10_000, 250)).toBe('Frais service (2,5%)');
+  });
+
+  it('omet le taux quand il n’est pas calculable', () => {
+    expect(serviceFeeLabel(0, 0)).toBe('Frais service');
+    expect(serviceFeeLabel(10_000, 0)).toBe('Frais service');
   });
 });

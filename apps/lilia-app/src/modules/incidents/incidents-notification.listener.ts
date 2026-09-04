@@ -1,16 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import {
-  IncidentSeverity,
-  IncidentStatus,
-  IncidentType,
-  Role,
-  StatusUser,
-} from '@prisma/client';
+import { IncidentSeverity, IncidentStatus, IncidentType } from '@prisma/client';
 import * as Sentry from '@sentry/nestjs';
 
 import { PrismaService } from '../../prisma/prisma.service';
-import { NotificationsService } from '../notifications/notifications.service';
+import { AdminAlertService } from '../notifications/admin-alert.service';
 import type {
   IncidentCreatedEvent,
   IncidentUpdatedEvent,
@@ -36,7 +30,7 @@ export class IncidentsNotificationListener {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly notifications: NotificationsService,
+    private readonly adminAlerts: AdminAlertService,
   ) {}
 
   @OnEvent('incident.created')
@@ -124,38 +118,23 @@ export class IncidentsNotificationListener {
   }
 
   /**
-   * Push FCM en parallèle à tous les admins ACTIVE.
-   * On utilise `allSettled` pour qu'un device offline n'empêche pas de
-   * notifier les autres. Les tokens invalides sont déjà nettoyés en interne
-   * par `NotificationsService.sendPushNotification`.
+   * Diffuse l'incident à tous les administrateurs actifs.
+   *
+   * Déléguée à `AdminAlertService`, qui envoie **push et e-mail**. Le fan-out
+   * était ici recopié à l'identique de `VendorsListener` et reposait sur le
+   * seul push : les trois comptes ADMIN de production n'ayant aucun token FCM,
+   * aucun incident n'a jamais atteint qui que ce soit. Un incident dont
+   * personne n'est prévenu ne se distingue pas d'un incident non détecté.
    */
   private async pushToAllAdmins(
     title: string,
     body: string,
     data: Record<string, string>,
   ): Promise<void> {
-    const admins = await this.prisma.user.findMany({
-      where: { role: Role.ADMIN, statusUser: StatusUser.ACTIVE },
-      select: { id: true },
-    });
-
-    if (admins.length === 0) {
+    const result = await this.adminAlerts.notify({ title, body, data });
+    if (result.admins === 0) {
       this.logger.warn(
-        'Aucun admin ACTIVE trouvé pour notifier — incident non poussé',
-      );
-      return;
-    }
-
-    const results = await Promise.allSettled(
-      admins.map((a) =>
-        this.notifications.sendPushNotification(a.id, title, body, data),
-      ),
-    );
-
-    const failures = results.filter((r) => r.status === 'rejected').length;
-    if (failures > 0) {
-      this.logger.warn(
-        `FCM admins : ${failures}/${admins.length} échecs (les autres push sont partis)`,
+        'Aucun admin ACTIVE trouvé pour notifier — incident non diffusé',
       );
     }
   }

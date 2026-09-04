@@ -1,16 +1,86 @@
 # Clés Google Maps — inventaire et cloisonnement
 
-**Dernière vérification : 2 septembre 2026.**
+**Dernière vérification : 4 septembre 2026.**
 
-> 🔴 **La clé A est publiquement lisible sur Internet à cet instant.** Ce n'est
-> pas une exposition théorique : voir §2 bis. Sa rotation est la première
-> action à mener, avant tout le reste de ce document.
+> ✅ **La cible de six clés est atteinte, et les six sont restreintes.**
+> Mesuré le 04/09/2026 par la sonde du §5 — voir §0. La rotation demandée par
+> l'audit du 01/08 a été effectuée.
+>
+> 🟠 **Reste ouvert** : les six anciennes valeurs restent lisibles dans
+> l'historique public des dépôts (§2 bis). Une clé remplacée n'est inoffensive
+> que si l'ancienne a été **révoquée** en console, pas seulement remplacée
+> dans le code.
 
 Ce document est la référence unique pour les clés Google Maps Platform de
 Lilia Food. Les actions marquées 🔧 se font dans la **Google Cloud Console** et
 ne peuvent pas être faites depuis le dépôt.
 
 ---
+
+## 0. État au 4 septembre 2026 — mesuré
+
+Six clés distinctes sont en service, une par couple (application, plateforme) —
+exactement la cible du §3. La sonde du §5, rejouée sur chacune depuis une
+machine tierce :
+
+| Emplacement | Clé (6 derniers car.) | Sonde Geocoding |
+|---|---|---|
+| `lilia-app` Android | `…p0od_w` | `REQUEST_DENIED` ✅ |
+| `lilia-app` iOS | `…mCycho` | `REQUEST_DENIED` ✅ |
+| `lilia-food-admin` Android | `…bVEcCc` | `REQUEST_DENIED` ✅ |
+| `lilia-food-admin` iOS | `…UmKTGw` | `REQUEST_DENIED` ✅ |
+| `lilia_food_delivery` Android | `…Wmqa44` | `REQUEST_DENIED` ✅ |
+| `lilia_food_delivery` iOS | `…rBYTBQ` | `REQUEST_DENIED` ✅ |
+
+**Changement par rapport au 02/09** : la clé B, alors totalement non restreinte
+(`OK` depuis une machine tierce, présente en clair dans trois binaires), n'est
+plus en service. Aucune des six clés actuelles n'accepte un appel REST anonyme.
+
+⚠️ **Ce que cette mesure ne dit PAS.** Elle prouve la présence d'une
+restriction d'**API**, pas d'une restriction d'**application** : les SDK Maps
+Android/iOS ne passent pas par l'API REST, une clé peut donc répondre
+`REQUEST_DENIED` ici tout en étant utilisable par n'importe quel binaire. Il
+reste à vérifier en console, pour chacune :
+
+- 🔧 restriction d'application posée (package + SHA-1 **de release**, y compris
+  l'empreinte **Play App Signing** — cf. §3) ;
+- 🔧 restriction d'API limitée aux seules API réellement utilisées ;
+- 🔧 budget et quotas ;
+- 🔧 **révocation** des deux clés historiques A et B, toujours lisibles dans
+  l'historique public des dépôts.
+
+Tant que la révocation n'est pas faite, l'exposition du §2 bis reste ouverte :
+remplacer une clé dans le code ne désactive pas l'ancienne.
+
+
+### Empreintes SHA-1 des certificats de **release** — relevées le 04/09/2026
+
+Nécessaires pour poser la restriction d'application Android sur chaque clé.
+Relevées sur les APK réellement produits par `flutter build apk --release`
+(`apksigner verify --print-certs`), donc sur les certificats effectivement
+utilisés — pas sur ce qu'un fichier de configuration prétend.
+
+| Application | `applicationId` | SHA-1 du certificat de release |
+|---|---|---|
+| `lilia-app` | `com.dreesis.lilia.lilia_app` | `1A:02:EE:67:65:E3:7A:52:01:E4:A0:56:4F:AB:37:98:48:85:48:DD` |
+| `lilia-food-admin` | `com.dreesis.lilia_admin` | `37:E9:1B:CA:6E:C6:9C:62:90:14:46:C9:07:D6:1F:BA:60:91:B2:EC` |
+| `lilia_food_delivery` | `com.dreesis.lilia_food_delivery` | `49:AD:2B:60:C4:42:47:C9:59:D7:67:A1:42:C6:16:C8:23:75:11:5D` |
+
+La restriction d'application Android d'une clé Maps se déclare en **SHA-1** —
+c'est ce que demande la console Google Cloud, là où la Play Console affiche des
+SHA-256. Les deux coexistent, ne pas les confondre.
+
+Les trois APK sont signés par un certificat **DreesisLab / Brazzaville**, et non
+par la clé de debug d'Android (`CN=Android Debug, O=Android, C=US`) — le défaut
+M-6 de l'audit d'août 2026 est bien refermé.
+
+🔧 **Le piège Play App Signing.** Si Google signe les artefacts à votre place,
+l'empreinte que voient les appareils n'est **pas** celle ci-dessus mais celle du
+certificat de la *Play Console* (Configuration → Intégrité de l'application).
+Il faut alors déclarer **les deux** sur chaque clé Android : celle du dépôt pour
+les installations directes, celle de Google pour les installations depuis le
+Store. N'en déclarer qu'une produit une carte grise sur la moitié du parc, sans
+message d'erreur.
 
 ## 1. Pourquoi il faut six clés et non deux
 
@@ -30,7 +100,7 @@ issues, toutes deux mauvaises.
 L'état constaté le 1er septembre 2026 était le troisième cas pour l'une des
 deux clés en service.
 
-## 2. État constaté avant correction
+## 2. État constaté avant correction (01–02/09/2026)
 
 Deux clés couvraient six emplacements, chacune servant Android **et** iOS :
 
@@ -107,6 +177,12 @@ HTTP** (`liliafood.com`, `www.liliafood.com`, `*.vercel.app` pour les
 prévisualisations).
 
 ### 🔧 Empreintes Android — relevées le 02/09/2026
+
+> ⚠️ **Partiellement périmé — voir §0.** Au 04/09/2026, les trois applications
+> possèdent un `android/key.properties` et les trois APK de release sont signés
+> par un certificat DreesisLab. La réserve ci-dessous sur `lilia-food-admin`
+> (« aucun keystore de release ») **n'est plus vraie**. Les empreintes SHA-1
+> effectivement portées par les binaires produits sont au §0.
 
 Une empreinte de certificat n'est pas un secret : c'est un condensat public,
 et c'est exactement ce que la console Google Cloud demande.

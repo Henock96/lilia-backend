@@ -1,6 +1,5 @@
 import { Type } from 'class-transformer';
 import {
-  IsIn,
   IsNotEmpty,
   IsObject,
   IsOptional,
@@ -74,17 +73,33 @@ class PawaPayFailureReasonDto {
 }
 
 /**
- * Statuts qu'un callback peut porter. pawaPay ne rappelle qu'aux états
- * **terminaux**, mais on accepte l'ensemble : refuser un statut intermédiaire
- * par une 400 le ferait rejouer pendant 15 minutes pour rien.
+ * Statuts **connus** de pawaPay, pour la documentation et les tests.
+ *
+ * ⚠️ Cette liste n'est **pas** une contrainte de validation, et ne doit jamais
+ * le redevenir. Elle l'a été (`@IsIn`), et c'était un défaut de conception :
+ *
+ *  - le DTO refusait par une `400` tout statut hors liste ;
+ *  - `mapPawaPayState` traite au contraire n'importe quelle valeur inconnue
+ *    comme « pas encore décidé » — donc sans aucune transition métier ;
+ *  - un `400` fait rejouer pawaPay pendant quinze minutes, puis abandonner,
+ *    **sans qu'aucune ligne ne soit écrite nulle part** : ni `PaymentEvent`, ni
+ *    log applicatif, la validation s'exécutant avant le handler.
+ *
+ * pawaPay documente au moins `SUBMITTED`, `REJECTED` et `DUPLICATE_IGNORED` en
+ * plus des six ci-dessous, et peut en ajouter sans nous prévenir. Un statut que
+ * nous ne connaissons pas doit être **reçu, tracé, et laissé sans effet** — pas
+ * refusé en silence. Refuser, ici, c'est perdre l'information définitivement.
  */
-export const PAWAPAY_CALLBACK_STATUSES = [
+export const PAWAPAY_KNOWN_STATUSES = [
   'ACCEPTED',
   'ENQUEUED',
+  'SUBMITTED',
   'PROCESSING',
   'IN_RECONCILIATION',
   'COMPLETED',
   'FAILED',
+  'REJECTED',
+  'DUPLICATE_IGNORED',
 ] as const;
 
 export class PawaPayCallbackDto {
@@ -100,11 +115,13 @@ export class PawaPayCallbackDto {
   @MaxLength(64)
   payoutId?: string;
 
+  /**
+   * Statut brut du prestataire. Contraint en **type** (chaîne bornée), jamais
+   * en **valeur** — voir `PAWAPAY_KNOWN_STATUSES`.
+   */
   @IsString()
   @IsNotEmpty({ message: 'status requis' })
-  @IsIn(PAWAPAY_CALLBACK_STATUSES as unknown as string[], {
-    message: 'statut pawaPay inconnu',
-  })
+  @MaxLength(64)
   status!: string;
 
   /** Montant mouvementé, en chaîne décimale. */
