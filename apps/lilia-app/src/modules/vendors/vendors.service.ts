@@ -14,7 +14,10 @@ import {
   PUBLIC_VENDOR_WHERE,
 } from '../../common/vendor-visibility';
 import { PaginationService } from '../../common/pagination/pagination.service';
-import { catalogProductWhere } from '../products/product-availability';
+import {
+  catalogProductWhere,
+  type ProductTimeFields,
+} from '../products/product-availability';
 import {
   defaultCategoriesCreateInput,
   PUBLIC_CATEGORIES_ARGS,
@@ -37,7 +40,13 @@ const VENDOR_PUBLIC_INCLUDE = {
 // requête (pas une const) car le filtre menus dépend de `now` — une const
 // figerait la date au chargement du module. Embarquer les menus ici évite une
 // 2e requête `GET /menus/active` côté client sur l'écran de détail.
-function vendorDetailInclude(now = new Date()) {
+//
+// ⚠️ `fields` est un paramètre, pas `this.prisma.product.fields` : cette
+// fonction vit **hors de la classe**, `this` y vaut `undefined`. Le lui faire
+// lire a mis `GET /vendors/:id` en 500 en production — l'écran de détail
+// vendeur du client, donc le catalogue tel que l'acheteur le voit.
+// `noImplicitThis` (activé depuis) rend l'erreur impossible à recompiler.
+function vendorDetailInclude(fields: ProductTimeFields, now = new Date()) {
   return {
     ...VENDOR_PUBLIC_INCLUDE,
     // Sections de menu du vendeur — actives uniquement, dans SON ordre.
@@ -53,10 +62,10 @@ function vendorDetailInclude(now = new Date()) {
       // (`deletedAt`) ou marqué indisponible restait servi ici, alors que
       // `GET /products` l'excluait depuis le fix M2. Le `AND` combine les deux
       // conditions sans que le `OR` du stock n'écrase celui de la fenêtre
-      // horaire porté par `availableProductWhere(this.prisma.product.fields)`.
+      // horaire porté par `availableProductWhere`.
       where: {
         OR: [{ stockRestant: null }, { stockRestant: { gt: 0 } }],
-        AND: [catalogProductWhere(this.prisma.product.fields, now)],
+        AND: [catalogProductWhere(fields, now)],
       },
       include: {
         category: true,
@@ -197,7 +206,7 @@ export class VendorsService {
   async findOne(id: string) {
     const vendor = await this.prisma.restaurant.findFirst({
       where: { id, ...PUBLIC_VENDOR_WHERE },
-      include: vendorDetailInclude(),
+      include: vendorDetailInclude(this.prisma.product.fields),
     });
     if (!vendor) throw new NotFoundException(`Vendeur "${id}" introuvable.`);
     return { data: vendor };
