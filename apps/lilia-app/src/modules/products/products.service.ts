@@ -36,6 +36,16 @@ export class ProductsService {
     return this.query.findAll(restaurantId, categoryId, page, limit, productType, vendorType);
   }
 
+  findAllForOwner(
+    firebaseUid: string,
+    restaurantId?: string,
+    categoryId?: string,
+    page = 1,
+    limit = 20,
+  ) {
+    return this.query.findAllForOwner(firebaseUid, restaurantId, categoryId, page, limit);
+  }
+
   findOne(id: string) {
     return this.query.findOne(id);
   }

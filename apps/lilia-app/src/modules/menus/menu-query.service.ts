@@ -30,7 +30,11 @@ export class MenuQueryService {
     return {
       products: {
         ...(scope === 'public'
-          ? { where: { product: availableProductWhere(now) } }
+          ? {
+              where: {
+                product: availableProductWhere(this.prisma.product.fields, now),
+              },
+            }
           : {}),
         include: {
           product: { include: { category: true, variants: true } },
@@ -163,7 +167,7 @@ export class MenuQueryService {
       where: { id, restaurant: PUBLIC_VENDOR_WHERE },
       include: {
         products: {
-          where: { product: availableProductWhere() },
+          where: { product: availableProductWhere(this.prisma.product.fields) },
           include: {
             product: {
               include: {

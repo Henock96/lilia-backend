@@ -3,6 +3,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, ProductType, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
+import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 import { catalogProductWhere } from './product-availability';
 
 /**
@@ -12,12 +13,25 @@ import { catalogProductWhere } from './product-availability';
  */
 @Injectable()
 export class ProductQueryService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly access: RestaurantAccessService,
+  ) {}
 
   /**
    * Récupère les produits du catalogue marketplace (route publique).
-   * Filtre toujours sur restaurant.isActive + adminApproved : on n'expose
-   * jamais le catalogue d'un vendeur en attente de validation ou suspendu.
+   *
+   * ⚠️ Ce `where` recopiait la frontière marketplace à la main — `isActive` et
+   * `adminApproved`, **sans** `onboardingStatus: ACTIVATED`. Le catalogue d'un
+   * vendeur encore en `DRAFT` était donc servi publiquement par
+   * `GET /products?restaurantId=…`, alors que le vendeur lui-même n'apparaissait
+   * ni dans `GET /vendors` ni dans `GET /restaurants`, et que `GET /products/:id`,
+   * `/popular`, `/search` et `/recommendations` — tous passés à
+   * `PUBLIC_VENDOR_WHERE` — le masquaient correctement. Une seule des cinq
+   * lectures publiques avait été oubliée, et c'était la principale.
+   *
+   * C'est exactement le risque que `PUBLIC_VENDOR_WHERE` existe pour supprimer :
+   * la règle ne se recopie pas, elle s'importe.
    */
   async findAll(
     restaurantId?: string,
@@ -29,8 +43,7 @@ export class ProductQueryService {
   ) {
     const where: Prisma.ProductWhereInput = {
       restaurant: {
-        isActive: true,
-        adminApproved: true,
+        ...PUBLIC_VENDOR_WHERE,
         ...(vendorType && { vendorType }),
       },
       ...(restaurantId && { restaurantId }),
@@ -39,7 +52,90 @@ export class ProductQueryService {
       // Fixes M1 + M2 : produits retirés, marqués indisponibles ou hors de
       // leur fenêtre horaire ne sont plus servis au catalogue. Le filtre passe
       // par `AND` pour ne pas écraser un éventuel `OR` de la requête.
-      AND: [catalogProductWhere()],
+      AND: [catalogProductWhere(this.prisma.product.fields)],
+    };
+
+    const [products, total] = await Promise.all([
+      this.prisma.product.findMany({
+        where,
+        include: {
+          category: true,
+          variants: true,
+          restaurant: {
+            select: {
+              id: true,
+              nom: true,
+              vendorType: true,
+            },
+          },
+          images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.product.count({ where }),
+    ]);
+
+    return {
+      data: products,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * Catalogue d'un vendeur, vue **back-office** — l'inverse exact de `findAll`.
+   *
+   * Les deux répondent à deux questions différentes, et c'est pour les avoir
+   * confondues que le back-office était aveugle :
+   *
+   * | | `findAll` (public) | `findAllForOwner` (back-office) |
+   * |---|---|---|
+   * | question | « qu'y a-t-il à acheter ? » | « qu'ai-je à gérer ? » |
+   * | vendeur suspendu / `DRAFT` | masqué | **visible** |
+   * | produit `isAvailable = false` | masqué | **visible** |
+   * | produit hors fenêtre horaire | masqué | **visible** |
+   * | produit retiré (`deletedAt`) | masqué | masqué |
+   *
+   * Servir la vue publique au vendeur produisait des impasses : un produit
+   * marqué indisponible disparaissait de l'écran d'où on le remet en vente, et
+   * une viennoiserie « 06:00 → 11:00 » devenait immodifiable l'après-midi. Un
+   * vendeur suspendu, lui, ne voyait plus rien du tout — au moment précis où il
+   * a besoin de corriger sa boutique.
+   *
+   * C'est la symétrie déjà posée pour les sections de menu
+   * (`CategoriesService.findAllForOwner` / `findPublicByRestaurant`).
+   */
+  async findAllForOwner(
+    firebaseUid: string,
+    restaurantId?: string,
+    categoryId?: string,
+    page = 1,
+    limit = 20,
+  ) {
+    // Même arbitre que les écritures : le vendeur reste chez lui, seul un ADMIN
+    // peut désigner une autre boutique. Une seule règle de propriété pour lire
+    // et pour écrire — deux implémentations divergeraient.
+    const restaurant = await this.access.resolveTargetRestaurant(
+      firebaseUid,
+      restaurantId,
+    );
+
+    const where: Prisma.ProductWhereInput = {
+      restaurantId: restaurant.id,
+      // Un produit retiré du catalogue n'est plus gérable : il ne survit que
+      // pour que les commandes passées restent lisibles.
+      deletedAt: null,
+      // Même exclusion que le catalogue public : le produit fantôme d'un menu
+      // `PLAT_SPECIAL` est le corps d'un menu, pas un article. Le laisser
+      // apparaître ici le rendrait modifiable indépendamment du menu qu'il sert.
+      menus: { none: { menu: { type: 'PLAT_SPECIAL' } } },
+      ...(categoryId && { categoryId }),
     };
 
     const [products, total] = await Promise.all([
@@ -143,7 +239,7 @@ export class ProductQueryService {
       where: {
         id: { in: productIds },
         restaurant: PUBLIC_VENDOR_WHERE,
-        AND: [catalogProductWhere()],
+        AND: [catalogProductWhere(this.prisma.product.fields)],
       },
       include: {
         category: true,
@@ -202,7 +298,7 @@ export class ProductQueryService {
             { category: { nom: { contains: searchTerm, mode: 'insensitive' } } },
           ],
           restaurant: PUBLIC_VENDOR_WHERE,
-          AND: [catalogProductWhere()],
+          AND: [catalogProductWhere(this.prisma.product.fields)],
         },
         include: {
           category: true,
@@ -257,7 +353,7 @@ export class ProductQueryService {
       where: {
         id: { notIn: excludeIds },
         restaurant: PUBLIC_VENDOR_WHERE,
-        AND: [catalogProductWhere()],
+        AND: [catalogProductWhere(this.prisma.product.fields)],
         OR: [
           ...(categoryIds.length > 0 ? [{ categoryId: { in: categoryIds } }] : []),
           { restaurantId: { in: restaurantIds } },

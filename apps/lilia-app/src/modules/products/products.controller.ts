@@ -101,6 +101,49 @@ export class ProductsController {
     return this.productsService.getRecommendations(fbUser.uid, query.limit);
   }
 
+  // ─── Back-office (avant :id, sinon « manage » passerait pour un id) ────────
+
+  /**
+   * GET /products/manage
+   *
+   * Catalogue **du gestionnaire** : tous les produits d'un vendeur, y compris
+   * ceux qu'aucun client ne voit (marqués indisponibles, hors de leur fenêtre
+   * horaire, ou appartenant à un vendeur suspendu ou encore en `DRAFT`).
+   *
+   * Les back-offices lisaient `GET /products`, c'est-à-dire le **catalogue
+   * client**. Un vendeur suspendu perdait donc l'écran depuis lequel il aurait
+   * pu se remettre en conformité, et un produit rendu indisponible ne pouvait
+   * plus jamais être remis en vente : il avait disparu de la seule liste qui
+   * porte le bouton.
+   *
+   * `restaurantId` n'est lu que pour un ADMIN — un RESTAURATEUR reste chez lui.
+   */
+  @Get('manage')
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @ApiOperation({
+    summary: 'Mon catalogue complet (ADMIN : celui du vendeur ciblé)',
+  })
+  @ApiQuery({
+    name: 'restaurantId',
+    required: false,
+    description: 'ADMIN uniquement',
+  })
+  @ApiQuery({ name: 'categoryId', required: false })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  findAllForOwner(
+    @FirebaseUser() fbUser: DecodedIdToken,
+    @Query() query: ProductFilterQueryDto,
+  ) {
+    return this.productsService.findAllForOwner(
+      fbUser.uid,
+      query.restaurantId,
+      query.categoryId,
+      query.page,
+      query.limit,
+    );
+  }
+
   /**
    * GET /products/:id
    * Récupère un produit par son ID

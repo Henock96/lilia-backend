@@ -248,7 +248,7 @@ export class CategoriesService {
       where: {
         restaurantId,
         isActive: true,
-        products: { some: catalogProductWhere() },
+        products: { some: catalogProductWhere(this.prisma.product.fields) },
       },
       orderBy: [...OWNER_CATEGORIES_ORDER_BY],
     });

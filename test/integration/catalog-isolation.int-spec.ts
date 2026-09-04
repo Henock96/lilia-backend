@@ -225,7 +225,7 @@ describeIfDb('Catalogue — isolation entre vendeurs (PostgreSQL réel)', () => 
         where: {
           restaurantId: A.resto,
           isActive: true,
-          products: { some: availableProductWhere() },
+          products: { some: availableProductWhere(prisma.product.fields) },
         },
       });
       expect(vuePublique.map((c) => c.id)).not.toContain(vide!.id);
@@ -305,7 +305,7 @@ describeIfDb('Catalogue — isolation entre vendeurs (PostgreSQL réel)', () => 
       const produits = await prisma.product.findMany({
         where: {
           restaurant: PUBLIC_VENDOR_WHERE,
-          AND: [availableProductWhere()],
+          AND: [availableProductWhere(prisma.product.fields)],
         },
       });
       expect(produits.map((p) => p.restaurantId)).not.toContain(DRAFT.resto);
@@ -354,7 +354,7 @@ describeIfDb('Catalogue — isolation entre vendeurs (PostgreSQL réel)', () => 
         prisma.product.findMany({
           where: {
             restaurant: PUBLIC_VENDOR_WHERE,
-            AND: [availableProductWhere()],
+            AND: [availableProductWhere(prisma.product.fields)],
           },
         });
       expect((await visibles()).map((x) => x.id)).toContain(p.id);
@@ -372,7 +372,7 @@ describeIfDb('Catalogue — isolation entre vendeurs (PostgreSQL réel)', () => 
         where: {
           restaurantId: B.resto,
           isActive: true,
-          products: { some: availableProductWhere() },
+          products: { some: availableProductWhere(prisma.product.fields) },
         },
       });
       expect(vuePublique.map((c) => c.id)).not.toContain(cat.id);
@@ -403,7 +403,7 @@ describeIfDb('Catalogue — isolation entre vendeurs (PostgreSQL réel)', () => 
         where: {
           id: p.id,
           restaurant: PUBLIC_VENDOR_WHERE,
-          AND: [availableProductWhere()],
+          AND: [availableProductWhere(prisma.product.fields)],
         },
       });
       expect(produit).not.toBeNull();
@@ -519,7 +519,10 @@ describeIfDb('MENU-01 — produit fantôme d’un PLAT_SPECIAL', () => {
 
   it('le fantôme est absent du catalogue, le produit normal y reste', async () => {
     const catalogue = await prisma.product.findMany({
-      where: { restaurant: PUBLIC_VENDOR_WHERE, AND: [catalogProductWhere()] },
+      where: {
+        restaurant: PUBLIC_VENDOR_WHERE,
+        AND: [catalogProductWhere(prisma.product.fields)],
+      },
     });
     const ids = catalogue.map((p) => p.id);
     expect(ids).toContain(normalId);
@@ -532,7 +535,11 @@ describeIfDb('MENU-01 — produit fantôme d’un PLAT_SPECIAL', () => {
     // PLAT_SPECIAL. Les deux filtres doivent rester distincts.
     const menu = await prisma.menuDuJour.findFirst({
       where: { restaurantId: V.resto },
-      include: { products: { where: { product: availableProductWhere() } } },
+      include: {
+        products: {
+          where: { product: availableProductWhere(prisma.product.fields) },
+        },
+      },
     });
     expect(menu?.products).toHaveLength(1);
     expect(menu?.products[0].productId).toBe(phantomId);
