@@ -83,7 +83,7 @@ export class RestaurantQueryService {
     // ni sur `isAvailable`. Le soft delete (fix M2) n'avait donc atteint que
     // `GET /products` — pas les deux routes que les clients ouvrent réellement,
     // où un produit retiré du catalogue restait affiché et compté.
-    const visibleProducts = catalogProductWhere();
+    const visibleProducts = catalogProductWhere(this.prisma.product.fields);
 
     const restaurant = await this.prisma.restaurant.findFirst({
       where: { id, ...PUBLIC_VENDOR_WHERE },

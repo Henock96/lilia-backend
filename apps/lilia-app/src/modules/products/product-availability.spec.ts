@@ -4,6 +4,7 @@ import {
   localTimeHHmm,
   unavailabilityReason,
 } from './product-availability';
+import { FAKE_PRODUCT_TIME_FIELDS } from './product-availability.test-fields';
 
 /**
  * Disponibilité produit (fixes M1 et M2 — audit du 28/08/2026).
@@ -118,7 +119,7 @@ describe('product-availability', () => {
   });
 
   it('le filtre Prisma exclut les produits retirés et indisponibles', () => {
-    const where = availableProductWhere(at('08:00'));
+    const where = availableProductWhere(FAKE_PRODUCT_TIME_FIELDS, at('08:00'));
     expect(where.deletedAt).toBeNull();
     expect(where.isAvailable).toBe(true);
     // Une branche par forme de fenêtre, dont le cas « à cheval sur minuit ».

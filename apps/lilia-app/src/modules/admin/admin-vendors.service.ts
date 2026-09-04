@@ -35,8 +35,7 @@ export class AdminVendorsService {
       ...(dto.isActive !== undefined && { isActive: dto.isActive }),
     };
 
-    const page = dto.page ?? 1;
-    const limit = dto.limit ?? 20;
+    const { page, limit } = dto;
 
     const [vendors, total] = await Promise.all([
       this.prisma.restaurant.findMany({

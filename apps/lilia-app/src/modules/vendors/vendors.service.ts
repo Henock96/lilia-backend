@@ -53,10 +53,10 @@ function vendorDetailInclude(now = new Date()) {
       // (`deletedAt`) ou marqué indisponible restait servi ici, alors que
       // `GET /products` l'excluait depuis le fix M2. Le `AND` combine les deux
       // conditions sans que le `OR` du stock n'écrase celui de la fenêtre
-      // horaire porté par `availableProductWhere()`.
+      // horaire porté par `availableProductWhere(this.prisma.product.fields)`.
       where: {
         OR: [{ stockRestant: null }, { stockRestant: { gt: 0 } }],
-        AND: [catalogProductWhere(now)],
+        AND: [catalogProductWhere(this.prisma.product.fields, now)],
       },
       include: {
         category: true,
@@ -170,8 +170,7 @@ export class VendorsService {
       ...(dto.isFeatured !== undefined && { isFeatured: dto.isFeatured }),
     };
 
-    const page = dto.page ?? 1;
-    const limit = dto.limit ?? 20;
+    const { page, limit } = dto;
 
     const [vendors, total] = await this.prisma.$transaction([
       this.prisma.restaurant.findMany({

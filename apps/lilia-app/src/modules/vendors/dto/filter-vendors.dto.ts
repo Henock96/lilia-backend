@@ -1,11 +1,17 @@
-/* eslint-disable prettier/prettier */
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
+import { IsBoolean, IsEnum, IsOptional } from 'class-validator';
 import { VendorType } from '@prisma/client';
+
+import { PaginationQueryDto } from '../../../common/pagination/pagination-query.dto';
 
 // Note : filtre `quartier` reporté au Sprint C — il dépend de la logique
 // deliveryZones (ZONE_BASED) vs FIXED qui mérite sa propre décision produit.
-export class FilterVendorsDto {
+//
+// `page` / `limit` viennent de `PaginationQueryDto` : ils y étaient redéclarés
+// avec un plafond de 50, divergent de la borne commune. Cf. le commentaire de
+// `AdminVendorFilterDto` — c'est ce genre d'écart qui rend un 400 inexplicable
+// côté client.
+export class FilterVendorsDto extends PaginationQueryDto {
   @IsEnum(VendorType)
   @IsOptional()
   vendorType?: VendorType;
@@ -27,17 +33,4 @@ export class FilterVendorsDto {
   @IsOptional()
   @Transform(({ value }) => value === 'true' || value === true)
   isFeatured?: boolean;
-
-  @IsInt()
-  @IsOptional()
-  @Min(1)
-  @Transform(({ value }) => parseInt(value, 10))
-  page?: number = 1;
-
-  @IsInt()
-  @IsOptional()
-  @Min(1)
-  @Max(50)
-  @Transform(({ value }) => parseInt(value, 10))
-  limit?: number = 20;
 }

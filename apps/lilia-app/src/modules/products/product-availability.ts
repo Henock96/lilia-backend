@@ -51,17 +51,61 @@ export function isWithinAvailabilityWindow(
 }
 
 /**
+ * Références de colonnes du modèle `Product`, telles que Prisma les expose sur
+ * son délégué (`prisma.product.fields`).
+ *
+ * Elles sont **exigées** — et non optionnelles avec un repli — parce que sans
+ * elles la fenêtre horaire ne peut pas être exprimée correctement en SQL (voir
+ * plus bas). Un paramètre facultatif aurait laissé chaque appelant retomber en
+ * silence sur la version fausse ; le rendre obligatoire fait énumérer les huit
+ * sites d'appel par le compilateur.
+ */
+export type ProductTimeFields = Pick<
+  Prisma.ProductFieldRefs,
+  'availableFrom' | 'availableUntil'
+>;
+
+/**
  * Filtre Prisma du catalogue public : produits ni supprimés ni marqués
  * indisponibles, et dans leur fenêtre horaire.
  *
- * La fenêtre est exprimée en SQL grâce au format "HH:mm" à largeur fixe, qui
- * se compare lexicographiquement comme il se compare chronologiquement. Le cas
- * « à cheval sur minuit » est traité par la branche `OR`.
+ * La fenêtre est exprimée en SQL grâce au format "HH:mm" à largeur fixe, qui se
+ * compare lexicographiquement comme il se compare chronologiquement.
+ *
+ * ### Pourquoi une comparaison colonne-à-colonne est nécessaire
+ *
+ * Une fenêtre est « à cheval sur minuit » quand `availableUntil < availableFrom`
+ * (« 18:00 → 02:00 »). Cette condition porte sur **deux colonnes**, pas sur
+ * l'heure courante — et la version précédente tentait de s'en passer :
+ *
+ * ```
+ * { availableFrom: { lte: current }, availableUntil: { lt: current } }  // ✗
+ * ```
+ *
+ * Cette branche voulait dire « fenêtre de nuit, on est après l'ouverture » ;
+ * elle dit en réalité « la fenêtre est ouverte et déjà terminée », ce qui est
+ * vrai de **toute fenêtre normale échue**. Une viennoiserie « 06:00 → 07:00 »
+ * restait donc au catalogue tout le reste de la journée. La branche symétrique
+ * (`from > current AND until >= current`) rendait de la même façon commandable
+ * une fenêtre « 20:00 → 22:00 » à 10 h du matin — c'est-à-dire **avant** son
+ * ouverture.
+ *
+ * Le prédicat en mémoire `isWithinAvailabilityWindow`, lui, était juste : il
+ * compare `from` et `until` entre eux. Les deux implémentations d'une même
+ * règle divergeaient sur 17 des 49 combinaisons heure × fenêtre, et c'est le
+ * SQL — celui qui décide de ce que voit le client — qui avait tort.
+ * `product-availability-parity.spec.ts` les compare désormais case par case.
  */
 export function availableProductWhere(
+  fields: ProductTimeFields,
   now: Date = new Date(),
 ): Prisma.ProductWhereInput {
   const current = localTimeHHmm(now);
+
+  /** La fenêtre traverse minuit — seule comparaison entre deux colonnes. */
+  const crossesMidnight: Prisma.ProductWhereInput = {
+    availableUntil: { lt: fields.availableFrom },
+  };
 
   return {
     deletedAt: null,
@@ -69,24 +113,16 @@ export function availableProductWhere(
     OR: [
       // Aucune fenêtre déclarée → toujours disponible.
       { availableFrom: null, availableUntil: null },
-      // Fenêtre classique (from <= until) : on est dedans.
-      {
-        availableFrom: { lte: current },
-        availableUntil: { gte: current },
-      },
       // Bornes partielles.
       { availableFrom: { lte: current }, availableUntil: null },
       { availableFrom: null, availableUntil: { gte: current } },
-      // Fenêtre à cheval sur minuit : from > until, on est après from…
-      {
-        availableFrom: { lte: current },
-        availableUntil: { lt: current },
-      },
-      // …ou avant until.
-      {
-        availableFrom: { gt: current },
-        availableUntil: { gte: current },
-      },
+      // Fenêtre classique : on est entre les deux bornes. `from <= current` et
+      // `current <= until` impliquent `from <= until` — inutile de le vérifier.
+      { availableFrom: { lte: current }, availableUntil: { gte: current } },
+      // Fenêtre de nuit, première moitié : après l'ouverture, avant minuit.
+      { AND: [crossesMidnight, { availableFrom: { lte: current } }] },
+      // Fenêtre de nuit, seconde moitié : après minuit, avant la fermeture.
+      { AND: [crossesMidnight, { availableUntil: { gte: current } }] },
     ],
   };
 }
@@ -111,10 +147,11 @@ export function availableProductWhere(
  * qui se désynchroniserait.
  */
 export function catalogProductWhere(
+  fields: ProductTimeFields,
   now: Date = new Date(),
 ): Prisma.ProductWhereInput {
   return {
-    ...availableProductWhere(now),
+    ...availableProductWhere(fields, now),
     menus: { none: { menu: { type: 'PLAT_SPECIAL' } } },
   };
 }
