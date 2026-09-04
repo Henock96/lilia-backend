@@ -1,9 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { Prisma, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
@@ -187,25 +182,5 @@ export class AdminRestaurantsService {
       orderBy: { createdAt: 'desc' },
     });
     return { data: restaurants, total: restaurants.length };
-  }
-
-  async toggleRestaurantActive(restaurantId: string, isActive: boolean) {
-    const restaurant = await this.prisma.restaurant.findUnique({
-      where: { id: restaurantId },
-    });
-    if (!restaurant) throw new NotFoundException('Restaurant non trouvé');
-
-    const updated = await this.prisma.restaurant.update({
-      where: { id: restaurantId },
-      data: { isActive, isOpen: isActive ? restaurant.isOpen : false },
-    });
-
-    this.logger.warn(
-      `Restaurant ${restaurantId} ${isActive ? 'activé' : 'désactivé'} par admin`,
-    );
-    return {
-      data: updated,
-      message: isActive ? 'Restaurant activé' : 'Restaurant désactivé',
-    };
   }
 }

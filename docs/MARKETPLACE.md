@@ -34,7 +34,7 @@ Trois couches filtrent les vendeurs non approuvés :
 
 Suspension réversible : `PATCH /admin/vendors/:id/suspend` body `{ reason }`
 met `isActive = false` sans toucher `adminApproved`. Réversible via
-`toggleRestaurantActive(id, true)`.
+`PATCH /admin/vendors/:id/unsuspend`.
 
 ## Matrice de compatibilité produit
 

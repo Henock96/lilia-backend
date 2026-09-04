@@ -129,7 +129,18 @@ describeIfDb('Onboarding vendeur — du DRAFT à la commande client', () => {
       .map((c) => c.key)
       .sort();
 
-    expect(missing).toEqual(['catalog', 'gps', 'hours', 'location', 'logo']);
+    // `payout` est bloquant depuis septembre 2026 : un vendeur publié sans
+    // compte de reversement encaisse des commandes sans qu'on puisse jamais
+    // lui verser sa part. C'est l'état dans lequel les six vendeurs de
+    // production ont vécu — onze commandes encaissées, zéro reversement.
+    expect(missing).toEqual([
+      'catalog',
+      'gps',
+      'hours',
+      'location',
+      'logo',
+      'payout',
+    ]);
   });
 
   // ─── Étapes 3 à 8 — configuration ──────────────────────────────────────────
@@ -196,6 +207,42 @@ describeIfDb('Onboarding vendeur — du DRAFT à la commande client', () => {
 
     const report = await readiness.getReport(VENDOR_ID);
     expect(report!.checks.find((c) => c.key === 'catalog')!.status).toBe('OK');
+    // Le catalogue ne suffit plus : il reste le compte de reversement.
+    expect(report!.isReady).toBe(false);
+    expect(report!.blockingIssues.length).toBe(1);
+  });
+
+  it("7 bis. un vendeur sans compte de reversement N'EST PAS prêt", async () => {
+    const report = await readiness.getReport(VENDOR_ID);
+    const payout = report!.checks.find((c) => c.key === 'payout')!;
+    expect(payout.blocking).toBe(true);
+    expect(payout.status).toBe('MISSING');
+    expect(report!.isReady).toBe(false);
+  });
+
+  it('7 ter. un numéro mal formé est refusé comme une absence', async () => {
+    // Se tromper de format ne produit aucune erreur au moment du virement :
+    // l'argent part vers un numéro inexistant, ou vers quelqu'un d'autre.
+    await prisma.restaurant.update({
+      where: { id: VENDOR_ID },
+      data: { payoutPhoneNumber: '061234567', payoutProvider: 'MTN_MOMO' },
+    });
+
+    const report = await readiness.getReport(VENDOR_ID);
+    expect(report!.checks.find((c) => c.key === 'payout')!.status).toBe(
+      'INVALID',
+    );
+    expect(report!.isReady).toBe(false);
+  });
+
+  it('7 quater. le compte de reversement renseigné rend la boutique prête', async () => {
+    await prisma.restaurant.update({
+      where: { id: VENDOR_ID },
+      data: { payoutPhoneNumber: '242060000001', payoutProvider: 'MTN_MOMO' },
+    });
+
+    const report = await readiness.getReport(VENDOR_ID);
+    expect(report!.checks.find((c) => c.key === 'payout')!.status).toBe('OK');
     expect(report!.isReady).toBe(true);
     expect(report!.progress).toBe(100);
   });

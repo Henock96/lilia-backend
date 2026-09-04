@@ -9,6 +9,26 @@ import type { TDocumentDefinitions } from 'pdfmake/interfaces';
 import { PrismaService } from '../../prisma/prisma.service';
 import { renderPdf } from './order-receipt-pdf.util';
 
+/**
+ * Libellé des frais de service, taux compris.
+ *
+ * Le taux annoncé était **écrit en dur à 8 %** à côté d'un montant calculé au
+ * taux réel de la plateforme (15 % en production) : le reçu contredisait
+ * lui-même sa propre ligne. C'est une pièce comptable, remise au client.
+ *
+ * Le taux est **dérivé de la commande**, jamais relu dans `PlatformSettings` :
+ * un reçu réédité six mois plus tard doit porter le taux appliqué ce jour-là,
+ * pas celui d'aujourd'hui.
+ */
+export function serviceFeeLabel(subTotal: number, serviceFee: number): string {
+  if (!subTotal || subTotal <= 0 || serviceFee <= 0) return 'Frais service';
+  const percent = (serviceFee / subTotal) * 100;
+  // Une décimale au plus : `Math.round` sur le montant rend rarement un taux
+  // entier exact, et « 14,97 % » sur un reçu n'apprend rien de plus que « 15 % ».
+  const shown = Math.round(percent * 10) / 10;
+  return `Frais service (${String(shown).replace('.', ',')}%)`;
+}
+
 @Injectable()
 export class OrderReceiptService {
   constructor(private readonly prisma: PrismaService) {}
@@ -90,7 +110,10 @@ export class OrderReceiptService {
     const totals: any[] = [
       row('Sous-total', this.fmt(order.subTotal)),
       row('Livraison', this.fmt(order.deliveryFee)),
-      row('Frais service (8%)', this.fmt(order.serviceFee)),
+      row(
+        serviceFeeLabel(order.subTotal, order.serviceFee),
+        this.fmt(order.serviceFee),
+      ),
     ];
     if (order.discountAmount > 0) {
       totals.push(row('Remise', `-${this.fmt(order.discountAmount)}`));

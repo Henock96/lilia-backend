@@ -122,6 +122,41 @@ export class PaymentEventService {
   }
 
   /**
+   * Comptage des signaux par source, sur une fenêtre glissante.
+   *
+   * **Pourquoi cette lecture existe.** Un webhook mal configuré est silencieux
+   * par construction : les paiements continuent d'être confirmés par le sondage
+   * de l'application cliente et par le cron de réconciliation, donc rien ne
+   * casse visiblement — jusqu'au client qui ferme son application juste après
+   * avoir payé. L'audit du 4 septembre 2026 a mesuré
+   * `INITIATION 20 · CLIENT_POLL 84 · RECONCILIATION 8 · WEBHOOK 0` : la
+   * configuration du callback n'avait jamais été faite, et **aucune interface
+   * ne pouvait le dire**. Il fallait une requête SQL sur la production pour
+   * l'apprendre.
+   */
+  async countBySource(since: Date): Promise<Record<string, number>> {
+    const rows = await this.prisma.paymentEvent.groupBy({
+      by: ['source'],
+      where: { receivedAt: { gte: since } },
+      _count: { _all: true },
+    });
+    const out: Record<string, number> = {};
+    for (const source of Object.values(PaymentEventSource)) out[source] = 0;
+    for (const row of rows) out[row.source] = row._count._all;
+    return out;
+  }
+
+  /** Date du dernier callback prestataire reçu, `null` si jamais aucun. */
+  async lastWebhookAt(): Promise<Date | null> {
+    const last = await this.prisma.paymentEvent.findFirst({
+      where: { source: PaymentEventSource.WEBHOOK },
+      orderBy: { receivedAt: 'desc' },
+      select: { receivedAt: true },
+    });
+    return last?.receivedAt ?? null;
+  }
+
+  /**
    * Retire du payload ce qui n'a pas à être conservé.
    *
    * Le corps d'un callback ne porte ni jeton ni PIN — un prestataire mobile

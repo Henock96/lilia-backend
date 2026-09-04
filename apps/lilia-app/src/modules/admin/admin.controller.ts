@@ -33,7 +33,6 @@ import {
   OptionalLimitQueryDto,
   PaginationQueryDto,
 } from '../../common/pagination/pagination-query.dto';
-import { ToggleActiveDto } from './dto/toggle-active.dto';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { LoyaltyReconciliationService } from '../loyalty/loyalty-reconciliation.service';
 import { AdminAuditAction } from '@prisma/client';
@@ -79,28 +78,29 @@ export class AdminController {
     return this.adminService.createRestaurantWithOwner(dto);
   }
 
-  @Patch('restaurants/:id/toggle-active')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Activer / désactiver un restaurant' })
-  @ApiParam({ name: 'id', description: 'ID du restaurant' })
-  async toggleRestaurantActive(
-    @Param('id') id: string,
-    @Body() dto: ToggleActiveDto,
-    @CurrentUser() admin: User,
-  ) {
-    const result = await this.adminService.toggleRestaurantActive(
-      id,
-      dto.isActive,
-    );
-    await this.audit.record({
-      actorId: admin.id,
-      action: AdminAuditAction.VENDOR_ACTIVE_TOGGLED,
-      targetType: 'Restaurant',
-      targetId: id,
-      metadata: { isActive: dto.isActive },
-    });
-    return result;
-  }
+  /*
+   * ⚠️ `PATCH /admin/restaurants/:id/toggle-active` a été **retiré**
+   * (septembre 2026, Phase 3).
+   *
+   * C'était une seconde porte sur `Restaurant.isActive`, strictement inférieure
+   * à la paire `suspend` / `unsuspend` qui existe juste en dessous :
+   *
+   *  · elle n'exigeait **aucun motif** — une suspension perdait sa raison ;
+   *  · elle n'émettait pas `vendor.suspended`, donc le vendeur découvrait sa
+   *    suspension en constatant l'absence de commandes ;
+   *  · elle acceptait de « suspendre » un vendeur déjà suspendu.
+   *
+   * Aucun des cinq dépôts ne l'appelait — vérifié par inventaire des 251 routes
+   * confrontées aux appels des cinq clients. Deux écritures concurrentes sur la
+   * même colonne, dont une sans traçabilité, sont une source d'erreur
+   * permanente : c'est la raison du retrait, pas le nettoyage.
+   *
+   * **Décision produit associée** : un vendeur ne se supprime pas. `Order` et
+   * `payments` sont des pièces comptables ; l'effacer fausserait rétroactivement
+   * le chiffre d'affaires. La sortie d'un vendeur est `suspend`, réversible par
+   * `unsuspend`. Pour un vendeur de test jamais passé en production, l'outil est
+   * `scripts/db/delete-vendor.js`, hors application et gardé.
+   */
 
   // ─── VENDORS (marketplace multi-vendeurs) ──────────────────────────────────
   // Vue admin complète : inclut les vendeurs non approuvés et désactivés

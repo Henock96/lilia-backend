@@ -2,6 +2,10 @@ import { Module } from '@nestjs/common';
 
 import { AdminAuditModule } from '../admin-audit/admin-audit.module';
 import { PaymentCoreModule } from './payment-core.module';
+// Variante **sans controllers** : importer `PlatformSettingsModule` monterait
+// `PATCH /admin/platform-settings` une seconde fois. Voir le commentaire de
+// `platform-settings-core.module.ts`.
+import { PlatformSettingsCoreModule } from '../platform-settings/platform-settings-core.module';
 
 import { PaymentController } from './controllers/payment.controller';
 import { AdminPayoutController } from './controllers/admin-payout.controller';
@@ -20,7 +24,7 @@ import { PawaPayWebhookController } from './controllers/pawapay-webhook.controll
  * explicite.
  */
 @Module({
-  imports: [PaymentCoreModule, AdminAuditModule],
+  imports: [PaymentCoreModule, AdminAuditModule, PlatformSettingsCoreModule],
   controllers: [
     PaymentController,
     AdminPayoutController,

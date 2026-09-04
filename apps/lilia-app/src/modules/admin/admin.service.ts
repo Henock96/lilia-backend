@@ -66,12 +66,6 @@ export class AdminService {
     return this.adminRestaurantsService.getAllRestaurants();
   }
 
-  async toggleRestaurantActive(restaurantId: string, isActive: boolean) {
-    return this.adminRestaurantsService.toggleRestaurantActive(
-      restaurantId,
-      isActive,
-    );
-  }
   // ─── GESTION UTILISATEURS ──────────────────────────────────────────────────
 
   /**
@@ -304,7 +298,7 @@ export class AdminService {
 
   /**
    * Suspend un vendeur : désactive (isActive=false) + ferme (isOpen=false).
-   * Réversible via toggleRestaurantActive(id, true).
+   * Réversible via `activateVendor` (`PATCH /admin/vendors/:id/unsuspend`).
    *
    * On NE touche PAS à adminApproved — un vendeur peut être suspendu
    * temporairement sans repasser par toute la validation initiale.

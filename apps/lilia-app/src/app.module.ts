@@ -73,6 +73,27 @@ import { envValidationSchema } from './config/env.validation';
     SentryModule.forRoot(),
     ConfigModule.forRoot({
       isGlobal: true,
+      /**
+       * Cascade d'environnements — **la première entrée gagne**.
+       *
+       * Le `.env` de ce dépôt porte les identifiants de production (base Neon,
+       * Redis Upstash) : c'est commode pour inspecter la vraie plateforme, et
+       * c'est exactement ce qui faisait qu'un `npm run start:dev` lancé
+       * distraitement écrivait dans la base des vrais clients.
+       *
+       * `.env.development` (versionné, **sans aucun secret**) ne redéfinit que
+       * ce qui doit rester local — base et Redis. Tout le reste continue de
+       * venir de `.env`, ce qui évite de dupliquer douze clés d'API.
+       *
+       * `.env.local` reste au-dessus pour les surcharges personnelles non
+       * versionnées. Sur Render, aucun de ces fichiers n'existe : les variables
+       * viennent du service, et `process.env` prime de toute façon.
+       */
+      envFilePath: [
+        '.env.local',
+        `.env.${process.env.NODE_ENV ?? 'development'}`,
+        '.env',
+      ],
       validationSchema: envValidationSchema,
       validationOptions: { abortEarly: false }, // remonte TOUTES les erreurs d'env d'un coup
     }),

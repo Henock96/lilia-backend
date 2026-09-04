@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { DeliveryPriceMode, OnboardingStatus, Role } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { checkCongoCoordinates } from '../../common/geo/congo-geo';
+import { isValidCongoMsisdn } from '../payments/providers/pawapay/pawapay.mapper';
 
 /**
  * Bornes géographiques de la République du Congo.
@@ -84,6 +85,7 @@ export class VendorReadinessService {
       this.checkGps(vendor),
       this.checkHours(vendor),
       this.checkDelivery(vendor),
+      this.checkPayoutAccount(vendor),
       this.checkCommerce(vendor),
       this.checkCatalog(sellableProducts),
     ];
@@ -287,6 +289,58 @@ export class VendorReadinessService {
         ...base,
         status: 'INVALID',
         detail: 'Le délai minimum dépasse le délai maximum.',
+      };
+    }
+    return { ...base, status: 'OK' };
+  }
+
+  /**
+   * Compte de reversement — **bloquant**.
+   *
+   * La checklist couvrait tout ce qu'il faut pour *vendre* et rien de ce qu'il
+   * faut pour *être payé*. Conséquence mesurée le 4 septembre 2026 : les six
+   * vendeurs de production ont `payoutPhoneNumber = NULL`, onze commandes
+   * encaissées, **zéro reversement possible**. Aucun code n'était en cause —
+   * personne n'avait jamais été invité à remplir cette case.
+   *
+   * Bloquant, donc, parce qu'un vendeur publié encaisse de l'argent dès la
+   * première commande : le laisser passer, c'est créer une dette dont on
+   * découvre l'existence quand le vendeur la réclame. Le geste manquant coûte
+   * un appel (`PATCH /admin/vendors/:id/payout-account`) avant l'activation, et
+   * une négociation après.
+   *
+   * ⚠️ **Ne rétrograde aucun vendeur déjà `ACTIVATED`** : `syncOnboardingStatus`
+   * ne redescend jamais depuis `ACTIVATED`. Les trois boutiques publiques
+   * restent publiques ; seule une *prochaine* activation est retenue.
+   */
+  private checkPayoutAccount(v: {
+    payoutPhoneNumber: string | null;
+    payoutProvider: string | null;
+  }): ReadinessCheck {
+    const base = {
+      key: 'payout',
+      label: 'Compte de reversement',
+      blocking: true,
+    };
+    if (!v.payoutPhoneNumber || !v.payoutProvider) {
+      return {
+        ...base,
+        status: 'MISSING',
+        detail:
+          'Aucun compte Mobile Money de reversement : ce vendeur encaisserait ' +
+          'des commandes sans qu’on puisse jamais lui verser sa part.',
+      };
+    }
+    if (!isValidCongoMsisdn(v.payoutPhoneNumber)) {
+      // Un numéro mal formé ne produit aucune erreur visible au moment du
+      // virement : la demande part vers un numéro inexistant — ou vers
+      // quelqu'un d'autre.
+      return {
+        ...base,
+        status: 'INVALID',
+        detail:
+          `Le numéro de reversement enregistré n’est pas un mobile congolais ` +
+          `valide (attendu : 242 + 0 + 4/5/6 + 7 chiffres).`,
       };
     }
     return { ...base, status: 'OK' };

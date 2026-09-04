@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
 
 import { AdminService } from './admin.service';
 import { AdminDeliverersService } from './admin-deliverers.service';
@@ -144,26 +144,8 @@ describe('AdminService (caractérisation — dashboard/restaurants)', () => {
     });
   });
 
-  describe('toggleRestaurantActive', () => {
-    it('404 si restaurant introuvable', async () => {
-      prisma.restaurant.findUnique.mockResolvedValue(null);
-      await expect(
-        service.toggleRestaurantActive('r1', true),
-      ).rejects.toBeInstanceOf(NotFoundException);
-    });
-
-    it('désactive : isActive=false + isOpen=false', async () => {
-      prisma.restaurant.findUnique.mockResolvedValue({
-        id: 'r1',
-        isOpen: true,
-      });
-      prisma.restaurant.update.mockResolvedValue({ id: 'r1', isActive: false });
-      const res = await service.toggleRestaurantActive('r1', false);
-      expect(prisma.restaurant.update.mock.calls[0][0].data).toEqual({
-        isActive: false,
-        isOpen: false,
-      });
-      expect(res.message).toBe('Restaurant désactivé');
-    });
-  });
+  // `toggleRestaurantActive` a été retiré en septembre 2026 : seconde écriture
+  // sur `isActive`, sans motif et sans notification au vendeur, doublonnant
+  // `suspendVendor` / `activateVendor`. Sa couverture vit désormais dans
+  // `admin-vendors.service` — voir le commentaire d'`admin.controller.ts`.
 });

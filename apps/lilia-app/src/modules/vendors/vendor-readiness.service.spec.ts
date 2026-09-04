@@ -30,6 +30,10 @@ describe('VendorReadinessService', () => {
     latitude: -4.2634,
     longitude: 15.2429,
     commissionPercent: null,
+    // Compte de reversement : sans lui, le vendeur encaisse sans jamais
+    // pouvoir être payé. Format normalisé par `toMsisdn` (242 + 0 + 4/5/6 + 7).
+    payoutPhoneNumber: '242060000001',
+    payoutProvider: 'MTN_MOMO_COG',
     supportsDelivery: true,
     supportsPickup: true,
     deliveryPriceMode: 'FIXED',
@@ -229,6 +233,49 @@ describe('VendorReadinessService', () => {
         variants: { some: {} },
       },
     });
+  });
+
+  // ─── Compte de reversement (P0-1) ─────────────────────────────────────────
+
+  it('bloque un vendeur sans compte de reversement', async () => {
+    // L'état réel des six vendeurs de production au 4 septembre 2026 : publiés,
+    // encaissant, et impossibles à payer. La checklist ne posait pas la
+    // question, donc personne ne pouvait y répondre.
+    const report = await load({
+      payoutPhoneNumber: null,
+      payoutProvider: null,
+    });
+    expect(check(report, 'payout').status).toBe('MISSING');
+    expect(check(report, 'payout').blocking).toBe(true);
+    expect(report!.isReady).toBe(false);
+  });
+
+  it('bloque un numéro renseigné sans opérateur', async () => {
+    const report = await load({ payoutProvider: null });
+    expect(check(report, 'payout').status).toBe('MISSING');
+    expect(report!.isReady).toBe(false);
+  });
+
+  it('bloque un numéro de reversement mal formé', async () => {
+    // Se tromper de format ne produit aucune erreur au moment du virement :
+    // l'argent part vers un numéro inexistant, ou vers quelqu'un d'autre.
+    const report = await load({ payoutPhoneNumber: '061234567' });
+    expect(check(report, 'payout').status).toBe('INVALID');
+    expect(report!.isReady).toBe(false);
+  });
+
+  it('bloque un numéro sans le zéro initial (forme à onze chiffres)', async () => {
+    const report = await load({ payoutPhoneNumber: '24261234567' });
+    expect(check(report, 'payout').status).toBe('INVALID');
+  });
+
+  it('accepte un compte Airtel correctement normalisé', async () => {
+    const report = await load({
+      payoutPhoneNumber: '242050000002',
+      payoutProvider: 'AIRTEL_COG',
+    });
+    expect(check(report, 'payout').status).toBe('OK');
+    expect(report!.isReady).toBe(true);
   });
 
   // ─── Progression ───────────────────────────────────────────────────────────

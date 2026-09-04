@@ -8,6 +8,7 @@ import {
   VendorSuspendedEvent,
 } from '../vendors/events/vendor-events';
 import { NotificationsService } from '../notifications/notifications.service';
+import { AdminAlertService } from '../notifications/admin-alert.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SmsService } from '../sms/sms.service';
 
@@ -17,6 +18,7 @@ export class VendorsListener {
 
   constructor(
     private readonly notifications: NotificationsService,
+    private readonly adminAlerts: AdminAlertService,
     private readonly prisma: PrismaService,
     private readonly sms: SmsService,
   ) {}
@@ -32,19 +34,10 @@ export class VendorsListener {
     // (hygiène marketplace — admin curate la liste avant exposition publique)
     if (!event.isPendingApproval) return;
 
-    const admins = await this.prisma.user.findMany({
-      where: { role: 'ADMIN', statusUser: 'ACTIVE' },
-      select: { id: true },
-    });
-    await Promise.allSettled(
-      admins.map((admin) =>
-        this.notifications.sendPushNotification(
-          admin.id,
-          '🛎️ Nouveau vendeur à valider',
-          `${event.vendor.nom} (${event.vendor.vendorType}) attend votre validation.`,
-          { vendorId: event.vendor.id, type: 'vendor_pending_approval' },
-        ),
-      ),
+    await this.notifyAdmins(
+      '🛎️ Nouveau vendeur à valider',
+      `${event.vendor.nom} (${event.vendor.vendorType}) attend votre validation.`,
+      { vendorId: event.vendor.id, type: 'vendor_pending_approval' },
     );
   }
 
@@ -124,20 +117,18 @@ export class VendorsListener {
     }
   }
 
-  /** Notifie tous les administrateurs actifs, sans laisser un échec en bloquer un autre. */
+  /**
+   * Notifie tous les administrateurs actifs.
+   *
+   * Déléguée à `AdminAlertService` : le fan-out ne repose plus sur le seul
+   * push, qui n'atteignait personne — les trois comptes ADMIN de production
+   * n'ont aucun token FCM, l'administration web n'en enregistrant pas.
+   */
   private async notifyAdmins(
     title: string,
     body: string,
     data: Record<string, string>,
   ): Promise<void> {
-    const admins = await this.prisma.user.findMany({
-      where: { role: 'ADMIN', statusUser: 'ACTIVE' },
-      select: { id: true },
-    });
-    await Promise.allSettled(
-      admins.map((admin) =>
-        this.notifications.sendPushNotification(admin.id, title, body, data),
-      ),
-    );
+    await this.adminAlerts.notify({ title, body, data });
   }
 }

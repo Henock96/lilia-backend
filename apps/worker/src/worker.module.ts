@@ -44,6 +44,14 @@ import { WorkerService } from './worker.service';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      // Même cascade que `AppModule` — sans quoi le worker, qui exécute les
+      // crons (expiration de commandes, reset de stock), continuerait d'écrire
+      // dans la base de production depuis un poste de développement.
+      envFilePath: [
+        '.env.local',
+        `.env.${process.env.NODE_ENV ?? 'development'}`,
+        '.env',
+      ],
       validationSchema: envValidationSchema,
       validationOptions: { abortEarly: false },
     }),

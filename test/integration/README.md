@@ -41,9 +41,33 @@ erreurs rouges qui ne le concernent pas. La CI, elle, la définit.
 | Deux notes sur la même livraison | `@@unique([deliveryId])` |
 | Deux lignes de panier identiques | index unique partiel `WHERE menuId IS NULL` |
 | Deux acceptations de la même mission | `updateMany` conditionné sur le statut |
+| **Chaîne de l'argent complète** (`money-chain.int-spec.ts`) | encaissement → callback → `PAYER` → commission → reversement → callback → `SUCCESS`, sur **une seule commande**, sans réinitialisation entre les étapes |
+
+## `money-chain.int-spec.ts` — pourquoi il est à part
+
+Les autres fichiers prouvent une garantie à la fois. Celui-ci suit **un seul
+parcours d'argent de bout en bout**, parce que l'audit du 4 septembre 2026
+constate que ce parcours n'a *jamais* été accompli en entier — ni en test, ni en
+production :
+
+> « Le reversement vendeur et le webhook pawaPay sont écrits, testés
+> unitairement, et n'ont jamais fonctionné une seule fois en conditions
+> réelles. Un test unitaire vert sur une machine à états ne prouve pas qu'un
+> virement arrive sur un téléphone MTN. »
+
+Il exerce les mêmes points de transition que le contrôleur de webhook, avec
+`source: WEBHOOK`, et vérifie en fin de parcours que **la somme se répartit
+sans reste** : ce que le client paie = produits + livraison + frais de service,
+ce que le vendeur touche = sous-total − commission, et aucun franc n'est compté
+deux fois.
+
+⚠️ **Ce qu'il ne prouve pas** : que pawaPay appelle réellement notre URL. C'est
+une affaire de configuration du tableau de bord prestataire ; le critère de
+sortie reste une ligne `PaymentEvent` `source='WEBHOOK'` **en production**.
 
 ## Ce qui n'est pas couvert
 
 Le parcours HTTP complet (guards, DTO, interceptors). Ces tests attaquent la
-couche données directement : ils vérifient les garanties de concurrence, pas le
-câblage de l'API — celui-ci est couvert par les tests unitaires.
+couche données directement : ils vérifient les garanties de concurrence et
+l'enchaînement des états, pas le câblage de l'API — celui-ci est couvert par
+les tests unitaires et par `scripts/ci/boot-smoke.sh`.
