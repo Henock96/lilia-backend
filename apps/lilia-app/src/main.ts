@@ -15,6 +15,7 @@ import { existsSync } from 'fs';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/exception-filters/http-exception.filter';
 import { RedisIoAdapter } from './common/adapters/redis-io.adapter';
+import { CORS_ALLOWED_HEADERS } from './common/http/cors-headers';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
@@ -118,7 +119,31 @@ async function bootstrap() {
     // Prod : liste blanche stricte. Dev : tout autoriser pour le confort local.
     origin: isProduction ? allowedOrigins : true,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    allowedHeaders: 'Content-Type,Authorization,Idempotency-Key',
+    /**
+     * ⚠️ Cette liste doit contenir **tout** en-tête que les clients web
+     * envoient, sans quoi le navigateur refuse d'émettre la requête après un
+     * préflight pourtant réussi.
+     *
+     * `X-Lilia-Payment-Flow` y manquait. Il est ajouté par `apiClient` à
+     * **chaque** requête depuis le 31/08/2026 (déclaration de capacité
+     * d'encaissement, lue par `payment.controller.ts`), mais n'a jamais été
+     * autorisé ici. Conséquence, mesurée sur l'admin déployé le 04/09/2026 :
+     *
+     *   OPTIONS /admin/vendors        → 204, en-têtes CORS corrects
+     *   GET     /admin/vendors        → JAMAIS ÉMIS par le navigateur
+     *
+     * Le préflight réussissait, donc rien ne semblait cassé côté serveur — et
+     * les deux applications web n'affichaient plus aucune donnée authentifiée.
+     * Le tableau de bord restait indéfiniment en squelettes, les listes
+     * annonçaient « Aucun vendeur », et aucune erreur n'apparaissait : une
+     * requête refusée au préflight ne produit qu'un `TypeError: Failed to
+     * fetch` que React Query traite comme un échec réseau ordinaire.
+     *
+     * **Règle : ajouter un en-tête personnalisé dans `packages/api-client`
+     * oblige à l'ajouter ici, dans le même changement.** Le test
+     * `cors-allowed-headers.spec.ts` fige cette correspondance.
+     */
+    allowedHeaders: CORS_ALLOWED_HEADERS.join(','),
     credentials: true,
   });
 
