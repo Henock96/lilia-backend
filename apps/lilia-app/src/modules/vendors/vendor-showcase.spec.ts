@@ -59,12 +59,12 @@ describe('VendorsService — classement et mise en avant', () => {
   // ─── Le tri ────────────────────────────────────────────────────────────────
 
   describe('findAll — ordre', () => {
-    it('trie par [isOpen desc, isFeatured desc, displayOrder asc, createdAt desc]', async () => {
+    it('trie par [isOpen desc, displayOrder asc, isFeatured desc, createdAt desc]', async () => {
       await service.findAll({} as never);
       expect(prisma.restaurant.findMany.mock.calls[0][0].orderBy).toEqual([
         { isOpen: 'desc' },
-        { isFeatured: 'desc' },
         { displayOrder: 'asc' },
+        { isFeatured: 'desc' },
         { createdAt: 'desc' },
       ]);
     });
@@ -85,14 +85,17 @@ describe('VendorsService — classement et mise en avant', () => {
       expect(call.orderBy).toContainEqual({ isFeatured: 'desc' });
       // Aucun filtre implicite : la liste par défaut reste le catalogue entier.
       expect(call.where).not.toHaveProperty('isFeatured');
-      // Et la mise en avant ne prime jamais sur « ouvert maintenant » : un
-      // vendeur fermé, si bien classé soit-il, ne remonte pas devant un
-      // vendeur chez qui on peut commander tout de suite.
+      // La précédence, dans l'ordre : « ouvert maintenant » d'abord — un
+      // vendeur fermé ne remonte pas devant un vendeur chez qui on peut
+      // commander tout de suite ; puis `displayOrder`, position explicite
+      // décidée par l'administrateur, que la vedette ne défait pas ; la mise
+      // en avant ne fait que départager ceux qu'il n'a pas rangés.
       const at = (key: string) =>
         (call.orderBy as Record<string, string>[]).findIndex((o) => key in o);
       expect(at('isOpen')).toBeGreaterThanOrEqual(0);
-      expect(at('isOpen')).toBeLessThan(at('isFeatured'));
-      expect(at('isFeatured')).toBeLessThan(at('displayOrder'));
+      expect(at('isOpen')).toBeLessThan(at('displayOrder'));
+      expect(at('displayOrder')).toBeLessThan(at('isFeatured'));
+      expect(at('isFeatured')).toBeLessThan(at('createdAt'));
     });
 
     /**
