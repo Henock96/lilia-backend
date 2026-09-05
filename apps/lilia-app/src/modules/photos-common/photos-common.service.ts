@@ -87,6 +87,46 @@ export class PhotosCommonService {
   }
 
   /**
+   * Réattribue la photo principale après la suppression de celle qui la
+   * portait.
+   *
+   * `demoteOtherCovers` garantissait « au plus un cover » ; rien ne garantissait
+   * « au moins un cover tant qu'il reste une photo ». Supprimer la principale
+   * laissait donc l'entité sans photo principale : plus aucune étoile dans le
+   * back-office, et la case « photo de couverture » de la checklist
+   * `VendorReadinessService` repassait en défaut sans qu'aucun geste ne l'ait
+   * demandé.
+   *
+   * Promotion de la **première** restante, dans l'ordre d'affichage — le même
+   * que celui déjà servi par les listes, donc la photo qui était affichée en
+   * tête. On ne choisit rien de nouveau : on entérine ce qui était déjà montré.
+   *
+   * No-op s'il reste un cover (suppression d'une photo secondaire) ou plus
+   * aucune photo.
+   */
+  async promoteNextCover(table: PhotoTable, where: object): Promise<void> {
+    const model = this.prisma[table] as {
+      findFirst: (args: any) => Promise<{ id: string } | null>;
+      update: (args: any) => Promise<unknown>;
+    };
+
+    const existingCover = await model.findFirst({
+      where: { ...where, isCover: true },
+      select: { id: true },
+    });
+    if (existingCover) return;
+
+    const next = await model.findFirst({
+      where,
+      orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+      select: { id: true },
+    });
+    if (!next) return;
+
+    await model.update({ where: { id: next.id }, data: { isCover: true } });
+  }
+
+  /**
    * Cleanup Cloudinary non-bloquant. Log warn si échec.
    */
   async cleanupCloudinary(publicId: string | null | undefined): Promise<void> {

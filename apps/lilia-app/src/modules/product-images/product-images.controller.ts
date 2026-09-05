@@ -30,9 +30,23 @@ export class ProductImagesController {
 
   @Public()
   @Get()
-  @ApiOperation({ summary: "Liste les images d'un produit (public)" })
+  @ApiOperation({
+    summary: "Liste les images d'un produit publié (public)",
+    description:
+      "404 sur un produit dont le vendeur n'est pas publié, suspendu ou en " +
+      'cours de configuration. Le gestionnaire lit `/product-images/mine`.',
+  })
   list(@Query('productId') productId: string) {
     return this.service.list(productId);
+  }
+
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @Get('mine')
+  @ApiOperation({
+    summary: 'Galerie du produit vue par son vendeur ou un administrateur',
+  })
+  listMine(@Query('productId') productId: string, @CurrentUser() user: User) {
+    return this.service.listForOwner(productId, user);
   }
 
   @Roles('RESTAURATEUR', 'ADMIN')

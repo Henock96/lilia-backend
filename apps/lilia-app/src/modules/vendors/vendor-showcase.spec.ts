@@ -59,13 +59,40 @@ describe('VendorsService — classement et mise en avant', () => {
   // ─── Le tri ────────────────────────────────────────────────────────────────
 
   describe('findAll — ordre', () => {
-    it('trie par [isOpen desc, displayOrder asc, createdAt desc]', async () => {
+    it('trie par [isOpen desc, isFeatured desc, displayOrder asc, createdAt desc]', async () => {
       await service.findAll({} as never);
       expect(prisma.restaurant.findMany.mock.calls[0][0].orderBy).toEqual([
         { isOpen: 'desc' },
+        { isFeatured: 'desc' },
         { displayOrder: 'asc' },
         { createdAt: 'desc' },
       ]);
+    });
+
+    /**
+     * Le défaut à l'origine de ce test : la home du site consommait
+     * `?isFeatured=true`, et mettre un vendeur en avant faisait disparaître
+     * tous les autres de la page d'accueil.
+     *
+     * La mise en avant doit **classer** sans filtrer. Elle appartient donc à
+     * `orderBy`, jamais à un `where` implicite — sans quoi le seul moyen de
+     * « remonter » un vendeur serait d'effacer les autres.
+     */
+    it('la mise en avant classe le vendeur, elle ne l’isole pas de la liste', async () => {
+      await service.findAll({} as never);
+      const call = prisma.restaurant.findMany.mock.calls[0][0];
+
+      expect(call.orderBy).toContainEqual({ isFeatured: 'desc' });
+      // Aucun filtre implicite : la liste par défaut reste le catalogue entier.
+      expect(call.where).not.toHaveProperty('isFeatured');
+      // Et la mise en avant ne prime jamais sur « ouvert maintenant » : un
+      // vendeur fermé, si bien classé soit-il, ne remonte pas devant un
+      // vendeur chez qui on peut commander tout de suite.
+      const at = (key: string) =>
+        (call.orderBy as Record<string, string>[]).findIndex((o) => key in o);
+      expect(at('isOpen')).toBeGreaterThanOrEqual(0);
+      expect(at('isOpen')).toBeLessThan(at('isFeatured'));
+      expect(at('isFeatured')).toBeLessThan(at('displayOrder'));
     });
 
     /**

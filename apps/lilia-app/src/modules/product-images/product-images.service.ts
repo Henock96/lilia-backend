@@ -44,6 +44,28 @@ export class ProductImagesService {
   }
 
   /**
+   * Galerie vue par son vendeur ou un administrateur, **sans** frontière de
+   * visibilité — pendant qu'il remplit sa boutique, le vendeur doit voir les
+   * images qu'il vient d'ajouter alors qu'elle n'est pas encore publiée.
+   *
+   * Elle existe pour la même raison que `GET /products/manage` : le
+   * back-office lisait la route publique, qui répond 404 dès que le vendeur
+   * est suspendu ou en configuration. L'écran qui porte le bouton « ajouter »
+   * affichait donc une galerie vide, et la photo tout juste ajoutée
+   * disparaissait au rafraîchissement suivant.
+   */
+  async listForOwner(productId: string, user: { id: string; role: string }) {
+    if (!productId) {
+      throw new BadRequestException('productId requis');
+    }
+    await this.assertProductOwnership(productId, user);
+    return this.prisma.productImage.findMany({
+      where: { productId },
+      orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+    });
+  }
+
+  /**
    * Remonte au restaurant parent puis délègue à PhotosCommonService.
    * Si productId invalide → NotFound.
    */

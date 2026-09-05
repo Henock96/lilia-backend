@@ -42,23 +42,31 @@ export const PUBLIC_VENDOR_RELATION_WHERE = {
  * `[isOpen, createdAt]` : deux listes de la même entité, deux ordres, et rien
  * pour dire lequel était le bon. Les deux consomment désormais cette constante.
  *
- * Les trois critères, dans cet ordre et pour ces raisons :
+ * Les quatre critères, dans cet ordre et pour ces raisons :
  *
  * 1. `isOpen desc` — un commerce fermé ne remonte pas devant un commerce
  *    ouvert, quelle que soit la mise en ordre voulue. Un client qui ne peut
  *    pas commander maintenant n'a que faire d'un vendeur bien classé ;
- * 2. `displayOrder asc` — la volonté de l'administrateur ;
- * 3. `createdAt desc` — départage stable, et comportement historique pour tous
+ * 2. `isFeatured desc` — la mise en avant éditoriale. **C'est ici, et nulle
+ *    part ailleurs, que `isFeatured` doit agir.** Elle a été livrée comme un
+ *    *filtre* (`GET /vendors?isFeatured=true`), et la home du site l'a
+ *    consommée telle quelle : mettre un vendeur en avant faisait disparaître
+ *    tous les autres de la page d'accueil. Une mise en avant **classe**, elle
+ *    n'exclut pas — c'est une clause `orderBy`, pas une clause `where` ;
+ * 3. `displayOrder asc` — la volonté de l'administrateur, appliquée à
+ *    l'intérieur de chacun des deux groupes ;
+ * 4. `createdAt desc` — départage stable, et comportement historique pour tous
  *    les vendeurs qui partagent le `displayOrder` par défaut. C'est ce qui
  *    rend l'ajout de la colonne invisible tant que personne n'a rien classé.
  *
  * ⚠️ Cette constante décide de l'**ordre**, jamais de la **visibilité** : elle
  * s'emploie dans `orderBy`, `PUBLIC_VENDOR_WHERE` dans `where`. Deux clauses
- * SQL distinctes — un vendeur `DRAFT` avec `displayOrder = 1` reste invisible,
- * structurellement et pas par convention.
+ * SQL distinctes — un vendeur `DRAFT` mis en avant et classé premier reste
+ * invisible, structurellement et pas par convention.
  */
 export const PUBLIC_VENDOR_ORDER_BY = [
   { isOpen: 'desc' },
+  { isFeatured: 'desc' },
   { displayOrder: 'asc' },
   { createdAt: 'desc' },
 ] as const satisfies Prisma.RestaurantOrderByWithRelationInput[];

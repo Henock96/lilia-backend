@@ -56,6 +56,9 @@ export class VendorPhotosService {
    * vient d'ajouter alors même que sa boutique n'est pas encore publiée.
    */
   async listForOwner(restaurantId: string, user: { id: string; role: string }) {
+    if (!restaurantId) {
+      throw new BadRequestException('restaurantId requis');
+    }
     await this.common.assertRestaurantOwnership(restaurantId, user);
     return this.prisma.vendorPhoto.findMany({
       where: { restaurantId },
@@ -127,6 +130,9 @@ export class VendorPhotosService {
     await this.common.assertRestaurantOwnership(photo.restaurantId, user);
 
     await this.prisma.vendorPhoto.delete({ where: { id } });
+    await this.common.promoteNextCover('vendorPhoto', {
+      restaurantId: photo.restaurantId,
+    });
     await this.common.cleanupCloudinary(photo.publicId);
     return { success: true };
   }
