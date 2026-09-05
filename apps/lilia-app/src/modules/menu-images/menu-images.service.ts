@@ -36,6 +36,23 @@ export class MenuImagesService {
     });
   }
 
+  /**
+   * Galerie vue par son vendeur ou un administrateur, sans frontière de
+   * visibilité. Même raison que `ProductImagesService.listForOwner` : le
+   * back-office lisait la route publique et voyait donc vide tout ce qui
+   * n'était pas encore publié — précisément ce qu'il est là pour remplir.
+   */
+  async listForOwner(menuDuJourId: string, user: { id: string; role: string }) {
+    if (!menuDuJourId) {
+      throw new BadRequestException('menuDuJourId requis');
+    }
+    await this.assertMenuOwnership(menuDuJourId, user);
+    return this.prisma.menuImage.findMany({
+      where: { menuDuJourId },
+      orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }],
+    });
+  }
+
   private async assertMenuOwnership(
     menuDuJourId: string,
     user: { id: string; role: string },
@@ -113,6 +130,9 @@ export class MenuImagesService {
     await this.assertMenuOwnership(image.menuDuJourId, user);
 
     await this.prisma.menuImage.delete({ where: { id } });
+    await this.common.promoteNextCover('menuImage', {
+      menuDuJourId: image.menuDuJourId,
+    });
     await this.common.cleanupCloudinary(image.publicId);
     return { success: true };
   }

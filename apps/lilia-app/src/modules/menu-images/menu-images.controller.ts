@@ -30,9 +30,26 @@ export class MenuImagesController {
 
   @Public()
   @Get()
-  @ApiOperation({ summary: "Liste les images d'un menu (public)" })
+  @ApiOperation({
+    summary: "Liste les images d'un menu publié (public)",
+    description:
+      "404 sur un menu dont le vendeur n'est pas publié, suspendu ou en cours " +
+      'de configuration. Le gestionnaire lit `/menu-images/mine`.',
+  })
   list(@Query('menuDuJourId') menuDuJourId: string) {
     return this.service.list(menuDuJourId);
+  }
+
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @Get('mine')
+  @ApiOperation({
+    summary: 'Galerie du menu vue par son vendeur ou un administrateur',
+  })
+  listMine(
+    @Query('menuDuJourId') menuDuJourId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.service.listForOwner(menuDuJourId, user);
   }
 
   @Roles('RESTAURATEUR', 'ADMIN')

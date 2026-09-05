@@ -183,8 +183,13 @@ describeIfDb('Catalogue public — ordre, vedettes et visibilité', () => {
       expect(noms).toEqual(['A', 'C']);
     });
 
-    it('la mise en avant est indépendante de la position', async () => {
+    it('la mise en avant ne défait pas un classement délibéré', async () => {
       // A est mis en avant ET rangé loin ; B est premier sans badge.
+      //
+      // `displayOrder` reste au-dessus de `isFeatured` : c'est une position
+      // explicite (« 1 = premier »), la vedette une distinction grossière. Qui
+      // a rangé B premier l'a déjà dit — mettre A en avant ne doit pas défaire
+      // ce classement. Pour cela, on change `displayOrder`.
       await prisma.restaurant.update({
         where: { id: 'sc-a' },
         data: { displayOrder: 50 },
@@ -202,6 +207,48 @@ describeIfDb('Catalogue public — ordre, vedettes et visibilité', () => {
       );
       expect(vedettes).toContain('A');
       expect(vedettes).not.toContain('B');
+    });
+
+    /**
+     * **Le défaut à l'origine de ce test.** `isFeatured` n'existait que comme
+     * *filtre*, et la home du site le consommait tel quel
+     * (`GET /vendors?isFeatured=true`). Cette section étant la seule liste de
+     * vendeurs de la page d'accueil, mettre un vendeur en avant ne mettait rien
+     * en avant : cela **retirait tous les autres**. Le site paraissait se vider
+     * au moment précis où on essayait de le mettre en valeur.
+     *
+     * Une mise en avant classe, elle n'exclut pas. Elle vit donc dans
+     * l'`orderBy`, et elle y a un effet réel là où il compte : sur les vendeurs
+     * que personne n'a rangés — c'est-à-dire tout le monde, `displayOrder`
+     * valant 1000 par défaut.
+     */
+    it('à displayOrder égal, la vedette passe devant — et les autres restent', async () => {
+      // Tout le monde au défaut, comme en production : personne n'est rangé.
+      await prisma.restaurant.updateMany({
+        where: { id: { in: ['sc-a', 'sc-b', 'sc-c', 'sc-d'] } },
+        data: { displayOrder: 1000, isFeatured: false },
+      });
+      await prisma.restaurant.update({
+        where: { id: 'sc-a' },
+        data: { isFeatured: true },
+      });
+
+      const tous = await publicCatalogue();
+
+      expect(tous[0]).toMatchObject({ nom: 'A', isFeatured: true });
+      // Et surtout : personne n'a disparu.
+      expect(tous.map((r) => r.nom).sort()).toEqual(['A', 'B', 'C', 'D']);
+    });
+
+    it('retirer la vedette rend la liste à son ordre normal', async () => {
+      await prisma.restaurant.update({
+        where: { id: 'sc-a' },
+        data: { isFeatured: false },
+      });
+
+      const noms = (await publicCatalogue()).map((r) => r.nom);
+      // Départage par `createdAt desc` : D créé en dernier, A en premier.
+      expect(noms).toEqual(['D', 'C', 'B', 'A']);
     });
   });
 
