@@ -5,7 +5,10 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 import { stockStatusWhere, type StockStatus } from './stock-status';
-import { catalogProductWhere } from './product-availability';
+import {
+  catalogProductWhere,
+  isWithinAvailabilityWindow,
+} from './product-availability';
 
 /**
  * Lectures du catalogue produits (extrait de ProductsService — LIL-143).
@@ -205,6 +208,16 @@ export class ProductQueryService {
           select: {
             id: true,
             nom: true,
+            // Ajoutés pour la fiche produit du site client. Sans `isOpen`,
+            // elle proposait d'ajouter au panier d'une boutique fermée et le
+            // refus n'arrivait qu'au paiement ; sans `preorderLeadHours`, elle
+            // ne pouvait pas annoncer le préavis d'un produit sur commande.
+            //
+            // Vue volontairement réduite : ce n'est pas un `Restaurant`
+            // complet, et un client qui aurait besoin des horaires ou du type
+            // de vendeur doit lire `GET /restaurants/:id`.
+            isOpen: true,
+            preorderLeadHours: true,
           },
         },
         images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
@@ -216,7 +229,27 @@ export class ProductQueryService {
     }
 
     return {
-      data: product,
+      data: {
+        ...product,
+        /**
+         * Le produit est-il dans sa fenêtre de vente **maintenant** ?
+         *
+         * Calculé ici, et pas par le client. La règle — bornes « HH:mm »
+         * comparées dans le fuseau de Brazzaville, fenêtres à cheval sur
+         * minuit — n'existe qu'à un seul endroit, `isWithinAvailabilityWindow`,
+         * celui-là même qu'applique le checkout pour accepter ou refuser.
+         *
+         * La recopier côté navigateur aurait créé deux vérités qui divergent en
+         * silence : c'est exactement ce qui s'était produit sur les montants,
+         * où le client affichait 800 XAF de frais et le serveur en facturait
+         * 1 500.
+         *
+         * ⚠️ Corollaire : cette valeur est **périssable**. Une réponse mise en
+         * cache plus de quelques minutes annoncera « disponible » après la
+         * fermeture de la fenêtre.
+         */
+        availableNow: isWithinAvailabilityWindow(product),
+      },
     };
   }
 
