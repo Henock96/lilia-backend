@@ -8,6 +8,7 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   AdminAuditAction,
+  DeliveryPriceMode,
   OnboardingStatus,
   Prisma,
   Role,
@@ -21,6 +22,7 @@ import { FirebaseService } from '../firebase/firebase.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { PhotosCommonService } from '../photos-common/photos-common.service';
+import { assertZoneCoverage } from '../../common/delivery/zone-coverage';
 import { defaultCategoriesCreateInput } from '../categories/category.includes';
 import {
   VendorReadinessService,
@@ -306,6 +308,18 @@ export class VendorOnboardingService {
       );
     }
 
+    // Fix L-3 : la checklist d'activation refusait déjà « ZONE_BASED sans
+    // zone », mais elle ne garde que la publication. Ce chemin-ci reste ouvert
+    // toute la vie du vendeur — c'est celui qu'il faut fermer pour que
+    // l'invariant tienne après l'activation, pas seulement avant.
+    const nextMode = dto.deliveryPriceMode ?? current.deliveryPriceMode;
+    if (nextMode === DeliveryPriceMode.ZONE_BASED && supportsDelivery) {
+      const zoneCount = await this.prisma.deliveryZone.count({
+        where: { restaurantId },
+      });
+      assertZoneCoverage(nextMode, zoneCount, supportsDelivery);
+    }
+
     await this.prisma.restaurant.update({
       where: { id: restaurantId },
       data: {
@@ -322,6 +336,9 @@ export class VendorOnboardingService {
         }),
         ...(dto.estimatedDeliveryTimeMax !== undefined && {
           estimatedDeliveryTimeMax: dto.estimatedDeliveryTimeMax,
+        }),
+        ...(dto.minimumOrderAmount !== undefined && {
+          minimumOrderAmount: dto.minimumOrderAmount,
         }),
         ...(dto.deliveryInstructions !== undefined && {
           deliveryInstructions: dto.deliveryInstructions.trim() || null,

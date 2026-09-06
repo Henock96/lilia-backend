@@ -156,7 +156,32 @@ export function catalogProductWhere(
   };
 }
 
-/** Raison lisible du refus, ou `null` si le produit est commandable. */
+/**
+ * Raison lisible du refus, ou `null` si le produit est commandable.
+ *
+ * ### Le stock en fait partie (fix S-2, audit du 05/09/2026)
+ *
+ * Cette fonction couvrait le retrait du catalogue, l'indisponibilité déclarée
+ * et la fenêtre horaire — **mais pas le stock**. Le panier, qui l'appelle,
+ * acceptait donc un produit épuisé, et `updateItemQuantity` ne vérifiait rien
+ * du tout : on pouvait porter à 50 la quantité d'un produit dont il restait une
+ * unité. Le refus n'arrivait qu'au `POST /orders/checkout`, une fois l'adresse
+ * et le moyen de paiement saisis — c'est-à-dire au pire moment.
+ *
+ * Le stock rejoint donc les trois autres raisons, au même endroit. Trois
+ * clients réimplémentaient chacun la règle « épuisé » de leur côté ; elle a
+ * maintenant une définition unique, côté serveur.
+ *
+ * ⚠️ Ce contrôle **ne remplace pas** la décrémentation atomique du checkout
+ * (`WHERE stockRestant >= qty`). Il est consultatif : entre cette lecture et la
+ * commande, une autre transaction peut prendre la dernière unité. C'est la
+ * décrémentation qui arbitre — celle-ci évite seulement de laisser le client
+ * remplir un panier qu'il ne pourra pas payer.
+ *
+ * @param quantite Quantité demandée. `0` (défaut) ne contrôle que la rupture
+ *   totale : c'est la question « ce produit est-il vendable ? », posée par le
+ *   catalogue, distincte de « puis-je en prendre n ? », posée par le panier.
+ */
 export function unavailabilityReason(
   product: {
     nom?: string | null;
@@ -164,8 +189,10 @@ export function unavailabilityReason(
     deletedAt?: Date | null;
     availableFrom?: string | null;
     availableUntil?: string | null;
+    stockRestant?: number | null;
   },
   now: Date = new Date(),
+  quantite = 0,
 ): string | null {
   const label = product.nom ? `« ${product.nom} »` : 'Ce produit';
 
@@ -179,5 +206,16 @@ export function unavailabilityReason(
         : '';
     return `${label} n'est pas disponible à cette heure${window}.`;
   }
+
+  // `null` = stock illimité, `0` = épuisé. Deux états distincts, à ne jamais
+  // confondre : `?? 0` transformerait « illimité » en « épuisé ».
+  const stock = product.stockRestant;
+  if (stock !== null && stock !== undefined) {
+    if (stock === 0) return `${label} est épuisé.`;
+    if (quantite > stock) {
+      return `${label} : il ne reste que ${stock} unité${stock > 1 ? 's' : ''}.`;
+    }
+  }
+
   return null;
 }

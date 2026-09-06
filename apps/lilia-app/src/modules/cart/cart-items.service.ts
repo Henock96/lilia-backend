@@ -35,12 +35,6 @@ export class CartItemsService {
     if (!variant)
       throw new NotFoundException('Variante de produit non trouvée.');
 
-    // Fixes M1 + M2 : on refuse d'emblée un produit retiré du catalogue,
-    // marqué indisponible ou hors de sa fenêtre horaire, plutôt que de le
-    // laisser bloquer le checkout plus tard.
-    const reason = unavailabilityReason(variant.product);
-    if (reason) throw new BadRequestException(reason);
-
     const cart = await this.common.getOrCreateCart(user.id);
 
     const cartItems = await this.prisma.cartItem.findMany({
@@ -59,6 +53,31 @@ export class CartItemsService {
         menuId: null,
       },
     });
+
+    // Fixes M1 + M2 + S-2 : produit retiré du catalogue, marqué indisponible,
+    // hors de sa fenêtre horaire, ou stock insuffisant — refusé ici plutôt
+    // qu'au checkout.
+    //
+    // ⚠️ La quantité contrôlée est le **total du panier après ajout**, pas
+    // celle de la requête. Ajouter 1 unité dix fois de suite est le geste
+    // ordinaire d'un client sur mobile : ne valider que l'incrément laisserait
+    // passer n'importe quel total, un ajout à la fois.
+    //
+    // Et elle couvre **toutes les lignes du même produit**, variantes
+    // comprises : c'est le produit qui porte le stock, pas la variante
+    // (`ProductVariant` n'a aucune colonne de stock). Deux variantes du même
+    // plat puisent dans le même compteur — la décrémentation du checkout le
+    // sait déjà, le panier l'ignorait.
+    const alreadyInCart = cartItems
+      .filter((item) => item.productId === variant.productId)
+      .reduce((sum, item) => sum + item.quantite, 0);
+
+    const reason = unavailabilityReason(
+      variant.product,
+      new Date(),
+      alreadyInCart + dto.quantite,
+    );
+    if (reason) throw new BadRequestException(reason);
 
     if (existingItem) {
       await this.prisma.cartItem.update({
@@ -92,6 +111,7 @@ export class CartItemsService {
 
     const cartItem = await this.prisma.cartItem.findFirst({
       where: { id: cartItemId, cart: { userId: user.id } },
+      include: { product: true },
     });
 
     if (!cartItem) {
@@ -103,6 +123,31 @@ export class CartItemsService {
         "Cet article fait partie d'un menu. Utilisez la mise à jour du menu pour modifier la quantité.",
       );
     }
+
+    // Fix S-2 : cette méthode ne vérifiait **rien**. `PATCH /cart/items/:id`
+    // avec `{ quantite: 50 }` sur un produit dont il restait une unité
+    // répondait 200 ; l'échec n'arrivait qu'au checkout, après la saisie de
+    // l'adresse et du moyen de paiement.
+    //
+    // Le total contrôlé inclut les autres lignes du même produit — le stock
+    // est porté par le produit, pas par la variante.
+    const siblings = await this.prisma.cartItem.findMany({
+      where: {
+        cartId: cartItem.cartId,
+        productId: cartItem.productId,
+        id: { not: cartItemId },
+      },
+      select: { quantite: true },
+    });
+    const totalWanted =
+      dto.quantite + siblings.reduce((sum, s) => sum + s.quantite, 0);
+
+    const reason = unavailabilityReason(
+      cartItem.product,
+      new Date(),
+      totalWanted,
+    );
+    if (reason) throw new BadRequestException(reason);
 
     // `UpdateCartItemDto` impose `@Min(1)` : la branche « quantite === 0 =
     // suppression » était du code mort, inatteignable depuis HTTP (fix L1).

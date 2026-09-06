@@ -21,6 +21,10 @@ import {
 import { Type } from 'class-transformer';
 import { DeliveryPriceMode, VendorType } from '@prisma/client';
 import { OperatingHourDto } from '../../restaurants/dto/operating-hours.dto';
+import {
+  MAX_DELIVERY_FEE_XAF,
+  MAX_DELIVERY_MINUTES,
+} from '../../restaurants/dto/create-restaurant.dto';
 
 /**
  * Format des numéros congolais : 9 chiffres en local (`060000000`) ou format
@@ -189,20 +193,32 @@ export class UpdateVendorDeliveryDto {
   @IsOptional()
   @IsInt({ message: 'Un montant en XAF est un entier — pas de sous-unité.' })
   @Min(0)
-  @Max(100_000)
+  @Max(MAX_DELIVERY_FEE_XAF)
   fixedDeliveryFee?: number;
 
   @IsOptional()
   @IsInt()
   @Min(0)
-  @Max(600)
+  @Max(MAX_DELIVERY_MINUTES)
   estimatedDeliveryTimeMin?: number;
 
   @IsOptional()
   @IsInt()
   @Min(0)
-  @Max(600)
+  @Max(MAX_DELIVERY_MINUTES)
   estimatedDeliveryTimeMax?: number;
+
+  /**
+   * Le minimum de commande manquait ici alors qu'il est réglé dans le même
+   * écran que le reste de la livraison. Sans lui, l'admin devait passer par
+   * `PATCH /restaurants/:id/delivery-settings` pour ce seul champ — deux routes
+   * pour un formulaire, donc deux façons de se tromper.
+   */
+  @IsOptional()
+  @IsInt({ message: 'Un montant en XAF est un entier — pas de sous-unité.' })
+  @Min(0)
+  @Max(MAX_DELIVERY_FEE_XAF)
+  minimumOrderAmount?: number;
 
   @IsOptional()
   @IsString()

@@ -21,6 +21,7 @@ import { ProductType, VendorType } from '@prisma/client';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { UpdateProductStockDto } from './dto/update-product-stock.dto';
 import {
   ProductFilterQueryDto,
   ProductSearchQueryDto,
@@ -131,6 +132,14 @@ export class ProductsController {
   @ApiQuery({ name: 'categoryId', required: false })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({
+    name: 'stockStatus',
+    required: false,
+    enum: ['out', 'low', 'unlimited', 'tracked'],
+    description:
+      'Filtre de stock : out = rupture, low = 3 unités ou moins, ' +
+      'unlimited = sans gestion de stock, tracked = stock suivi.',
+  })
   findAllForOwner(
     @FirebaseUser() fbUser: DecodedIdToken,
     @Query() query: ProductFilterQueryDto,
@@ -141,6 +150,7 @@ export class ProductsController {
       query.categoryId,
       query.page,
       query.limit,
+      query.stockStatus,
     );
   }
 
@@ -188,18 +198,27 @@ export class ProductsController {
 
   /**
    * PATCH /products/:id/stock
-   * Met à jour le stock d'un produit
+   *
+   * Réapprovisionnement **explicite** : remet `stockRestant` au niveau déclaré,
+   * même si `stockQuotidien` ne change pas. C'est le geste « j'ai réassorti »,
+   * distinct de `PATCH /products/:id` qui décrit la fiche produit.
+   *
+   * ⚠️ Le corps était lu en `@Body('stockQuotidien')` brut, donc jamais validé.
    */
   @Patch(':id/stock')
   @Roles('RESTAURATEUR', 'ADMIN')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Mettre à jour le stock' })
+  @ApiOperation({ summary: 'Réapprovisionner (stock déclaré + stock restant)' })
   updateStock(
     @Param('id') id: string,
-    @Body('stockQuotidien') stockQuotidien: number | null,
+    @Body() dto: UpdateProductStockDto,
     @FirebaseUser() fbUser: DecodedIdToken,
   ) {
-    return this.productsService.updateStock(id, stockQuotidien, fbUser.uid);
+    return this.productsService.updateStock(
+      id,
+      dto.stockQuotidien ?? null,
+      fbUser.uid,
+    );
   }
 
   /**

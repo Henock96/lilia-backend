@@ -21,6 +21,7 @@ import { RestaurantAccessService } from './restaurant-access.service';
 import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { RestaurantQueryService } from './restaurant-query.service';
 import { RestaurantHoursService } from './restaurant-hours.service';
+import { assertZoneCoverage } from '../../common/delivery/zone-coverage';
 
 /**
  * Service restaurants (LIL-145).
@@ -176,6 +177,31 @@ export class RestaurantsService {
         if (dto.estimatedDeliveryTimeMax !== undefined) data.estimatedDeliveryTimeMax = dto.estimatedDeliveryTimeMax;
         if (dto.minimumOrderAmount !== undefined) data.minimumOrderAmount = dto.minimumOrderAmount;
         if (dto.deliveryPriceMode !== undefined) data.deliveryPriceMode = dto.deliveryPriceMode;
+
+        // Cohérence des délais — le contrôle n'existait que côté formulaire web,
+        // donc l'API et l'app Flutter pouvaient enregistrer « entre 45 et 20 min ».
+        // `PATCH /vendors/:id/delivery` le faisait déjà ; les deux routes écrivent
+        // les mêmes colonnes, elles doivent poser les mêmes règles.
+        const nextMin = dto.estimatedDeliveryTimeMin ?? restaurant.estimatedDeliveryTimeMin;
+        const nextMax = dto.estimatedDeliveryTimeMax ?? restaurant.estimatedDeliveryTimeMax;
+        if (nextMin > nextMax) {
+            throw new BadRequestException(
+                `Le délai minimum (${nextMin} min) ne peut pas dépasser le délai maximum (${nextMax} min).`,
+            );
+        }
+
+        // Fix L-3 : basculer en ZONE_BASED sans aucune zone rendait la
+        // tarification par zone inopérante *en silence* — toutes les livraisons
+        // retombaient sur `fixedDeliveryFee`. La règle existait dans la
+        // checklist d'activation, donc uniquement pour les vendeurs pas encore
+        // publiés ; elle vit maintenant là où elle peut être violée.
+        const nextMode = dto.deliveryPriceMode ?? restaurant.deliveryPriceMode;
+        if (nextMode === 'ZONE_BASED') {
+            const zoneCount = await this.prisma.deliveryZone.count({
+                where: { restaurantId: restaurant.id },
+            });
+            assertZoneCoverage(nextMode, zoneCount, restaurant.supportsDelivery);
+        }
 
         const updated = await this.prisma.restaurant.update({
         where: { id: restaurant.id },

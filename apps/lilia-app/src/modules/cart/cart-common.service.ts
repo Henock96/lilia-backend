@@ -13,6 +13,11 @@ export const CART_INCLUDE = {
           imageUrl: true,
           restaurantId: true,
           madeToOrder: true,
+          // Fix S-2 : sans le stock, l'interface ne peut pas plafonner le
+          // bouton « + » et laisse le client monter une quantité que le
+          // serveur refusera au checkout. `null` = illimité, `0` = épuisé —
+          // les clients doivent recevoir la distinction, pas la deviner.
+          stockRestant: true,
         },
       },
       variant: { select: { label: true, prix: true } },

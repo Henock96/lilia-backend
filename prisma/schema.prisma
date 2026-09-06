@@ -1263,6 +1263,11 @@ model DeliveryZone {
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 
+  /// Cible de la clé étrangère **composite** portée par `QuartierZone` — même
+  /// idiome que `Category` pour `Product`. C'est elle qui rend structurellement
+  /// impossible qu'un rattachement porte un `restaurantId` différent de celui
+  /// de sa zone, et donc qui rend la contrainte d'unicité ci-dessous fiable.
+  @@unique([id, restaurantId])
   @@index([restaurantId])
 }
 
@@ -1292,13 +1297,36 @@ model Quartier {
 
 // Table de liaison entre quartiers et zones de livraison
 model QuartierZone {
-  id             String       @id @default(cuid())
-  quartier       Quartier     @relation(fields: [quartierId], references: [id], onDelete: Cascade)
-  quartierId     String
-  deliveryZone   DeliveryZone @relation(fields: [deliveryZoneId], references: [id], onDelete: Cascade)
+  id         String   @id @default(cuid())
+  quartier   Quartier @relation(fields: [quartierId], references: [id], onDelete: Cascade)
+  quartierId String
+
+  /// Zone tarifaire, jointe sur `(deliveryZoneId, restaurantId)`.
+  ///
+  /// La relation est **composite** pour que PostgreSQL garantisse lui-même que
+  /// `restaurantId` est bien celui de la zone. Sans cette garantie, la colonne
+  /// serait une dénormalisation qui pourrait mentir, et la contrainte
+  /// d'unicité qui s'appuie dessus ne protégerait rien.
+  deliveryZone   DeliveryZone @relation(fields: [deliveryZoneId, restaurantId], references: [id, restaurantId], onDelete: Cascade)
   deliveryZoneId String
+  /// Vendeur propriétaire de la zone — recopié depuis elle, jamais saisi.
+  restaurantId   String
 
   @@unique([quartierId, deliveryZoneId])
+  /// **Un quartier, un seul tarif par vendeur** (fix L-6, audit du 05/09/2026).
+  ///
+  /// Rien n'empêchait jusqu'ici un quartier d'appartenir à deux zones du même
+  /// vendeur : `@@unique([quartierId, deliveryZoneId])` interdit le doublon
+  /// dans **une** zone, pas l'appartenance à deux zones différentes. Or
+  /// `QuartiersService.calculateDeliveryFee` retourne la **première** zone
+  /// trouvée en parcourant un `include` sans `orderBy` — l'ordre des lignes
+  /// n'étant pas garanti par PostgreSQL, deux clients du même quartier
+  /// pouvaient payer deux tarifs différents.
+  ///
+  /// La règle vit en base et non dans un `if` : un `if` ne protège que le
+  /// chemin qui le traverse, et il y en a trois (création, mise à jour,
+  /// ajout de quartiers) plus les scripts d'administration.
+  @@unique([restaurantId, quartierId])
   @@index([quartierId])
   @@index([deliveryZoneId])
 }
