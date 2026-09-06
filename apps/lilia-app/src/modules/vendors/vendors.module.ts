@@ -6,6 +6,7 @@ import { FirebaseModule } from '../firebase/firebase.module';
 import { PhotosCommonModule } from '../photos-common/photos-common.module';
 import { AdminAuditModule } from '../admin-audit/admin-audit.module';
 import { RestaurantsModule } from '../restaurants/restaurants.module';
+import { QuartiersModule } from '../quartiers/quartiers.module';
 import { VendorsCoreModule } from './vendors-core.module';
 import { VendorsController } from './vendors.controller';
 import {
@@ -26,6 +27,9 @@ import { PreorderValidatorService } from './preorder-validator.service';
     // Fournit VendorInvitationService et VendorReadinessService, tous deux
     // partagés avec le worker via OutboxModule.
     VendorsCoreModule,
+    // Fournit DeliveryZonesService à `GET /vendors/:id/delivery-zones`.
+    // QuartiersModule n'importe que PrismaModule : aucun cycle possible.
+    QuartiersModule,
   ],
   controllers: [
     VendorsController,

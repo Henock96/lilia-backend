@@ -202,11 +202,35 @@ export class ProductCommandService {
 
     const { variants, ...productData } = dto;
 
+    // ─── Stock : `stockQuotidien` seul ne suffit pas (fix S-1) ────────────────
+    //
+    // `stockRestant` est ce qui décide de la vente ; `stockQuotidien` n'est que
+    // la capacité déclarée. Écrire l'une sans l'autre laissait un produit
+    // épuisé (`stockRestant = 0`) invendable après un réassort — définitivement
+    // pour un `stockMode = PERMANENT`, que le cron de 5 h ne touche jamais.
+    //
+    // On ne réaligne QUE si la capacité déclarée change réellement. Les deux
+    // formulaires produit renvoient le champ à chaque enregistrement : sans
+    // cette garde, corriger une faute de frappe dans une description à 15 h
+    // ressusciterait le stock déjà vendu dans la journée.
+    //
+    // Le geste « j'ai réassorti sans changer ma capacité » a sa propre route,
+    // `PATCH /products/:id/stock` → `updateStock()`, qui réaligne
+    // inconditionnellement. Deux intentions différentes, deux points d'entrée.
+    const stockData: { stockRestant?: number | null } = {};
+    if (
+      dto.stockQuotidien !== undefined &&
+      dto.stockQuotidien !== product.stockQuotidien
+    ) {
+      // `null` = illimité, et se propage tel quel.
+      stockData.stockRestant = dto.stockQuotidien;
+    }
+
     const updatedProduct = await this.prisma.$transaction(async (tx) => {
       // 1. Mettre à jour le produit
       const updated = await tx.product.update({
         where: { id },
-        data: productData,
+        data: { ...productData, ...stockData },
       });
 
       // 2. Gérer les variantes si fournies

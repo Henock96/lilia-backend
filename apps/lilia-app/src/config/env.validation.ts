@@ -177,9 +177,20 @@ export const envValidationSchema = Joi.object({
   // ─── Expiration des commandes impayées ────────────────────────────────────
   // Le stock est réservé au checkout : sans expiration il reste bloqué
   // indéfiniment sur une commande abandonnée (cf. OrderExpiryService).
-  // Délai court = paiement jamais initié ; délai long = paiement en attente de
-  // confirmation admin (le client a peut-être bien envoyé l'argent).
+  // Trois seuils, parce que trois situations différentes :
+  //  - paiement jamais initié       → 45 min  (le client hésite encore)
+  //  - refus définitif du prestataire → 10 min (fix S-6 : il a tranché, garder
+  //    le stock réservé 45 min n'aide personne — pawaPay répond en une minute)
+  //  - paiement PENDING             → 6 h    (mode MANUAL : l'argent est
+  //    peut-être parti, c'est la confirmation admin qui traîne)
   ORDER_PAYMENT_TIMEOUT_MINUTES: Joi.number().integer().min(5).default(45),
+  ORDER_FAILED_PAYMENT_TIMEOUT_MINUTES: Joi.number()
+    .integer()
+    // `min(5)` et non `min(1)` : sous 5 minutes, le cron (toutes les 5 min)
+    // annulerait des commandes pendant que le client relit son solde pour
+    // réessayer.
+    .min(5)
+    .default(10),
   ORDER_PENDING_PAYMENT_TIMEOUT_MINUTES: Joi.number()
     .integer()
     .min(30)

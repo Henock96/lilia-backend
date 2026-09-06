@@ -94,44 +94,67 @@ export class OrderValidatorService {
     const menuMap = new Map(menus.map((m) => [m.id, m]));
     const errors: string[] = [];
 
+    // ⚠️ AGRÉGATION PAR PRODUIT — fix S-9 (audit du 05/09/2026).
+    //
+    // La boucle parcourait les **lignes** de panier et comparait chacune au
+    // stock, isolément. Un produit présent sur deux lignes (deux variantes du
+    // même plat) était donc validé deux fois contre le même stock : deux fois
+    // 1 unité passaient sur un stock de 1. La décrémentation, elle, agrège par
+    // produit — elle refusait ensuite l'écriture, si bien que la commande
+    // échouait quand même, mais sur « Stock épuisé pour un ou plusieurs
+    // produits », après le travail de la transaction, au lieu du message
+    // nominatif que cette méthode existe pour produire.
+    //
+    // Le validateur doit compter comme la décrémentation compte, sinon les
+    // deux ne parlent pas du même panier.
+    const qtyByProduct = new Map<string, number>();
+    const qtyByMenu = new Map<string, number>();
     for (const item of cartItems) {
-      const product = productMap.get(item.productId);
-
-      // Fixes M1 + M2 : produit retiré du catalogue, marqué indisponible, ou
-      // hors de sa fenêtre horaire. Le catalogue les masque déjà, mais un
-      // panier peut avoir été rempli avant — et `availableFrom/Until` n'était
-      // jamais relu nulle part, donc une viennoiserie du matin passait
-      // commande à 3 h.
-      if (product) {
-        const reason = unavailabilityReason(product);
-        if (reason) errors.push(reason);
-      }
-
-      if (product?.stockRestant !== null && product?.stockRestant !== undefined) {
-        if (product.stockRestant < item.quantite) {
-          errors.push(
-            product.stockRestant === 0
-              ? `"${product.nom}" est épuisé`
-              : `"${product.nom}" : seulement ${product.stockRestant} restant(s)`,
-          );
-        }
-      }
+      qtyByProduct.set(
+        item.productId,
+        (qtyByProduct.get(item.productId) ?? 0) + item.quantite,
+      );
       if (item.menuId) {
-        const menu = menuMap.get(item.menuId);
-        if (menu?.stockRestant !== null && menu?.stockRestant !== undefined) {
-          if (menu.stockRestant < item.quantite) {
-            errors.push(
-              menu.stockRestant === 0
-                ? `Menu "${menu.nom}" épuisé`
-                : `Menu "${menu.nom}" : seulement ${menu.stockRestant} restant(s)`,
-            );
-          }
+        qtyByMenu.set(
+          item.menuId,
+          (qtyByMenu.get(item.menuId) ?? 0) + item.quantite,
+        );
+      }
+    }
+
+    for (const [productId, quantite] of qtyByProduct) {
+      const product = productMap.get(productId);
+      if (!product) continue;
+
+      // Fixes M1 + M2 (+ S-2) : produit retiré du catalogue, marqué
+      // indisponible, hors de sa fenêtre horaire, ou en stock insuffisant. Le
+      // catalogue masque déjà les trois premiers, mais un panier peut avoir
+      // été rempli avant — et `availableFrom/Until` n'était relu nulle part,
+      // donc une viennoiserie du matin passait commande à 3 h.
+      //
+      // Les quatre raisons vivent dans `unavailabilityReason` : le panier et
+      // le checkout posent ainsi exactement la même question, avec les mêmes
+      // mots. Elles étaient auparavant réparties entre cette méthode et cette
+      // fonction, ce qui donnait deux messages différents pour « épuisé ».
+      const reason = unavailabilityReason(product, new Date(), quantite);
+      if (reason) errors.push(reason);
+    }
+
+    for (const [menuId, quantite] of qtyByMenu) {
+      const menu = menuMap.get(menuId);
+      if (menu?.stockRestant !== null && menu?.stockRestant !== undefined) {
+        if (menu.stockRestant < quantite) {
+          errors.push(
+            menu.stockRestant === 0
+              ? `Menu « ${menu.nom} » épuisé.`
+              : `Menu « ${menu.nom} » : il ne reste que ${menu.stockRestant} unité${menu.stockRestant > 1 ? 's' : ''}.`,
+          );
         }
       }
     }
 
     if (errors.length > 0)
-      throw new BadRequestException(`Ruptures de stock : ${errors.join(', ')}`);
+      throw new BadRequestException(`Ruptures de stock : ${errors.join(' ')}`);
   }
 
   validateMinimumOrderAmount(subTotal: number, minimum: number, restaurantName: string) {

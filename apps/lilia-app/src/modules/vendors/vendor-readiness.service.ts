@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { DeliveryPriceMode, OnboardingStatus, Role } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { checkCongoCoordinates } from '../../common/geo/congo-geo';
+import { isZoneCoverageMissing } from '../../common/delivery/zone-coverage';
 import { isValidCongoMsisdn } from '../payments/providers/pawapay/pawapay.mapper';
 
 /**
@@ -273,10 +274,17 @@ export class VendorReadinessService {
           'Ni livraison ni retrait : le client ne pourrait pas être servi.',
       };
     }
+    // Même prédicat que les services d'écriture (`assertZoneCoverage`) : la
+    // checklist *présente* ce qui manque, les services le *refusent*, mais la
+    // règle elle-même n'est écrite qu'une fois. Deux copies d'une même règle
+    // finissent par diverger — cf. `isWithinAvailabilityWindow` vs
+    // `availableProductWhere`, qui différaient sur 17 des 49 cas.
     if (
-      v.supportsDelivery &&
-      v.deliveryPriceMode === DeliveryPriceMode.ZONE_BASED &&
-      v.deliveryZones.length === 0
+      isZoneCoverageMissing(
+        v.deliveryPriceMode,
+        v.deliveryZones.length,
+        v.supportsDelivery,
+      )
     ) {
       return {
         ...base,

@@ -4,6 +4,7 @@ import { ProductType, VendorType } from '@prisma/client';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ProductQueryService } from './product-query.service';
+import type { StockStatus } from './stock-status';
 import { ProductCommandService } from './product-command.service';
 
 /**
@@ -42,8 +43,16 @@ export class ProductsService {
     categoryId?: string,
     page = 1,
     limit = 20,
+    stockStatus?: StockStatus,
   ) {
-    return this.query.findAllForOwner(firebaseUid, restaurantId, categoryId, page, limit);
+    return this.query.findAllForOwner(
+      firebaseUid,
+      restaurantId,
+      categoryId,
+      page,
+      limit,
+      stockStatus,
+    );
   }
 
   findOne(id: string) {

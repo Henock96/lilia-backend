@@ -144,13 +144,36 @@ export class RestaurantsController {
     }
 
     /**
-     * PATCH /restaurants/:id/delivery-settings
-     * Met à jour les paramètres de livraison
+     * PATCH /restaurants/:id/delivery-settings — **DÉPRÉCIÉE**.
+     *
+     * Utiliser `PATCH /vendors/:id/delivery`, qui écrit les mêmes colonnes.
+     *
+     * Les deux routes ont coexisté avec deux niveaux de validation : ici
+     * `deliveryPriceMode` n'était qu'un `@IsString()` (« GRATUIT » passait et
+     * remontait en 500 depuis Prisma) et les montants n'avaient pas de borne
+     * haute ; là-bas, `@IsEnum` et `@Max` depuis le début. **Deux portes sur la
+     * même chose finissent toujours par ne pas poser les mêmes règles.**
+     *
+     * Les deux contrats sont alignés depuis la Phase 2A (mêmes bornes, même
+     * garde `assertZoneCoverage`, même contrôle `min ≤ max`), et le dernier
+     * appelant — l'écran Livraison de `lilia-food-admin` — a migré. La route
+     * survit uniquement pour les binaires Flutter déjà installés : la
+     * supprimer casserait leur écran de réglages sans qu'ils puissent se
+     * mettre à jour.
+     *
+     * ⚠️ Ne pas y ajouter de champ : tout nouveau réglage de livraison va sur
+     * `/vendors/:id/delivery`.
      */
     @Patch(':id/delivery-settings')
     @Roles('ADMIN', 'RESTAURATEUR')
     @HttpCode(HttpStatus.OK)
-    @ApiOperation({ summary: 'Paramètres de livraison du restaurant' })
+    @ApiOperation({
+        summary: 'Paramètres de livraison du restaurant',
+        deprecated: true,
+        description:
+            'Dépréciée — utiliser `PATCH /vendors/:id/delivery`. Conservée pour ' +
+            'les applications Flutter déjà déployées.',
+    })
     updateDeliverySettings(
         @Param('id') id: string,
         @Body() dto: UpdateDeliverySettingsDto,

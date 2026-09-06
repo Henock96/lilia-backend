@@ -52,9 +52,10 @@ describe('OrderExpiryService', () => {
     expect(where.Payment).toEqual({ none: { status: 'SUCCESS' } });
   });
 
-  it('applique deux délais : court sans paiement, long si paiement en attente', async () => {
+  it('applique trois délais selon ce que le prestataire a répondu', async () => {
     service = await build({
       ORDER_PAYMENT_TIMEOUT_MINUTES: 45,
+      ORDER_FAILED_PAYMENT_TIMEOUT_MINUTES: 10,
       ORDER_PENDING_PAYMENT_TIMEOUT_MINUTES: 360,
     });
     const before = Date.now();
@@ -63,14 +64,28 @@ describe('OrderExpiryService', () => {
 
     const after = Date.now();
     const branches = prisma.order.findMany.mock.calls[0][0].where.AND[1].OR;
-    const [noPayment, pendingPayment] = branches;
+    const [noPayment, failedPayment, pendingPayment] = branches;
 
-    expect(noPayment.Payment).toEqual({ none: { status: 'PENDING' } });
+    // Trois situations, trois branches — et elles doivent être exhaustives :
+    // un paiement SUCCESS est déjà exclu plus haut, il ne reste donc que
+    // « aucune ligne », « uniquement des échecs » et « au moins un PENDING ».
+    expect(noPayment.Payment).toEqual({ none: {} });
+    expect(failedPayment.Payment).toEqual({
+      none: { status: 'PENDING' },
+      some: { status: { in: ['FAILED', 'CANCELLED'] } },
+    });
     expect(pendingPayment.Payment).toEqual({ some: { status: 'PENDING' } });
 
     // Le paiement en attente bénéficie du délai le plus long : en mode MANUAL
     // c'est peut-être la confirmation admin qui traîne, pas le client.
     expect(pendingPayment.createdAt.lt.getTime()).toBeLessThan(
+      noPayment.createdAt.lt.getTime(),
+    );
+
+    // Fix S-6 : un refus définitif rend le stock le plus vite. Le prestataire
+    // a tranché — attendre les 45 min du cas « le client hésite encore »
+    // n'immobilisait le stock que pour rien.
+    expect(failedPayment.createdAt.lt.getTime()).toBeGreaterThan(
       noPayment.createdAt.lt.getTime(),
     );
 

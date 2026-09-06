@@ -14,7 +14,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { ProductType, StockMode } from '@prisma/client';
-import { MAX_PRIX_XAF } from './create-product.dto';
+import { MAX_PRIX_XAF, MAX_STOCK_UNITS } from './create-product.dto';
 
 const TIME_HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -79,6 +79,27 @@ export class UpdateProductDto {
   @IsEnum(StockMode)
   @IsOptional()
   stockMode?: StockMode;
+
+  /**
+   * Capacité déclarée. `null` = stock illimité.
+   *
+   * ⚠️ Ce champ **manquait** à ce DTO, et c'est la cause racine du bug S-1
+   * (audit du 05/09/2026). Le `ValidationPipe` global tourne en
+   * `whitelist: true` / `forbidNonWhitelisted: false` : une propriété non
+   * déclarée est **supprimée en silence**. Les deux formulaires produit (admin
+   * web et admin Flutter) envoyaient donc `stockQuotidien` à
+   * `PATCH /products/:id` depuis toujours, recevaient un 200 et un toast
+   * « Produit mis à jour », et **aucune des deux colonnes de stock ne
+   * bougeait**. Le seul stock jamais écrit était celui de la création.
+   *
+   * Le champ absent est plus dangereux que le champ mal validé : il n'échoue
+   * nulle part.
+   */
+  @IsInt({ message: 'Le stock est un nombre entier d’unités.' })
+  @IsOptional()
+  @Min(0, { message: 'Le stock ne peut pas être négatif.' })
+  @Max(MAX_STOCK_UNITS, { message: 'Stock hors limites.' })
+  stockQuotidien?: number | null;
 
   @IsString()
   @IsOptional()

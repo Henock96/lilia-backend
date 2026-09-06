@@ -25,6 +25,16 @@ const TIME_HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
  */
 export const MAX_PRIX_XAF = 10_000_000;
 
+/**
+ * Borne haute sur les quantités de stock.
+ *
+ * Même esprit que `MAX_PRIX_XAF` : personne ne déclare un million de beignets.
+ * La borne existe pour qu'une saisie aberrante — un champ texte mal converti,
+ * un client bogué — soit rejetée en 400 explicite plutôt que persistée, et
+ * pour que `stockRestant - quantite` reste très loin de tout débordement.
+ */
+export const MAX_STOCK_UNITS = 1_000_000;
+
 class CreateProductVariantDto {
   @IsString()
   @IsOptional()
@@ -98,10 +108,13 @@ export class CreateProductDto {
   @IsOptional()
   stockMode?: StockMode;
 
-  @IsInt()
+  // `null` / absent = stock illimité. `0` = épuisé (deux états distincts, cf.
+  // `Product.stockRestant` au schéma).
+  @IsInt({ message: 'Le stock est un nombre entier d’unités.' })
   @IsOptional()
-  @Min(0)
-  stockQuotidien?: number;
+  @Min(0, { message: 'Le stock ne peut pas être négatif.' })
+  @Max(MAX_STOCK_UNITS, { message: 'Stock hors limites.' })
+  stockQuotidien?: number | null;
 
   // Fait maison / pâtisserie
   @IsString()

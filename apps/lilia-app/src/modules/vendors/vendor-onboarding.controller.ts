@@ -23,6 +23,7 @@ import { VendorInvitationService } from './vendor-invitation.service';
 import { VendorsService } from './vendors.service';
 import { RestaurantHoursService } from '../restaurants/restaurant-hours.service';
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
+import { DeliveryZonesService } from '../quartiers/delivery-zones.service';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import {
@@ -60,6 +61,7 @@ export class VendorOnboardingController {
     private readonly onboarding: VendorOnboardingService,
     private readonly hours: RestaurantHoursService,
     private readonly access: RestaurantAccessService,
+    private readonly zones: DeliveryZonesService,
   ) {}
 
   // ─── Lecture (admin ou propriétaire) ───────────────────────────────────────
@@ -141,6 +143,32 @@ export class VendorOnboardingController {
   ) {
     await this.access.verifyOwnership(id, caller.firebaseUid);
     return this.onboarding.updateDelivery(id, dto);
+  }
+
+  /**
+   * GET /vendors/:id/delivery-zones — grille tarifaire **vue gestionnaire**.
+   *
+   * Elle vit ici, et non sous `/quartiers`, parce que c'est une lecture *sur un
+   * vendeur* : même objet, mêmes droits et même contrôle de propriété que les
+   * six routes de configuration ci-dessus. Les routes `/quartiers/zones/...`
+   * restent le point d'écriture — elles acceptent déjà l'ADMIN via
+   * `verifyOwnership` ; c'est la **lecture** par identifiant qui manquait.
+   *
+   * ⚠️ Ne pas confondre avec `GET /quartiers/restaurant-zones`, publique et
+   * filtrée sur la frontière marketplace : elle ne rend rien d'un vendeur en
+   * cours de configuration.
+   */
+  @Get(':id/delivery-zones')
+  @Roles('ADMIN', 'RESTAURATEUR')
+  @ApiOperation({
+    summary: 'Zones de livraison et couverture (admin ou propriétaire)',
+  })
+  @ApiParam({ name: 'id', description: 'ID du vendeur (Restaurant)' })
+  getDeliveryZones(@Param('id') id: string, @CurrentUser() caller: User) {
+    // Le contrôle de propriété est fait par le service, qui a besoin du
+    // restaurant chargé de toute façon — le refaire ici serait une requête de
+    // plus pour la même réponse.
+    return this.zones.getManagedDeliveryZones(id, caller.firebaseUid);
   }
 }
 

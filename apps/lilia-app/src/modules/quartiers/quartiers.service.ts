@@ -150,6 +150,21 @@ export class QuartiersService {
               },
             },
           },
+          // Ordre **déterministe**, en défense en profondeur.
+          //
+          // La boucle plus bas retourne la première zone contenant le quartier.
+          // Sans `orderBy`, PostgreSQL ne garantit aucun ordre : si un
+          // chevauchement existait, deux clients du même quartier pouvaient
+          // payer deux tarifs différents — et rien ne l'aurait signalé.
+          //
+          // Le chevauchement est désormais impossible en base
+          // (`@@unique([restaurantId, quartierId])`), donc au plus une zone
+          // correspond et cet ordre ne change plus rien. Il est conservé parce
+          // qu'une lecture ne doit pas dépendre d'une contrainte d'écriture
+          // pour être correcte : si la contrainte disparaissait, ou sur une
+          // base restaurée avant la migration, le tarif le plus bas gagne —
+          // le même arbitrage que celui posé dans la migration.
+          orderBy: [{ fee: 'asc' }, { id: 'asc' }],
         },
       },
     });

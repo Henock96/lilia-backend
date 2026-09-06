@@ -4,6 +4,7 @@ import { Prisma, ProductType, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
+import { stockStatusWhere, type StockStatus } from './stock-status';
 import { catalogProductWhere } from './product-availability';
 
 /**
@@ -117,6 +118,7 @@ export class ProductQueryService {
     categoryId?: string,
     page = 1,
     limit = 20,
+    stockStatus?: StockStatus,
   ) {
     // Même arbitre que les écritures : le vendeur reste chez lui, seul un ADMIN
     // peut désigner une autre boutique. Une seule règle de propriété pour lire
@@ -136,6 +138,11 @@ export class ProductQueryService {
       // apparaître ici le rendrait modifiable indépendamment du menu qu'il sert.
       menus: { none: { menu: { type: 'PLAT_SPECIAL' } } },
       ...(categoryId && { categoryId }),
+      // Le filtre de stock n'a de sens que sur cette vue : le catalogue public
+      // ne montre déjà que ce qui est vendable, et le vendeur est le seul à
+      // avoir besoin de retrouver ce qui ne l'est plus. Filtrer côté serveur
+      // et non dans l'interface, sinon on ne filtrerait que la page reçue.
+      ...(stockStatus ? stockStatusWhere(stockStatus) : {}),
     };
 
     const [products, total] = await Promise.all([

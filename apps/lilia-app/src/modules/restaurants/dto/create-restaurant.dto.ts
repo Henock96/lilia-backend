@@ -2,12 +2,26 @@
 import {
   IsArray,
   IsBoolean,
+  IsEnum,
   IsInt,
   IsOptional,
   IsString,
   Max,
   Min,
 } from 'class-validator';
+import { DeliveryPriceMode } from '@prisma/client';
+
+/**
+ * Plafonds partagés avec `UpdateVendorDeliveryDto` (`vendors/dto/onboarding.dto.ts`).
+ *
+ * Les deux DTOs écrivent **les mêmes colonnes** par deux routes différentes
+ * (`PATCH /restaurants/:id/delivery-settings` et `PATCH /vendors/:id/delivery`)
+ * et ne les validaient pas pareil : l'un bornait, l'autre non. Un plafond
+ * déclaré à deux endroits finit toujours par diverger — ils sont donc définis
+ * ici et importés là-bas.
+ */
+export const MAX_DELIVERY_FEE_XAF = 100_000;
+export const MAX_DELIVERY_MINUTES = 600;
 
 export class CreateRestaurantDto {
     @IsString()
@@ -34,26 +48,41 @@ export class UpdateDeliverySettingsDto {
     @IsOptional()
     @IsInt({ message: 'Un montant en francs CFA est un nombre entier — le XAF n’a pas de sous-unité.' })
     @Min(0)
+    @Max(MAX_DELIVERY_FEE_XAF, { message: 'Frais de livraison hors limites.' })
     fixedDeliveryFee?: number;
 
     @IsOptional()
     @IsInt()
     @Min(0)
+    @Max(MAX_DELIVERY_MINUTES)
     estimatedDeliveryTimeMin?: number;
 
     @IsOptional()
     @IsInt()
     @Min(0)
+    @Max(MAX_DELIVERY_MINUTES)
     estimatedDeliveryTimeMax?: number;
 
     @IsOptional()
     @IsInt({ message: 'Un montant en francs CFA est un nombre entier — le XAF n’a pas de sous-unité.' })
     @Min(0)
+    @Max(MAX_DELIVERY_FEE_XAF, { message: 'Montant minimum hors limites.' })
     minimumOrderAmount?: number;
 
+    /**
+     * ⚠️ Ce champ était validé par `@IsString()` (fix L-4, audit du 05/09/2026).
+     *
+     * L'annotation TypeScript `'FIXED' | 'ZONE_BASED'` ne vaut rien à
+     * l'exécution : `{"deliveryPriceMode": "GRATUIT"}` passait class-validator,
+     * atteignait Prisma, et remontait en **500** — une erreur d'infrastructure
+     * pour ce qui est une saisie invalide. La route jumelle
+     * `PATCH /vendors/:id/delivery` faisait déjà `@IsEnum`.
+     */
     @IsOptional()
-    @IsString()
-    deliveryPriceMode?: 'FIXED' | 'ZONE_BASED';
+    @IsEnum(DeliveryPriceMode, {
+      message: 'Mode de livraison invalide : attendu FIXED ou ZONE_BASED.',
+    })
+    deliveryPriceMode?: DeliveryPriceMode;
 }
 
 // DTO pour mettre à jour le statut d'ouverture

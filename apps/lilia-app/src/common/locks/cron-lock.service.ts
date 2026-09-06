@@ -8,7 +8,7 @@ import { shouldRunBackgroundJobs } from '../../config/background-jobs';
  * Verrou distribué pour les tâches planifiées (fix M8 — audit du 28/08/2026).
  *
  * `@nestjs/schedule` exécute les crons dans **chaque** instance. La plupart des
- * jobs sont idempotents (`expireUnpaidOrders`, `resetDailyStock`), mais
+ * jobs sont idempotents (`expireUnpaidOrders`, `handleDailyStockReset`), mais
  * `sendDailyReminders` envoie une notification par instance : le vendeur reçoit
  * le même rappel deux fois dès qu'on passe à deux instances Render.
  *
