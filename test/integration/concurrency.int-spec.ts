@@ -40,6 +40,7 @@ describeIfDb('Concurrence — garanties portées par PostgreSQL', () => {
   beforeEach(async () => {
     await prisma.$executeRawUnsafe(`
       TRUNCATE TABLE "DeliveryReview", "DeliveryLocation", "Delivery",
+                     "ReferralReward", "DeviceInstallation",
                      "LoyaltyTransaction", "OrderItem", "OrderHistory",
                      "payments", "Refund", "Order", "CartItem", "Cart",
                      "ProductVariant", "Product", "Restaurant", "User"
@@ -288,5 +289,174 @@ describeIfDb('Concurrence — garanties portées par PostgreSQL', () => {
     });
     expect(delivery.status).toBe('EN_TRANSIT');
     expect(delivery.pickedUpAt).not.toBeNull();
+  });
+
+  // ─── Parrainage : « exactement une récompense », portée par la base ───────
+
+  it('deux livraisons concurrentes du même filleul : exactement UNE récompense', async () => {
+    await seed({ stock: 5 });
+    await createOrder('order-1', 'client-2');
+    await createOrder('order-2', 'client-2');
+
+    // Les deux chemins vers LIVRER peuvent arriver ensemble, sur deux
+    // commandes différentes du même filleul. L'ancienne garde comptait les
+    // commandes payées et exigeait « exactement 1 » : les deux appels lisaient
+    // 2 et AUCUNE récompense n'était versée. `referredUserId @unique` rend le
+    // comptage inutile — la base tranche.
+    const claim = (orderId: string) =>
+      prisma.referralReward.create({
+        data: {
+          referrerId: 'client-1',
+          referredUserId: 'client-2',
+          orderId,
+          status: 'APPROVED',
+          riskScore: 0,
+          riskSignals: [],
+          points: 1,
+        },
+      });
+
+    const results = await Promise.allSettled([
+      claim('order-1'),
+      claim('order-2'),
+    ]);
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
+
+    expect(
+      await prisma.referralReward.count({
+        where: { referredUserId: 'client-2' },
+      }),
+    ).toBe(1);
+  });
+
+  it('une commande ne peut valider qu’un seul parrainage', async () => {
+    await seed({ stock: 5 });
+    await createOrder('order-1', 'client-2');
+    await prisma.user.create({
+      data: { id: 'client-3', firebaseUid: 'fb-c3', email: 'c3@test.local' },
+    });
+
+    await prisma.referralReward.create({
+      data: {
+        referrerId: 'client-1',
+        referredUserId: 'client-2',
+        orderId: 'order-1',
+        status: 'APPROVED',
+        riskScore: 0,
+        riskSignals: [],
+        points: 1,
+      },
+    });
+
+    await expect(
+      prisma.referralReward.create({
+        data: {
+          referrerId: 'client-1',
+          referredUserId: 'client-3',
+          orderId: 'order-1', // même commande
+          status: 'APPROVED',
+          riskScore: 0,
+          riskSignals: [],
+          points: 1,
+        },
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('les trois écritures de la commande qualifiante coexistent', async () => {
+    await seed({ stock: 5 });
+    await createOrder('order-1', 'client-2');
+
+    // La contrainte porte sur (orderId, type) : sur la commande qui valide un
+    // parrainage, le gain du filleul et la récompense du parrain sont deux
+    // types distincts et doivent pouvoir cohabiter. C'est ce qui permet de
+    // porter l'idempotence du parrainage EN BASE sans table supplémentaire.
+    await prisma.loyaltyTransaction.create({
+      data: {
+        userId: 'client-2',
+        orderId: 'order-1',
+        points: 1,
+        type: 'ORDER_EARN',
+        reason: '+1 pt — commande livrée',
+      },
+    });
+    await prisma.loyaltyTransaction.create({
+      data: {
+        userId: 'client-1',
+        sourceUserId: 'client-2',
+        orderId: 'order-1',
+        points: 1,
+        type: 'REFERRAL_REFERRER',
+        reason: 'Parrainage',
+      },
+    });
+
+    expect(
+      await prisma.loyaltyTransaction.count({ where: { orderId: 'order-1' } }),
+    ).toBe(2);
+
+    // Mais un second REFERRAL_REFERRER sur la même commande est refusé.
+    await expect(
+      prisma.loyaltyTransaction.create({
+        data: {
+          userId: 'client-1',
+          orderId: 'order-1',
+          points: 1,
+          type: 'REFERRAL_REFERRER',
+          reason: 'Doublon',
+        },
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('un même appareil sur deux comptes est comptable, un doublon ne l’est pas', async () => {
+    await seed({ stock: 5 });
+
+    const register = (userId: string) =>
+      prisma.deviceInstallation.create({
+        data: { installationId: 'inst-A', userId, platform: 'android' },
+      });
+
+    await register('client-1');
+    await register('client-2');
+
+    // Deux comptes distincts sur la même installation : c'est LE signal.
+    const accounts = await prisma.deviceInstallation.findMany({
+      where: { installationId: 'inst-A' },
+      distinct: ['userId'],
+    });
+    expect(accounts).toHaveLength(2);
+
+    // Mais le même couple ne se compte pas deux fois : sinon une simple
+    // reconnexion gonflerait le score d'un client parfaitement honnête.
+    await expect(register('client-1')).rejects.toThrow();
+  });
+
+  it('le solde ne descend jamais sous zéro, même en dépense concurrente', async () => {
+    await seed({ stock: 5 });
+    await prisma.user.update({
+      where: { id: 'client-1' },
+      data: { loyaltyPoints: 10 },
+    });
+
+    // Requête réelle du checkout (`order-checkout.service.ts`).
+    const spend = () =>
+      prisma.$executeRaw`
+        UPDATE "User"
+           SET "loyaltyPoints" = "loyaltyPoints" - 10
+         WHERE id = 'client-1' AND "loyaltyPoints" >= 10
+      `;
+
+    const [a, b] = await Promise.all([spend(), spend()]);
+
+    expect([a, b].filter((n) => n === 1)).toHaveLength(1);
+    expect([a, b].filter((n) => n === 0)).toHaveLength(1);
+
+    const user = await prisma.user.findUniqueOrThrow({
+      where: { id: 'client-1' },
+    });
+    expect(user.loyaltyPoints).toBe(0);
   });
 });

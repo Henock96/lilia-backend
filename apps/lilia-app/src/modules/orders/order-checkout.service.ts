@@ -267,7 +267,19 @@ export class OrderCheckoutService {
     const finalDeliveryFee = promoResult?.newDeliveryFee ?? amounts.deliveryFee;
     const discountAmount = promoResult?.discountAmount ?? 0;
 
-    // Réduction points de fidélité — plafonnée au montant encore dû après promo.
+    // Réduction points de fidélité — plafonnée au **panier alimentaire**.
+    //
+    // ⚠️ L'assiette a changé en septembre 2026. Les points s'imputaient sur
+    // `subTotal + deliveryFee + serviceFee` : ils finançaient donc la course du
+    // livreur et les frais de fonctionnement, deux postes réellement décaissés
+    // et que le reversement vendeur ne compense pas (il se calcule sur
+    // `subTotal` brut). Une commande réglée intégralement en points ne rentrait
+    // aucun franc tout en devant payer le livreur.
+    //
+    // Les points ne réduisent désormais que ce que le client achète à manger,
+    // déduction faite de la promo déjà appliquée sur ce même panier. La
+    // livraison et les frais de service restent dus en argent.
+    //
     // On ne consomme JAMAIS plus de points que nécessaire (évite la perte de
     // valeur sur une petite commande payée avec un gros solde de points).
     let loyaltyDiscount = 0;
@@ -279,19 +291,16 @@ export class OrderCheckoutService {
       });
       const pts = userPoints?.loyaltyPoints ?? 0;
       if (pts >= settings.loyaltyMinRedemption) {
-        // Montant restant à payer une fois la promo appliquée
-        const remaining = Math.max(
-          0,
-          amounts.subTotal +
-            finalDeliveryFee +
-            amounts.serviceFee -
-            discountAmount,
-        );
+        // Assiette : le panier alimentaire, une fois la promo passée dessus.
+        // `discountAmount` d'un code FREE_DELIVERY vaut 0 (sa remise porte sur
+        // `finalDeliveryFee`), il ne rogne donc pas cette assiette — ce qui est
+        // exact : il n'a rien offert sur la nourriture.
+        const redeemableBase = Math.max(0, amounts.subTotal - discountAmount);
         // Nombre de points effectivement utilisables (entier, plafonné au solde
-        // ET au montant dû)
+        // ET à l'assiette)
         loyaltyPointsUsed = Math.min(
           pts,
-          Math.floor(remaining / settings.loyaltyPointValueXaf),
+          Math.floor(redeemableBase / settings.loyaltyPointValueXaf),
         );
         loyaltyDiscount = loyaltyPointsUsed * settings.loyaltyPointValueXaf;
       }
@@ -317,6 +326,12 @@ export class OrderCheckoutService {
           commissionPercent: amounts.commissionPercent,
           commissionAmount: amounts.commissionAmount,
           discountAmount: discountAmount + loyaltyDiscount,
+          // Part « fidélité » isolée, figée à la commande. `discountAmount`
+          // reste la remise totale (promo + fidélité) : c'est lui qui entre
+          // dans `total`, et le reversement vendeur comme les remboursements
+          // continuent de le lire sans changement.
+          loyaltyPointsUsed,
+          loyaltyDiscount,
           total: finalTotal,
           promoCodeId: promoResult?.promoCodeId ?? null,
           isDelivery,

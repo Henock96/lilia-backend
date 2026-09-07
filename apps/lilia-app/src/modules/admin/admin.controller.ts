@@ -35,6 +35,12 @@ import {
 } from '../../common/pagination/pagination-query.dto';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { LoyaltyReconciliationService } from '../loyalty/loyalty-reconciliation.service';
+import { LoyaltyAdminService } from '../loyalty/loyalty-admin.service';
+import {
+  AdjustLoyaltyDto,
+  ReferralRewardFilterDto,
+  ReviewReferralRewardDto,
+} from './dto/loyalty-admin.dto';
 import { AdminAuditAction } from '@prisma/client';
 
 /**
@@ -54,6 +60,9 @@ export class AdminController {
     // activation/désactivation ne laissaient aucune trace durable.
     private readonly audit: AdminAuditService,
     private readonly loyaltyReconciliation: LoyaltyReconciliationService,
+    // Écritures d'administration sur la fidélité : ajustement manuel tracé et
+    // arbitrage des récompenses de parrainage retenues par le scoring.
+    private readonly loyaltyAdmin: LoyaltyAdminService,
   ) {}
 
   // ─── DASHBOARD ─────────────────────────────────────────────────────────────
@@ -253,6 +262,72 @@ export class AdminController {
   @ApiParam({ name: 'id', description: 'ID Prisma du client' })
   getClientReferral(@Param('id') id: string) {
     return this.adminService.getClientReferral(id);
+  }
+
+  @Post('clients/:id/loyalty/adjust')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Créditer ou débiter manuellement le solde de fidélité',
+    description:
+      "Un point vaut de l'argent : l'écriture porte son auteur, son motif, et " +
+      'double sa trace dans le journal d’audit. Aucun solde ne bouge sans nom.',
+  })
+  @ApiParam({ name: 'id', description: 'ID Prisma du client' })
+  adjustClientLoyalty(
+    @Param('id') id: string,
+    @Body() dto: AdjustLoyaltyDto,
+    @CurrentUser() admin: User,
+  ) {
+    return this.loyaltyAdmin
+      .adjust({
+        actorId: admin.id,
+        userId: id,
+        points: dto.points,
+        reason: dto.reason,
+      })
+      .then((data) => ({ data }));
+  }
+
+  // ─── RÉCOMPENSES DE PARRAINAGE ─────────────────────────────────────────────
+
+  @Get('referral-rewards')
+  @ApiOperation({
+    summary: 'Récompenses de parrainage arbitrées',
+    description:
+      'Filtrer sur `PENDING_REVIEW` donne la file d’attente : les récompenses ' +
+      'que le scoring anti-abus a retenues sans les refuser. Chaque ligne porte ' +
+      'son score et le détail des signaux qui l’ont produit.',
+  })
+  listReferralRewards(@Query() query: ReferralRewardFilterDto) {
+    return this.loyaltyAdmin.listReferralRewards({
+      status: query.status,
+      page: query.page,
+      limit: query.limit,
+    });
+  }
+
+  @Post('referral-rewards/:id/review')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Arbitrer une récompense en attente de revue',
+    description:
+      'Seul un `PENDING_REVIEW` est révisable : approuver un refus motivé ' +
+      'reviendrait à le contourner, et rejouer une approbation doublerait un ' +
+      'crédit déjà passé.',
+  })
+  reviewReferralReward(
+    @Param('id') id: string,
+    @Body() dto: ReviewReferralRewardDto,
+    @CurrentUser() admin: User,
+  ) {
+    return this.loyaltyAdmin
+      .reviewReferralReward({
+        actorId: admin.id,
+        rewardId: id,
+        decision: dto.decision,
+        note: dto.note,
+      })
+      .then((data) => ({ data }));
   }
 
   @Patch('users/:id/role')
@@ -476,7 +551,8 @@ export class AdminController {
     description:
       'Fix M13 : `User.loyaltyPoints` est écrit par 5 chemins différents et ' +
       'aucun contrôle ne vérifiait `SUM(points) == loyaltyPoints`. Un écart ' +
-      "de points est un écart d'argent (1 pt = 5 XAF).",
+      "de points est un écart d'argent : un point vaut ce que dit " +
+      '`PlatformSettings.loyaltyPointValueXaf`.',
   })
   getLoyaltyDrifts(@Query() query: OptionalLimitQueryDto) {
     return this.loyaltyReconciliation

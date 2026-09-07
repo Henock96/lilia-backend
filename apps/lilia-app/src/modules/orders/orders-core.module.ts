@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { LoyaltyModule } from '../loyalty/loyalty.module';
 import { RefundsCoreModule } from '../refunds/refunds-core.module';
+import { ReferralCoreModule } from '../users/referral-core.module';
 import { OrderLifecycleService } from './order-lifecycle.service';
 import { OrderStateMachine } from './order-state.machine';
 import { StockService } from './stock.service';
@@ -25,7 +26,7 @@ import { StockService } from './stock.service';
  * ni importer un module qui en déclare.**
  */
 @Module({
-  imports: [PrismaModule, LoyaltyModule, RefundsCoreModule],
+  imports: [PrismaModule, LoyaltyModule, RefundsCoreModule, ReferralCoreModule],
   providers: [OrderStateMachine, StockService, OrderLifecycleService],
   exports: [
     OrderLifecycleService,
@@ -33,6 +34,7 @@ import { StockService } from './stock.service';
     StockService,
     LoyaltyModule,
     RefundsCoreModule,
+    ReferralCoreModule,
   ],
 })
 export class OrdersCoreModule {}

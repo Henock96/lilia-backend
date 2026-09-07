@@ -3,7 +3,6 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderPaymentConfirmedEvent } from '../events/order-events';
-import { ReferralService } from '../users/referral.service';
 
 /**
  * Réactions à la confirmation / à l'échec d'un encaissement client.
@@ -36,7 +35,6 @@ export class PaymentListener {
   constructor(
     private readonly notificationsService: NotificationsService,
     private readonly prisma: PrismaService,
-    private readonly referral: ReferralService,
   ) {}
 
   @OnEvent('order.payment.confirmed')
@@ -65,14 +63,17 @@ export class PaymentListener {
       // n'avait pas commencé.
       await this.notifyCustomerPaymentSuccess(event, order.restaurant.nom);
 
-      // Récompense de parrainage — versée ICI, et nulle part ailleurs (fix C3) :
-      // elle l'était à la création de la commande, donc sans qu'un franc soit
-      // payé. Non bloquant.
-      await this.referral
-        .rewardIfFirstPaidOrder(event.userId)
-        .catch((err) =>
-          this.logger.error(`Erreur récompense parrainage: ${err}`),
-        );
+      // ⚠️ La récompense de parrainage N'EST PLUS versée ici (septembre 2026).
+      //
+      // Elle l'était à la confirmation du paiement. Mais une commande payée
+      // reste annulable — par le vendeur depuis `EN_PREPARATION` et `PRET`,
+      // par l'administrateur depuis `EN_ROUTE` — avec ouverture d'un
+      // remboursement : le client était remboursé, ses points dépensés lui
+      // étaient rendus, et le point du parrain restait acquis.
+      //
+      // Elle est désormais arbitrée à `LIVRER`, seul statut terminal, sur les
+      // deux chemins qui y mènent (`OrderLifecycleService`, `DeliveriesService`).
+      // Ne pas la réintroduire ici.
     } catch (error) {
       this.logger.error(
         `Erreur au traitement de order.payment.confirmed : ${(error as Error).message}`,

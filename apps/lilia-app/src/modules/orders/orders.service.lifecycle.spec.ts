@@ -24,6 +24,7 @@ import { PreorderValidatorService } from '../vendors/preorder-validator.service'
 import { QuartiersService } from '../quartiers/quartiers.service';
 import { DeliveryDestinationService } from './delivery-destination.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
+import { ReferralService } from '../users/referral.service';
 import { RefundsService } from '../refunds/refunds.service';
 import { OutboxService } from '../outbox/outbox.service';
 
@@ -99,6 +100,14 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
           provide: LoyaltyService,
           useValue: {
             awardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          // Le parrainage est arbitré au même endroit que la fidélité depuis
+          // que son déclencheur est passé du paiement à la livraison.
+          provide: ReferralService,
+          useValue: {
+            rewardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
           },
         },
         {

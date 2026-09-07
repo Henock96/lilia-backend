@@ -56,4 +56,21 @@ describe('CORS — en-têtes autorisés', () => {
     expect(serialized).not.toMatch(/,\s/);
     expect(serialized.split(',')).toEqual([...allowed]);
   });
+
+  it('autorise X-Lilia-Installation-Id — envoyé par apiClient sur TOUTES les requêtes', () => {
+    const allowed = CORS_ALLOWED_HEADERS.map((h) => h.toLowerCase());
+
+    // Signal anti-abus du parrainage, posé par `installationHeaders()` dans
+    // `packages/api-client/src/client.ts` et par l'interceptor Dio côté
+    // Flutter. L'omettre ici ne casserait pas l'inscription : le navigateur
+    // refuserait d'émettre **toute** requête portant cet en-tête, donc les
+    // deux applications web en entier — et en silence, le préflight répondant
+    // 204 avec des en-têtes parfaitement corrects.
+    expect(allowed).toContain('x-lilia-installation-id');
+  });
+
+  it('autorise X-Lilia-Platform', () => {
+    const allowed = CORS_ALLOWED_HEADERS.map((h) => h.toLowerCase());
+    expect(allowed).toContain('x-lilia-platform');
+  });
 });
