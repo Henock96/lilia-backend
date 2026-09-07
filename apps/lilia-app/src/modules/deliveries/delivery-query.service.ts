@@ -168,6 +168,10 @@ export class DeliveryQueryService {
                 adresse: true,
                 phone: true,
                 vendorType: true,
+                // Coordonnees du point de retrait : le livreur doit pouvoir lancer
+                // un itineraire vers le comptoir, pas seulement vers le client.
+                latitude: true,
+                longitude: true,
                 acceptsPreorders: true,
                 preorderLeadHours: true,
               },
@@ -213,6 +217,10 @@ export class DeliveryQueryService {
                 adresse: true,
                 phone: true,
                 vendorType: true,
+                // Coordonnees du point de retrait : le livreur doit pouvoir lancer
+                // un itineraire vers le comptoir, pas seulement vers le client.
+                latitude: true,
+                longitude: true,
                 acceptsPreorders: true,
                 preorderLeadHours: true,
                 owner: { select: { firebaseUid: true } },
@@ -329,6 +337,10 @@ export class DeliveryQueryService {
                 adresse: true,
                 phone: true,
                 vendorType: true,
+                // Coordonnees du point de retrait : le livreur doit pouvoir lancer
+                // un itineraire vers le comptoir, pas seulement vers le client.
+                latitude: true,
+                longitude: true,
                 acceptsPreorders: true,
                 preorderLeadHours: true,
               },

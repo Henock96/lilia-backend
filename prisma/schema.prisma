@@ -1951,5 +1951,41 @@ model PlatformSettings {
   maintenanceMode    Boolean @default(false)
   maintenanceMessage String?
 
+  /// PARC INSTALLÉ — pilotage des mises à jour des applications mobiles.
+  ///
+  /// Les binaires publiés sur les stores ne peuvent pas être rappelés : une
+  /// version qui affiche un mauvais numéro de paiement, ou qui parle un
+  /// contrat d'API qu'on vient de changer, reste installée chez le client
+  /// jusqu'à ce qu'il décide de la mettre à jour. Ces champs sont le seul
+  /// levier dont dispose la plateforme pour agir dessus sans release.
+  ///
+  /// Format attendu : `major.minor.patch` avec `+build` optionnel
+  /// (« 1.3.0 », « 1.3.0+41 »). Les clients parsent **strictement** : une
+  /// valeur mal formée est ignorée et traitée comme « aucune contrainte ».
+  /// C'est délibéré — une faute de frappe ne doit pas bloquer le parc.
+  /// Laisser `null` désactive le mécanisme correspondant.
+
+  /// En dessous de cette version, l'application se bloque et exige une mise à
+  /// jour. ⚠️ À manier avec précaution : c'est le seul réglage de cette table
+  /// qui peut empêcher un client de commander. Ne l'utiliser que pour une
+  /// faille de sécurité ou une rupture de contrat d'API — jamais pour pousser
+  /// une nouveauté, ce à quoi sert `latestAppVersion`.
+  minAppVersion String?
+
+  /// Dernière version publiée. Au-dessus de la version installée, l'app
+  /// propose la mise à jour et laisse repousser.
+  latestAppVersion String?
+
+  /// Liens de store. `null` ⇒ les applications retombent sur les URL par
+  /// défaut compilées dans le binaire. Les renseigner permet de rediriger vers
+  /// une fiche de test ou un store alternatif sans release.
+  updateUrlAndroid String?
+  updateUrlIos     String?
+
+  /// Message affiché dans la boîte de dialogue. Sert à dire *pourquoi* la mise
+  /// à jour compte — « corrige un problème de paiement Airtel » convainc mieux
+  /// qu'un libellé générique.
+  updateMessage String?
+
   updatedAt DateTime @updatedAt
 }
