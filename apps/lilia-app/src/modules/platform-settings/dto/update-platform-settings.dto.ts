@@ -4,10 +4,27 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  IsUrl,
+  Matches,
   Max,
   MaxLength,
   Min,
 } from 'class-validator';
+
+/**
+ * Version d'application acceptée : `major.minor.patch`, `+build` optionnel.
+ *
+ * Volontairement **plus strict** que le parseur des applications mobiles
+ * (`AppVersion.tryParse`, qui tolère en plus un « v » initial et des espaces).
+ * L'asymétrie est le bon sens : on est exigeant sur ce qu'on **enregistre**,
+ * tolérant sur ce qu'on **reçoit**.
+ *
+ * Ce qui ne doit jamais s'inverser, c'est la direction : le serveur ne doit
+ * pas accepter une forme que les clients rejetteraient. L'administrateur
+ * croirait avoir posé un seuil qui n'existe nulle part — une panne silencieuse
+ * dans le sens le plus dangereux, celui où l'on se croit protégé.
+ */
+export const APP_VERSION_PATTERN = /^\d+\.\d+\.\d+(\+\d+)?$/;
 
 /**
  * Bornes du barème plateforme.
@@ -88,4 +105,54 @@ export class UpdatePlatformSettingsDto {
   @IsString()
   @MaxLength(500)
   maintenanceMessage?: string;
+
+  // ── Pilotage du parc installé ────────────────────────────────────────────
+  //
+  // `APP_VERSION_PATTERN` refuse tout ce qui n'est pas `major.minor.patch`
+  // (+build optionnel). Ce n'est pas du zèle : `minAppVersion` peut **bloquer
+  // l'application** de tous les clients, et une valeur acceptée « au mieux »
+  // — « 1.2 », « 1.3.x », « v2 beta » — produirait un seuil valide à partir
+  // d'une faute de frappe. Les applications parsent tout aussi strictement et
+  // ignorent ce qu'elles ne comprennent pas ; le refus ici permet à
+  // l'administrateur de voir son erreur au lieu d'un réglage sans effet.
+
+  /**
+   * ⚠️ Seul réglage de cette table capable d'empêcher un client de commander.
+   * Réservé à une faille de sécurité ou une rupture de contrat d'API. Pour
+   * pousser une nouveauté, utiliser `latestAppVersion`, qui laisse repousser.
+   */
+  @IsOptional()
+  @Matches(APP_VERSION_PATTERN, {
+    message:
+      'minAppVersion doit être au format major.minor.patch (ex : 1.3.0 ou 1.3.0+41).',
+  })
+  minAppVersion?: string;
+
+  @IsOptional()
+  @Matches(APP_VERSION_PATTERN, {
+    message:
+      'latestAppVersion doit être au format major.minor.patch (ex : 1.3.0 ou 1.3.0+41).',
+  })
+  latestAppVersion?: string;
+
+  @IsOptional()
+  @IsUrl(
+    { protocols: ['https', 'market'], require_protocol: true },
+    { message: 'updateUrlAndroid doit être une URL https ou market complète.' },
+  )
+  @MaxLength(500)
+  updateUrlAndroid?: string;
+
+  @IsOptional()
+  @IsUrl(
+    { protocols: ['https', 'itms-apps'], require_protocol: true },
+    { message: 'updateUrlIos doit être une URL https ou itms-apps complète.' },
+  )
+  @MaxLength(500)
+  updateUrlIos?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  updateMessage?: string;
 }

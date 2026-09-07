@@ -41,6 +41,18 @@ export class PublicPlatformSettingsController {
         referrerBonusPoints: settings.referrerBonusPoints,
         maintenanceMode: settings.maintenanceMode,
         maintenanceMessage: settings.maintenanceMessage,
+
+        // Pilotage du parc installé. Ces cinq champs doivent rester sur la
+        // route **publique** : une application trop ancienne pour parler le
+        // contrat d'API courant doit tout de même pouvoir apprendre qu'elle
+        // est périmée, et elle ne peut le faire que sans authentification.
+        // Les servir derrière un guard reviendrait à ne prévenir que les
+        // clients qui n'en ont pas besoin.
+        minAppVersion: settings.minAppVersion,
+        latestAppVersion: settings.latestAppVersion,
+        updateUrlAndroid: settings.updateUrlAndroid,
+        updateUrlIos: settings.updateUrlIos,
+        updateMessage: settings.updateMessage,
       },
     };
   }
