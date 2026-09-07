@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Controller, Get, Post, Body, Put, Delete, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Body, Put, Delete, HttpCode, HttpStatus, Headers } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { UserService } from './users.service';
 import { UserDeletionService } from './user-deletion.service';
@@ -9,6 +9,7 @@ import { DecodedIdToken } from 'firebase-admin/auth';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { User } from '@prisma/client';
 import { AllowUnsynced } from '../auth/decorators/allow-unsynced.decorator';
+import { DeviceInstallationService } from '../devices/device-installation.service';
 
 /**
  * Gère le profil utilisateur.
@@ -57,8 +58,26 @@ export class UsersController {
     @FirebaseUser() fbUser: DecodedIdToken,
     @Body('telephone') phone?: string,
     @Body('referralCode') referralCode?: string,
+    // Signal anti-abus. En-têtes plutôt que corps de requête : ce sont des
+    // métadonnées de client, pas des données saisies par l'utilisateur, et
+    // elles voyagent déjà de la même façon que `X-Lilia-Payment-Flow`.
+    //
+    // ⚠️ Toute valeur absente ou mal formée devient `null` — les versions déjà
+    // installées n'envoient rien, et refuser leur connexion serait hors de
+    // proportion pour un signal qui ne décide jamais seul.
+    @Headers('x-lilia-installation-id') installationId?: string,
+    @Headers('x-lilia-platform') platform?: string,
   ) {
-    const { user, isNewUser } = await this.userService.syncFromFirebase(fbUser, phone, referralCode);
+    const { user, isNewUser } = await this.userService.syncFromFirebase(
+      fbUser,
+      phone,
+      referralCode,
+      {
+        installationId:
+          DeviceInstallationService.sanitizeInstallationId(installationId),
+        platform: DeviceInstallationService.sanitizePlatform(platform),
+      },
+    );
     return {
       message: isNewUser ? 'Compte créé avec succès.' : 'Profil synchronisé.',
       isNew: isNewUser,

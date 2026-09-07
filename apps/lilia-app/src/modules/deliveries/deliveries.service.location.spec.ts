@@ -12,6 +12,7 @@ import { PlatformSettingsService } from '../platform-settings/platform-settings.
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { TrackingService } from '../tracking/tracking.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
+import { ReferralService } from '../users/referral.service';
 
 /**
  * LIL-54 — convergence des deux paths de tracking.
@@ -44,6 +45,14 @@ describe('DeliveriesService.updateLocation (convergence Redis — LIL-54)', () =
           provide: LoyaltyService,
           useValue: {
             awardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          // Le parrainage est arbitré au même endroit que la fidélité depuis
+          // que son déclencheur est passé du paiement à la livraison.
+          provide: ReferralService,
+          useValue: {
+            rewardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
           },
         },
         DeliveriesService,

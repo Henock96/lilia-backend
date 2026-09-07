@@ -65,6 +65,7 @@ import { PayoutListener } from './modules/listeners/payout.listener';
 import { MenusListener } from './modules/listeners/menus.listener';
 import { UserListener } from './modules/listeners/user.listener';
 import { VendorsListener } from './modules/listeners/vendors.listener';
+import { LoyaltyListener } from './modules/listeners/loyalty.listener';
 import { TrackingModule } from './modules/tracking/tracking.module';
 // Email + SMS de bienvenue : gérés par UserListener (modules/listeners/user.listener.ts)
 import { RedisModule } from '@nestjs-modules/ioredis';
@@ -260,6 +261,7 @@ import { envValidationSchema } from './config/env.validation';
     MenusListener,
     UserListener,
     VendorsListener,
+    LoyaltyListener,
   ],
 })
 export class AppModule {}

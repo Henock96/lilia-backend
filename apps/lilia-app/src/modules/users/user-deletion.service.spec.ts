@@ -32,11 +32,16 @@ describe('UserDeletionService', () => {
     cart: { deleteMany: jest.fn() },
     favorite: { deleteMany: jest.fn() },
     review: { deleteMany: jest.fn() },
-    loyaltyTransaction: { deleteMany: jest.fn() },
+    // ⚠️ Plus de `deleteMany` : le ledger de fidélité est CONSERVÉ, soldé par
+    // une écriture de clôture. Voir l'assertion dédiée plus bas.
+    loyaltyTransaction: { create: jest.fn() },
     // Plaque et permis sont des données personnelles : le profil livreur est
     // purgé au même titre que les adresses.
     driverProfile: { deleteMany: jest.fn() },
-    user: { update: jest.fn() },
+    user: {
+      update: jest.fn(),
+      findUniqueOrThrow: jest.fn().mockResolvedValue({ loyaltyPoints: 0 }),
+    },
   };
 
   const prisma = {
@@ -91,7 +96,19 @@ describe('UserDeletionService', () => {
     expect(tx.cart.deleteMany).toHaveBeenCalled();
     expect(tx.favorite.deleteMany).toHaveBeenCalled();
     expect(tx.review.deleteMany).toHaveBeenCalled();
-    expect(tx.loyaltyTransaction.deleteMany).toHaveBeenCalled();
+    // Le ledger n'est PAS supprimé : effacer les écritures ferait disparaître
+    // la trace comptable de valeur réellement distribuée, et laisserait un
+    // parrain crédité d'un point dont le filleul n'a plus d'histoire.
+    expect(
+      (tx.loyaltyTransaction as { deleteMany?: unknown }).deleteMany,
+    ).toBeUndefined();
+    // Et le compte est SOLDÉ, pas simplement mis à zéro : sans cette écriture,
+    // `SUM(ledger)` et `loyaltyPoints` divergeraient et la réconciliation
+    // quotidienne signalerait chaque compte supprimé comme une dérive.
+    expect(tx.user.findUniqueOrThrow).toHaveBeenCalledWith({
+      where: { id: 'u1' },
+      select: { loyaltyPoints: true },
+    });
     expect(tx.driverProfile.deleteMany).toHaveBeenCalledWith({
       where: { userId: 'u1' },
     });
@@ -198,5 +215,27 @@ describe('UserDeletionService', () => {
         ConflictException,
       );
     });
+  });
+
+  it('solde une clôture de compte par une écriture de ledger, jamais par un effacement', async () => {
+    tx.user.findUniqueOrThrow.mockResolvedValue({ loyaltyPoints: 7 });
+
+    await service.deleteOwnAccount('u1');
+
+    expect(tx.loyaltyTransaction.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        userId: 'u1',
+        points: -7,
+        type: 'ADJUSTMENT',
+      }),
+    });
+  });
+
+  it('n’écrit aucune clôture quand le solde est déjà nul', async () => {
+    tx.user.findUniqueOrThrow.mockResolvedValue({ loyaltyPoints: 0 });
+
+    await service.deleteOwnAccount('u1');
+
+    expect(tx.loyaltyTransaction.create).not.toHaveBeenCalled();
   });
 });

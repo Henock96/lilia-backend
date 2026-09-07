@@ -8,6 +8,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { DecodedIdToken } from 'firebase-admin/auth';
 import { UserCreatedEvent, UserPhoneCompletedEvent } from '../events/user-events';
 import { UserCacheService } from '../auth/services/user-cache.service';
+import { DeviceInstallationService } from '../devices/device-installation.service';
 
 
 @Injectable()
@@ -18,6 +19,7 @@ export class UserService {
     private prisma: PrismaService,
     private eventEmitter: EventEmitter2,
     private userCache: UserCacheService,
+    private deviceInstallations: DeviceInstallationService,
   ) {}
 
   /**
@@ -103,7 +105,12 @@ export class UserService {
     return { data: transactions };
   }
 
-  async syncFromFirebase(decoded: DecodedIdToken, phone?: string, referralCode?: string) {
+  async syncFromFirebase(
+    decoded: DecodedIdToken,
+    phone?: string,
+    referralCode?: string,
+    device?: { installationId: string | null; platform: string | null },
+  ) {
     const { uid, email, name, picture } = decoded;
 
     // Log structuré début sync pour tracer signups manquants en BDD (LIL-XX).
@@ -124,11 +131,39 @@ export class UserService {
     // Valider le code de parrainage si fourni
     let validReferredByCode: string | null = null;
     if (referralCode && isNewUser === false) {
-      // Ignorer si le user existe déjà (pas de rétro-application)
+      // Ignorer si le user existe déjà (pas de rétro-application).
+      //
+      // C'est ce qui rend le changement de parrain impossible : le code n'est
+      // lu qu'à la création du compte, et `referredByCode` n'est modifiable par
+      // aucune autre route. S'inscrire sans code puis en ajouter un plus tard
+      // n'a donc aucun effet — volontairement.
+      this.logger.log(
+        `[SYNC] Code de parrainage ignoré pour ${uid} : compte déjà existant.`,
+      );
     } else if (referralCode && isNewUser !== false) {
-      const referrer = await this.prisma.user.findUnique({ where: { referralCode } });
-      if (referrer) validReferredByCode = referralCode;
+      const referrer = await this.prisma.user.findUnique({
+        where: { referralCode },
+        select: { id: true, role: true, statusUser: true },
+      });
+      // Un parrain supprimé, banni, ou qui n'est pas un client n'ouvre aucun
+      // droit. Vérifié ici ET au moment de récompenser : le compte peut avoir
+      // été fermé entre l'inscription du filleul et sa première livraison.
+      if (
+        referrer &&
+        referrer.statusUser === 'ACTIVE' &&
+        referrer.role === 'CLIENT'
+      ) {
+        validReferredByCode = referralCode;
+      }
     }
+
+    // Téléphone : `NULL`, jamais `''`.
+    //
+    // Les comptes historiques portaient la chaîne vide, ce qui les rendait tous
+    // « porteurs du même numéro » pour le signal anti-abus `PHONE_REUSED` — et
+    // interdisait structurellement toute contrainte d'unicité future, `NULL`
+    // échappant à l'unicité en PostgreSQL mais pas `''`.
+    const normalizedPhone = phone?.trim() ? phone.trim() : null;
 
     const user = await this.prisma.user.upsert({
       where: { firebaseUid: uid },
@@ -136,7 +171,7 @@ export class UserService {
         firebaseUid: uid,
         email: email ?? '',
         nom: name ?? email?.split('@')[0] ?? 'Utilisateur',
-        phone: phone ?? '',
+        phone: normalizedPhone,
         imageUrl: picture ?? null,
         role: 'CLIENT',
         referralCode: await this.generateUniqueReferralCode(),
@@ -146,10 +181,22 @@ export class UserService {
         ...(email && { email }),
         ...(name && { nom: name }),
         ...(picture && { imageUrl: picture }),
-        ...(phone && { phone }),
+        ...(normalizedPhone && { phone: normalizedPhone }),
         lastLogin: new Date(),
       }
     });
+
+    // Signal anti-abus : on note l'installation d'où ce compte s'identifie.
+    //
+    // `/users/sync` est le seul point de capture, et c'est suffisant : tous les
+    // modes de connexion y passent — e-mail, Google, Apple — à chaque ouverture
+    // de session. Jamais bloquant : l'échec d'un signal ne doit pas empêcher
+    // quelqu'un de se connecter.
+    await this.deviceInstallations.register(
+      user.id,
+      device?.installationId ?? null,
+      device?.platform ?? null,
+    );
 
     // Le upsert update lastLogin/email/nom à chaque sync → invalider le cache pour
     // garantir que la prochaine requête authentifiée voit le User à jour.

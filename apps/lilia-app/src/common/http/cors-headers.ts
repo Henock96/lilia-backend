@@ -43,4 +43,19 @@ export const CORS_ALLOWED_HEADERS = [
    * applications web, pas seulement le paiement.
    */
   'X-Lilia-Payment-Flow',
+
+  /**
+   * Identifiant d'installation applicative, lu par `POST /users/sync`
+   * (`DeviceInstallationService`). Signal anti-abus du parrainage : plusieurs
+   * comptes nés de la même installation pèsent sur la décision de récompense.
+   *
+   * Envoyé par `apiClient` sur **toutes** les requêtes, comme
+   * `X-Lilia-Payment-Flow` : l'omettre ici casserait les deux applications web
+   * en entier, pas seulement l'inscription. Et le défaut serait muet — le
+   * préflight répond 204, le navigateur refuse simplement d'émettre la requête.
+   */
+  'X-Lilia-Installation-Id',
+
+  /** Plateforme déclarée (`android` | `ios` | `web`), indicative. */
+  'X-Lilia-Platform',
 ] as const;

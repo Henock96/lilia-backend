@@ -20,6 +20,7 @@ import { DeliveryFailedEvent } from '../events/delivery-events';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { TrackingService } from '../tracking/tracking.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
+import { ReferralService } from '../users/referral.service';
 
 type ActorRole = 'CLIENT' | 'RESTAURATEUR' | 'ADMIN' | 'LIVREUR';
 
@@ -58,6 +59,7 @@ export class DeliveriesService {
     private readonly queryService: DeliveryQueryService,
     private readonly assignmentService: DeliveryAssignmentService,
     private readonly loyalty: LoyaltyService,
+    private readonly referral: ReferralService,
   ) {}
 
   private resolveActor(role: string): ActorRole | null {
@@ -108,7 +110,7 @@ export class DeliveriesService {
    *  - Vérifie la transition Order EN_ROUTE → LIVRER via state machine
    *  - Met à jour Order.status, Delivery.deliveredAt, User.driverStatus = AVAILABLE
    *  - Émet `order.status.updated` → FCM client + broadcast WebSocket
-   *  - Crédite les points fidélité (1pt/100 FCFA subTotal)
+   *  - Crédite le forfait de fidélité et arbitre la récompense de parrainage
    *
    * Quand status = ECHEC :
    *  - Marque la livraison en échec, libère le livreur (DriverStatus = AVAILABLE)
@@ -240,16 +242,22 @@ export class DeliveriesService {
       );
       this.eventEmitter.emit('order.status.updated', statusEvent);
 
-      // Crédite les points fidélité (non-bloquant)
-      // Implémentation unique et idempotente (fix M5) : l'autre chemin vers
-      // LIVRER (PATCH /orders/:id/status) appelle exactement le même service.
+      // Récompenses à la livraison (non-bloquantes).
+      //
+      // Implémentations uniques et idempotentes : l'autre chemin vers LIVRER
+      // (`PATCH /orders/:id/status`) appelle exactement les mêmes services, et
+      // leur idempotence est portée par la base — `@@unique([orderId, type])`
+      // pour la fidélité, `ReferralReward.referredUserId @unique` pour le
+      // parrainage. Deux passages concurrents produisent un seul crédit.
       this.loyalty
-        .awardForDeliveredOrder(
-          delivery.order.userId,
-          delivery.orderId,
-          delivery.order.subTotal,
-        )
+        .awardForDeliveredOrder(delivery.order.userId, delivery.orderId)
         .catch((err) => this.logger.error(`Erreur points fidélité: ${err}`));
+
+      this.referral
+        .rewardForDeliveredOrder(delivery.order.userId, delivery.orderId)
+        .catch((err) =>
+          this.logger.error(`Erreur récompense parrainage: ${err}`),
+        );
     }
 
     // ECHEC était un cul-de-sac silencieux : aucun event, aucune notification,

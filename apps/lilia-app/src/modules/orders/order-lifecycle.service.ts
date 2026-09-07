@@ -17,6 +17,7 @@ import {
 import { OrderStateMachine } from './order-state.machine';
 import { StockService } from './stock.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
+import { ReferralService } from '../users/referral.service';
 import { RefundsService } from '../refunds/refunds.service';
 
 /**
@@ -34,6 +35,7 @@ export class OrderLifecycleService {
     private readonly stateMachine: OrderStateMachine,
     private readonly stockService: StockService,
     private readonly loyalty: LoyaltyService,
+    private readonly referral: ReferralService,
     private readonly refunds: RefundsService,
   ) {}
 
@@ -216,15 +218,28 @@ export class OrderLifecycleService {
       `🔄 [STATUT] Succès: commande ${orderId} - ${order.status} → ${newStatus} (par ${user.id}/${user.role})`,
     );
 
-    // Points fidélité quand la commande est livrée (non-bloquant)
+    // Récompenses à la livraison (non-bloquantes).
+    //
+    // `LIVRER` est le SEUL déclencheur des deux programmes, et c'est délibéré :
+    // c'est l'unique statut terminal de `ORDER_TRANSITION_MATRIX`. Tout ce qui
+    // le précède — y compris `PAYER` — reste annulable avec remboursement, et
+    // une récompense versée sur une commande annulable doit ou bien être
+    // reprise, ou bien être offerte. On préfère ne pas la verser trop tôt.
+    //
+    // ⚠️ Ce bloc est dupliqué à l'identique dans `DeliveriesService.updateStatus`
+    // (l'autre chemin vers LIVRER). Les deux appellent les MÊMES services, dont
+    // l'idempotence est portée par la base : jouer les deux en concurrence
+    // produit exactement un crédit.
     if (newStatus === 'LIVRER') {
       this.loyalty
-        .awardForDeliveredOrder(
-          updatedOrder.userId,
-          orderId,
-          updatedOrder.subTotal,
-        )
+        .awardForDeliveredOrder(updatedOrder.userId, orderId)
         .catch((err) => this.logger.error(`Erreur points fidélité: ${err}`));
+
+      this.referral
+        .rewardForDeliveredOrder(updatedOrder.userId, orderId)
+        .catch((err) =>
+          this.logger.error(`Erreur récompense parrainage: ${err}`),
+        );
     }
 
     // Fix H5 : une annulation vendeur/admin sur une commande déjà encaissée

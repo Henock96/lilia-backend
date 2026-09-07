@@ -64,6 +64,9 @@ describe('OrderLifecycleService — le statut ne ment pas sur le terrain', () =>
 
     const eventEmitter = { emit: jest.fn() };
     const loyalty = { awardForDeliveredOrder: jest.fn().mockResolvedValue(1) };
+    const referral = {
+      rewardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
+    };
     const refunds = { openForCancelledOrder: jest.fn() };
 
     const service = new OrderLifecycleService(
@@ -72,6 +75,7 @@ describe('OrderLifecycleService — le statut ne ment pas sur le terrain', () =>
       new OrderStateMachine(),
       { restoreInTransaction: jest.fn() } as any,
       loyalty as any,
+      referral as any,
       refunds as any,
     );
 

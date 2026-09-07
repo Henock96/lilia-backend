@@ -1,7 +1,10 @@
 import { Body, Controller, Get, Patch } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { AdminAuditAction, Prisma, User } from '@prisma/client';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Public } from '../auth/decorators/public.decorator';
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { PlatformSettingsService } from './platform-settings.service';
 import { UpdatePlatformSettingsDto } from './dto/update-platform-settings.dto';
 
@@ -27,9 +30,15 @@ export class PublicPlatformSettingsController {
     return {
       data: {
         serviceFeePercent: settings.serviceFeePercent,
-        loyaltyPointsPer100Xaf: settings.loyaltyPointsPer100Xaf,
+        loyaltyPointsPerOrder: settings.loyaltyPointsPerOrder,
         loyaltyPointValueXaf: settings.loyaltyPointValueXaf,
         loyaltyMinRedemption: settings.loyaltyMinRedemption,
+        // Le barème de parrainage est désormais public. Il ne l'était pas, et
+        // les quatre interfaces l'écrivaient donc en dur — « +500 pts pour
+        // vous, +200 pts pour lui » restait affiché après que l'administrateur
+        // eut changé les valeurs. Une donnée qu'on affiche doit être une donnée
+        // qu'on peut lire.
+        referrerBonusPoints: settings.referrerBonusPoints,
         maintenanceMode: settings.maintenanceMode,
         maintenanceMessage: settings.maintenanceMessage,
       },
@@ -46,7 +55,10 @@ export class PublicPlatformSettingsController {
 @Controller('admin/platform-settings')
 @Roles('ADMIN')
 export class PlatformSettingsController {
-  constructor(private readonly service: PlatformSettingsService) {}
+  constructor(
+    private readonly service: PlatformSettingsService,
+    private readonly audit: AdminAuditService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'Configuration plateforme' })
@@ -54,9 +66,48 @@ export class PlatformSettingsController {
     return { data: await this.service.getSettings() };
   }
 
+  /**
+   * ⚠️ Geste financier, pas réglage d'interface.
+   *
+   * Changer `loyaltyPointValueXaf` revalorise d'un coup tout le passif déjà
+   * distribué. Le changement laissait pourtant **aucune trace** : ni auteur, ni
+   * date, ni valeur précédente. Il est désormais journalisé avec son avant/après.
+   */
   @Patch()
-  @ApiOperation({ summary: 'Mettre à jour la configuration plateforme' })
-  async update(@Body() dto: UpdatePlatformSettingsDto) {
-    return { data: await this.service.updateSettings(dto) };
+  @ApiOperation({
+    summary: 'Mettre à jour la configuration plateforme',
+    description:
+      'Journalisé dans `AdminAuditLog` (`PLATFORM_SETTINGS_CHANGED`) avec les ' +
+      'valeurs avant/après des seuls champs réellement modifiés.',
+  })
+  async update(
+    @Body() dto: UpdatePlatformSettingsDto,
+    @CurrentUser() admin: User,
+  ) {
+    const before = await this.service.getSettings();
+    const settings = await this.service.updateSettings(dto);
+
+    // On ne journalise que ce qui a bougé : un diff intégral à chaque
+    // enregistrement noierait le champ qui compte parmi neuf inchangés.
+    const changes: Record<string, { before: unknown; after: unknown }> = {};
+    for (const key of Object.keys(dto) as (keyof UpdatePlatformSettingsDto)[]) {
+      const previous = (before as Record<string, unknown>)[key];
+      const next = (settings as Record<string, unknown>)[key];
+      if (previous !== next) {
+        changes[key] = { before: previous, after: next };
+      }
+    }
+
+    if (Object.keys(changes).length > 0) {
+      await this.audit.record({
+        actorId: admin.id,
+        action: AdminAuditAction.PLATFORM_SETTINGS_CHANGED,
+        targetType: 'User', // pas de cible métier : le réglage est global
+        targetId: 'platform-settings',
+        metadata: changes as unknown as Prisma.InputJsonValue,
+      });
+    }
+
+    return { data: settings };
   }
 }

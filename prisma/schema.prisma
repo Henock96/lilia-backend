@@ -31,6 +31,21 @@ model User {
   firebaseUid   String         @unique
   email         String         @unique
   nom           String?
+  /// ⚠️ **Volontairement NON `@unique`** (septembre 2026).
+  ///
+  /// La réutilisation d'un numéro est le meilleur signal d'une ferme à comptes,
+  /// et l'unicité SQL serait la garde idéale — mais elle est **inapplicable en
+  /// l'état** : les comptes historiques ont été créés avec `''` (chaîne vide,
+  /// pas `NULL`), et `''` ne bénéficie pas de l'échappatoire que PostgreSQL
+  /// accorde à `NULL`. Créer l'index échouerait sur l'existant, et la deuxième
+  /// inscription sans téléphone échouerait ensuite en 409.
+  ///
+  /// Trois temps : (1) on écrit désormais `NULL` et jamais `''` ;
+  /// (2) `scripts/db/audit-phone-duplicates.js` recense les doublons réels
+  /// **en lecture seule** ; (3) l'unicité ne sera posée qu'une fois ce rapport
+  /// traité. En attendant, l'abus est fermé par le signal `PHONE_REUSED` du
+  /// scoring de parrainage — qui envoie la récompense en revue humaine au lieu
+  /// de refuser une inscription potentiellement légitime.
   phone         String?
   imageUrl      String?
   role          Role           @default(CLIENT)
@@ -58,9 +73,33 @@ model User {
   statusUser StatusUser @default(ACTIVE)
 
   // Parrainage
-  referralCode     String? @unique // code unique à partager
-  referredByCode   String? // code du parrain utilisé à l'inscription
-  referralRewarded Boolean @default(false) // vrai quand la récompense a été émise
+  referralCode          String?   @unique // code unique à partager
+  referredByCode        String? // code du parrain utilisé à l'inscription
+  /// Vrai quand une récompense a été **arbitrée** pour ce filleul, quelle qu'ait
+  /// été la décision. La preuve opposable vit dans `ReferralReward` (statut,
+  /// score, signaux, commande) ; ce booléen reste le verrou de chemin rapide et
+  /// la compatibilité avec l'existant.
+  referralRewarded      Boolean   @default(false)
+  /// Date de l'arbitrage et commande qui l'a déclenché. Sans eux, « ce filleul
+  /// a-t-il déjà généré sa récompense ? » se répondait, mais « quand » et
+  /// « pourquoi » restaient introuvables (audit du 06/09/2026, D10).
+  referralRewardedAt    DateTime?
+  referralRewardOrderId String?
+
+  /// Récompenses de parrainage — reçues en tant que parrain, générée en tant que
+  /// filleul (au plus une, garantie par `ReferralReward.referredUserId @unique`).
+  referralRewardsGiven    ReferralReward[] @relation("ReferralRewardReferrer")
+  referralRewardReceived  ReferralReward?  @relation("ReferralRewardReferred")
+  referralRewardsReviewed ReferralReward[] @relation("ReferralRewardReviewer")
+
+  /// Installations applicatives depuis lesquelles ce compte s'est synchronisé.
+  deviceInstallations DeviceInstallation[]
+
+  /// Écritures de fidélité passées **par** ce compte en tant qu'administrateur.
+  loyaltyAdjustmentsMade    LoyaltyTransaction[] @relation("LoyaltyAdjustmentActor")
+  /// Écritures de fidélité **causées** par ce compte (filleul à l'origine d'une
+  /// récompense de parrainage versée à quelqu'un d'autre).
+  loyaltyTransactionsCaused LoyaltyTransaction[] @relation("LoyaltyTransactionSource")
 
   // Points de fidélité
   loyaltyPoints       Int                  @default(0)
@@ -79,6 +118,10 @@ model User {
   customerDeliveryReviews DeliveryReview[] @relation("CustomerDeliveryReviews")
 
   @@index([referredByCode]) // getReferralStats : 2 count() par ouverture de l'écran (fix M19)
+  /// Réutilisation d'un numéro de téléphone = signal anti-abus le plus fort du
+  /// parrainage (`ReferralRiskService`). Index simple et **non unique** : voir
+  /// la note d'unicité sur le champ `phone` ci-dessous.
+  @@index([phone])
 }
 
 model LoyaltyTransaction {
@@ -94,10 +137,126 @@ model LoyaltyTransaction {
   orderId   String? // lien optionnel à la commande
   createdAt DateTime               @default(now())
 
+  /// Compte **à l'origine** de l'écriture, quand ce n'est pas son bénéficiaire :
+  /// le filleul dont la première commande a payé le point du parrain.
+  ///
+  /// Sans lui, « quel filleul a généré ce point ? » n'avait pour seule réponse
+  /// qu'une chaîne libre (`reason: 'Récompense parrainage — filleul activé'`) —
+  /// inexploitable en litige comme en supervision (audit du 06/09/2026, D10).
+  sourceUserId String?
+  sourceUser   User?   @relation("LoyaltyTransactionSource", fields: [sourceUserId], references: [id], onDelete: SetNull)
+
+  /// Administrateur auteur d'une écriture manuelle (`ADJUSTMENT`). `null` pour
+  /// tout mouvement produit par le système. Aucun solde ne doit pouvoir bouger
+  /// à la main sans nom.
+  actorId String?
+  actor   User?   @relation("LoyaltyAdjustmentActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  /// Contexte machine de l'écriture — porte notamment le marqueur d'idempotence
+  /// des migrations de barème (`{ migration: 'loyalty-redenomination-v1' }`).
+  metadata Json?
+
   @@unique([orderId, type]) // NULL != NULL en PG : ne contraint que les lignes portant un orderId
   @@index([userId])
   @@index([userId, createdAt(sort: Desc)]) // historique fidelite par user, plus recent en premier (LFD-9)
   @@index([userId, type, createdAt]) // plafond mensuel de parrainage (ReferralService)
+  @@index([sourceUserId])
+  @@index([actorId])
+}
+
+/// Arbitrage d'une récompense de parrainage — **une ligne par filleul, à vie**.
+///
+/// Ce modèle existe parce que trois questions restaient sans réponse fiable
+/// (audit du 06/09/2026) : quelle commande a validé le parrainage, quel filleul
+/// a payé le point du parrain, et pourquoi une récompense n'a pas été versée.
+///
+/// Il porte aussi l'idempotence **en base** : `referredUserId @unique` rend
+/// structurellement impossible qu'un même filleul récompense deux fois, y
+/// compris si les deux chemins vers `LIVRER` sont joués en concurrence. C'est
+/// la base qui arbitre, pas un `if` — même principe que
+/// `payments(orderId) WHERE status='PENDING'`.
+model ReferralReward {
+  id String @id @default(cuid())
+
+  /// Bénéficiaire du point.
+  referrerId String
+  referrer   User   @relation("ReferralRewardReferrer", fields: [referrerId], references: [id], onDelete: Restrict)
+
+  /// Filleul dont la première commande livrée a déclenché l'arbitrage.
+  /// `@unique` : la garantie « exactement une récompense par filleul ».
+  referredUserId String @unique
+  referredUser   User   @relation("ReferralRewardReferred", fields: [referredUserId], references: [id], onDelete: Restrict)
+
+  /// Commande qualifiante — la première du filleul à atteindre `LIVRER`.
+  /// `@unique` aussi : une commande ne peut valider qu'un seul parrainage.
+  orderId String @unique
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  status ReferralRewardStatus
+
+  /// Score de risque 0–100 et détail des signaux qui l'ont produit, figés au
+  /// moment de la décision. Les poids peuvent changer ; ce qui a été décidé
+  /// hier doit rester explicable demain.
+  riskScore   Int
+  riskSignals Json
+
+  /// Points effectivement crédités. `0` tant que le statut n'est pas `APPROVED` —
+  /// une ligne existe donc même quand rien n'a été versé, et c'est le but.
+  points Int @default(0)
+
+  decidedAt DateTime @default(now())
+
+  /// Revue humaine d'un `PENDING_REVIEW`.
+  reviewedById String?
+  reviewedBy   User?     @relation("ReferralRewardReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt   DateTime?
+  reviewNote   String?   @db.Text
+
+  @@index([referrerId, decidedAt(sort: Desc)])
+  @@index([status, decidedAt(sort: Desc)]) // file d'attente admin
+}
+
+enum ReferralRewardStatus {
+  APPROVED // point versé au parrain
+  PENDING_REVIEW // rien versé, en attente d'un arbitrage humain
+  REJECTED // rien versé, refus motivé
+}
+
+/// Installation applicative d'où un compte s'est connecté.
+///
+/// L'identifiant est un UUID **généré par le client** et persisté localement
+/// (`shared_preferences` / `localStorage`). Aucune donnée matérielle n'est
+/// collectée : ni IMEI, ni adresse MAC, ni numéro de série.
+///
+/// ⚠️ **C'est un signal, jamais une preuve d'identité.** Il disparaît à la
+/// désinstallation et se partage dans une famille : il pondère une décision de
+/// récompense, il ne bloque jamais un compte à lui seul (`ReferralRiskService`).
+model DeviceInstallation {
+  id             String @id @default(cuid())
+  installationId String
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// « android » | « ios » | « web » — déclaré par le client, indicatif.
+  platform String?
+
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+
+  status DeviceInstallationStatus @default(ACTIVE)
+
+  /// Une ligne par couple installation/compte : c'est la multiplicité de ce
+  /// couple qui est le signal, donc elle doit être comptable.
+  @@unique([installationId, userId])
+  @@index([installationId])
+  @@index([userId])
+}
+
+enum DeviceInstallationStatus {
+  ACTIVE
+  FLAGGED // marquée par un administrateur après revue
+  BLOCKED // aucune récompense de parrainage depuis cette installation
 }
 
 enum LoyaltyTransactionType {
@@ -105,8 +264,12 @@ enum LoyaltyTransactionType {
   ORDER_EARN // points gagnés à la livraison
   CANCELLATION_REFUND // recrédit des points à l'annulation
   REFERRAL_REFERRER // récompense du parrain
-  REFERRAL_REFERRED // bonus de bienvenue du filleul
-  ADJUSTMENT // écriture manuelle / héritée
+  /// Bonus de bienvenue du filleul — **supprimé du programme** en septembre 2026
+  /// (le filleul ne reçoit plus rien, seul le parrain est récompensé). La valeur
+  /// reste dans l'enum : des écritures historiques la portent, et un enum
+  /// PostgreSQL ne se rétrécit pas sans réécrire les lignes existantes.
+  REFERRAL_REFERRED
+  ADJUSTMENT // écriture manuelle (admin) / migration de barème / héritée
 }
 
 model FcmToken {
@@ -715,6 +878,23 @@ model Order {
   promoCodeId    String?
   promoCode      PromoCode? @relation(fields: [promoCodeId], references: [id])
   discountAmount Int        @default(0) // remise totale (promo + fidélité), en XAF
+
+  /// Détail de la part « fidélité » de `discountAmount`, figée à la commande.
+  ///
+  /// `discountAmount` fusionnait promo et fidélité : mesurer le coût du
+  /// programme imposait de rejouer le ledger, et rien ne permettait de savoir
+  /// *a posteriori* combien de points une commande avait consommés — alors que
+  /// c'est exactement ce que le garde-fou anti-boucle doit lire à la livraison.
+  ///
+  /// `loyaltyDiscount` est un **snapshot** : il vaut `loyaltyPointsUsed × la
+  /// valeur du point au moment de la commande`. Il ne se recalcule pas, sans
+  /// quoi un changement de barème réécrirait rétroactivement des montants
+  /// encaissés — même raison que `commissionPercent` et `snapshotPrice`.
+  loyaltyPointsUsed Int @default(0)
+  loyaltyDiscount   Int @default(0)
+
+  /// Récompense de parrainage que cette commande a validée, s'il y en a une.
+  referralReward ReferralReward?
 
   // Commission plateforme figée au moment de la commande (onboarding, août
   // 2026). `Restaurant.commissionPercent` peut changer ; sans ce snapshot, un
@@ -1480,15 +1660,15 @@ model PromoCode {
   isActive       Boolean @default(true)
 
   // Restriction par restaurant (null = toute la plateforme)
-  restaurantId   String?
-  restaurant     Restaurant? @relation("RestaurantPromoCodes", fields: [restaurantId], references: [id])
+  restaurantId String?
+  restaurant   Restaurant? @relation("RestaurantPromoCodes", fields: [restaurantId], references: [id])
   // `discountAmount` a été SUPPRIMÉ de ce modèle (03/09/2026). Dupliqué depuis
   // `Order.discountAmount`, il n'était NI lu NI écrit depuis sa création :
   // toutes les lignes portaient le défaut `0`. Une colonne qui ressemble à un
   // montant sans en être un finit par être lue de bonne foi — c'est un piège,
   // pas une donnée.
-  startsAt       DateTime    @default(now())
-  expiresAt      DateTime? // null = pas d'expiration
+  startsAt     DateTime    @default(now())
+  expiresAt    DateTime? // null = pas d'expiration
 
   usages    PromoUsage[]
   orders    Order[]
@@ -1692,6 +1872,15 @@ enum AdminAuditAction {
   REFUND_CREATED
   REFUND_UPDATED
   ORDER_STATUS_FORCED
+  /// Écriture manuelle sur un solde de fidélité. Un point vaut de l'argent :
+  /// le créditer à la main est un mouvement financier, pas un réglage.
+  LOYALTY_ADJUSTED
+  /// Changement du barème plateforme — dont la **valeur du point**, qui
+  /// revalorise d'un coup tout le passif déjà distribué. C'est le geste le plus
+  /// lourd de conséquences du back-office, il ne laissait aucune trace.
+  PLATFORM_SETTINGS_CHANGED
+  /// Arbitrage humain d'une récompense de parrainage mise en revue.
+  REFERRAL_REWARD_REVIEWED
 }
 
 model Incident {
@@ -1739,12 +1928,25 @@ model PlatformSettings {
   /// `RestaurantPayoutService.resolveCommissionPercent`.
   restaurantCommissionPercent Float @default(10)
 
-  loyaltyPointsPer100Xaf Int @default(1)
-  loyaltyPointValueXaf   Int @default(5)
-  loyaltyMinRedemption   Int @default(100)
+  /// BARÈME DE FIDÉLITÉ — refondu en septembre 2026.
+  ///
+  /// Le gain n'est plus proportionnel au montant : une commande livrée vaut un
+  /// forfait, quel que soit son montant. `loyaltyPointsPer100Xaf` a donc été
+  /// **supprimé** plutôt que détourné — un champ dont le nom ne décrit plus le
+  /// calcul est un piège pour qui reprend le code.
+  ///
+  /// ⚠️ `loyaltyPointValueXaf` est lu **au moment de la dépense**, jamais figé à
+  /// l'acquisition : le modifier revalorise instantanément tout le passif déjà
+  /// distribué. Ne jamais le changer sans exécuter au préalable
+  /// `scripts/db/redenominate-loyalty.js` (voir `docs/LOYALTY.md`).
+  loyaltyPointsPerOrder Int @default(1)
+  loyaltyPointValueXaf  Int @default(50)
+  loyaltyMinRedemption  Int @default(1)
 
-  referrerBonusPoints Int @default(500)
-  referredBonusPoints Int @default(200)
+  /// Récompense du parrain à la première commande **livrée** de son filleul.
+  /// Le bonus de bienvenue du filleul (`referredBonusPoints`) a été supprimé :
+  /// il payait une inscription, pas un achat.
+  referrerBonusPoints Int @default(1)
 
   maintenanceMode    Boolean @default(false)
   maintenanceMessage String?

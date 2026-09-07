@@ -4,7 +4,12 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { OrderStatus, Prisma, User } from '@prisma/client';
+import {
+  LoyaltyTransactionType,
+  OrderStatus,
+  Prisma,
+  User,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FirebaseService } from '../firebase/firebase.service';
 import { UserCacheService } from '../auth/services/user-cache.service';
@@ -77,7 +82,38 @@ export class UserDeletionService {
       await tx.cart.deleteMany({ where: { userId } });
       await tx.favorite.deleteMany({ where: { userId } });
       await tx.review.deleteMany({ where: { userId } });
-      await tx.loyaltyTransaction.deleteMany({ where: { userId } });
+      // ⚠️ Le ledger de fidélité N'EST PLUS supprimé (septembre 2026).
+      //
+      // Il l'était, et c'était deux erreurs en une : on effaçait la trace
+      // comptable de valeur réellement distribuée, et on rendait indéfendable
+      // toute vérification postérieure — un parrain restait crédité d'un point
+      // dont le filleul avait disparu sans laisser d'écriture.
+      //
+      // On solde le compte au lieu de l'effacer : une écriture de clôture
+      // ramène le ledger à zéro, exactement comme le solde. L'invariant
+      // `SUM(points) == loyaltyPoints` que vérifie
+      // `LoyaltyReconciliationService` tient donc toujours après suppression —
+      // supprimer les lignes en gardant `loyaltyPoints = 0` l'aurait tenu
+      // aussi, mais en perdant l'histoire.
+      //
+      // Les écritures conservées ne portent aucune donnée personnelle : un
+      // identifiant interne, un nombre de points, un motif. L'identité, elle,
+      // est anonymisée sur la ligne `User` juste en dessous.
+      const balance = await tx.user.findUniqueOrThrow({
+        where: { id: userId },
+        select: { loyaltyPoints: true },
+      });
+      if (balance.loyaltyPoints !== 0) {
+        await tx.loyaltyTransaction.create({
+          data: {
+            userId,
+            points: -balance.loyaltyPoints,
+            type: LoyaltyTransactionType.ADJUSTMENT,
+            reason: 'Clôture de compte — solde de fidélité soldé',
+            metadata: { closure: true },
+          },
+        });
+      }
       // Profil livreur : `plateNumber` et `licenseNumber` sont des données
       // personnelles au même titre qu'une adresse. La cascade PostgreSQL ne
       // s'applique pas ici — on anonymise le `User`, on ne le supprime pas —
