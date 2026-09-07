@@ -56,6 +56,19 @@ export const envValidationSchema = Joi.object({
   FIREBASE_SERVICE_ACCOUNT_PATH: Joi.string().allow('').optional(), // dev uniquement
 
   // ─── CORS — requis en production (cohérent avec le fail-fast de main.ts) ──
+  // ─── Invalidation du cache du site public ────────────────────────────────
+  //
+  // Facultatives et **solidaires** : sans les deux, le service se tait et le
+  // cache du site expire de lui-même au bout de quelques minutes
+  // (`cacheLife('minutes')`). C'est un mode dégradé légitime — développement
+  // local, préproduction sans site — pas une panne.
+  //
+  // ⚠️ `WEB_REVALIDATE_SECRET` protège une route publique du site : sans lui,
+  // n'importe qui pourrait purger le cache en boucle et faire du site un
+  // amplificateur de charge vers ce backend.
+  WEB_REVALIDATE_URL: Joi.string().uri().optional(),
+  WEB_REVALIDATE_SECRET: Joi.string().min(16).optional(),
+
   ALLOWED_ORIGINS: Joi.string().when('NODE_ENV', {
     is: 'production',
     then: Joi.required(),

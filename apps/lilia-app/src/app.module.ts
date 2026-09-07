@@ -55,6 +55,8 @@ import { AdminAuditModule } from './modules/admin-audit/admin-audit.module';
 import { RefundsModule } from './modules/refunds/refunds.module';
 import { OutboxModule } from './modules/outbox/outbox.module';
 
+import { CatalogCacheModule } from './modules/catalog-cache/catalog-cache.module';
+
 // Listeners (providers globaux)
 import { OrdersListener } from './modules/listeners/orders.listener';
 import { DeliveriesListener } from './modules/listeners/deliveries.listener';
@@ -202,6 +204,9 @@ import { envValidationSchema } from './config/env.validation';
     // Domaines
     UsersModule,
     RestaurantsModule,
+    // Invalide le cache du site public après une écriture au catalogue.
+    // Sans controller : rien de nouveau n'est exposé.
+    CatalogCacheModule,
     ProductsModule,
     CategoriesModule,
     OrdersModule,

@@ -9,6 +9,11 @@ import {
   catalogProductWhere,
   isWithinAvailabilityWindow,
 } from './product-availability';
+import {
+  MENU_IMAGES_ORDER_BY,
+  MENU_PRODUCTS_ORDER_BY,
+  MENU_VARIANTS_ORDER_BY,
+} from './vendor-menu.include';
 
 /**
  * Lectures du catalogue produits (extrait de ProductsService — LIL-143).
@@ -64,7 +69,7 @@ export class ProductQueryService {
         where,
         include: {
           category: true,
-          variants: true,
+          variants: { orderBy: [...MENU_VARIANTS_ORDER_BY] },
           restaurant: {
             select: {
               id: true,
@@ -72,9 +77,14 @@ export class ProductQueryService {
               vendorType: true,
             },
           },
-          images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
+          images: { orderBy: [...MENU_IMAGES_ORDER_BY] },
         },
-        orderBy: { createdAt: 'desc' },
+        // Le **même** tri que la carte (`vendorMenuInclude`), et ce n'est pas
+        // une coquetterie : c'est par cette route que les clients complètent un
+        // menu dépassant `MENU_PRODUCTS_LIMIT`. Un tri différent ferait
+        // réapparaître en page 2 des produits déjà reçus en page 1, et en
+        // sauterait d'autres — c'est-à-dire un menu faux, sans erreur visible.
+        orderBy: [...MENU_PRODUCTS_ORDER_BY],
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -153,7 +163,7 @@ export class ProductQueryService {
         where,
         include: {
           category: true,
-          variants: true,
+          variants: { orderBy: [...MENU_VARIANTS_ORDER_BY] },
           restaurant: {
             select: {
               id: true,
@@ -161,9 +171,13 @@ export class ProductQueryService {
               vendorType: true,
             },
           },
-          images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
+          images: { orderBy: [...MENU_IMAGES_ORDER_BY] },
         },
-        orderBy: { createdAt: 'desc' },
+        // Le back-office voit sa carte **dans l'ordre où le client la voit**.
+        // Sans cela, l'écran qui porte les boutons « monter / descendre »
+        // afficherait un autre ordre que celui qu'il prétend régler — et le
+        // vendeur classerait à l'aveugle.
+        orderBy: [...MENU_PRODUCTS_ORDER_BY],
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -203,7 +217,7 @@ export class ProductQueryService {
       },
       include: {
         category: true,
-        variants: true,
+        variants: { orderBy: [...MENU_VARIANTS_ORDER_BY] },
         restaurant: {
           select: {
             id: true,
@@ -220,7 +234,7 @@ export class ProductQueryService {
             preorderLeadHours: true,
           },
         },
-        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
+        images: { orderBy: [...MENU_IMAGES_ORDER_BY] },
       },
     });
 
@@ -283,11 +297,11 @@ export class ProductQueryService {
       },
       include: {
         category: true,
-        variants: true,
+        variants: { orderBy: [...MENU_VARIANTS_ORDER_BY] },
         restaurant: {
           select: { id: true, nom: true, imageUrl: true, isOpen: true },
         },
-        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
+        images: { orderBy: [...MENU_IMAGES_ORDER_BY] },
       },
     });
 
@@ -342,11 +356,11 @@ export class ProductQueryService {
         },
         include: {
           category: true,
-          variants: true,
+          variants: { orderBy: [...MENU_VARIANTS_ORDER_BY] },
           restaurant: {
             select: { id: true, nom: true, imageUrl: true, isOpen: true },
           },
-          images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
+          images: { orderBy: [...MENU_IMAGES_ORDER_BY] },
         },
         take: limit,
       }),
@@ -401,11 +415,11 @@ export class ProductQueryService {
       },
       include: {
         category: true,
-        variants: true,
+        variants: { orderBy: [...MENU_VARIANTS_ORDER_BY] },
         restaurant: {
           select: { id: true, nom: true, imageUrl: true, isOpen: true },
         },
-        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
+        images: { orderBy: [...MENU_IMAGES_ORDER_BY] },
       },
       take: limit,
       orderBy: { createdAt: 'desc' },

@@ -64,6 +64,7 @@ describe('CategoriesService — autorisation', () => {
       prisma as never,
       access as never,
       audit as never,
+      { emit: jest.fn() } as never,
     );
     return { service, prisma, access, audit };
   }

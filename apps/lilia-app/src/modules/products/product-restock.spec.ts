@@ -64,6 +64,7 @@ describe('ProductCommandService.update — réalignement du stock', () => {
       } as never,
       { resolveTargetRestaurant: jest.fn() } as never,
       { record: jest.fn() } as never,
+      { emit: jest.fn() } as never,
     );
     return { service, txUpdate };
   }

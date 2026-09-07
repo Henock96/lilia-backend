@@ -1,4 +1,5 @@
 /* eslint-disable prettier/prettier */
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   Injectable,
   NotFoundException,
@@ -6,6 +7,10 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  CATALOG_CHANGED,
+  CatalogChangedEvent,
+} from '../events/catalog-events';
 
 /**
  * Cycle de vie des menus (extrait de MenusService — LIL-141).
@@ -18,7 +23,18 @@ import { PrismaService } from '../../prisma/prisma.service';
 export class MenuLifecycleService {
   private readonly logger = new Logger(MenuLifecycleService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly eventEmitter: EventEmitter2,
+  ) {}
+
+  /** Cf. `ProductCommandService.touchCatalog` — émis hors transaction. */
+  private touchCatalog(restaurantId: string, reason: string): void {
+    this.eventEmitter.emit(
+      CATALOG_CHANGED,
+      new CatalogChangedEvent(restaurantId, reason),
+    );
+  }
 
   /**
    * Supprimer un menu
@@ -79,6 +95,8 @@ export class MenuLifecycleService {
       }
     }
 
+    this.touchCatalog(menu.restaurantId, 'menu.removed');
+
     return {
       message: 'Menu supprimé avec succès',
     };
@@ -113,6 +131,8 @@ export class MenuLifecycleService {
         stockRestant: stockQuotidien,
       },
     });
+
+    this.touchCatalog(updated.restaurantId, 'menu.stock');
 
     return {
       message: 'Stock du menu mis à jour avec succès',
@@ -151,6 +171,8 @@ export class MenuLifecycleService {
         isActive: !menu.isActive,
       },
     });
+
+    this.touchCatalog(updatedMenu.restaurantId, 'menu.toggled');
 
     return {
       message: `Menu ${updatedMenu.isActive ? 'activé' : 'désactivé'} avec succès`,

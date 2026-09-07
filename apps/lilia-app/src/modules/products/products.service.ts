@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { ProductType, VendorType } from '@prisma/client';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { ReorderProductsDto } from './dto/reorder-products.dto';
 import { ProductQueryService } from './product-query.service';
 import type { StockStatus } from './stock-status';
 import { ProductCommandService } from './product-command.service';
@@ -79,6 +80,10 @@ export class ProductsService {
 
   update(id: string, dto: UpdateProductDto, firebaseUid: string) {
     return this.command.update(id, dto, firebaseUid);
+  }
+
+  reorder(dto: ReorderProductsDto, firebaseUid: string) {
+    return this.command.reorder(dto, firebaseUid);
   }
 
   remove(id: string, firebaseUid: string) {

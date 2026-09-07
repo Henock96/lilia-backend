@@ -7,6 +7,10 @@ import {
   Logger,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import {
+  CATALOG_CHANGED,
+  CatalogChangedEvent,
+} from '../events/catalog-events';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateMenuDto, UpdateMenuDto } from './dto';
 import { MenuCreatedEvent } from '../events/menu-events';
@@ -32,6 +36,14 @@ export class MenuCommandService {
     private readonly access: RestaurantAccessService,
     private readonly audit: AdminAuditService,
   ) {}
+
+  /** Cf. `ProductCommandService.touchCatalog` — émis hors transaction. */
+  private touchCatalog(restaurantId: string, reason: string): void {
+    this.eventEmitter.emit(
+      CATALOG_CHANGED,
+      new CatalogChangedEvent(restaurantId, reason),
+    );
+  }
 
   /**
    * Créer un nouveau menu pour un restaurant
@@ -219,6 +231,8 @@ export class MenuCommandService {
       }
     }
 
+    this.touchCatalog(menu.restaurantId, 'menu.created');
+
     return {
       message: 'Menu créé avec succès',
       data: menu,
@@ -365,6 +379,8 @@ export class MenuCommandService {
         images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
       },
     });
+
+    this.touchCatalog(menu.restaurantId, 'menu.updated');
 
     return {
       message: 'Menu mis à jour avec succès',
