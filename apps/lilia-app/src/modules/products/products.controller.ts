@@ -21,6 +21,7 @@ import { ProductType, VendorType } from '@prisma/client';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { ReorderProductsDto } from './dto/reorder-products.dto';
 import { UpdateProductStockDto } from './dto/update-product-stock.dto';
 import {
   ProductFilterQueryDto,
@@ -178,6 +179,27 @@ export class ProductsController {
     @FirebaseUser() fbUser: DecodedIdToken,
   ) {
     return this.productsService.create(dto, fbUser.uid);
+  }
+
+  /**
+   * PATCH /products/reorder
+   *
+   * ⚠️ Déclarée **avant** `@Patch(':id')`, sinon « reorder » serait lu comme un
+   * identifiant de produit — exactement le piège que
+   * `products.controller.routing.spec.ts` rend exigible pour `/manage`, et que
+   * `PATCH /categories/reorder` a déjà rencontré.
+   */
+  @Patch('reorder')
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Réordonner ses produits (liste ordonnée complète)',
+  })
+  reorder(
+    @Body() dto: ReorderProductsDto,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return this.productsService.reorder(dto, fbUser.uid);
   }
 
   /**

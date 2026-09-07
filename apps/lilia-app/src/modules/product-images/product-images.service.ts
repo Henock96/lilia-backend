@@ -3,7 +3,9 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../../prisma/prisma.service';
+import { CATALOG_CHANGED, CatalogChangedEvent } from '../events/catalog-events';
 import { PhotosCommonService } from '../photos-common/photos-common.service';
 import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import {
@@ -17,7 +19,21 @@ export class ProductImagesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly common: PhotosCommonService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
+
+  /**
+   * Cf. `ProductCommandService.touchCatalog`.
+   *
+   * La couverture pilote `Product.imageUrl`, lu par les deux catalogues :
+   * changer une photo change la carte publique.
+   */
+  private touchCatalog(restaurantId: string, reason: string): void {
+    this.eventEmitter.emit(
+      CATALOG_CHANGED,
+      new CatalogChangedEvent(restaurantId, reason),
+    );
+  }
 
   /**
    * Route PUBLIQUE. Le filtre de visibilité manquait : les photos des produits
@@ -83,12 +99,12 @@ export class ProductImagesService {
   }
 
   async create(dto: CreateProductImageDto, user: { id: string; role: string }) {
-    await this.assertProductOwnership(dto.productId, user);
+    const restaurantId = await this.assertProductOwnership(dto.productId, user);
     await this.common.assertUnderMax('productImage', {
       productId: dto.productId,
     });
 
-    return this.prisma.$transaction(async (tx) => {
+    const created = await this.prisma.$transaction(async (tx) => {
       if (dto.isCover) {
         await this.common.demoteOtherCovers(
           'productImage',
@@ -115,6 +131,9 @@ export class ProductImagesService {
       }
       return image;
     });
+
+    this.touchCatalog(restaurantId, 'product.image.created');
+    return created;
   }
 
   async update(
@@ -124,9 +143,12 @@ export class ProductImagesService {
   ) {
     const image = await this.prisma.productImage.findUnique({ where: { id } });
     if (!image) throw new NotFoundException('Image introuvable');
-    await this.assertProductOwnership(image.productId, user);
+    const restaurantId = await this.assertProductOwnership(
+      image.productId,
+      user,
+    );
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       if (dto.isCover === true) {
         await this.common.demoteOtherCovers(
           'productImage',
@@ -153,12 +175,18 @@ export class ProductImagesService {
       }
       return updated;
     });
+
+    this.touchCatalog(restaurantId, 'product.image.updated');
+    return result;
   }
 
   async remove(id: string, user: { id: string; role: string }) {
     const image = await this.prisma.productImage.findUnique({ where: { id } });
     if (!image) throw new NotFoundException('Image introuvable');
-    await this.assertProductOwnership(image.productId, user);
+    const restaurantId = await this.assertProductOwnership(
+      image.productId,
+      user,
+    );
 
     await this.prisma.$transaction(async (tx) => {
       await tx.productImage.delete({ where: { id } });
@@ -187,6 +215,7 @@ export class ProductImagesService {
       }
     });
     await this.common.cleanupCloudinary(image.publicId);
+    this.touchCatalog(restaurantId, 'product.image.removed');
     return { success: true };
   }
 

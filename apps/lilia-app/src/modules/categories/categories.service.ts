@@ -4,13 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { AdminAuditAction, Prisma, VendorType } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
-import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
-import { catalogProductWhere } from '../products/product-availability';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { ReorderCategoriesDto } from './dto/reorder-categories.dto';
@@ -19,6 +18,7 @@ import {
   OWNER_CATEGORIES_ORDER_BY,
 } from './category.includes';
 import { slugifyCategoryName } from './category-slug';
+import { CATALOG_CHANGED, CatalogChangedEvent } from '../events/catalog-events';
 
 /**
  * Sections de menu d'un vendeur.
@@ -34,7 +34,16 @@ export class CategoriesService {
     private readonly prisma: PrismaService,
     private readonly access: RestaurantAccessService,
     private readonly audit: AdminAuditService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
+
+  /** Cf. `ProductCommandService.touchCatalog` — émis hors transaction. */
+  private touchCatalog(restaurantId: string, reason: string): void {
+    this.eventEmitter.emit(
+      CATALOG_CHANGED,
+      new CatalogChangedEvent(restaurantId, reason),
+    );
+  }
 
   // ─── Écritures ─────────────────────────────────────────────────────────────
 
@@ -69,6 +78,8 @@ export class CategoriesService {
       });
     }
 
+    this.touchCatalog(restaurant.id, 'category.created');
+
     return { data: category, message: 'Catégorie créée avec succès' };
   }
 
@@ -91,6 +102,7 @@ export class CategoriesService {
         where: { id },
         data,
       });
+      this.touchCatalog(updated.restaurantId, 'category.updated');
       return { data: updated, message: 'Catégorie mise à jour avec succès' };
     } catch (error) {
       throw this.translateUniqueViolation(error, dto.nom ?? existing.nom);
@@ -106,7 +118,7 @@ export class CategoriesService {
    * détaché reste vendable et remonte en « Autres » côté client.
    */
   async remove(id: string, firebaseUid: string) {
-    await this.findOwnedOrThrow(id, firebaseUid);
+    const category = await this.findOwnedOrThrow(id, firebaseUid);
 
     const detached = await this.prisma.$transaction(async (tx) => {
       const { count } = await tx.product.updateMany({
@@ -116,6 +128,8 @@ export class CategoriesService {
       await tx.category.delete({ where: { id } });
       return count;
     });
+
+    this.touchCatalog(category.restaurantId, 'category.removed');
 
     return {
       message:
@@ -158,6 +172,8 @@ export class CategoriesService {
         }),
       ),
     );
+
+    this.touchCatalog(restaurant.id, 'category.reordered');
 
     return {
       data: await this.prisma.category.findMany({
@@ -227,34 +243,15 @@ export class CategoriesService {
     return { data: categories, count: categories.length };
   }
 
-  /**
-   * Catégories d'un vendeur, vue **client**.
-   *
-   * Actives uniquement, et seulement celles qui ont au moins un produit
-   * visible : afficher une section vide au client, c'est lui promettre un
-   * contenu qui n'existe pas. C'est la vue *inverse* de `findAllForOwner`, où
-   * une section vide doit rester visible pour pouvoir être remplie.
-   */
-  async findPublicByRestaurant(restaurantId: string) {
-    const vendor = await this.prisma.restaurant.findFirst({
-      where: { id: restaurantId, ...PUBLIC_VENDOR_WHERE },
-      select: { id: true },
-    });
-    if (!vendor) {
-      throw new NotFoundException('Vendeur introuvable.');
-    }
-
-    const categories = await this.prisma.category.findMany({
-      where: {
-        restaurantId,
-        isActive: true,
-        products: { some: catalogProductWhere(this.prisma.product.fields) },
-      },
-      orderBy: [...OWNER_CATEGORIES_ORDER_BY],
-    });
-
-    return { data: categories, count: categories.length };
-  }
+  // ⚠️ `findPublicByRestaurant` a été **supprimée** (07/09/2026).
+  //
+  // Elle servait `GET /categories/restaurant/:restaurantId` — sections actives
+  // et non vides d'un vendeur — et n'a jamais eu le moindre appelant sur les
+  // cinq dépôts. Les sections de la carte arrivent embarquées dans
+  // `GET /vendors/:id` (`PUBLIC_CATEGORIES_ARGS`), et le filtre « non vide »
+  // est appliqué par les clients, sur les produits qu'ils ont **reçus** — donc
+  // après la borne `MENU_PRODUCTS_LIMIT`, ce que cette méthode ne pouvait pas
+  // faire. Voir l'en-tête de `categories.controller.ts`.
 
   async findOne(id: string, firebaseUid: string) {
     const category = await this.findOwnedOrThrow(id, firebaseUid);

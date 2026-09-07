@@ -23,16 +23,33 @@ import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { ReorderCategoriesDto } from './dto/reorder-categories.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { Public } from '../auth/decorators/public.decorator';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 
 /**
  * Sections de menu — **propriété du vendeur**.
  *
  * Il n'y a plus de `GET /categories` global : une catégorie n'existe que
- * rattachée à un commerce. Les deux lectures répondent à deux questions
- * différentes — « que puis-je remplir ? » (vendeur, sections vides comprises) et
- * « qu'y a-t-il à voir ? » (client, sections non vides uniquement).
+ * rattachée à un commerce.
+ *
+ * ## Une seule lecture, et pourquoi
+ *
+ * Ce contrôleur en exposait deux : celle-ci (« que puis-je remplir ? ») et
+ * `GET /categories/restaurant/:restaurantId` (« qu'y a-t-il à voir ? »,
+ * sections actives **et non vides**). La seconde **n'a jamais eu d'appelant** —
+ * vérifié sur les cinq dépôts — parce que les sections de la carte arrivent
+ * embarquées dans `GET /vendors/:id`, et que le filtre « non vide » est fait
+ * côté client.
+ *
+ * Ce n'est pas un détail de propreté : ce filtre côté client est **plus juste**
+ * que ne l'était la route. Elle regardait toute la table, quand le client, lui,
+ * regarde les produits qu'il a **effectivement reçus** — donc après la borne
+ * `MENU_PRODUCTS_LIMIT`. Une section dont tous les produits tombaient au-delà de
+ * la borne aurait été annoncée par le serveur puis rendue vide à l'écran.
+ *
+ * Garder les deux, dont une morte, garantissait qu'on corrigerait un jour la
+ * mauvaise. La règle « ne pas promettre une section vide » vit désormais à un
+ * seul endroit par plateforme : `buildMenuModel` (web) et `_sections`
+ * (application).
  */
 @ApiTags('Categories')
 @ApiBearerAuth()
@@ -41,19 +58,6 @@ export class CategoriesController {
   constructor(private readonly categoriesService: CategoriesService) {}
 
   // ─── Lectures ──────────────────────────────────────────────────────────────
-
-  /**
-   * Vue client : sections **actives et non vides** d'un vendeur publié.
-   * Déclarée avant `:id` pour ne pas être prise pour un identifiant.
-   */
-  @Public()
-  @Get('restaurant/:restaurantId')
-  @ApiOperation({
-    summary: "Sections publiques d'un vendeur (actives, non vides)",
-  })
-  findPublicByRestaurant(@Param('restaurantId') restaurantId: string) {
-    return this.categoriesService.findPublicByRestaurant(restaurantId);
-  }
 
   /**
    * Vue vendeur / administration : **toutes** ses sections, y compris vides et

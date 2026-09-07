@@ -5,13 +5,17 @@ import {
   PUBLIC_VENDOR_ORDER_BY,
   PUBLIC_VENDOR_WHERE,
 } from '../../common/vendor-visibility';
-import { catalogProductWhere } from '../products/product-availability';
-import { PUBLIC_CATEGORIES_ARGS } from '../categories/category.includes';
+import {
+  MENU_PRODUCTS_LIMIT,
+  vendorMenuInclude,
+  withAvailableNow,
+} from '../products/vendor-menu.include';
 import {
   PHOTOS_GALLERY,
   RESTAURANT_INCLUDE,
   RESTAURANT_LIST_INCLUDE,
 } from './restaurant.includes';
+import { aggregateRatings, NO_RATING } from './restaurant-ratings';
 
 /**
  * Lectures, scoring et analytics restaurants (extrait de RestaurantsService —
@@ -21,8 +25,11 @@ import {
  */
 @Injectable()
 export class RestaurantQueryService {
-  /** Nombre de produits renvoyés dans le détail d'un vendeur. */
-  private static readonly PRODUCTS_PREVIEW_LIMIT = 100;
+  // ⚠️ `PRODUCTS_PREVIEW_LIMIT` a disparu : la borne du menu est désormais
+  // `MENU_PRODUCTS_LIMIT`, partagée avec `GET /vendors/:id`. Deux constantes
+  // pour une même notion, c'est la définition même de la divergence qu'on
+  // vient de supprimer.
+
   /** Taille de page par défaut du catalogue vendeurs. */
   private static readonly LIST_DEFAULT_LIMIT = 50;
 
@@ -66,41 +73,29 @@ export class RestaurantQueryService {
   }
 
   /**
-   * Détail public d'un vendeur.
+   * Détail public d'un vendeur — **réglages + carte**.
    *
-   * Le filtre `isActive + adminApproved` est le même que sur la liste : sans
-   * lui, un vendeur suspendu ou en attente de validation restait publiquement
-   * consultable par lien direct, catalogue complet inclus. Aligné sur
-   * `VendorsService.findOne`.
+   * ⚠️ Cette route n'est plus la source canonique du menu : `GET /vendors/:id`
+   * l'est. Elle la conserve néanmoins, pour deux raisons qui n'ont rien à voir
+   * avec le catalogue — `apps/web/panier` (frais de livraison, minimum de
+   * commande, `isOpen`) et `apps/admin/mon-restaurant` (réglages) l'appellent
+   * et lisent la réponse entière. La supprimer, ou en retirer `products`,
+   * casserait un contrat que rien ne type.
    *
-   * Les produits sont bornés : `findOne` chargeait *tous* les produits avec
-   * toutes leurs variantes et images. Pour une épicerie de 400 références,
-   * c'était plusieurs mégaoctets sur la 4G de Brazzaville. Au-delà de
-   * `PRODUCTS_PREVIEW_LIMIT`, le client pagine via `GET /products?restaurantId=`.
+   * Ce qui change : le bloc catalogue vient désormais de `vendorMenuInclude`,
+   * **exactement le même** que celui de `VendorsService.findOne`. Les deux
+   * routes ne peuvent donc plus diverger sur les produits épuisés, l'ordre, la
+   * borne, les variantes, les images ou les menus du jour — elles l'avaient
+   * fait sur six points, sans que rien ne le signale.
+   * `vendor-menu-parity.spec.ts` compare les arguments Prisma des deux.
    */
   async findOne(id: string) {
-    // Fix PRD-03 : les produits embarqués n'étaient filtrés ni sur `deletedAt`
-    // ni sur `isAvailable`. Le soft delete (fix M2) n'avait donc atteint que
-    // `GET /products` — pas les deux routes que les clients ouvrent réellement,
-    // où un produit retiré du catalogue restait affiché et compté.
-    const visibleProducts = catalogProductWhere(this.prisma.product.fields);
+    const now = new Date();
 
     const restaurant = await this.prisma.restaurant.findFirst({
       where: { id, ...PUBLIC_VENDOR_WHERE },
       include: {
-        // Sections de menu du vendeur — actives uniquement, dans SON ordre.
-        categories: PUBLIC_CATEGORIES_ARGS,
-        products: {
-          where: visibleProducts,
-          include: {
-            category: true,
-            variants: true,
-            images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
-          },
-          orderBy: { createdAt: 'desc' },
-          take: RestaurantQueryService.PRODUCTS_PREVIEW_LIMIT,
-        },
-        _count: { select: { products: { where: visibleProducts } } },
+        ...vendorMenuInclude(this.prisma.product.fields, now),
         ...RESTAURANT_INCLUDE,
       },
     });
@@ -109,16 +104,16 @@ export class RestaurantQueryService {
       throw new NotFoundException(`Restaurant "${id}" non trouvé.`);
     }
 
-    const { _count, ...rest } = restaurant;
-    const ratings = await this.aggregateRatings([id]);
+    const { _count, products, ...rest } = restaurant;
+    const ratings = await aggregateRatings(this.prisma, [id]);
 
     return {
       data: {
         ...rest,
-        ...(ratings.get(id) ?? { averageRating: null, totalReviews: 0 }),
+        products: withAvailableNow(products, now),
+        ...(ratings.get(id) ?? NO_RATING),
         totalProducts: _count.products,
-        hasMoreProducts:
-          _count.products > RestaurantQueryService.PRODUCTS_PREVIEW_LIMIT,
+        hasMoreProducts: _count.products > MENU_PRODUCTS_LIMIT,
       },
     };
   }
@@ -165,7 +160,7 @@ export class RestaurantQueryService {
       include: RESTAURANT_LIST_INCLUDE,
     });
 
-    const ratings = await this.aggregateRatings(restaurants.map((r) => r.id));
+    const ratings = await aggregateRatings(this.prisma, restaurants.map((r) => r.id));
 
     // Préserve le tri par popularité
     const sorted = ids
@@ -267,38 +262,4 @@ export class RestaurantQueryService {
     };
   }
 
-  /**
-   * Moyenne + nombre d'avis, calculés **par PostgreSQL** (fix P0).
-   *
-   * Avant : `include: { reviews: { select: { rating: true } } }` chargeait la
-   * totalité des avis d'un vendeur pour afficher une étoile — sur la fiche
-   * publique et sur la liste des populaires. À 10 000 avis, c'est 10 000
-   * lignes transférées par carte affichée. Un `groupBy` avec `_avg`/`_count`
-   * ramène une ligne par vendeur.
-   */
-  private async aggregateRatings(
-    restaurantIds: string[],
-  ): Promise<Map<string, { averageRating: number | null; totalReviews: number }>> {
-    if (restaurantIds.length === 0) return new Map();
-
-    const grouped = await this.prisma.review.groupBy({
-      by: ['restaurantId'],
-      where: { restaurantId: { in: restaurantIds } },
-      _avg: { rating: true },
-      _count: { rating: true },
-    });
-
-    return new Map(
-      grouped.map((row) => [
-        row.restaurantId,
-        {
-          averageRating:
-            row._avg.rating !== null
-              ? Math.round(row._avg.rating * 10) / 10
-              : null,
-          totalReviews: row._count.rating,
-        },
-      ]),
-    );
-  }
 }

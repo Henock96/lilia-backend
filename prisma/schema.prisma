@@ -566,6 +566,28 @@ model Product {
   isAvailable Boolean   @default(true)
   deletedAt   DateTime?
 
+  /// Position du produit dans sa section, voulue par le vendeur.
+  /// Plus petit = plus haut.
+  ///
+  /// C'était la **seule** entité ordonnable de la carte à ne pas en avoir :
+  /// `Category`, `Banner`, `ProductImage`, `VendorPhoto`, `MenuImage` et
+  /// `MenuProduct` en portaient une, pas le produit. Les deux clients triaient
+  /// donc différemment — `createdAt desc` sur le web, **rien du tout** sur
+  /// mobile, c'est-à-dire l'ordre que PostgreSQL veut bien rendre, qui change
+  /// dès qu'une ligne est mise à jour. Constaté sur les 4 vendeurs de
+  /// production le 06/09/2026 : ordre différent des deux côtés, partout.
+  ///
+  /// Défaut `1000` et non `0`, comme `Restaurant.displayOrder` et pour la même
+  /// raison : avec `0`, « pas encore classé » et « tout premier » seraient la
+  /// même valeur, et chaque nouveau produit passerait en tête de section par
+  /// accident. À 1000, tout le catalogue existant reste à égalité et le tri
+  /// secondaire (`createdAt desc`) le départage — **l'ordre affiché aujourd'hui
+  /// sur le web est donc préservé à l'octet près** tant qu'aucun vendeur n'a
+  /// classé quoi que ce soit.
+  ///
+  /// Les doublons sont autorisés : le tri secondaire existe pour ça.
+  displayOrder Int @default(1000)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -574,8 +596,19 @@ model Product {
   @@index([restaurantId, productType]) // catalogue par type
   @@index([productType, stockMode]) // cron reset DAILY uniquement
   @@index([restaurantId, deletedAt, isAvailable]) // catalogue vendeur filtré (fix M2)
+  /// Tri du menu : on lit toujours « les produits d'un vendeur, dans l'ordre ».
+  @@index([restaurantId, displayOrder])
 }
 
+/// Format d'un produit — « 30cl », « Grand », « Standard ».
+///
+/// ⚠️ **Aucun ordre déclaré par le vendeur.** Les lectures trient par `prix`
+/// croissant (voir `MENU_VARIANTS_ORDER_BY`), et c'est délibéré : inventer un
+/// `displayOrder` de variante imposerait une interface de classement que
+/// personne n'a demandée, alors que le seul besoin réel est un ordre
+/// **déterministe**. Sans `orderBy`, PostgreSQL rendait les variantes dans
+/// l'ordre de son tas, si bien que « le prix de la première variante » —
+/// affiché sur les deux catalogues — pouvait changer après une simple édition.
 model ProductVariant {
   id        String     @id @default(cuid())
   label     String? // e.g., "30cl", "1.5L", "Normal", "Grand"
@@ -588,6 +621,8 @@ model ProductVariant {
   updatedAt DateTime   @updatedAt
 
   @@index([productId])
+  /// Sert le tri du menu (`prix asc`) sans passer par un tri en mémoire.
+  @@index([productId, prix])
 }
 
 model Cart {

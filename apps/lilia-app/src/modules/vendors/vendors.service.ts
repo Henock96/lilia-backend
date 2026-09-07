@@ -14,14 +14,14 @@ import {
   PUBLIC_VENDOR_WHERE,
 } from '../../common/vendor-visibility';
 import { PaginationService } from '../../common/pagination/pagination.service';
+import { type ProductTimeFields } from '../products/product-availability';
 import {
-  catalogProductWhere,
-  type ProductTimeFields,
-} from '../products/product-availability';
-import {
-  defaultCategoriesCreateInput,
-  PUBLIC_CATEGORIES_ARGS,
-} from '../categories/category.includes';
+  MENU_PRODUCTS_LIMIT,
+  vendorMenuInclude,
+  withAvailableNow,
+} from '../products/vendor-menu.include';
+import { ratingOf } from '../restaurants/restaurant-ratings';
+import { defaultCategoriesCreateInput } from '../categories/category.includes';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { CreateVendorDto } from './dto/create-vendor.dto';
 import { FilterVendorsDto } from './dto/filter-vendors.dto';
@@ -36,61 +36,34 @@ const VENDOR_PUBLIC_INCLUDE = {
   photos: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
 } satisfies Prisma.RestaurantInclude;
 
-// Détail vendeur : produits + menus du jour actifs embarqués. Construit par
-// requête (pas une const) car le filtre menus dépend de `now` — une const
-// figerait la date au chargement du module. Embarquer les menus ici évite une
-// 2e requête `GET /menus/active` côté client sur l'écran de détail.
-//
-// ⚠️ `fields` est un paramètre, pas `this.prisma.product.fields` : cette
-// fonction vit **hors de la classe**, `this` y vaut `undefined`. Le lui faire
-// lire a mis `GET /vendors/:id` en 500 en production — l'écran de détail
-// vendeur du client, donc le catalogue tel que l'acheteur le voit.
-// `noImplicitThis` (activé depuis) rend l'erreur impossible à recompiler.
+/**
+ * Détail vendeur = identité publique + **la** carte partagée.
+ *
+ * ⚠️ Le bloc catalogue ne se déclare plus ici. Il vient de
+ * `vendorMenuInclude`, la seule définition de « que vend ce commerçant ? », que
+ * `RestaurantQueryService.findOne` importe également —
+ * `vendor-menu-parity.spec.ts` échoue si l'un des deux s'en écarte.
+ *
+ * Deux choses ont disparu au passage, volontairement :
+ *
+ * 1. **Le filtre de stock** (`OR: [{ stockRestant: null }, { gt: 0 }]`). Il
+ *    faisait *disparaître* de l'application un plat que le site affichait
+ *    « Rupture ». Un plat épuisé aujourd'hui existe quand même : le masquer
+ *    laisse croire qu'il n'est pas au menu. Le refus de vente reste porté par
+ *    le serveur (`unavailabilityReason`, au panier **et** au checkout) — c'est
+ *    l'affichage qui change, pas la protection.
+ * 2. **L'absence de `take` et d'`orderBy`.** Sans borne, un catalogue de 400
+ *    références partait entier sur la 4G ; sans tri, l'ordre était celui du tas
+ *    PostgreSQL, qui bouge à chaque écriture.
+ *
+ * ⚠️ `fields` reste un paramètre, jamais `this.prisma.product.fields` : cette
+ * fonction vit hors de la classe, `this` y vaut `undefined`. Le lui faire lire
+ * a déjà mis `GET /vendors/:id` en 500 en production.
+ */
 function vendorDetailInclude(fields: ProductTimeFields, now = new Date()) {
   return {
     ...VENDOR_PUBLIC_INCLUDE,
-    // Sections de menu du vendeur — actives uniquement, dans SON ordre.
-    categories: PUBLIC_CATEGORIES_ARGS,
-    products: {
-      // Convention stock : null = illimité, 0 = épuisé, > 0 = quantité réelle.
-      // `{ not: 0 }` exclut aussi les NULL (sémantique SQL : NULL != 0 →
-      // UNKNOWN, pas TRUE). Sans cette branche OR, les produits HOME_COOK /
-      // BAKERY créés sans stockQuotidien (= illimité) n'apparaissaient jamais
-      // sur le détail vendeur (LIL-120).
-      //
-      // Fix PRD-03 : seul le stock était filtré. Un produit retiré du catalogue
-      // (`deletedAt`) ou marqué indisponible restait servi ici, alors que
-      // `GET /products` l'excluait depuis le fix M2. Le `AND` combine les deux
-      // conditions sans que le `OR` du stock n'écrase celui de la fenêtre
-      // horaire porté par `availableProductWhere`.
-      where: {
-        OR: [{ stockRestant: null }, { stockRestant: { gt: 0 } }],
-        AND: [catalogProductWhere(fields, now)],
-      },
-      include: {
-        category: true,
-        variants: true,
-        // Galerie produit pour le carrousel ouvert depuis le détail vendeur.
-        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
-      },
-    },
-    // Menus du jour actifs — même filtre et include que
-    // `MenuQueryService.getActiveMenus` pour un parsing identique côté client.
-    menuDuJour: {
-      where: { isActive: true, dateDebut: { lte: now }, dateFin: { gte: now } },
-      include: {
-        products: {
-          include: {
-            product: { include: { category: true, variants: true } },
-          },
-          orderBy: { ordre: 'asc' },
-        },
-        // Requis par `MenuDuJour.fromJson` côté Flutter (json['restaurant']).
-        restaurant: { select: { id: true, nom: true, imageUrl: true } },
-        images: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
-      },
-      orderBy: { dateDebut: 'desc' },
-    },
+    ...vendorMenuInclude(fields, now),
   } satisfies Prisma.RestaurantInclude;
 }
 
@@ -203,13 +176,42 @@ export class VendorsService {
     };
   }
 
+  /**
+   * **Source canonique de la carte d'un vendeur** — la route que le site et
+   * l'application consomment toutes deux depuis la phase 2.
+   *
+   * La réponse porte tout ce dont un client a besoin pour rendre un menu sans
+   * recalculer une seule règle métier :
+   *
+   * - `products` triés, bornés à `MENU_PRODUCTS_LIMIT`, épuisés compris, chacun
+   *   avec son `availableNow` (verdict horaire du serveur) ;
+   * - `categories` actives, dans l'ordre du vendeur ;
+   * - `menuDuJour` actifs ;
+   * - `averageRating` / `totalReviews` — absents jusqu'ici, d'où une application
+   *   qui n'affichait jamais d'étoiles ;
+   * - `totalProducts` / `hasMoreProducts` — pour que le client sache **qu'il
+   *   manque quelque chose**. Une carte tronquée en silence fait disparaître
+   *   des sections entières, les clients masquant les sections vides.
+   */
   async findOne(id: string) {
+    const now = new Date();
     const vendor = await this.prisma.restaurant.findFirst({
       where: { id, ...PUBLIC_VENDOR_WHERE },
-      include: vendorDetailInclude(this.prisma.product.fields),
+      include: vendorDetailInclude(this.prisma.product.fields, now),
     });
     if (!vendor) throw new NotFoundException(`Vendeur "${id}" introuvable.`);
-    return { data: vendor };
+
+    const { _count, products, ...rest } = vendor;
+
+    return {
+      data: {
+        ...rest,
+        products: withAvailableNow(products, now),
+        ...(await ratingOf(this.prisma, id)),
+        totalProducts: _count.products,
+        hasMoreProducts: _count.products > MENU_PRODUCTS_LIMIT,
+      },
+    };
   }
 
   /**

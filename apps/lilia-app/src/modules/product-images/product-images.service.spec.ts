@@ -1,4 +1,5 @@
 import { Test } from '@nestjs/testing';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ProductImagesService } from './product-images.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PhotosCommonService } from '../photos-common/photos-common.service';
@@ -57,6 +58,9 @@ describe('ProductImagesService — sync Product.imageUrl', () => {
         ProductImagesService,
         { provide: PrismaService, useValue: prisma },
         { provide: PhotosCommonService, useValue: common },
+        // L'invalidation du cache du site passe par un événement ;
+        // ces suites testent l'écriture, pas la revalidation.
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
       ],
     }).compile();
     service = moduleRef.get(ProductImagesService);

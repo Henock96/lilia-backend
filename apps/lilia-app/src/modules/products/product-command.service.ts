@@ -1,10 +1,17 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { AdminAuditAction, ProductType } from '@prisma/client';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { AdminAuditAction, Prisma, ProductType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { ReorderProductsDto } from './dto/reorder-products.dto';
 import { ProductValidatorService } from './product-validator.service';
+import { MENU_PRODUCTS_ORDER_BY } from './vendor-menu.include';
+import {
+  CATALOG_CHANGED,
+  CatalogChangedEvent,
+} from '../events/catalog-events';
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 
@@ -20,7 +27,22 @@ export class ProductCommandService {
     private readonly productValidator: ProductValidatorService,
     private readonly access: RestaurantAccessService,
     private readonly audit: AdminAuditService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
+
+  /**
+   * Signale que la carte de ce vendeur a changé.
+   *
+   * Émis **après** la transaction, jamais dedans : l'invalidation du cache du
+   * site est du « au mieux », elle ne doit ni retarder ni faire échouer une
+   * écriture. Voir `CatalogRevalidationService`.
+   */
+  private touchCatalog(restaurantId: string, reason: string): void {
+    this.eventEmitter.emit(
+      CATALOG_CHANGED,
+      new CatalogChangedEvent(restaurantId, reason),
+    );
+  }
 
   async create(dto: CreateProductDto, firebaseUid: string) {
     // `dto.restaurantId` n'est renseigné que par un administrateur agissant au
@@ -102,6 +124,8 @@ export class ProductCommandService {
         nom: dto.nom,
       });
     }
+
+    this.touchCatalog(restaurant.id, 'product.created');
 
     return {
       message: 'Création de produit réussie',
@@ -233,46 +257,9 @@ export class ProductCommandService {
         data: { ...productData, ...stockData },
       });
 
-      // 2. Gérer les variantes si fournies
+      // 2. Réconcilier les variantes si fournies
       if (variants !== undefined) {
-        // Récupérer les IDs des anciennes variantes
-        const oldVariants = await tx.productVariant.findMany({
-          where: { productId: id },
-          select: { id: true },
-        });
-        const oldVariantIds = oldVariants.map((v) => v.id);
-
-        // Supprimer d'abord les CartItems qui référencent ces variantes
-        if (oldVariantIds.length > 0) {
-          await tx.cartItem.deleteMany({
-            where: { variantId: { in: oldVariantIds } },
-          });
-        }
-
-        // Supprimer les anciennes variantes
-        await tx.productVariant.deleteMany({
-          where: { productId: id },
-        });
-
-        // Créer les nouvelles variantes
-        if (variants.length > 0) {
-          await tx.productVariant.createMany({
-            data: variants.map((v) => ({
-              label: v.label,
-              prix: v.prix,
-              productId: id,
-            })),
-          });
-        } else {
-          // Si aucune variante fournie, créer une variante par défaut
-          await tx.productVariant.create({
-            data: {
-              label: 'Standard',
-              prix: updated.prixOriginal,
-              productId: id,
-            },
-          });
-        }
+        await this.reconcileVariants(tx, id, variants, updated.prixOriginal);
       }
 
       // 3. Retourner le produit complet avec ses variantes
@@ -285,9 +272,185 @@ export class ProductCommandService {
       });
     });
 
+    this.touchCatalog(product.restaurantId, 'product.updated');
+
     return {
       message: 'Produit mis à jour avec succès',
       data: updatedProduct,
+    };
+  }
+
+  /**
+   * Aligne les variantes d'un produit sur celles soumises — **sans détruire ce
+   * qui n'a pas changé**.
+   *
+   * ## Le défaut corrigé (audit du 06/09/2026)
+   *
+   * La version précédente faisait un « détruire puis recréer » :
+   *
+   * ```ts
+   * await tx.cartItem.deleteMany({ where: { variantId: { in: oldVariantIds } } });
+   * await tx.productVariant.deleteMany({ where: { productId: id } });
+   * await tx.productVariant.createMany({ data: variants.map(...) });
+   * ```
+   *
+   * Or **les deux formulaires d'administration envoient `variants` à chaque
+   * enregistrement**, même quand le vendeur n'a corrigé qu'une faute de frappe
+   * dans une description. Conséquences, toutes silencieuses :
+   *
+   * 1. le produit disparaissait du panier de **tous** les clients qui l'y
+   *    avaient mis, sans qu'aucun ne soit averti ;
+   * 2. les identifiants de variantes changeaient à chaque sauvegarde, donc tout
+   *    client détenant une réponse en cache (cache de session mobile, cache web)
+   *    poussait ensuite un `variantId` qui n'existait plus ;
+   * 3. les lignes étant réinsérées, l'ordre des variantes changeait — et avec
+   *    lui le prix affiché sur les deux catalogues, alors que rien n'avait bougé
+   *    métier.
+   *
+   * ## Ce qu'on fait à la place
+   *
+   * Chaque variante soumise **avec un `id` connu** est mise à jour sur place :
+   * son identifiant survit, donc les paniers aussi. Une variante sans `id` est
+   * créée. Seules celles réellement retirées de la liste sont supprimées — et
+   * elles seules emportent leurs `CartItem`, parce que la clé étrangère l'exige.
+   *
+   * `UpdateProductVariantDto.id` existait déjà et n'était **jamais lu** :
+   * l'information nécessaire était présente dans la requête depuis le début.
+   *
+   * ⚠️ Un `id` inconnu (variante d'un autre produit, identifiant inventé) est
+   * traité comme une création, jamais comme une mise à jour : sans ce filtre,
+   * un vendeur pourrait réécrire le prix de la variante d'un concurrent en
+   * postant son identifiant.
+   */
+  private async reconcileVariants(
+    tx: Prisma.TransactionClient,
+    productId: string,
+    variants: { id?: string; label?: string; prix?: number }[],
+    prixOriginal: number,
+  ): Promise<void> {
+    const existing = await tx.productVariant.findMany({
+      where: { productId },
+      select: { id: true },
+    });
+    const existingIds = new Set(existing.map((v) => v.id));
+
+    // Liste vide = « remets-moi une variante par défaut », comportement
+    // historique conservé. On la traite comme une soumission normale pour ne
+    // pas avoir deux chemins d'écriture.
+    const submitted =
+      variants.length > 0
+        ? variants
+        : [{ id: undefined, label: 'Standard', prix: prixOriginal }];
+
+    const keptIds = new Set(
+      submitted
+        .map((v) => v.id)
+        .filter((id): id is string => !!id && existingIds.has(id)),
+    );
+
+    const removedIds = [...existingIds].filter((id) => !keptIds.has(id));
+    if (removedIds.length > 0) {
+      // Seules les variantes qui disparaissent vraiment emportent les lignes de
+      // panier qui les référencent : `CartItem.variantId` est une clé étrangère,
+      // la suppression échouerait sinon. Les variantes conservées gardent leurs
+      // paniers intacts — c'est tout l'objet de ce correctif.
+      await tx.cartItem.deleteMany({ where: { variantId: { in: removedIds } } });
+      await tx.productVariant.deleteMany({ where: { id: { in: removedIds } } });
+    }
+
+    for (const variant of submitted) {
+      if (variant.id && keptIds.has(variant.id)) {
+        await tx.productVariant.update({
+          where: { id: variant.id },
+          data: {
+            label: variant.label ?? null,
+            // `prix` est facultatif au DTO : absent, on **garde celui en base**.
+            // L'ancien code écrivait `prix: undefined` dans un `createMany`, ce
+            // qui faisait échouer toute la requête — modifier le seul libellé
+            // d'une variante était donc impossible.
+            ...(variant.prix !== undefined && { prix: variant.prix }),
+          },
+        });
+      } else {
+        await tx.productVariant.create({
+          data: {
+            label: variant.label,
+            // Une création, elle, doit porter un prix : à défaut, celui du
+            // produit — c'est déjà la convention de `create()`.
+            prix: variant.prix ?? prixOriginal,
+            productId,
+          },
+        });
+      }
+    }
+  }
+
+  /**
+   * Pose un ordre d'affichage cohérent (0, 1, 2…) sur les produits fournis.
+   *
+   * Calqué trait pour trait sur `CategoriesService.reorder`, qui a déjà résolu
+   * les mêmes questions :
+   *
+   * - le vendeur cible vient de `resolveTargetRestaurant`, **jamais** du corps
+   *   de la requête — un RESTAURATEUR reste chez lui même s'il connaît
+   *   l'identifiant d'une autre boutique ;
+   * - un identifiant étranger fait échouer **l'appel entier** plutôt que d'être
+   *   ignoré en silence : un réordonnancement partiellement appliqué laisserait
+   *   un ordre faux, et personne ne le saurait ;
+   * - l'écriture est une transaction : on ne veut pas d'un état intermédiaire où
+   *   la moitié de la carte porte l'ancien ordre.
+   *
+   * ⚠️ Les produits retirés (`deletedAt`) sont exclus de la vérification de
+   * propriété : ils ne sont plus gérables, et les inclure permettrait de les
+   * faire réapparaître dans un ordre.
+   */
+  async reorder(dto: ReorderProductsDto, firebaseUid: string) {
+    const restaurant = await this.access.resolveTargetRestaurant(
+      firebaseUid,
+      dto.restaurantId,
+    );
+
+    const owned = await this.prisma.product.findMany({
+      where: {
+        id: { in: dto.productIds },
+        restaurantId: restaurant.id,
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+
+    if (owned.length !== dto.productIds.length) {
+      throw new ForbiddenException(
+        "Certains produits n'appartiennent pas à ce vendeur.",
+      );
+    }
+
+    await this.prisma.$transaction(
+      dto.productIds.map((productId, index) =>
+        this.prisma.product.update({
+          where: { id: productId },
+          data: { displayOrder: index },
+        }),
+      ),
+    );
+
+    if (restaurant.onBehalfOf) {
+      await this.recordAdminCatalogEdit(firebaseUid, restaurant.id, {
+        entity: 'Product',
+        action: 'reorder',
+        count: dto.productIds.length,
+      });
+    }
+
+    this.touchCatalog(restaurant.id, 'product.reordered');
+
+    return {
+      data: await this.prisma.product.findMany({
+        where: { id: { in: dto.productIds } },
+        orderBy: [...MENU_PRODUCTS_ORDER_BY],
+        select: { id: true, nom: true, displayOrder: true, categoryId: true },
+      }),
+      message: 'Ordre des produits mis à jour',
     };
   }
 
@@ -363,6 +526,8 @@ export class ProductCommandService {
       await tx.product.delete({ where: { id } });
     });
 
+    this.touchCatalog(product.restaurantId, 'product.removed');
+
     return {
       message:
         soldAtLeastOnce > 0
@@ -410,6 +575,8 @@ export class ProductCommandService {
       data: { isAvailable },
     });
 
+    this.touchCatalog(product.restaurantId, 'product.availability');
+
     return {
       message: isAvailable
         ? 'Produit remis en vente'
@@ -445,6 +612,8 @@ export class ProductCommandService {
         stockRestant: stockQuotidien,
       },
     });
+
+    this.touchCatalog(product.restaurantId, 'product.stock');
 
     return {
       message: 'Stock mis à jour avec succès',

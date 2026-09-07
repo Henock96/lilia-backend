@@ -108,6 +108,7 @@ describe('Galeries — la vue de gestion ignore la frontière publique', () => {
       const service = new ProductImagesService(
         prisma as unknown as PrismaService,
         common,
+        { emit: jest.fn() } as never,
       );
       await expect(service.list('prod_1')).rejects.toThrow(
         'Produit introuvable',
@@ -122,6 +123,7 @@ describe('Galeries — la vue de gestion ignore la frontière publique', () => {
       const service = new ProductImagesService(
         prisma as unknown as PrismaService,
         common,
+        { emit: jest.fn() } as never,
       );
 
       await expect(service.listForOwner('prod_1', admin)).resolves.toEqual(
