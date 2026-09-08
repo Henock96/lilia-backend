@@ -3,10 +3,12 @@
 import { Controller, Get, HttpStatus, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { SkipThrottle } from '@nestjs/throttler';
 import { FirebaseService } from '../firebase/firebase.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { Public } from '../auth/decorators/public.decorator';
 import { SkipResponseWrap } from '../../common/interceptors/api-response.interceptor';
+import { SKIP_ALL_THROTTLERS } from '../../common/throttler/throttler-names';
 
 @ApiTags('Health')
 @Controller('health')
@@ -26,6 +28,7 @@ export class HealthController {
    * qu'en dehors de la production, où il aide réellement au diagnostic.
    */
   @Public()
+  @SkipThrottle(SKIP_ALL_THROTTLERS)
   @Get()
   @ApiOperation({ summary: 'Statut général de l\'application' })
   check() {
@@ -59,8 +62,13 @@ export class HealthController {
    * Liveness probe — ultra-léger, aucune I/O (pas d'appel Firebase/DB).
    * Cible du monitoring externe UptimeRobot (LIL-36), pollé toutes les 30s.
    * Exclu de l'auto-log Pino pour ne pas polluer les logs.
+   *
+   * Exempté de rate limiting (P-04) : le `ThrottlerGuard` coûtait ~545 ms de
+   * Redis sur une route qui ne fait que retourner un objet littéral — soit la
+   * quasi-totalité du temps de réponse de la sonde.
    */
   @Public()
+  @SkipThrottle(SKIP_ALL_THROTTLERS)
   @Get('live')
   @ApiOperation({ summary: 'Liveness probe (monitoring externe)' })
   live() {
@@ -76,6 +84,11 @@ export class HealthController {
    * orchestrateur qui se fie au code HTTP — c'est-à-dire tous — continuait
    * donc à router du trafic vers une instance incapable de servir. On répond
    * désormais 503, et le corps reste identique pour les outils qui le lisent.
+   *
+   * ⚠️ Volontairement **non** exempté de rate limiting, contrairement aux trois
+   * autres sondes (P-04) : celle-ci déclenche un `SELECT 1` sur la base. La
+   * déthrottler en ferait un levier d'amplification base de données, gratuit et
+   * anonyme. Ici la dépense Redis achète une protection, elle n'est pas perdue.
    */
   @Public()
   @SkipResponseWrap()
@@ -102,6 +115,7 @@ export class HealthController {
   }
 
   @Public()
+  @SkipThrottle(SKIP_ALL_THROTTLERS)
   @Get('firebase')
   @ApiOperation({ summary: 'Statut Firebase Admin SDK' })
   checkFirebase() {
