@@ -12,6 +12,10 @@ import { SentryModule } from '@sentry/nestjs/setup';
 import { SentryUserInterceptor } from './common/interceptors/sentry-user.interceptor';
 import { ApiResponseInterceptor } from './common/interceptors/api-response.interceptor';
 import { resolveThrottlerTracker } from './common/throttler/throttler-tracker';
+import {
+  THROTTLER_LONG,
+  THROTTLER_SHORT,
+} from './common/throttler/throttler-names';
 
 import { PrismaModule } from './prisma/prisma.module';
 import { FirebaseModule } from './modules/firebase/firebase.module';
@@ -168,9 +172,12 @@ import { envValidationSchema } from './config/env.validation';
       useFactory: (config: ConfigService) => {
         const redisUrl = config.get<string>('REDIS_URL');
         return {
+          // ⚠️ Noms tirés de `common/throttler/throttler-names.ts` : les routes
+          // exemptées les réutilisent, car `@SkipThrottle()` sans argument vise
+          // un limiteur `default` qui n'existe pas ici et n'exempte rien (P-04).
           throttlers: [
-            { name: 'short', ttl: 1000, limit: 10 },
-            { name: 'long', ttl: 60000, limit: 100 },
+            { name: THROTTLER_SHORT, ttl: 1000, limit: 10 },
+            { name: THROTTLER_LONG, ttl: 60000, limit: 100 },
           ],
           // Traçage par COMPTE quand un jeton est présent, par IP sinon
           // (fix C4) — voir common/throttler/throttler-tracker.ts.
