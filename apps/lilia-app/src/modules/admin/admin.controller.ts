@@ -475,18 +475,58 @@ export class AdminController {
 
   // ─── COMMANDES ─────────────────────────────────────────────────────────────
 
+  /**
+   * Vue d'administration des commandes — la route que les deux back-offices
+   * doivent consommer.
+   *
+   * Elle existait, gardée et paginée, et **n'avait aucun appelant** : les deux
+   * administrations lisaient `GET /orders/restaurant` sans transmettre de
+   * pagination, donc n'affichaient que les vingt dernières commandes de toute
+   * la plateforme (audit du 09/09/2026, blocker n°1).
+   *
+   * Réponse : `{ data, meta: { total, page, limit, totalPages, statusCounts } }`.
+   * `statusCounts` alimente les onglets — il est calculé sur le périmètre
+   * entier, filtre de statut exclu, pour qu'ils restent lisibles quand on en
+   * sélectionne un.
+   */
   @Get('orders')
   @ApiOperation({
-    summary: 'Toutes les commandes avec filtre optionnel par statut',
+    summary: 'Toutes les commandes — paginées, filtrables par statut',
+    description:
+      'Rend `{ data, meta }`. `meta.total` est le nombre réel de commandes du ' +
+      'périmètre ; `meta.statusCounts` porte le compte des sept statuts, ' +
+      'indépendamment du filtre courant.',
   })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
-  @ApiQuery({ name: 'status', required: false })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    description:
+      'EN_ATTENTE | PAYER | EN_PREPARATION | PRET | EN_ROUTE | LIVRER | ' +
+      'ANNULER. Vide ou absent = tous statuts.',
+  })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    description:
+      "Recherche libre : identifiant de commande (complet ou tronqué tel qu'il " +
+      "s'affiche, dièse compris), nom du client, téléphone (compte ou contact " +
+      'de livraison, format local ou international), nom du vendeur. La ' +
+      'recherche définit le périmètre : `meta.statusCounts` porte sur son ' +
+      'résultat.',
+  })
   getAllOrders(
     @Query() query: PaginationQueryDto,
     @Query('status') status?: string,
+    @Query('search') search?: string,
   ) {
-    return this.adminService.getAllOrders(query.page, query.limit, status);
+    return this.adminService.getAllOrders(
+      query.page,
+      query.limit,
+      status,
+      search,
+    );
   }
 
   @Get('orders/active')

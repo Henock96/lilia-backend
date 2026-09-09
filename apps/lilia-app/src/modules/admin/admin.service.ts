@@ -16,6 +16,7 @@ import { AdminUsersService } from './admin-users.service';
 import { AdminReviewsService } from './admin-reviews.service';
 import { AdminDashboardService } from './admin-dashboard.service';
 import { AdminRestaurantsService } from './admin-restaurants.service';
+import { AdminOrdersService } from './admin-orders.service';
 
 @Injectable()
 export class AdminService {
@@ -34,6 +35,7 @@ export class AdminService {
     private readonly adminReviewsService: AdminReviewsService,
     private readonly adminDashboardService: AdminDashboardService,
     private readonly adminRestaurantsService: AdminRestaurantsService,
+    private readonly adminOrdersService: AdminOrdersService,
   ) {}
 
   // ─── DASHBOARD ─────────────────────────────────────────────────────────────
@@ -212,26 +214,16 @@ export class AdminService {
 
   /**
    * Commandes paginées avec filtres — vue complète admin.
+   * Délègue à `AdminOrdersService` (même convention de façade que les huit
+   * autres domaines de ce module).
    */
-  async getAllOrders(page = 1, limit = 20, status?: string) {
-    const where = status ? { status: status as any } : {};
-
-    const [orders, total] = await Promise.all([
-      this.prisma.order.findMany({
-        where,
-        include: {
-          restaurant: { select: { nom: true } },
-          user: { select: { nom: true, email: true } },
-          items: { include: { product: { select: { nom: true } } } },
-        },
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      this.prisma.order.count({ where }),
-    ]);
-
-    return { data: orders, total, page, limit };
+  async getAllOrders(
+    page = 1,
+    limit = 20,
+    status?: string,
+    search?: string,
+  ) {
+    return this.adminOrdersService.list({ page, limit, status, search });
   }
 
   /**

@@ -41,7 +41,15 @@ describe('OrdersService (caractérisation — lectures)', () => {
 
   const prisma = {
     user: { findUnique: jest.fn() },
-    order: { findUnique: jest.fn(), findMany: jest.fn(), count: jest.fn() },
+    order: {
+      findUnique: jest.fn(),
+      findMany: jest.fn(),
+      count: jest.fn(),
+      // `groupBy` alimente `meta.statusCounts` : les onglets de l'écran
+      // Commandes comptaient dans la page reçue, ils comptent désormais dans
+      // le périmètre entier (audit du 09/09/2026).
+      groupBy: jest.fn(),
+    },
     restaurant: { findFirst: jest.fn() },
   };
   const pagination = {
@@ -57,6 +65,7 @@ describe('OrdersService (caractérisation — lectures)', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    prisma.order.groupBy.mockResolvedValue([]);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [

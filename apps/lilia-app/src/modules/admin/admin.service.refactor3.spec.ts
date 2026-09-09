@@ -10,6 +10,7 @@ import { AdminUsersService } from './admin-users.service';
 import { AdminReviewsService } from './admin-reviews.service';
 import { AdminDashboardService } from './admin-dashboard.service';
 import { AdminRestaurantsService } from './admin-restaurants.service';
+import { AdminOrdersService } from './admin-orders.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import { VendorsService } from '../vendors/vendors.service';
@@ -47,6 +48,7 @@ describe('AdminService (caractérisation — dashboard/restaurants)', () => {
         AdminService,
         AdminDashboardService, // réels concernés
         AdminRestaurantsService,
+        AdminOrdersService,
         { provide: AdminDeliverersService, useValue: {} },
         { provide: AdminPaymentsService, useValue: {} },
         { provide: AdminVendorsService, useValue: {} },
