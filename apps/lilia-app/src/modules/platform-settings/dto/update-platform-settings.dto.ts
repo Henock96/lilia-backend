@@ -137,7 +137,11 @@ export class UpdatePlatformSettingsDto {
 
   @IsOptional()
   @IsUrl(
-    { protocols: ['https', 'market'], require_protocol: true },
+    {
+      protocols: ['https', 'market'],
+      require_protocol: true,
+      require_tld: false, // market://details?id=x n'a pas de TLD, contrairement à https://
+    },
     { message: 'updateUrlAndroid doit être une URL https ou market complète.' },
   )
   @MaxLength(500)

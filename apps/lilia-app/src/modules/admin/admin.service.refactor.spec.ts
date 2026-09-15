@@ -11,6 +11,7 @@ import { AdminUsersService } from './admin-users.service';
 import { AdminReviewsService } from './admin-reviews.service';
 import { AdminDashboardService } from './admin-dashboard.service';
 import { AdminRestaurantsService } from './admin-restaurants.service';
+import { AdminOrdersService } from './admin-orders.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import { VendorsService } from '../vendors/vendors.service';
@@ -57,6 +58,7 @@ describe('AdminService (caractérisation — deliverers/payments/vendors)', () =
         { provide: AdminReviewsService, useValue: {} },
         { provide: AdminDashboardService, useValue: {} },
         { provide: AdminRestaurantsService, useValue: {} },
+        { provide: AdminOrdersService, useValue: {} },
         { provide: PrismaService, useValue: prisma },
         { provide: UserCacheService, useValue: {} },
         { provide: VendorsService, useValue: vendorsService },

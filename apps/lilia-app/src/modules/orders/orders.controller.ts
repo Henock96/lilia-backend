@@ -19,12 +19,14 @@ import {
   ApiResponse,
   ApiBearerAuth,
   ApiParam,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { OrdersService } from './orders.service';
 import { OrderReceiptService } from './order-receipt.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
+import { StuckOrdersQueryDto } from './dto/stuck-orders-query.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { DecodedIdToken } from 'firebase-admin/auth';
@@ -108,16 +110,71 @@ export class OrdersController {
   @Get('restaurant')
   @Roles('RESTAURATEUR', 'ADMIN')
   @ApiOperation({ summary: 'Commandes reçues (restaurateur / admin)' })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    description:
+      'EN_ATTENTE | PAYER | EN_PREPARATION | PRET | EN_ROUTE | LIVRER | ' +
+      'ANNULER. Vide ou absent = tous statuts. Le filtre est appliqué en SQL : ' +
+      'filtrer une page déjà tronquée ne rendrait que les commandes de cette page.',
+  })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    description:
+      "Recherche libre : identifiant de commande (complet ou tronqué), nom du " +
+      'client, téléphone, nom du vendeur. Pour un RESTAURATEUR, elle reste ' +
+      'bornée à sa propre boutique.',
+  })
   getRestaurantOrders(
     @FirebaseUser() fbUser: DecodedIdToken,
     @Query() query: PaginationQueryDto,
+    @Query('status') status?: string,
+    @Query('search') search?: string,
   ) {
     return this.ordersService.findRestaurantOrders(
       fbUser.uid,
       query.page,
       query.limit,
+      status,
+      search,
     );
   }
+  /**
+   * Commandes bloquées — la source de l'alerte du tableau de bord.
+   *
+   * L'alerte filtrait auparavant les vingt commandes reçues : une commande
+   * bloquée depuis trois heures en sortait dès que vingt plus récentes
+   * arrivaient. Elle s'éteignait donc précisément quand le problème
+   * s'aggravait (audit du 09/09/2026, D-4).
+   *
+   * ⚠️ Déclarée **avant** `@Get(':id')`, comme ses voisines : sinon
+   * « restaurant » serait lu comme un identifiant de commande.
+   */
+  @Get('restaurant/stuck')
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @ApiOperation({
+    summary: 'Commandes payées que personne n’a fait avancer',
+    description:
+      'Compte les commandes `PAYER`, `EN_PREPARATION` et `PRET` créées il y a ' +
+      'plus de `minutes`. `EN_ATTENTE` est exclu (non payée, fermée seule par ' +
+      'le cron d’expiration) et `EN_ROUTE` aussi (quelqu’un la porte). Les ' +
+      'précommandes dont l’échéance n’est pas venue ne sont jamais comptées.',
+  })
+  @ApiQuery({
+    name: 'minutes',
+    required: false,
+    description: 'Seuil en minutes (1 à 1440). Défaut : 30.',
+  })
+  getStuckOrders(
+    @FirebaseUser() fbUser: DecodedIdToken,
+    @Query() query: StuckOrdersQueryDto,
+  ) {
+    return this.ordersService.countStuckOrders(fbUser.uid, query.minutes);
+  }
+
   /**
    * Badge « commandes non ouvertes » (fix H7).
    *

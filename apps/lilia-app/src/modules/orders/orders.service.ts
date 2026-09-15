@@ -50,11 +50,31 @@ export class OrdersService {
   }
 
   /**
+   * Commandes bloquées — alimente l'alerte du tableau de bord.
+   * Périmètre résolu par le rôle, comme `findRestaurantOrders`.
+   */
+  async countStuckOrders(firebaseUid: string, minutes?: number) {
+    return this.queryService.countStuckOrders(firebaseUid, minutes);
+  }
+
+  /**
    * Récupère les commandes d'un restaurant spécifique.
    * ADMIN voit toutes les commandes de tous les restaurants.
    */
-  async findRestaurantOrders(firebaseUid: string, page = 1, limit = 20) {
-    return this.queryService.findRestaurantOrders(firebaseUid, page, limit);
+  async findRestaurantOrders(
+    firebaseUid: string,
+    page = 1,
+    limit = 20,
+    status?: string,
+    search?: string,
+  ) {
+    return this.queryService.findRestaurantOrders(
+      firebaseUid,
+      page,
+      limit,
+      status,
+      search,
+    );
   }
 
   /**

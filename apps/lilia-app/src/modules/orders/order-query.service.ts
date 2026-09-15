@@ -1,11 +1,27 @@
 import {
+  BadRequestException,
   Injectable,
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
-import { OrderStatus } from '@prisma/client';
+import { OrderStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationService } from '../../common/pagination/pagination.service';
+import {
+  parseOrderStatusFilter,
+  toOrderStatusCounts,
+} from './order-status-filter';
+import { buildOrderSearchWhere } from './order-search';
+
+/**
+ * Les trois états où l'argent du client est encaissé et où personne n'a livré.
+ * C'est la définition d'une commande « bloquée » — cf. `countStuckOrders`.
+ */
+const STUCK_ORDER_STATUSES = [
+  OrderStatus.PAYER,
+  OrderStatus.EN_PREPARATION,
+  OrderStatus.PRET,
+] as const;
 
 /**
  * Lectures de commandes (queries) extraites de `OrdersService` (LIL-134).
@@ -85,16 +101,23 @@ export class OrderQueryService {
   }
 
   /**
-   * Récupère les commandes d'un restaurant spécifique.
-   * ADMIN voit toutes les commandes de tous les restaurants.
+   * Périmètre de commandes visible par un compte, et relations à charger.
+   *
+   * **Un seul endroit** décide de ce qu'un rôle voit. Recopier ce `if` à chaque
+   * nouvelle lecture est le chemin le plus court vers une requête qui oublie le
+   * cloisonnement : c'est ce qui a produit l'IDOR des analytics vendeur en
+   * août, où le rôle était contrôlé mais pas l'objet.
+   *
+   * Minimisation des données (fix L12) : le vendeur reçoit ce qu'il lui faut
+   * pour préparer et livrer — nom, téléphone, photo. Pas l'e-mail, qui n'a
+   * aucun usage opérationnel et alimente les exports sauvages.
    */
-  async findRestaurantOrders(firebaseUid: string, page = 1, limit = 20) {
+  private async resolveOrderScope(
+    firebaseUid: string,
+  ): Promise<{ scope: Prisma.OrderWhereInput; include: object }> {
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
     if (!user) throw new NotFoundException('Utilisateur non trouvé.');
 
-    // Minimisation des données (fix L12) : le vendeur reçoit ce qu'il lui faut
-    // pour préparer et livrer — nom, téléphone, photo. Pas l'e-mail, qui n'a
-    // aucun usage opérationnel et alimente les exports sauvages.
     const baseInclude = {
       items: {
         include: { product: { select: { nom: true, imageUrl: true } } },
@@ -102,45 +125,25 @@ export class OrderQueryService {
       restaurant: { select: { nom: true } },
     };
 
-    const vendorInclude = {
-      ...baseInclude,
-      user: {
-        select: { id: true, nom: true, phone: true, imageUrl: true },
-      },
-    };
-
-    const adminInclude = {
-      ...baseInclude,
-      user: {
-        select: {
-          id: true,
-          nom: true,
-          phone: true,
-          email: true,
-          imageUrl: true,
-        },
-      },
-    };
-
     if (user.role === 'ADMIN') {
-      // PERFORMANCE (fix P1) : `order.count()` sans `where` force un scan
-      // séquentiel complet de la table à CHAQUE page. On borne sur les
-      // commandes non supprimées, ce qui laisse PostgreSQL utiliser un index
-      // et évite d'annoncer un total incluant les soft-deletes.
-      const adminWhere = { deleteCommande: false };
-      const [orders, total] = await Promise.all([
-        this.prisma.order.findMany({
-          where: adminWhere,
-          include: adminInclude,
-          orderBy: { createdAt: 'desc' },
-          skip: (page - 1) * limit,
-          take: limit,
-        }),
-        this.prisma.order.count({ where: adminWhere }),
-      ]);
       return {
-        data: orders,
-        meta: this.pagination.getPaginationMeta(page, limit, total),
+        // PERFORMANCE (fix P1) : `order.count()` sans `where` force un scan
+        // séquentiel complet de la table à CHAQUE page. On borne sur les
+        // commandes non supprimées, ce qui laisse PostgreSQL utiliser un index
+        // et évite d'annoncer un total incluant les soft-deletes.
+        scope: { deleteCommande: false },
+        include: {
+          ...baseInclude,
+          user: {
+            select: {
+              id: true,
+              nom: true,
+              phone: true,
+              email: true,
+              imageUrl: true,
+            },
+          },
+        },
       };
     }
 
@@ -148,27 +151,163 @@ export class OrderQueryService {
     const restaurant = await this.prisma.restaurant.findFirst({
       where: { owner: { firebaseUid } },
     });
-
     if (!restaurant) {
-      throw new NotFoundException(
-        'Restaurant non trouvé pour cet utilisateur.',
+      throw new NotFoundException('Restaurant non trouvé pour cet utilisateur.');
+    }
+
+    return {
+      scope: { restaurantId: restaurant.id },
+      include: {
+        ...baseInclude,
+        user: { select: { id: true, nom: true, phone: true, imageUrl: true } },
+      },
+    };
+  }
+
+  /**
+   * Combien de commandes sont **bloquées**, et depuis combien de temps.
+   *
+   * ## Ce que « bloquée » veut dire
+   *
+   * Les trois états où Lilia détient l'argent du client et où personne n'a
+   * encore livré : `PAYER` (payée, le vendeur ne l'a pas ouverte),
+   * `EN_PREPARATION` (en cuisine trop longtemps), `PRET` (prête, aucun livreur
+   * ne l'a prise).
+   *
+   * Deux exclusions volontaires :
+   *
+   * - **`EN_ATTENTE`** — la commande n'est pas payée, et `OrderExpiryService`
+   *   la ferme seul au bout de 45 min. L'alerte du tableau de bord l'incluait
+   *   et se remplissait donc de paniers abandonnés, qui noyaient les cas réels.
+   * - **`EN_ROUTE`** — quelqu'un la porte. Un retard s'y traite dans le flux de
+   *   livraison (incident `DRIVER_NO_SHOW`), pas ici.
+   *
+   * ## Le piège des précommandes
+   *
+   * Une précommande passée pour dans trois jours a un `createdAt` ancien **par
+   * construction**. Sans la garde sur `scheduledFor`, l'alerte annoncerait
+   * « bloquée depuis 4 320 minutes » sur une commande parfaitement normale — et
+   * un opérateur apprend vite à ignorer une alerte qui se trompe.
+   */
+  async countStuckOrders(firebaseUid: string, minutes = 30) {
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
+      throw new BadRequestException(
+        'Le seuil doit être un entier de 1 à 1440 minutes.',
       );
     }
 
-    const [orders, total] = await Promise.all([
+    const { scope } = await this.resolveOrderScope(firebaseUid);
+
+    const now = new Date();
+    const threshold = new Date(now.getTime() - minutes * 60_000);
+
+    const where: Prisma.OrderWhereInput = {
+      ...scope,
+      status: { in: [...STUCK_ORDER_STATUSES] },
+      createdAt: { lte: threshold },
+      OR: [
+        { isPreorder: false },
+        { isPreorder: true, scheduledFor: { lte: now } },
+      ],
+    };
+
+    const [grouped, oldest] = await Promise.all([
+      this.prisma.order.groupBy({
+        by: ['status'],
+        where,
+        _count: { status: true },
+      }),
       this.prisma.order.findMany({
-        where: { restaurantId: restaurant.id },
-        include: vendorInclude,
+        where,
+        select: { createdAt: true },
+        orderBy: { createdAt: 'asc' },
+        take: 1,
+      }),
+    ]);
+
+    const byStatus = Object.fromEntries(
+      STUCK_ORDER_STATUSES.map((s) => [s, 0]),
+    ) as Record<(typeof STUCK_ORDER_STATUSES)[number], number>;
+    let total = 0;
+    for (const row of grouped) {
+      byStatus[row.status as (typeof STUCK_ORDER_STATUSES)[number]] =
+        row._count.status;
+      total += row._count.status;
+    }
+
+    return {
+      data: {
+        thresholdMinutes: minutes,
+        total,
+        byStatus,
+        // `null` et non `0` : zéro se lirait comme « une commande vient de se
+        // bloquer », alors qu'il n'y en a aucune.
+        oldestMinutes: oldest[0]
+          ? Math.floor((now.getTime() - oldest[0].createdAt.getTime()) / 60_000)
+          : null,
+      },
+    };
+  }
+
+  /**
+   * Récupère les commandes d'un restaurant spécifique.
+   * ADMIN voit toutes les commandes de tous les restaurants.
+   *
+   * `status` filtre **en SQL**, et `meta.statusCounts` compte les sept statuts
+   * sur le périmètre entier. Les deux ont été ajoutés en même temps que le
+   * raccordement d'`/admin/orders` (audit du 09/09/2026) : l'écran Commandes
+   * du Web est partagé entre ADMIN et RESTAURATEUR, et un écran dont les
+   * onglets sont honnêtes pour un rôle et faux pour l'autre est pire qu'un
+   * écran uniformément faux — personne ne sait lequel il regarde.
+   */
+  async findRestaurantOrders(
+    firebaseUid: string,
+    page = 1,
+    limit = 20,
+    status?: string,
+    search?: string,
+  ) {
+    // Le refus d'un statut inconnu vient avant toute requête : inutile de
+    // solliciter la base pour une demande qu'on sait invalide.
+    const statusFilter = parseOrderStatusFilter(status);
+    const searchFilter = buildOrderSearchWhere(search);
+
+    const { scope: baseScope, include } =
+      await this.resolveOrderScope(firebaseUid);
+
+    // ⚠️ La recherche s'ajoute au cloisonnement, elle ne s'y substitue jamais :
+    // elle ne doit pas devenir une porte vers les commandes d'un concurrent.
+    const scope: Prisma.OrderWhereInput = { ...baseScope, ...searchFilter };
+
+    // `scope` sert aux compteurs, `where` à la page affichée. Les deux doivent
+    // porter sur la même population, filtre de statut mis à part — sinon les
+    // nombres des onglets ne s'additionnent pas au total annoncé.
+    const where: Prisma.OrderWhereInput = statusFilter
+      ? { ...scope, status: statusFilter }
+      : scope;
+
+    const [orders, total, grouped] = await Promise.all([
+      this.prisma.order.findMany({
+        where,
+        include,
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
       }),
-      this.prisma.order.count({ where: { restaurantId: restaurant.id } }),
+      this.prisma.order.count({ where }),
+      this.prisma.order.groupBy({
+        by: ['status'],
+        where: scope,
+        _count: { status: true },
+      }),
     ]);
 
     return {
       data: orders,
-      meta: this.pagination.getPaginationMeta(page, limit, total),
+      meta: {
+        ...this.pagination.getPaginationMeta(page, limit, total),
+        statusCounts: toOrderStatusCounts(grouped),
+      },
     };
   }
 

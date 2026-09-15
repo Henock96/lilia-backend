@@ -9,6 +9,7 @@ import { AdminUsersService } from './admin-users.service';
 import { AdminReviewsService } from './admin-reviews.service';
 import { AdminDashboardService } from './admin-dashboard.service';
 import { AdminRestaurantsService } from './admin-restaurants.service';
+import { AdminOrdersService } from './admin-orders.service';
 import { FirebaseModule } from '../firebase/firebase.module';
 import { AuthModule } from '../auth/auth.module';
 import { VendorsModule } from '../vendors/vendors.module';
@@ -28,6 +29,7 @@ import { LoyaltyAdminService } from '../loyalty/loyalty-admin.service';
     AdminReviewsService,
     AdminDashboardService,
     AdminRestaurantsService,
+    AdminOrdersService,
     // Écritures d'administration sur la fidélité (ajustement manuel tracé,
     // arbitrage des récompenses de parrainage).
     //
