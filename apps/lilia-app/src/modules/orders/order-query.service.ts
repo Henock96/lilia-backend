@@ -152,7 +152,9 @@ export class OrderQueryService {
       where: { owner: { firebaseUid } },
     });
     if (!restaurant) {
-      throw new NotFoundException('Restaurant non trouvé pour cet utilisateur.');
+      throw new NotFoundException(
+        'Restaurant non trouvé pour cet utilisateur.',
+      );
     }
 
     return {

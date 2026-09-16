@@ -10,6 +10,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import Redis from 'ioredis';
+import { buildRedisOptions } from '../../common/redis/redis-options';
 
 export interface PositionPayload {
   orderId: string;
@@ -34,7 +35,15 @@ export class TrackingService implements OnModuleDestroy {
     private readonly config: ConfigService,
   ) {
     const redisUrl = this.config.get<string>('REDIS_URL');
-    this.redis = redisUrl ? new Redis(redisUrl) : null;
+    // Connexion dédiée, volontairement distincte du client partagé : le
+    // tracking émet une rafale toutes les 5 s par livreur et doit pouvoir
+    // saturer ou tomber sans entraîner le checkout avec lui. Ses options
+    // viennent de `common/redis/redis-options.ts` — sans `commandTimeout`, une
+    // position perdue bloquait le handler au lieu d'être simplement remplacée
+    // cinq secondes plus tard.
+    this.redis = redisUrl
+      ? new Redis(redisUrl, buildRedisOptions({ usage: 'tracking', config }))
+      : null;
     if (!redisUrl) {
       this.logger.warn(
         'REDIS_URL non défini: tracking temps réel indisponible',
@@ -68,16 +77,38 @@ export class TrackingService implements OnModuleDestroy {
    */
   async cacheLivePosition(payload: PositionPayload): Promise<void> {
     if (!this.redis) return;
-    const { orderId, driverId, lat, lng, accuracy } = payload;
+    // Un seul aller-retour au lieu de deux : les deux écritures sont
+    // indépendantes, rien n'obligeait à attendre la première pour émettre la
+    // seconde.
+    const results = await this.queueLivePosition(
+      this.redis.pipeline(),
+      payload,
+    ).exec();
+    this.assertPipelineSucceeded(results);
+  }
 
-    // GEO — position instantanée, lecture < 1ms
-    await this.redis.geoadd('driver_positions', lng, lat, driverId);
-
-    // Métadonnées avec TTL — effacé si livreur déconnecté 5min
-    await this.redis.setex(
-      `delivery:${orderId}`,
-      this.POSITION_TTL,
-      JSON.stringify({ lat, lng, accuracy, ts: Date.now() }),
+  /**
+   * Empile les deux écritures de position sur un pipeline, sans l'exécuter.
+   *
+   * Partagé entre `cacheLivePosition` (repli HTTP `PATCH /deliveries/:id/location`)
+   * et `updatePosition` (voie WebSocket), pour que les deux chemins écrivent
+   * exactement la même chose — et pour que le second puisse y ajouter son verrou
+   * et tout envoyer d'un coup.
+   */
+  private queueLivePosition(
+    pipeline: ReturnType<Redis['pipeline']>,
+    { orderId, driverId, lat, lng, accuracy }: PositionPayload,
+  ): ReturnType<Redis['pipeline']> {
+    return (
+      pipeline
+        // GEO — position instantanée, lecture < 1ms
+        .geoadd('driver_positions', lng, lat, driverId)
+        // Métadonnées avec TTL — effacé si livreur déconnecté 5min
+        .setex(
+          `delivery:${orderId}`,
+          this.POSITION_TTL,
+          JSON.stringify({ lat, lng, accuracy, ts: Date.now() }),
+        )
     );
   }
 
@@ -85,18 +116,33 @@ export class TrackingService implements OnModuleDestroy {
     const { orderId, lat, lng, accuracy } = payload;
     const redis = this.getRedis();
 
-    // 1 + 2. Cache live (GEO + métadonnées TTL) — mutualisé avec le fallback HTTP
-    await this.cacheLivePosition(payload);
+    // Les TROIS commandes en un seul aller-retour.
+    //
+    // Elles étaient enchaînées par trois `await` successifs alors qu'aucune ne
+    // dépend du résultat de la précédente. Avec un Redis distant, cela coûtait
+    // trois fois le temps de trajet — sur un message émis toutes les 5 secondes
+    // par livreur en course.
+    //
+    // Rien d'autre ne change : mêmes commandes, même TTL (300 s), même
+    // intervalle de persistance (60 s), même sémantique de verrou `NX`.
+    //   [0] GEOADD   [1] SETEX   [2] SET NX EX ← le seul résultat qu'on lit
+    const results = await this.queueLivePosition(redis.pipeline(), payload)
+      .set(
+        `persist_lock:${orderId}`,
+        '1',
+        'EX',
+        this.PERSIST_INTERVAL,
+        'NX', // Only if Not eXists
+      )
+      .exec();
 
-    // 3. Persist PostgreSQL — seulement si 60s écoulées (clé NX = "si n'existe pas")
-    // Redis pose un verrou de 60s → 1 seul write DB par minute max
-    const shouldPersist = await redis.set(
-      `persist_lock:${orderId}`,
-      '1',
-      'EX',
-      this.PERSIST_INTERVAL,
-      'NX', // Only if Not eXists
-    );
+    // `exec()` ne rejette pas sur l'échec d'une commande : il rend un couple
+    // `[erreur, résultat]` par commande. Sans ce contrôle, une erreur Redis
+    // deviendrait silencieuse — alors que les trois `await` d'avant la
+    // propageaient. On relance donc la première, à l'identique.
+    this.assertPipelineSucceeded(results);
+
+    const shouldPersist = results?.[2]?.[1];
 
     if (shouldPersist === 'OK') {
       // Fire-and-forget — n'attend pas la DB pour répondre au livreur
@@ -106,6 +152,23 @@ export class TrackingService implements OnModuleDestroy {
         ),
       );
     }
+  }
+
+  /**
+   * Relance la première erreur d'un pipeline.
+   *
+   * Un `pipeline().exec()` est résolu même quand une commande a échoué : les
+   * erreurs sont rendues dans les couples `[erreur, résultat]`. Les trois
+   * `await` d'origine, eux, rejetaient. Sans ce contrôle, la mise en pipeline
+   * transformerait une panne Redis en succès silencieux — et le verrou de
+   * persistance serait lu comme « déjà pris », donc aucune position n'atteindrait
+   * plus jamais la base.
+   */
+  private assertPipelineSucceeded(
+    results: [Error | null, unknown][] | null,
+  ): void {
+    const failure = results?.find(([err]) => err)?.[0];
+    if (failure) throw failure;
   }
 
   private async persistPosition(

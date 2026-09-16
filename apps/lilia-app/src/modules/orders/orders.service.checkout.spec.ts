@@ -11,6 +11,7 @@ import { OrderReorderService } from './order-reorder.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationService } from '../../common/pagination/pagination.service';
 import { OrderStateMachine } from './order-state.machine';
+import { OrderTransitionService } from './order-transition.service';
 import { StockService } from './stock.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
@@ -40,6 +41,9 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
 
   // ─── tx simulé pour prisma.$transaction(cb) ──────────────────────────────
   const tx = {
+    // P0-4 : toute transition de statut écrit sa ligne d'historique dans la
+    // MÊME transaction. Le client de transaction doit donc l'exposer.
+    orderHistory: { create: jest.fn() },
     order: { create: jest.fn() },
     user: { update: jest.fn() },
     loyaltyTransaction: { create: jest.fn() },
@@ -194,6 +198,7 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
         { provide: ConfigService, useValue: { get: () => undefined } },
         { provide: PaginationService, useValue: {} },
         { provide: OrderStateMachine, useValue: {} },
+        OrderTransitionService,
         { provide: QuartiersService, useValue: {} },
         {
           provide: DeliveryDestinationService,

@@ -5,6 +5,7 @@ import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { DeliveryAssignmentService } from './delivery-assignment.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
+import { OrderTransitionService } from '../orders/order-transition.service';
 
 /**
  * Les quatre conditions d'assignabilité d'un livreur — côté ÉCRITURE.
@@ -73,6 +74,9 @@ describe('DeliveryAssignmentService — assertAssignable', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        // P0-4 : `Order.status` ne s'écrit plus qu'à travers ce service,
+        // qui historise la transition dans la même transaction.
+        OrderTransitionService,
         DeliveryAssignmentService,
         { provide: PrismaService, useValue: prisma },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },

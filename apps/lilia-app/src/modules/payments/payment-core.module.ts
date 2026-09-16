@@ -13,6 +13,7 @@ import { MtnMomoTokenService } from './services/mtn-momo-token.service';
 
 import { PaymentProviderRegistry } from './payment-provider.registry';
 import { PayoutStateMachine } from './payout-state.machine';
+import { OrderTransitionService } from '../orders/order-transition.service';
 import { ManualPaymentProvider } from './providers/manual.provider';
 import { MtnMomoProvider } from './providers/mtn-momo.provider';
 import { PawaPayProvider } from './providers/pawapay/pawapay.provider';
@@ -60,6 +61,11 @@ import { PawaPaySignatureService } from './providers/pawapay/pawapay-signature.s
     PaymentEventService,
     RestaurantPayoutService,
     PayoutStateMachine,
+    // Fourni localement plutôt qu'importé d'`OrdersCoreModule` : le service est
+    // sans état et sans dépendance, et l'importer tirerait ici tout le graphe
+    // des commandes (fidélité, remboursements, parrainage). Même choix que
+    // `DeliveriesModule` pour `OrderStateMachine`.
+    OrderTransitionService,
   ],
   exports: [
     PaymentService,

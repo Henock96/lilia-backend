@@ -24,9 +24,7 @@ import {
  *    « 1.2.0 » et s'est arrêté trop tôt bloquerait tout le parc antérieur à
  *    la 1.2 sans s'en apercevoir.
  */
-async function errorsFor(
-  payload: Record<string, unknown>,
-): Promise<string[]> {
+async function errorsFor(payload: Record<string, unknown>): Promise<string[]> {
   const dto = plainToInstance(UpdatePlatformSettingsDto, payload);
   const errors = await validate(dto, { whitelist: true });
   return errors.map((e) => e.property);

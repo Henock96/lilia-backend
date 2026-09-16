@@ -10,6 +10,7 @@ import {
 
 import { PaymentService } from '../../apps/lilia-app/src/modules/payments/services/payment.service';
 import { RestaurantPayoutService } from '../../apps/lilia-app/src/modules/payments/services/restaurant-payout.service';
+import { OrderTransitionService } from '../../apps/lilia-app/src/modules/orders/order-transition.service';
 import { PaymentEventService } from '../../apps/lilia-app/src/modules/payments/services/payment-event.service';
 import { PayoutStateMachine } from '../../apps/lilia-app/src/modules/payments/payout-state.machine';
 import { PlatformSettingsService } from '../../apps/lilia-app/src/modules/platform-settings/platform-settings.service';
@@ -121,6 +122,9 @@ describeIfDb(
         registry as never,
         events,
         outbox,
+        // P0-4 : le passage `EN_ATTENTE → PAYER` écrit sa ligne d'historique
+        // dans la transaction de confirmation.
+        new OrderTransitionService(),
       );
       payouts = new RestaurantPayoutService(
         prisma as never,

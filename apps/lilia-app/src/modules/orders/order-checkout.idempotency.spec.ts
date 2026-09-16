@@ -15,6 +15,7 @@ import { PreorderValidatorService } from '../vendors/preorder-validator.service'
 import { QuartiersService } from '../quartiers/quartiers.service';
 import { DeliveryDestinationService } from './delivery-destination.service';
 import { OutboxService } from '../outbox/outbox.service';
+import { OrderTransitionService } from './order-transition.service';
 
 /**
  * Garde d'idempotence du checkout.
@@ -28,6 +29,9 @@ describe('OrderCheckoutService — idempotence', () => {
   let service: OrderCheckoutService;
 
   const tx = {
+    // P0-4 : toute transition de statut écrit sa ligne d'historique dans la
+    // MÊME transaction. Le client de transaction doit donc l'exposer.
+    orderHistory: { create: jest.fn() },
     order: { create: jest.fn() },
     user: { update: jest.fn() },
     loyaltyTransaction: { create: jest.fn() },
@@ -138,6 +142,9 @@ describe('OrderCheckoutService — idempotence', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        // P0-4 : `Order.status` ne s'écrit plus qu'à travers ce service,
+        // qui historise la transition dans la même transaction.
+        OrderTransitionService,
         {
           provide: OutboxService,
           useValue: {

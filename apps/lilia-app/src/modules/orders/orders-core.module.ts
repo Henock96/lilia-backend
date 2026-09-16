@@ -6,6 +6,7 @@ import { RefundsCoreModule } from '../refunds/refunds-core.module';
 import { ReferralCoreModule } from '../users/referral-core.module';
 import { OrderLifecycleService } from './order-lifecycle.service';
 import { OrderStateMachine } from './order-state.machine';
+import { OrderTransitionService } from './order-transition.service';
 import { StockService } from './stock.service';
 
 /**
@@ -27,10 +28,20 @@ import { StockService } from './stock.service';
  */
 @Module({
   imports: [PrismaModule, LoyaltyModule, RefundsCoreModule, ReferralCoreModule],
-  providers: [OrderStateMachine, StockService, OrderLifecycleService],
+  providers: [
+    OrderStateMachine,
+    // Seul point d'écriture de `Order.status`. Fourni ici — donc par un module
+    // SANS controller — parce que le worker en a besoin lui aussi :
+    // `OrderExpiryService` annule les commandes impayées depuis l'autre
+    // processus, et cette transition doit être historisée comme les autres.
+    OrderTransitionService,
+    StockService,
+    OrderLifecycleService,
+  ],
   exports: [
     OrderLifecycleService,
     OrderStateMachine,
+    OrderTransitionService,
     StockService,
     LoyaltyModule,
     RefundsCoreModule,

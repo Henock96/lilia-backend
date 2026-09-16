@@ -8,6 +8,7 @@ import { PaymentEventService } from './services/payment-event.service';
 import { PaymentProviderRegistry } from './payment-provider.registry';
 import { OutboxService } from '../outbox/outbox.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { OrderTransitionService } from '../orders/order-transition.service';
 
 /**
  * Résurrection de commande et commande à total nul (fixes H2 et M3 — audit du
@@ -33,6 +34,9 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
       create: jest.fn(),
       update: jest.fn(),
     },
+    // P0-4 : toute transition de statut écrit sa ligne d'historique dans la
+    // MÊME transaction. Le client de transaction doit donc l'exposer.
+    orderHistory: { create: jest.fn() },
     order: {
       updateMany: jest.fn(),
       findUnique: jest.fn(),
@@ -83,6 +87,9 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        // P0-4 : `Order.status` ne s'écrit plus qu'à travers ce service,
+        // qui historise la transition dans la même transaction.
+        OrderTransitionService,
         PaymentService,
         { provide: PrismaService, useValue: prisma },
         { provide: EventEmitter2, useValue: eventEmitter },

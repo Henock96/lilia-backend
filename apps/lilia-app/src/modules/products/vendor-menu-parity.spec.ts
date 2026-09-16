@@ -13,6 +13,7 @@ import {
   MENU_PRODUCTS_ORDER_BY,
   MENU_VARIANTS_ORDER_BY,
 } from './vendor-menu.include';
+import { OrderTransitionService } from '../orders/order-transition.service';
 
 /**
  * **Le garde-fou de la phase 2.**
@@ -63,11 +64,34 @@ describe('Parité de la carte — GET /vendors/:id vs GET /restaurants/:id', () 
 
   beforeEach(async () => {
     jest.clearAllMocks();
+
+    // ⚠️ Temps figé, sans quoi ce fichier est **instable**.
+    //
+    // `vendorMenuInclude(fields, now = new Date())` prend l'instant par défaut
+    // à chaque appel, et `bothIncludes()` appelle les deux services l'un après
+    // l'autre. Les deux `include` portent donc deux `Date` **distinctes**
+    // (`menuDuJour.where.dateDebut`, `dateFin`, et la fenêtre de disponibilité
+    // des produits), que `toEqual` compare par valeur.
+    //
+    // Seul en isolation, les deux appels tiennent dans la même milliseconde et
+    // le test passe. Dans la suite complète — 124 fichiers en parallèle — la
+    // milliseconde tourne entre les deux : mesuré **3 échecs sur 5** exécutions
+    // de `npx jest`, toujours sur `menuDuJour`, le premier champ porteur d'une
+    // date. Un test qui échoue six fois sur dix n'est plus une porte : on
+    // apprend à le relancer.
+    //
+    // La valeur exacte n'a aucune importance — ce fichier compare les deux
+    // `include` **entre eux**, jamais à une attente absolue.
+    jest.useFakeTimers().setSystemTime(Date.UTC(2026, 8, 16, 12, 0));
+
     prisma.restaurant.findFirst.mockResolvedValue(VENDEUR);
     prisma.review.groupBy.mockResolvedValue([]);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        // P0-4 : `Order.status` ne s'écrit plus qu'à travers ce service,
+        // qui historise la transition dans la même transaction.
+        OrderTransitionService,
         VendorsService,
         RestaurantQueryService,
         { provide: PrismaService, useValue: prisma },
@@ -79,6 +103,10 @@ describe('Parité de la carte — GET /vendors/:id vs GET /restaurants/:id', () 
 
     vendors = module.get(VendorsService);
     restaurants = module.get(RestaurantQueryService);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
   });
 
   /** Les deux `include`, capturés en appelant réellement les deux services. */

@@ -8,6 +8,7 @@ import { PaymentEventService } from './services/payment-event.service';
 import { PaymentProviderRegistry } from './payment-provider.registry';
 import { OutboxService } from '../outbox/outbox.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { OrderTransitionService } from '../orders/order-transition.service';
 
 /**
  * Transitions d'encaissement et **concurrence réelle**.
@@ -114,6 +115,9 @@ describe('PaymentService — transitions et concurrence', () => {
       create: jest.fn(),
       count: jest.fn(async () => 0),
     },
+    // P0-4 : toute transition de statut écrit sa ligne d'historique dans la
+    // MÊME transaction. Le client de transaction doit donc l'exposer.
+    orderHistory: { create: jest.fn() },
     order: {
       findUnique: jest.fn(async () => ({ ...orderRow })),
       updateMany: jest.fn(
@@ -209,6 +213,9 @@ describe('PaymentService — transitions et concurrence', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        // P0-4 : `Order.status` ne s'écrit plus qu'à travers ce service,
+        // qui historise la transition dans la même transaction.
+        OrderTransitionService,
         PaymentService,
         { provide: PrismaService, useValue: prisma },
         { provide: EventEmitter2, useValue: eventEmitter },

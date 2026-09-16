@@ -1,10 +1,10 @@
 ﻿// app.module.ts
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
 import { randomUUID } from 'node:crypto';
 import { EventEmitterModule } from '@nestjs/event-emitter';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { SentryModule } from '@sentry/nestjs/setup';
@@ -12,10 +12,14 @@ import { SentryModule } from '@sentry/nestjs/setup';
 import { SentryUserInterceptor } from './common/interceptors/sentry-user.interceptor';
 import { ApiResponseInterceptor } from './common/interceptors/api-response.interceptor';
 import { resolveThrottlerTracker } from './common/throttler/throttler-tracker';
+import { ParallelThrottlerGuard } from './common/throttler/parallel-throttler.guard';
 import {
   THROTTLER_LONG,
   THROTTLER_SHORT,
 } from './common/throttler/throttler-names';
+import { buildRedisOptions } from './common/redis/redis-options';
+import { instrumentIoredis } from './common/redis/redis-metrics';
+import { RedisMetricsMiddleware } from './common/redis/redis-metrics.middleware';
 
 import { PrismaModule } from './prisma/prisma.module';
 import { FirebaseModule } from './modules/firebase/firebase.module';
@@ -182,17 +186,26 @@ import { envValidationSchema } from './config/env.validation';
           // Traçage par COMPTE quand un jeton est présent, par IP sinon
           // (fix C4) — voir common/throttler/throttler-tracker.ts.
           getTracker: resolveThrottlerTracker,
+          // Connexion dédiée, avec un `commandTimeout` plus court que celui du
+          // client métier : le rate limiting est une protection, il doit
+          // échouer vite. Voir `common/redis/redis-options.ts`.
           storage: redisUrl
-            ? new ThrottlerStorageRedisService(redisUrl)
+            ? new ThrottlerStorageRedisService(
+                redisUrl,
+                buildRedisOptions({ usage: 'throttler', config }),
+              )
             : undefined,
         };
       },
     }),
-    // app.module.ts — ajouter
+    // Client Redis partagé : cache utilisateur (RolesGuard), idempotence du
+    // checkout, verrous de cron. Profil « business » — patient, parce qu'une
+    // commande perdue ici fait perdre une garantie métier, pas du confort.
     RedisModule.forRootAsync({
       useFactory: (config: ConfigService) => ({
         type: 'single',
         url: config.get('REDIS_URL'),
+        options: buildRedisOptions({ usage: 'business', config }),
       }),
       inject: [ConfigService],
     }),
@@ -251,7 +264,11 @@ import { envValidationSchema } from './config/env.validation';
     OutboxModule,
   ],
   providers: [
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // `ParallelThrottlerGuard` et non `ThrottlerGuard` : les deux limiteurs
+    // (`short` 10/s, `long` 100/min) sont CONSERVÉS, mais leurs deux `EVAL`
+    // Redis partent ensemble au lieu de s'enchaîner — 2 allers-retours
+    // deviennent 1. Voir `common/throttler/parallel-throttler.guard.ts`.
+    { provide: APP_GUARD, useClass: ParallelThrottlerGuard },
     // ⚠️ Ordre des intercepteurs : NestJS exécute les intercepteurs APP_INTERCEPTOR
     // dans l'ordre de déclaration sur le chemin entrant, et en sens inverse sur
     // le chemin sortant (réponse). ApiResponseInterceptor doit être le DERNIER
@@ -269,6 +286,23 @@ import { envValidationSchema } from './config/env.validation';
     UserListener,
     VendorsListener,
     LoyaltyListener,
+    RedisMetricsMiddleware,
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  constructor() {
+    // Enveloppe le prototype ioredis pour compter les commandes par requête.
+    // Fait ici plutôt que dans `main.ts` pour que les tests d'intégration, qui
+    // construisent le module sans passer par le bootstrap, mesurent aussi.
+    // Idempotent.
+    instrumentIoredis();
+  }
+
+  configure(consumer: MiddlewareConsumer): void {
+    // ⚠️ MIDDLEWARE et non intercepteur : Nest exécute les middlewares AVANT
+    // les guards, les intercepteurs APRÈS. Les trois appels Redis les plus
+    // coûteux (2 × ThrottlerGuard + 1 × cache utilisateur du RolesGuard) ont
+    // lieu dans les guards — un intercepteur les raterait tous.
+    consumer.apply(RedisMetricsMiddleware).forRoutes('*');
+  }
+}

@@ -16,6 +16,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
+import { OrderTransitionService } from '../orders/order-transition.service';
 import { OrderStatusUpdatedEvent } from '../events/order-events';
 import {
   DeliveryAcceptedEvent,
@@ -37,6 +38,7 @@ export class DeliveryAssignmentService {
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
     private readonly stateMachine: OrderStateMachine,
+    private readonly transitions: OrderTransitionService,
   ) {}
 
   private async getUserOrThrow(firebaseUid: string) {
@@ -472,12 +474,17 @@ export class DeliveryAssignmentService {
       }
 
       // Verrou optimiste sur la commande aussi : le vendeur peut l'avoir
-      // annulée pendant que le livreur était au comptoir.
-      const orderClaimed = await tx.order.updateMany({
-        where: { id: delivery.orderId, status: previousOrderStatus },
-        data: { status: OrderStatus.EN_ROUTE },
+      // annulée pendant que le livreur était au comptoir. Depuis P0-4, ce
+      // verrou et l'écriture de l'historique sont un seul geste.
+      const { moved } = await this.transitions.tryTransition(tx, {
+        orderId: delivery.orderId,
+        from: previousOrderStatus,
+        to: OrderStatus.EN_ROUTE,
+        actor: 'LIVREUR',
+        actorUserId: user.id,
+        source: 'APP',
       });
-      if (orderClaimed.count === 0) {
+      if (!moved) {
         throw new ConflictException(
           'Le statut de la commande a changé. Rechargez la mission avant de continuer.',
         );

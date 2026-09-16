@@ -13,6 +13,7 @@ import { OutboxModule } from '../../lilia-app/src/modules/outbox/outbox.module';
 import { AppScheduleModule } from '../../lilia-app/src/modules/schedule/schedule.module';
 import { LoyaltyModule } from '../../lilia-app/src/modules/loyalty/loyalty.module';
 import { envValidationSchema } from '../../lilia-app/src/config/env.validation';
+import { buildRedisOptions } from '../../lilia-app/src/common/redis/redis-options';
 
 import { WorkerController } from './worker.controller';
 import { WorkerService } from './worker.service';
@@ -68,10 +69,15 @@ import { WorkerService } from './worker.service';
     }),
     // Les verrous de cron et l'idempotence passent par Redis : sans lui, deux
     // processus feraient le même travail.
+    //
+    // Mêmes options que le web (`common/redis/redis-options.ts`) : sans
+    // `commandTimeout`, un Redis injoignable ne fait pas échouer un cron — il
+    // le laisse suspendu, et le verrou qu'il détient avec lui.
     RedisModule.forRootAsync({
       useFactory: (config: ConfigService) => ({
         type: 'single',
         url: config.get('REDIS_URL'),
+        options: buildRedisOptions({ usage: 'business', config }),
       }),
       inject: [ConfigService],
     }),

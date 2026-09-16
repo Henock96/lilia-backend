@@ -31,6 +31,30 @@ import {
   ProviderUnavailableError,
 } from '../providers/payment-provider.interface';
 import { PaymentEventService } from './payment-event.service';
+import { OrderTransitionService } from '../../orders/order-transition.service';
+import { OrderTransitionSource } from '../../orders/order-transition.types';
+
+/**
+ * Traduction `PaymentEventSource` → `OrderTransitionSource`.
+ *
+ * Les deux vocabulaires ne se recouvrent pas : le premier décrit le cycle de vie
+ * d'une transaction chez le prestataire, le second l'origine d'un geste sur une
+ * commande. Fusionner les enums aurait forcé des valeurs fausses d'un côté ou de
+ * l'autre — `INITIATION` n'est pas une origine, `ADMIN_APP` n'est pas un
+ * événement de paiement.
+ *
+ * `INITIATION` devient `BACKEND` : une confirmation synchrone à la demande de
+ * paiement vient bien du serveur, pas d'un callback.
+ */
+const ORDER_SOURCE_BY_PAYMENT_EVENT: Record<
+  PaymentEventSource,
+  OrderTransitionSource
+> = {
+  [PaymentEventSource.WEBHOOK]: 'WEBHOOK',
+  [PaymentEventSource.CLIENT_POLL]: 'POLLING',
+  [PaymentEventSource.RECONCILIATION]: 'CRON',
+  [PaymentEventSource.INITIATION]: 'BACKEND',
+};
 
 /** Masque un numéro de téléphone pour les logs : garde les 2 derniers chiffres. */
 export function maskPhone(phone?: string): string {
@@ -95,6 +119,10 @@ export class PaymentService {
     private readonly registry: PaymentProviderRegistry,
     private readonly events: PaymentEventService,
     private readonly outbox: OutboxService,
+    // P0-4 : les deux passages `EN_ATTENTE → PAYER` de ce service passent par
+    // le point d'écriture unique de `Order.status`, qui historise la transition
+    // dans la même transaction.
+    private readonly transitions: OrderTransitionService,
   ) {
     this.maxAttempts = Number(
       this.config.get<number>('PAYMENT_MAX_ATTEMPTS', 3),
@@ -384,11 +412,20 @@ export class PaymentService {
         },
       });
 
-      const claimed = await tx.order.updateMany({
-        where: { id: order.id, status: OrderStatus.EN_ATTENTE },
-        data: { status: OrderStatus.PAYER, paidAt: new Date() },
+      // Règlement intégral en points de fidélité : aucun mouvement d'argent,
+      // mais c'est bien une transition de commande — elle doit laisser la même
+      // trace que les autres. `SYSTEM` / `BACKEND` : personne n'a cliqué, c'est
+      // le serveur qui a constaté un total nul.
+      const { moved } = await this.transitions.tryTransition(tx, {
+        orderId: order.id,
+        from: OrderStatus.EN_ATTENTE,
+        to: OrderStatus.PAYER,
+        actor: 'SYSTEM',
+        source: 'BACKEND',
+        reason: 'Commande réglée intégralement en points de fidélité',
+        data: { paidAt: new Date() },
       });
-      if (claimed.count === 0) {
+      if (!moved) {
         throw new ConflictException(
           'Le statut de la commande a changé. Rechargez la commande.',
         );
@@ -510,7 +547,7 @@ export class PaymentService {
     }
 
     // ── Succès ────────────────────────────────────────────────────────────────
-    return this.confirmCollection(payment, input.status, eventId);
+    return this.confirmCollection(payment, input.status, eventId, input.source);
   }
 
   private async confirmCollection(
@@ -523,6 +560,7 @@ export class PaymentService {
     },
     status: ProviderTransactionStatus,
     eventId: string | null,
+    source: PaymentEventSource,
   ): Promise<ApplyOutcome> {
     let outboxId: string | null = null;
     let orderMoved = false;
@@ -545,11 +583,25 @@ export class PaymentService {
       });
       if (payClaim.count === 0) return false;
 
-      const orderClaim = await tx.order.updateMany({
-        where: { id: payment.orderId, status: OrderStatus.EN_ATTENTE },
-        data: { status: OrderStatus.PAYER, paidAt: new Date() },
+      // `tryTransition` et non `transition` : une commande qui n'est plus
+      // `EN_ATTENTE` au moment où l'encaissement aboutit n'est pas une erreur
+      // HTTP — c'est un litige, traité plus bas (`payment.orphan`). Lever ici
+      // annulerait la confirmation du paiement, c'est-à-dire perdrait la trace
+      // d'un débit qui a bien eu lieu.
+      //
+      // La ligne d'historique n'est écrite que si la commande a bougé, et le
+      // verrou `WHERE status = EN_ATTENTE` garantit qu'une seule des trois
+      // sources (webhook, sondage, cron) l'écrit — les deux autres lisent
+      // `count === 0` et ressortent en `DUPLICATE`.
+      const { moved } = await this.transitions.tryTransition(tx, {
+        orderId: payment.orderId,
+        from: OrderStatus.EN_ATTENTE,
+        to: OrderStatus.PAYER,
+        actor: 'SYSTEM',
+        source: ORDER_SOURCE_BY_PAYMENT_EVENT[source],
+        data: { paidAt: new Date() },
       });
-      orderMoved = orderClaim.count > 0;
+      orderMoved = moved;
 
       if (orderMoved) {
         // L'obligation de prévenir le vendeur est écrite DANS la transaction :

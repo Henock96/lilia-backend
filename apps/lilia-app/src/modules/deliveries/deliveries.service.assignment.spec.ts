@@ -18,6 +18,7 @@ import { TrackingGateway } from '../tracking/tracking.gateway';
 import { TrackingService } from '../tracking/tracking.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
 import { ReferralService } from '../users/referral.service';
+import { OrderTransitionService } from '../orders/order-transition.service';
 
 /**
  * Tests de CARACTÉRISATION de l'assignation/acceptation de DeliveriesService
@@ -34,6 +35,9 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
     delivery: { updateMany: jest.fn(), findUniqueOrThrow: jest.fn() },
     order: { updateMany: jest.fn() },
     user: { update: jest.fn() },
+    // P0-4 : toute transition de statut écrit sa ligne d'historique dans la
+    // MÊME transaction. Le client de transaction doit donc l'exposer.
+    orderHistory: { create: jest.fn() },
   };
   const prisma = {
     delivery: {
@@ -61,6 +65,9 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
     tx.user.update.mockResolvedValue({});
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        // P0-4 : `Order.status` ne s'écrit plus qu'à travers ce service,
+        // qui historise la transition dans la même transaction.
+        OrderTransitionService,
         {
           provide: LoyaltyService,
           useValue: {

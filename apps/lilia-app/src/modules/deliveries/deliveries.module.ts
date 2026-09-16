@@ -6,6 +6,7 @@ import { DeliveriesController } from './deliveries.controller';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { OrderStateMachine } from '../orders/order-state.machine';
+import { OrderTransitionService } from '../orders/order-transition.service';
 import { PlatformSettingsModule } from '../platform-settings/platform-settings.module';
 import { TrackingModule } from '../tracking/tracking.module';
 import { LoyaltyModule } from '../loyalty/loyalty.module';
@@ -25,6 +26,7 @@ import { ReferralCoreModule } from '../users/referral-core.module';
     DeliveryQueryService,
     DeliveryAssignmentService,
     OrderStateMachine,
+    OrderTransitionService,
   ],
   controllers: [DeliveriesController],
   exports: [DeliveriesService],

@@ -3,6 +3,7 @@ import { OrderStatus } from '@prisma/client';
 
 import { OrderLifecycleService } from './order-lifecycle.service';
 import { OrderStateMachine } from './order-state.machine';
+import { OrderTransitionService } from './order-transition.service';
 
 /**
  * Un statut de commande doit décrire quelque chose qui a réellement eu lieu
@@ -45,6 +46,9 @@ describe('OrderLifecycleService — le statut ne ment pas sur le terrain', () =>
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUniqueOrThrow: jest.fn().mockResolvedValue(order),
       },
+      // Depuis P0-4, toute transition écrit sa ligne d'historique dans la même
+      // transaction : le client de transaction doit donc l'exposer.
+      orderHistory: { create: jest.fn().mockResolvedValue({}) },
     };
 
     const prisma = {
@@ -73,6 +77,7 @@ describe('OrderLifecycleService — le statut ne ment pas sur le terrain', () =>
       prisma as any,
       eventEmitter as any,
       new OrderStateMachine(),
+      new OrderTransitionService(),
       { restoreInTransaction: jest.fn() } as any,
       loyalty as any,
       referral as any,

@@ -13,6 +13,7 @@ import { TrackingGateway } from '../tracking/tracking.gateway';
 import { TrackingService } from '../tracking/tracking.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
 import { ReferralService } from '../users/referral.service';
+import { OrderTransitionService } from '../orders/order-transition.service';
 
 /**
  * LIL-54 — convergence des deux paths de tracking.
@@ -41,6 +42,9 @@ describe('DeliveriesService.updateLocation (convergence Redis — LIL-54)', () =
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        // P0-4 : `Order.status` ne s'écrit plus qu'à travers ce service,
+        // qui historise la transition dans la même transaction.
+        OrderTransitionService,
         {
           provide: LoyaltyService,
           useValue: {
