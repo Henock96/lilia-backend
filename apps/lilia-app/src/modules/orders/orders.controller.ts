@@ -124,7 +124,7 @@ export class OrdersController {
     name: 'search',
     required: false,
     description:
-      "Recherche libre : identifiant de commande (complet ou tronqué), nom du " +
+      'Recherche libre : identifiant de commande (complet ou tronqué), nom du ' +
       'client, téléphone, nom du vendeur. Pour un RESTAURATEUR, elle reste ' +
       'bornée à sa propre boutique.',
   })

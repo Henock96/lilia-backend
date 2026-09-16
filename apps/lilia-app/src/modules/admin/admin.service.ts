@@ -217,12 +217,7 @@ export class AdminService {
    * Délègue à `AdminOrdersService` (même convention de façade que les huit
    * autres domaines de ce module).
    */
-  async getAllOrders(
-    page = 1,
-    limit = 20,
-    status?: string,
-    search?: string,
-  ) {
+  async getAllOrders(page = 1, limit = 20, status?: string, search?: string) {
     return this.adminOrdersService.list({ page, limit, status, search });
   }
 

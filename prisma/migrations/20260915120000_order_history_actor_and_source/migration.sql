@@ -1,0 +1,84 @@
+-- OrderHistory : rendre l'historique des transitions réellement exploitable.
+--
+-- ## Contexte
+--
+-- La table existe depuis avril 2026 et **n'a jamais reçu une seule ligne** :
+-- le modèle Prisma, la relation `Order.orderHistory` et l'index étaient en
+-- place, mais aucun code ne les écrivait (`grep -rni orderHistory apps/` → 0
+-- résultat). Elle est alimentée à partir de maintenant par
+-- `OrderTransitionService`, seul point d'écriture de `Order.status`.
+--
+-- ## Ce que cette migration NE fait pas
+--
+-- Elle **ne reconstruit aucun historique passé**. Ni depuis `Order.createdAt`,
+-- ni depuis `Order.paidAt`, ni depuis `Delivery.pickedUpAt` / `deliveredAt`.
+-- Ces colonnes ne couvrent que 4 des 7 transitions possibles : les lignes
+-- fabriquées à partir d'elles donneraient un journal d'apparence complète,
+-- troué en son milieu (acceptation vendeur, début de préparation, `readyAt`,
+-- `cancelledAt` n'existent nulle part). Un `COUNT(*) = 0` se lit sans
+-- ambiguïté ; une série trouée se lit comme une série.
+--
+--   historique AVANT cette migration : inexistant et non reconstructible
+--   historique APRÈS                 : garanti, atomique avec le changement de statut
+--
+-- ## Pourquoi chaque changement
+--
+-- Strictement additif : une instance de l'ancien code continue de tourner
+-- dessus sans rien voir. La table étant vide, aucun `UPDATE` de reprise n'est
+-- nécessaire et aucune ligne existante ne peut être invalidée.
+
+-- 1. `fromStatus` devient nullable — `NULL` = création de la commande.
+--
+-- Il n'y a pas d'état de départ à la création, et l'enum `OrderStatus` ne peut
+-- pas en exprimer un. L'alternative — écrire `EN_ATTENTE → EN_ATTENTE` — serait
+-- comptée comme une transition par toute agrégation de durée par étape, et
+-- fausserait donc exactement la mesure pour laquelle cette table existe.
+--
+-- Assouplir une contrainte `NOT NULL` ne réécrit aucune donnée et se rejoue sur
+-- une base peuplée sans risque.
+ALTER TABLE "OrderHistory" ALTER COLUMN "fromStatus" DROP NOT NULL;
+
+-- 2. `actorUserId` — répondre à « qui ? » par une personne, pas par un rôle.
+--
+-- `actionId` porte déjà le rôle (`CLIENT`, `RESTAURATEUR`, …) ; il ne dit pas
+-- LEQUEL. Sans clé étrangère, conformément à la convention de ce schéma pour
+-- les colonnes d'audit (`adminApprovedById`, `activatedById`, `requestedBy`,
+-- `processedBy`) : elles doivent survivre à l'anonymisation d'un compte par
+-- `UserDeletionService`, qui conserve la ligne `User` mais la vide.
+--
+-- `NULL` sur les transitions automatiques (cron d'expiration, webhook de
+-- paiement) : il n'y a alors aucune personne à nommer, et inventer un
+-- utilisateur technique ferait croire à un geste humain.
+ALTER TABLE "OrderHistory" ADD COLUMN "actorUserId" TEXT;
+
+-- 3. `source` — distinguer un geste humain d'un automatisme.
+--
+-- Valeurs admises : APP, ADMIN_APP, BACKEND, WEBHOOK, POLLING, CRON. C'est ce
+-- qui rendra mesurable le taux d'acceptation vendeur (une commande passée en
+-- préparation depuis l'application du vendeur n'est pas la même chose qu'une
+-- commande débloquée par un administrateur).
+--
+-- TEXT et non un type énuméré PostgreSQL, pour deux raisons :
+--   · `actionId`, la colonne sœur, est déjà un TEXT — représenter deux facettes
+--     du même acteur de deux façons différentes serait incohérent ;
+--   · ajouter une valeur à un enum impose `ALTER TYPE … ADD VALUE`, qui n'est
+--     **pas transactionnel** : ce dépôt a déjà vu une migration mourir dessus
+--     et laisser toute la production en `DRAFT` (`20260830120000`).
+-- Les valeurs sont bornées côté application par `ORDER_TRANSITION_SOURCES` et
+-- par un test qui échoue si le code en produit une autre.
+--
+-- `DEFAULT 'BACKEND'` : la colonne est NOT NULL, et le défaut permet à une
+-- instance de l'ancien code — qui n'écrit rien dans cette table — de tourner
+-- sur ce schéma sans échouer.
+ALTER TABLE "OrderHistory" ADD COLUMN "source" TEXT NOT NULL DEFAULT 'BACKEND';
+
+-- 4. Index d'agrégation.
+--
+-- La requête visée est « durée passée dans chaque étape » : elle filtre sur
+-- `toStatus` puis borne `createdAt`. L'index existant `(orderId)` sert la
+-- lecture d'une commande (≈ 6 lignes), pas celle-ci.
+--
+-- Créé maintenant sur une table vide, il ne coûte rien. Ajouté dans six mois
+-- sur plusieurs centaines de milliers de lignes, il coûterait un verrou en
+-- production.
+CREATE INDEX "OrderHistory_toStatus_createdAt_idx" ON "OrderHistory"("toStatus", "createdAt");

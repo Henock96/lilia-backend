@@ -2,6 +2,26 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
 /**
+ * Statuts dans lesquels une commande représente de l'argent réellement encaissé.
+ *
+ * ⚠️ **Cette liste ne se recopie pas, elle s'importe.** Le total, le total du
+ * jour et le graphe hebdomadaire somment tous les trois `Order.total` ; le
+ * graphe, lui, n'avait **aucun filtre de statut**. Une même réponse HTTP
+ * annonçait donc deux chiffres d'affaires : celui du haut excluait les paniers
+ * abandonnés et les annulations, celui du graphe les comptait. Sommer les sept
+ * barres ne redonnait pas le total affiché au-dessus.
+ *
+ * `EN_ATTENTE` n'a jamais donné d'argent — `OrderExpiryService` ferme ces
+ * commandes au bout de 45 minutes. `ANNULER` l'a rendu.
+ */
+const PAID_ORDER_STATUSES = [
+  'PAYER',
+  'EN_PREPARATION',
+  'PRET',
+  'LIVRER',
+] as const;
+
+/**
  * KPI du dashboard admin (LIL-134) : utilisateurs par rôle, CA total/jour,
  * commandes par statut + 7 jours, restaurants actifs/inactifs. Extrait de
  * `AdminService` (agrégations Prisma uniquement). `AdminService` y délègue.
@@ -36,7 +56,7 @@ export class AdminDashboardService {
       // CA total — commandes payées uniquement
       this.prisma.order.aggregate({
         where: {
-          status: { in: ['PAYER', 'EN_PREPARATION', 'PRET', 'LIVRER'] },
+          status: { in: [...PAID_ORDER_STATUSES] },
         },
         _sum: { total: true },
       }),
@@ -44,7 +64,7 @@ export class AdminDashboardService {
       // CA du jour
       this.prisma.order.aggregate({
         where: {
-          status: { in: ['PAYER', 'EN_PREPARATION', 'PRET', 'LIVRER'] },
+          status: { in: [...PAID_ORDER_STATUSES] },
           createdAt: { gte: today },
         },
         _sum: { total: true },
@@ -62,10 +82,23 @@ export class AdminDashboardService {
         _count: { isActive: true },
       }),
 
-      // Commandes des 7 derniers jours pour le graphe
+      // Commandes des 7 derniers jours pour le graphe.
+      //
+      // Même périmètre que les deux agrégats ci-dessus : il somme la même
+      // colonne, il doit compter les mêmes lignes.
+      //
+      // ⚠️ Défaut connu, **non traité ici** : `by: ['createdAt']` groupe sur un
+      // horodatage à la milliseconde, donc rend une ligne par commande et non
+      // une par jour. Le corriger suppose un `date_trunc` en SQL brut — et
+      // surtout de décider à quoi sert cet endpoint, qui n'a aujourd'hui aucun
+      // appelant dans les quatre applications. Voir
+      // `PHASE1D_2026-09-16_INFRA_OPS_DISCOVERY.md` §11.4.
       this.prisma.order.groupBy({
         by: ['createdAt'],
-        where: { createdAt: { gte: sevenDaysAgo } },
+        where: {
+          status: { in: [...PAID_ORDER_STATUSES] },
+          createdAt: { gte: sevenDaysAgo },
+        },
         _count: { id: true },
         _sum: { total: true },
       }),

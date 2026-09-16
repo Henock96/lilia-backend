@@ -15,6 +15,7 @@ import { PaymentProviderRegistry } from './payment-provider.registry';
 import { ProviderUnavailableError } from './providers/payment-provider.interface';
 import { OutboxService } from '../outbox/outbox.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { OrderTransitionService } from '../orders/order-transition.service';
 
 /**
  * Encaissement client — idempotence, sécurité, transitions.
@@ -31,6 +32,9 @@ describe('PaymentService — encaissement', () => {
 
   const prisma = {
     user: { findUnique: jest.fn() },
+    // P0-4 : toute transition de statut écrit sa ligne d'historique dans la
+    // MÊME transaction. Le client de transaction doit donc l'exposer.
+    orderHistory: { create: jest.fn() },
     order: { findUnique: jest.fn(), updateMany: jest.fn() },
     payment: {
       create: jest.fn(),
@@ -111,6 +115,9 @@ describe('PaymentService — encaissement', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        // P0-4 : `Order.status` ne s'écrit plus qu'à travers ce service,
+        // qui historise la transition dans la même transaction.
+        OrderTransitionService,
         PaymentService,
         { provide: PrismaService, useValue: prisma },
         { provide: EventEmitter2, useValue: eventEmitter },

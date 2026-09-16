@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -15,6 +16,8 @@ import { DriverStatus, OrderStatus } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
+import { OrderTransitionService } from '../orders/order-transition.service';
+import { sourceFromRole } from '../orders/order-transition.types';
 import { OrderStatusUpdatedEvent } from '../events/order-events';
 import { DeliveryFailedEvent } from '../events/delivery-events';
 import { TrackingGateway } from '../tracking/tracking.gateway';
@@ -54,6 +57,7 @@ export class DeliveriesService {
     private readonly notificationsService: NotificationsService,
     private readonly eventEmitter: EventEmitter2,
     private readonly stateMachine: OrderStateMachine,
+    private readonly transitions: OrderTransitionService,
     private readonly trackingGateway: TrackingGateway,
     private readonly trackingService: TrackingService,
     private readonly queryService: DeliveryQueryService,
@@ -163,10 +167,15 @@ export class DeliveriesService {
     }
 
     // Si LIVRER : valide la transition Order via state machine
+    const actorRole = this.resolveActor(user.role);
     if (status === DeliveryStatus.LIVRER) {
-      const actor = this.resolveActor(user.role);
-      if (!actor) throw new ForbiddenException('Acteur invalide pour cette transition.');
-      this.stateMachine.assertTransition(delivery.order.status, OrderStatus.LIVRER, actor);
+      if (!actorRole)
+        throw new ForbiddenException('Acteur invalide pour cette transition.');
+      this.stateMachine.assertTransition(
+        delivery.order.status,
+        OrderStatus.LIVRER,
+        actorRole,
+      );
     }
 
     const now = new Date();
@@ -182,9 +191,31 @@ export class DeliveriesService {
     // qui arbitre entre réassigner un livreur et annuler. On retire simplement
     // le livreur de la livraison pour qu'elle redevienne assignable ; le statut
     // de la commande reste inchangé jusqu'à sa décision.
-    const operations: any[] = [
-      this.prisma.delivery.update({
-        where: { id },
+    //
+    // ─── Correction S8 (P0-4) ─────────────────────────────────────────────
+    //
+    // Ce bloc était un `$transaction([...])` — un tableau d'opérations dont le
+    // résultat n'était **jamais lu**. Le verrou optimiste sur la commande était
+    // donc posé et son `count` jeté. Quand la commande bougeait entre la lecture
+    // et l'écriture (annulation ADMIN concurrente, par exemple) :
+    //
+    //   · `Delivery` passait `LIVRER` et recevait son `deliveredAt` ;
+    //   · `Order` ne bougeait pas — 0 ligne affectée, en silence ;
+    //   · l'événement `order.status.updated` partait quand même avec
+    //     `toStatus = LIVRER`, donc le client recevait « 🎉 Commande livrée »
+    //     sur une commande annulée ;
+    //   · les points de fidélité et la récompense de parrainage étaient
+    //     crédités sur cette même commande.
+    //
+    // Le contrôle vit maintenant **dans** la transaction : si la commande n'a
+    // pas bougé, tout est annulé, y compris la livraison — et les effets de bord
+    // (événements, fidélité, parrainage) ne sont déclenchés qu'après le succès.
+    await this.prisma.$transaction(async (tx) => {
+      // Verrou optimiste sur la LIVRAISON, qu'elle n'avait pas : l'écriture
+      // était un `update` inconditionnel. Un double-tap du livreur passait deux
+      // fois. `confirmPickup` posait déjà cette garde, pas ce chemin.
+      const claimedDelivery = await tx.delivery.updateMany({
+        where: { id, status: delivery.status },
         data: {
           status,
           ...(status === DeliveryStatus.LIVRER ? { deliveredAt: now } : {}),
@@ -192,31 +223,39 @@ export class DeliveriesService {
             ? { delivererId: null }
             : {}),
         },
-      }),
-    ];
+      });
+      if (claimedDelivery.count === 0) {
+        throw new ConflictException(
+          'Cette livraison a changé d’état entre-temps. Rechargez la mission avant de réessayer.',
+        );
+      }
 
-    if (status === DeliveryStatus.LIVRER) {
-      operations.push(
-        // Verrou optimiste (fix H6) : on n'écrase pas une commande que
-        // quelqu'un d'autre a fait avancer entre la lecture et l'écriture.
-        this.prisma.order.updateMany({
-          where: { id: delivery.orderId, status: previousOrderStatus },
-          data: { status: OrderStatus.LIVRER },
-        }),
-      );
-    }
+      if (status === DeliveryStatus.LIVRER) {
+        // `transition` et non `tryTransition` : ici, une commande qui a bougé
+        // EST une erreur. Elle lève, donc la transaction est annulée — la
+        // livraison repasse dans l'état où elle était.
+        await this.transitions.transition(tx, {
+          orderId: delivery.orderId,
+          from: previousOrderStatus,
+          to: OrderStatus.LIVRER,
+          actor: actorRole!,
+          actorUserId: user.id,
+          source: sourceFromRole(user.role),
+        });
+      }
 
-    // Libère le livreur dans les 2 cas (LIVRER ou ECHEC)
-    if ((status === DeliveryStatus.LIVRER || status === DeliveryStatus.ECHEC) && delivery.delivererId) {
-      operations.push(
-        this.prisma.user.update({
+      // Libère le livreur dans les 2 cas (LIVRER ou ECHEC)
+      if (
+        (status === DeliveryStatus.LIVRER ||
+          status === DeliveryStatus.ECHEC) &&
+        delivery.delivererId
+      ) {
+        await tx.user.update({
           where: { id: delivery.delivererId },
           data: { driverStatus: DriverStatus.AVAILABLE },
-        }),
-      );
-    }
-
-    await this.prisma.$transaction(operations);
+        });
+      }
+    });
 
     const updated = await this.prisma.delivery.findUnique({
       where: { id },

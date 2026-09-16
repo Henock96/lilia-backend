@@ -957,17 +957,79 @@ model OrderItem {
   @@index([menuId])
 }
 
+/// Journal des transitions de statut d'une commande.
+///
+/// ⚠️ **Cette table est restée vide de sa création (avril 2026) à septembre
+/// 2026** : le modèle existait, la relation existait, l'index existait, et
+/// aucune ligne du backend ne l'écrivait (`grep -rni orderHistory apps/` → 0
+/// résultat). Elle est alimentée depuis le chantier P0-4 par
+/// `OrderTransitionService`, **seul** point d'écriture autorisé.
+///
+/// Conséquence à garder en tête pour toute requête analytique : une commande
+/// antérieure à ce chantier n'a **aucune** ligne. Rien n'a été reconstruit — ni
+/// depuis `Order.createdAt`, ni depuis `paidAt`, ni depuis les horodatages de
+/// `Delivery`. Fabriquer un historique partiel à partir de ces colonnes aurait
+/// produit un journal qui *a l'air* complet sans l'être, ce qui est pire que
+/// son absence : `COUNT(*) = 0` se lit sans ambiguïté, une série trouée non.
 model OrderHistory {
-  id         String      @id @default(cuid())
-  order      Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  orderId    String
-  fromStatus OrderStatus
+  id      String @id @default(cuid())
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId String
+
+  /// Statut quitté. **`null` = création de la commande** — il n'y a pas d'état
+  /// de départ, et l'enum ne peut pas en représenter un.
+  ///
+  /// L'alternative aurait été d'écrire `EN_ATTENTE → EN_ATTENTE` : cette ligne
+  /// serait comptée comme une transition par toute agrégation de durée par
+  /// étape, et fausserait précisément la mesure pour laquelle cette table
+  /// existe. Rendre la colonne nullable n'a coûté aucune migration de données :
+  /// la table était vide.
+  fromStatus OrderStatus?
   toStatus   OrderStatus
-  actionId   String // "CLIENT", "RESTAURATEUR", "LIVREUR", "SYSTEM"
-  reason     String? // Raison de l'annulation ou du changement de statut
-  createdAt  DateTime    @default(now())
+
+  /// Rôle de l'auteur : `CLIENT`, `RESTAURATEUR`, `LIVREUR`, `ADMIN`, `SYSTEM`.
+  ///
+  /// Conserve son nom historique bien qu'il porte un rôle et non un
+  /// identifiant : aucun consommateur ne le lit (la table n'a jamais été
+  /// écrite), et le renommer n'apporterait rien qu'`actorUserId` ne donne déjà.
+  /// Reste un `String` plutôt qu'un `Role` : `SYSTEM` n'est pas un rôle du
+  /// RBAC, et l'y ajouter pour un besoin d'historique modifierait la sécurité
+  /// de toute l'application pour un besoin local.
+  actionId String
+
+  /// `User.id` de l'auteur, quand il y en a un. `null` pour les transitions
+  /// automatiques (cron, webhook, règlement d'une commande à zéro).
+  ///
+  /// Sans clé étrangère, comme `adminApprovedById`, `activatedById`,
+  /// `requestedBy` et `processedBy` : convention déjà établie dans ce schéma
+  /// pour les colonnes d'audit, qui doivent survivre à l'anonymisation d'un
+  /// compte (`UserDeletionService`).
+  actorUserId String?
+
+  /// D'où vient le geste : `APP`, `ADMIN_APP`, `BACKEND`, `WEBHOOK`,
+  /// `POLLING`, `CRON`. C'est ce qui distingue une transition **humaine** d'une
+  /// transition automatique — donc ce qui rendra mesurable le taux
+  /// d'acceptation vendeur.
+  ///
+  /// `String` et non enum Prisma, pour deux raisons : `actionId`, la colonne
+  /// sœur, en est déjà un — mélanger les deux représentations pour deux facettes
+  /// du même acteur serait incohérent ; et ajouter une valeur à un enum
+  /// PostgreSQL impose un `ALTER TYPE … ADD VALUE` **non transactionnel**, dont
+  /// ce dépôt a déjà payé le prix (migration `20260830120000`). Les valeurs
+  /// admises sont bornées par `ORDER_TRANSITION_SOURCES` et un test.
+  source String @default("BACKEND")
+
+  /// Motif, quand l'appelant en fournit un (annulation, échec de livraison).
+  reason String?
+
+  createdAt DateTime @default(now())
 
   @@index([orderId])
+  /// Agrégation des délais par étape (médiane, P90, P95) : la requête filtre
+  /// sur `toStatus` puis borne `createdAt`. Créé maintenant, sur une table
+  /// vide, il ne coûte rien ; ajouté plus tard sur plusieurs centaines de
+  /// milliers de lignes, il coûterait un verrou.
+  @@index([toStatus, createdAt])
 }
 
 enum DriverStatus {

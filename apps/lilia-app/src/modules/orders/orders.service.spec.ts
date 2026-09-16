@@ -11,6 +11,7 @@ import { OrderReorderService } from './order-reorder.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationService } from '../../common/pagination/pagination.service';
 import { OrderStateMachine } from './order-state.machine';
+import { OrderTransitionService } from './order-transition.service';
 import { StockService } from './stock.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
@@ -106,6 +107,7 @@ describe('OrdersService (caractérisation — lectures)', () => {
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         { provide: ConfigService, useValue: { get: () => undefined } }, // pas de REDIS_URL → redis = null
         { provide: OrderStateMachine, useValue: {} },
+        OrderTransitionService,
         { provide: StockService, useValue: {} },
         { provide: OrderValidatorService, useValue: {} },
         { provide: OrderCalculatorService, useValue: {} },

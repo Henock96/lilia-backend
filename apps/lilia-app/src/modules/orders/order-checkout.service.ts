@@ -26,6 +26,7 @@ import {
   DeliveryDestinationService,
   ResolvedDestination,
 } from './delivery-destination.service';
+import { OrderTransitionService } from './order-transition.service';
 
 /**
  * Checkout : création d'une commande à partir du panier (LIL-134).
@@ -60,6 +61,8 @@ export class OrderCheckoutService {
     private readonly preorderValidator: PreorderValidatorService,
     private readonly quartiersService: QuartiersService,
     private readonly destinationService: DeliveryDestinationService,
+    // P0-4 : ouvre l'historique de la commande dans la transaction de création.
+    private readonly transitions: OrderTransitionService,
     // Client partagé fourni par `RedisModule.forRootAsync` (app.module). On
     // n'ouvre plus une seconde connexion ici : Render plafonne les connexions
     // Redis et `UserCacheService` utilise déjà ce même pool.
@@ -368,6 +371,22 @@ export class OrderCheckoutService {
           restaurant: { select: { nom: true } }, // Correction: Toujours inclure le restaurant
         },
       });
+
+      // Ouvre l'historique de la commande (P0-4), dans LA transaction de
+      // création : une commande ne peut pas exister sans sa première ligne.
+      //
+      // `fromStatus` vaut `null` — il n'y a pas d'état quitté. L'écrire
+      // `EN_ATTENTE → EN_ATTENTE` ferait compter la création comme une
+      // transition dans les agrégations de durée par étape, c'est-à-dire
+      // fausserait exactement la mesure pour laquelle cette table existe.
+      await this.transitions.recordCreation(tx, {
+        orderId: newOrder.id,
+        to: 'EN_ATTENTE',
+        actor: 'CLIENT',
+        actorUserId: user.id,
+        source: 'APP',
+      });
+
       // Consomme le code promo dans la transaction
       if (promoResult) {
         // Fix L7 : sur un code FREE_DELIVERY, `discountAmount` vaut 0 (la

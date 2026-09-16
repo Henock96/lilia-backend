@@ -15,6 +15,7 @@ import { OrderReorderService } from './order-reorder.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationService } from '../../common/pagination/pagination.service';
 import { OrderStateMachine } from './order-state.machine';
+import { OrderTransitionService } from './order-transition.service';
 import { StockService } from './stock.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
@@ -50,6 +51,9 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
     loyaltyTransaction: { aggregate: jest.fn(), create: jest.fn() },
     promoUsage: { deleteMany: jest.fn() },
     payment: { updateMany: jest.fn() },
+    // P0-4 : le verrou optimiste et l'écriture de l'historique sont désormais
+    // un seul geste, dans la même transaction (`OrderTransitionService`).
+    orderHistory: { create: jest.fn() },
   };
   const prisma = {
     user: { findUnique: jest.fn(), update: jest.fn() },
@@ -123,6 +127,9 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
         OrderReorderService, // service réel : OrdersService y délègue le reorder
         { provide: PrismaService, useValue: prisma },
         { provide: OrderStateMachine, useValue: stateMachine },
+        // P0-4 : toute transition passe désormais par ce service, qui écrit
+        // le statut ET sa ligne d'historique dans la même transaction.
+        OrderTransitionService,
         { provide: StockService, useValue: stockService },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: PlatformSettingsService, useValue: platformSettings },

@@ -856,24 +856,135 @@ export class RestaurantPayoutService {
         paid: order.payout?.status === PayoutStatus.SUCCESS,
       },
 
-      liliaFood: {
-        serviceFee: order.serviceFee,
-        restaurantCommission: breakdown.commissionAmount,
+      liliaFood: this.buildContribution(order, breakdown, {
         collectionFee,
         payoutFee,
-        // Marge nette connue seulement quand les deux frais prestataire le sont.
-        netMargin:
-          collectionFee !== null && payoutFee !== null
-            ? order.serviceFee +
-              breakdown.commissionAmount -
-              collectionFee -
-              payoutFee
-            : null,
-        currency: 'XAF',
-      },
+      }),
 
       refund: order.refund,
       eligibility,
+    };
+  }
+
+  /**
+   * Ce que Lilia Food gagne réellement sur une commande.
+   *
+   * ## Ce que le calcul précédent disait, et pourquoi c'était faux
+   *
+   * ```ts
+   * netMargin = serviceFee + commission − collectionFee − payoutFee
+   * ```
+   *
+   * Ce nombre était affiché sous le libellé « Marge nette » dans les deux
+   * back-offices. Il omettait **trois** postes connus, dont deux de sens
+   * opposé — l'erreur ne se compensait donc pas, et son ampleur variait d'une
+   * commande à l'autre :
+   *
+   * | Poste | Qui le paie / le reçoit | Dans le reversement vendeur ? | Effet |
+   * |---|---|---|---|
+   * | `deliveryFee` | le client | **non** (`grossAmount = subTotal`) | **revenu** omis |
+   * | `discountAmount` | Lilia (promo + fidélité) | **non** (payout sur `subTotal` brut) | **coût** omis |
+   * | `Refund` `COMPLETED` | Lilia, rendu au client | non | **coût** omis |
+   *
+   * Sur le panier type observé en production (sous-total 4 000, livraison
+   * 1 000, frais de service 320, commission 400, frais prestataire ~195),
+   * l'ancien calcul affichait 525 XAF là où le revenu réel avant course est de
+   * 1 525 XAF.
+   *
+   * ## Pourquoi la contribution est `null` sur une commande livrée
+   *
+   * Le **coût du livreur n'existe nulle part dans le système** — ni colonne, ni
+   * table, ni règle métier (vérifié sur tout le dépôt et toute la
+   * documentation). C'est le poste de coût variable principal d'une
+   * marketplace de livraison.
+   *
+   * On ne le remplace **pas** par zéro : écrire `driverCost = 0` transformerait
+   * « inconnu » en « gratuit » et produirait une marge systématiquement
+   * surestimée, avec l'air d'être exacte. `null` + `missingInputs` dit ce qui
+   * manque, et le dit à l'écran.
+   *
+   * Sur une commande **à emporter**, il n'y a pas de livreur : la contribution
+   * est alors complète, et elle est rendue.
+   */
+  private buildContribution(
+    order: {
+      deliveryFee: number;
+      serviceFee: number;
+      discountAmount: number;
+      loyaltyDiscount: number;
+      isDelivery: boolean;
+      refund: { status: RefundStatus; amount: number } | null;
+    },
+    breakdown: { commissionAmount: number },
+    fees: { collectionFee: number | null; payoutFee: number | null },
+  ) {
+    const { collectionFee, payoutFee } = fees;
+
+    // ── Revenus ───────────────────────────────────────────────────────────
+    // Les frais de livraison encaissés sont un revenu de Lilia : le client les
+    // paie, le vendeur ne les reçoit pas (`grossAmount = subTotal`). Ce qu'ils
+    // coûtent réellement — la course — est le poste manquant ci-dessous.
+    const revenue =
+      order.serviceFee + breakdown.commissionAmount + order.deliveryFee;
+
+    // ── Coûts variables connus ────────────────────────────────────────────
+    // ⚠️ `discountAmount` est la remise TOTALE : promo + fidélité.
+    // `loyaltyDiscount` en est une sous-partie (cf. `schema.prisma`). Les
+    // additionner compterait la fidélité deux fois. On expose les deux pour la
+    // lecture, on n'en déduit qu'un.
+    const discount = order.discountAmount;
+
+    // Un remboursement n'est un coût que lorsqu'il a réellement été versé.
+    // `PENDING` ou `PROCESSING` = une dette, pas encore une sortie d'argent :
+    // la déduire annoncerait une perte qui pourrait ne jamais survenir (un
+    // remboursement peut être `REJECTED`).
+    const refundPaid =
+      order.refund?.status === RefundStatus.COMPLETED ? order.refund.amount : 0;
+
+    const missingInputs: string[] = [];
+    if (collectionFee === null) missingInputs.push('collectionFee');
+    if (payoutFee === null) missingInputs.push('payoutFee');
+    // Le trou structurel : aucune donnée, aucune règle métier. Voir
+    // `PHASE1_DRIVER_COST_BLOCKERS.md` (décisions D1–D4).
+    if (order.isDelivery) missingInputs.push('driverCost');
+
+    const variableCosts =
+      discount + (collectionFee ?? 0) + (payoutFee ?? 0) + refundPaid;
+
+    const contributionMargin =
+      missingInputs.length === 0 ? revenue - variableCosts : null;
+
+    return {
+      serviceFee: order.serviceFee,
+      restaurantCommission: breakdown.commissionAmount,
+      // Encaissés auprès du client, jamais reversés au vendeur.
+      deliveryFeeCollected: order.deliveryFee,
+      collectionFee,
+      payoutFee,
+      // Remises offertes par Lilia. `discountAmount` inclut `loyaltyDiscount` :
+      // ne jamais les additionner.
+      discountGranted: discount,
+      loyaltyDiscount: order.loyaltyDiscount,
+      refundPaid,
+      revenue,
+      variableCosts,
+      /**
+       * Contribution réelle, ou `null` si un poste obligatoire est inconnu.
+       * `missingInputs` nomme lesquels — un nombre absent qui dit pourquoi vaut
+       * mieux qu'un nombre présent qui ment.
+       */
+      contributionMargin,
+      missingInputs,
+      /**
+       * @deprecated Conservé pour les deux back-offices déjà déployés, qui
+       * l'affichent sous le libellé « Marge nette ». Il vaut désormais
+       * exactement `contributionMargin` — donc `null` sur toute commande
+       * livrée, tant que le coût du livreur n'est pas capturé. Les deux fronts
+       * gardent déjà ce cas (`if (netMargin != null)`) et masquent la ligne.
+       * À retirer quand ils auront adopté `contributionMargin`.
+       */
+      netMargin: contributionMargin,
+      currency: 'XAF',
     };
   }
 

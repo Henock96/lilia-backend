@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   Injectable,
   NotFoundException,
   ForbiddenException,
@@ -15,6 +14,8 @@ import {
   OrderStatusUpdatedEvent,
 } from '../events/order-events';
 import { OrderStateMachine } from './order-state.machine';
+import { OrderTransitionService } from './order-transition.service';
+import { actorFromRole, sourceFromRole } from './order-transition.types';
 import { StockService } from './stock.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
 import { ReferralService } from '../users/referral.service';
@@ -33,6 +34,7 @@ export class OrderLifecycleService {
     private readonly prisma: PrismaService,
     private readonly eventEmitter: EventEmitter2,
     private readonly stateMachine: OrderStateMachine,
+    private readonly transitions: OrderTransitionService,
     private readonly stockService: StockService,
     private readonly loyalty: LoyaltyService,
     private readonly referral: ReferralService,
@@ -77,8 +79,16 @@ export class OrderLifecycleService {
     const updatedOrder = await this.prisma.$transaction(async (tx) => {
       // Verrou optimiste (fix H6) : sans lui, une annulation client concurrente
       // d'un passage en préparation appliquait les compensations à une
-      // commande toujours vivante.
-      await this.claimStatus(tx, orderId, order.status, 'ANNULER');
+      // commande toujours vivante. Depuis P0-4, le verrou et l'écriture de
+      // l'historique sont indissociables — même transaction, même appel.
+      await this.transitions.transition(tx, {
+        orderId,
+        from: order.status,
+        to: 'ANNULER',
+        actor: 'CLIENT',
+        actorUserId: user.id,
+        source: 'APP',
+      });
       const updated = await tx.order.findUniqueOrThrow({
         where: { id: orderId },
         include: {
@@ -170,12 +180,26 @@ export class OrderLifecycleService {
     // la validation, et la dernière écriture gagnait — l'admin annulait
     // pendant que le vendeur passait en préparation, et la commande restait
     // vivante alors que le stock avait été rendu et les points recrédités.
-    // On verrouille donc sur l'état lu (`claimStatus`), comme le fait déjà
-    // `expireUnpaidOrder`.
+    // On verrouille donc sur l'état lu. Depuis P0-4, ce verrou vit dans
+    // `OrderTransitionService` — seul point d'écriture de `Order.status` — et
+    // il est indissociable de l'écriture de l'historique.
+    // L'acteur a déjà été validé par la state machine ci-dessus ; `actor` ne
+    // peut donc pas être `null` ici. Le contrôle reste, parce qu'un journal
+    // d'audit qui invente un acteur est pire qu'un journal absent.
+    const historyActor = actorFromRole(user.role) ?? 'SYSTEM';
+    const historySource = sourceFromRole(user.role);
+
     const updatedOrder =
       newStatus === 'ANNULER'
         ? await this.prisma.$transaction(async (tx) => {
-            await this.claimStatus(tx, orderId, order.status, newStatus);
+            await this.transitions.transition(tx, {
+              orderId,
+              from: order.status,
+              to: newStatus,
+              actor: historyActor,
+              actorUserId: user.id,
+              source: historySource,
+            });
             const updated = await tx.order.findUniqueOrThrow({
               where: { id: orderId },
               include: { restaurant: true, items: true },
@@ -189,7 +213,14 @@ export class OrderLifecycleService {
             return updated;
           })
         : await this.prisma.$transaction(async (tx) => {
-            await this.claimStatus(tx, orderId, order.status, newStatus);
+            await this.transitions.transition(tx, {
+              orderId,
+              from: order.status,
+              to: newStatus,
+              actor: historyActor,
+              actorUserId: user.id,
+              source: historySource,
+            });
             return tx.order.findUniqueOrThrow({
               where: { id: orderId },
               include: {
@@ -286,11 +317,19 @@ export class OrderLifecycleService {
 
     const expired = await this.prisma.$transaction(async (tx) => {
       // Garde de concurrence : seule l'instance qui affecte une ligne annule.
-      const claimed = await tx.order.updateMany({
-        where: { id: orderId, status: 'EN_ATTENTE' },
-        data: { status: 'ANNULER' },
+      //
+      // `tryTransition` et non `transition` : deux instances jouant le cron en
+      // parallèle est le cas NOMINAL, pas une erreur. Celle qui arrive seconde
+      // doit sortir en silence, pas lever un 409 dans les logs d'un cron.
+      const { moved } = await this.transitions.tryTransition(tx, {
+        orderId,
+        from: 'EN_ATTENTE',
+        to: 'ANNULER',
+        actor: 'SYSTEM',
+        source: 'CRON',
+        reason: 'Paiement non reçu dans le délai imparti',
       });
-      if (claimed.count === 0) return false;
+      if (!moved) return false;
 
       await this.stockService.restoreInTransaction(tx, order.items);
       await this.restoreCheckoutCompensations(tx, orderId, order.userId);
@@ -420,31 +459,6 @@ export class OrderLifecycleService {
     if (removedUsages.count > 0) {
       this.logger.log(
         `↩️ Usage du code promo libéré (commande ${orderId} annulée)`,
-      );
-    }
-  }
-
-  /**
-   * Verrou optimiste sur la transition de statut (fix H6).
-   *
-   * Écrit le nouveau statut **uniquement** si la commande est toujours dans
-   * l'état lu au moment de la validation. Zéro ligne affectée = quelqu'un
-   * d'autre a fait avancer la commande entre-temps : on refuse plutôt que
-   * d'appliquer des compensations à une commande qui a changé de main.
-   */
-  private async claimStatus(
-    tx: Prisma.TransactionClient,
-    orderId: string,
-    expectedStatus: OrderStatus,
-    newStatus: OrderStatus,
-  ): Promise<void> {
-    const claimed = await tx.order.updateMany({
-      where: { id: orderId, status: expectedStatus },
-      data: { status: newStatus },
-    });
-    if (claimed.count === 0) {
-      throw new ConflictException(
-        'Le statut de cette commande a changé entre-temps. Rechargez-la avant de réessayer.',
       );
     }
   }

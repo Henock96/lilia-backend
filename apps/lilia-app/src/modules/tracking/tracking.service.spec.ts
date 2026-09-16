@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { TrackingService } from './tracking.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { fakeRedis } from './test-support/fake-redis';
 
 /**
  * Smoke test DI TrackingService (LIL-106).
@@ -35,7 +36,7 @@ describe('TrackingService', () => {
   // ─── cacheLivePosition : source de vérité Redis partagée WS/HTTP (LIL-54) ───
   describe('cacheLivePosition', () => {
     it('écrit GEO + métadonnées TTL dans Redis', async () => {
-      const redis = { geoadd: jest.fn(), setex: jest.fn() };
+      const redis = fakeRedis();
       (service as any).redis = redis;
 
       await service.cacheLivePosition({
@@ -78,11 +79,7 @@ describe('TrackingService', () => {
   describe('updatePosition', () => {
     it('alimente le cache live (geoadd + setex) puis pose le verrou persist', async () => {
       // set NX → null : le verrou existe déjà, pas de write DB (Prisma non sollicité)
-      const redis = {
-        geoadd: jest.fn(),
-        setex: jest.fn(),
-        set: jest.fn().mockResolvedValue(null),
-      };
+      const redis = fakeRedis({ setResult: null });
       (service as any).redis = redis;
 
       await service.updatePosition({
