@@ -170,7 +170,35 @@ export class DashboardSalesStatsService {
   }
 
   /**
-   * Récupère les statistiques des commandes par statut
+   * Récupère les statistiques des commandes par statut.
+   *
+   * ## Deux périmètres dans la même réponse, et c'est voulu
+   *
+   * `byStatus` énumère **tous** les statuts, annulations comprises — c'est
+   * précisément son objet : un vendeur doit voir combien de commandes il perd.
+   *
+   * `totals`, lui, agrégeait la même liste **sans rien retirer**. Il annonçait
+   * donc un « revenu » qui incluait les commandes annulées, pendant que les
+   * trois autres endpoints du même tableau de bord (`getOverview`,
+   * `getRevenueChart`, `getPeakHours`) les excluaient tous les trois. Deux
+   * écrans du même dashboard donnaient deux chiffres pour la même notion, sur
+   * la même colonne — le défaut exact corrigé côté admin dans
+   * `admin-dashboard.service.ts`.
+   *
+   * ⚠️ Ce n'est **pas** un choix de métrique nouveau : `totals` adopte la
+   * définition déjà en vigueur chez ses trois voisins. Vérifié le 16/09/2026 :
+   * `totals` n'avait alors **aucun lecteur** (le web ne lit que `byStatus`, le
+   * client Flutter le désérialise sans jamais l'afficher).
+   *
+   * ## Ce qui n'est PAS tranché ici — décision métier
+   *
+   * Le périmètre retenu reste `≠ ANNULER`, donc il compte les `EN_ATTENTE` :
+   * des commandes jamais payées, qu'`OrderExpiryService` ferme au bout de
+   * 45 minutes. Les exclure ferait du « revenu » du vendeur autre chose que ce
+   * qu'il affiche depuis l'origine, et ce n'est pas une correction de bug :
+   * c'est au métier de dire si son tableau de bord annonce des commandes
+   * **reçues** ou de l'argent **encaissé**. Constat et proposition dans
+   * `PHASE1E_2026-09-16_RELEASE_VERIFICATION.md` §11.
    */
   async getOrderStats(firebaseUid: string, period?: string) {
     const restaurant = await this.common.getRestaurant(firebaseUid);
@@ -188,8 +216,30 @@ export class DashboardSalesStatsService {
       _sum: { total: true },
     });
 
-    const totalOrders = stats.reduce((acc, s) => acc + s._count.status, 0);
-    const totalRevenue = stats.reduce((acc, s) => acc + (s._sum.total || 0), 0);
+    // Même périmètre que `getOverview` / `getRevenueChart` / `getPeakHours` :
+    // ils somment la même colonne, ils doivent compter les mêmes lignes.
+    // Le filtre est appliqué ici et non dans le `where` : `byStatus` a besoin
+    // de la ligne `ANNULER`, une seconde requête pour l'obtenir serait un
+    // aller-retour de plus pour un total déjà en mémoire.
+    const facturables = stats.filter((s) => s.status !== 'ANNULER');
+
+    const totalOrders = facturables.reduce((acc, s) => acc + s._count.status, 0);
+    const totalRevenue = facturables.reduce(
+      (acc, s) => acc + (s._sum.total || 0),
+      0,
+    );
+
+    // ⚠️ Dénominateur distinct, et il doit le rester.
+    //
+    // `percentage` répartit `byStatus`, qui contient `ANNULER` : le diviser par
+    // `totalOrders` (qui ne la contient plus) ferait dépasser 100 % la part des
+    // annulations et empêcherait les parts de sommer à 100. Sur la production
+    // du 16/09/2026 — 88 annulées, 35 livrées, 1 en route — cela aurait affiché
+    // « ANNULER 244,4 % ».
+    const totalToutesCommandes = stats.reduce(
+      (acc, s) => acc + s._count.status,
+      0,
+    );
 
     return {
       data: {
@@ -197,7 +247,7 @@ export class DashboardSalesStatsService {
           status: s.status,
           count: s._count.status,
           revenue: s._sum.total || 0,
-          percentage: totalOrders > 0 ? ((s._count.status / totalOrders) * 100).toFixed(1) : 0,
+          percentage: totalToutesCommandes > 0 ? ((s._count.status / totalToutesCommandes) * 100).toFixed(1) : 0,
         })),
         totals: {
           orders: totalOrders,

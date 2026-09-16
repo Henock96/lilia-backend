@@ -904,7 +904,20 @@ export class RestaurantPayoutService {
    * manque, et le dit à l'écran.
    *
    * Sur une commande **à emporter**, il n'y a pas de livreur : la contribution
-   * est alors complète, et elle est rendue.
+   * est alors calculable — *à condition que les frais du prestataire soient
+   * connus*.
+   *
+   * ⚠️ Ils ne le sont pas. `Payment.collectionFeeXaf` et
+   * `RestaurantPayout.payoutFeeXaf` sont **lus ici et écrits nulle part**
+   * (vérifié sur tout le dépôt). Mesuré en production le 16/09/2026 :
+   * 0 / 61 paiements et 0 / 2 reversements portent une valeur. En pratique,
+   * `missingInputs` n'est donc **jamais vide** et `contributionMargin` vaut
+   * `null` sur 100 % des commandes, retraits au comptoir compris.
+   *
+   * Ce n'est pas un défaut de ce calcul — il dit exactement ce qu'il sait — mais
+   * il faut le savoir avant de conclure que « la marge ne s'affiche pas » vient
+   * du coût livreur seul. Alimenter ces deux colonnes depuis les callbacks
+   * pawaPay est un chantier distinct, hors périmètre de la phase 1E.
    */
   private buildContribution(
     order: {
@@ -945,7 +958,7 @@ export class RestaurantPayoutService {
     if (collectionFee === null) missingInputs.push('collectionFee');
     if (payoutFee === null) missingInputs.push('payoutFee');
     // Le trou structurel : aucune donnée, aucune règle métier. Voir
-    // `PHASE1_DRIVER_COST_BLOCKERS.md` (décisions D1–D4).
+    // `PHASE2_2026-09-16_DRIVER_ECONOMICS_DISCOVERY.md` (décisions D1–D4).
     if (order.isDelivery) missingInputs.push('driverCost');
 
     const variableCosts =

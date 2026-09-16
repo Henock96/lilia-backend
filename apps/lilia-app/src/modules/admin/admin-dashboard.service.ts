@@ -12,12 +12,24 @@ import { PrismaService } from '../../prisma/prisma.service';
  * barres ne redonnait pas le total affiché au-dessus.
  *
  * `EN_ATTENTE` n'a jamais donné d'argent — `OrderExpiryService` ferme ces
- * commandes au bout de 45 minutes. `ANNULER` l'a rendu.
+ * commandes au bout de 45 minutes. `ANNULER` l'a rendu. **Tous les autres
+ * statuts de l'enum y sont**, et c'est la règle que
+ * `admin-dashboard-revenue-consistency.spec.ts` rend exigible.
+ *
+ * ⚠️ `EN_ROUTE` manquait — omission, pas décision. La liste énumérait le
+ * chemin nominal complet (`PAYER → EN_PREPARATION → PRET → … → LIVRER`) en
+ * sautant l'étape du milieu : une commande payée **disparaissait du chiffre
+ * d'affaires pendant toute la course**, puis y revenait à la livraison. Aucune
+ * lecture métier ne rend l'argent « non encaissé » le temps que le livreur
+ * roule. Le défaut est antérieur à la centralisation de cette liste (il vivait
+ * dans les deux copies inline) et la production en portait un cas au moment du
+ * constat, le 16/09/2026.
  */
-const PAID_ORDER_STATUSES = [
+export const PAID_ORDER_STATUSES = [
   'PAYER',
   'EN_PREPARATION',
   'PRET',
+  'EN_ROUTE',
   'LIVRER',
 ] as const;
 

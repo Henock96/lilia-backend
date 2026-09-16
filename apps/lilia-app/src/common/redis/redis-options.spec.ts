@@ -39,6 +39,35 @@ describe('buildRedisOptions', () => {
     expect(throttler.commandTimeout!).toBeLessThan(business.commandTimeout!);
   });
 
+  /**
+   * **Un plafond posé sous la latence nominale ne protège pas, il coupe.**
+   *
+   * Le premier réglage livré — 500 ms pour le throttler — avait été calculé sur
+   * un RTT Redis de 271 ms mesuré le 08/09. Vingt heures de production ont
+   * donné ≈ 395 ms par commande, et 338 `Error: Command timed out` sur le
+   * chemin du rate limiting : à chaque expiration, `ParallelThrottlerGuard`
+   * laisse passer la requête **sans la compter**.
+   *
+   * Aucun test ne pouvait l'attraper, parce qu'aucun ne confrontait le plafond
+   * à une latence réelle : ils vérifiaient que la valeur existait, qu'elle était
+   * positive, et que les deux profils étaient ordonnés — tout cela était vrai
+   * d'une valeur cassée.
+   *
+   * `RTT_MESURE_MS` est une **observation**, pas une préférence : la mettre à
+   * jour demande une mesure, et la mesure est ce qui manquait. Le facteur 2 est
+   * le minimum sous lequel un hoquet ordinaire suffit à faire tomber la garde.
+   */
+  it('chaque plafond garde une marge sur le RTT Redis réellement observé', () => {
+    /** Sentry, 16/09/2026 : `lilia.redis.ms` ÷ `lilia.redis.calls`, n = 17. */
+    const RTT_MESURE_MS = 395;
+
+    for (const usage of ['business', 'throttler', 'tracking'] as const) {
+      const { commandTimeout } = buildRedisOptions({ usage });
+
+      expect(commandTimeout! / RTT_MESURE_MS).toBeGreaterThanOrEqual(2);
+    }
+  });
+
   it('le client métier réessaie une fois de plus que les autres', () => {
     expect(buildRedisOptions({ usage: 'business' }).maxRetriesPerRequest).toBe(
       2,
