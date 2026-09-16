@@ -1,4 +1,9 @@
-import { AdminDashboardService } from './admin-dashboard.service';
+import { OrderStatus } from '@prisma/client';
+
+import {
+  AdminDashboardService,
+  PAID_ORDER_STATUSES,
+} from './admin-dashboard.service';
 import type { PrismaService } from '../../prisma/prisma.service';
 
 /**
@@ -84,6 +89,33 @@ describe('GET /admin/dashboard — un seul périmètre de chiffre d’affaires',
     // l'un n'a jamais donné d'argent, l'autre l'a rendu.
     expect(statuses).not.toContain('EN_ATTENTE');
     expect(statuses).not.toContain('ANNULER');
+  });
+
+  /**
+   * ⚠️ **Le test précédent ne suffit pas, et c'est ce qui a laissé passer le
+   * défaut.**
+   *
+   * « Ne contient pas `EN_ATTENTE` ni `ANNULER` » est satisfait par une liste
+   * vide, et par toute liste **trouée**. `EN_ROUTE` manquait depuis l'origine :
+   * une commande payée sortait du chiffre d'affaires pendant toute la course,
+   * puis y rentrait à la livraison — et les trois agrégats étant alimentés par
+   * la même constante, le test de cohérence les trouvait parfaitement d'accord
+   * entre eux. **Trois copies du même chiffre faux sont cohérentes.**
+   *
+   * La règle est donc écrite dans l'autre sens : on part de l'enum `OrderStatus`
+   * — la seule liste que personne ne peut oublier de mettre à jour, puisque
+   * Prisma la génère — et on exige que **tout** statut y figure, sauf les deux
+   * exclusions nommées. Ajouter une valeur à l'enum fait échouer ce test tant
+   * que quelqu'un n'a pas tranché de quel côté elle tombe.
+   */
+  it('couvre tous les statuts de l’enum sauf les deux exclus', () => {
+    const NEVER_PAID = [OrderStatus.EN_ATTENTE, OrderStatus.ANNULER] as const;
+
+    const attendu = Object.values(OrderStatus).filter(
+      (status) => !NEVER_PAID.includes(status as (typeof NEVER_PAID)[number]),
+    );
+
+    expect([...PAID_ORDER_STATUSES].sort()).toEqual([...attendu].sort());
   });
 
   it('borne le graphe hebdomadaire à sept jours', async () => {
