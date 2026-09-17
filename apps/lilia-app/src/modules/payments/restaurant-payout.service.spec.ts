@@ -70,6 +70,12 @@ describe('RestaurantPayoutService', () => {
     id: 'o1',
     status: 'PRET',
     subTotal: 5000,
+    /**
+     * Taux FIGÉ à la commande. C'est lui — et lui seul — qui décide de ce que
+     * le vendeur touchera. `restaurant.commissionPercent` ci-dessous décrit ce
+     * que portera la PROCHAINE commande, pas celle-ci.
+     */
+    commissionPercent: 10,
     deliveryFee: 1000,
     serviceFee: 400,
     total: 6400,
@@ -259,52 +265,89 @@ describe('RestaurantPayoutService', () => {
   });
 
   // ══════════════════════════════════════════════════════════════════════════
-  describe('commission configurable', () => {
-    it('utilise le taux du vendeur quand il en a un', async () => {
-      const order = readyOrder();
+  /**
+   * ⚠️ Ce bloc a changé de sens le 17/09/2026, et c'est délibéré.
+   *
+   * Il affirmait auparavant que le reversement « suit un changement de taux
+   * plateforme sans redéploiement ». C'était vrai, et c'était le défaut :
+   * `requestPayout` lisait `Restaurant.commissionPercent` **vivant**, si bien
+   * qu'un taux modifié aujourd'hui réécrivait ce que la plateforme prélèverait
+   * sur des commandes passées hier et pas encore reversées.
+   *
+   * Le snapshot `Order.commissionPercent` existait déjà — écrit au checkout,
+   * lu par personne. Il est désormais la seule autorité. Le repli
+   * « vendeur sinon plateforme » n'a pas disparu : il a été ramené à l'unique
+   * endroit où il a un sens, le checkout. Un seul résolveur, un seul repli.
+   */
+  describe('taux de commission — le SNAPSHOT de la commande fait foi', () => {
+    it('applique le taux figé sur la commande, pas celui que le vendeur porte aujourd’hui', async () => {
+      // Commande passée à 0 %. Le vendeur s'est vu attribuer 12 % depuis.
+      const order = readyOrder({ commissionPercent: 0 });
       order.restaurant.commissionPercent = 12 as never;
       prisma.order.findUnique.mockResolvedValue(order);
 
       const result = await service.checkEligibility('o1');
 
       expect(result.breakdown).toMatchObject({
-        commissionPercent: 12,
-        commissionAmount: 600,
-        payoutAmount: 4400,
+        commissionPercent: 0,
+        commissionAmount: 0,
+        payoutAmount: 5000,
       });
-      // Le taux plateforme n'a pas été consulté : celui du vendeur prime.
+    });
+
+    it('n’interroge JAMAIS PlatformSettings — le repli vit au checkout, pas ici', async () => {
+      prisma.order.findUnique.mockResolvedValue(
+        readyOrder({ commissionPercent: 8 }),
+      );
+
+      await service.checkEligibility('o1');
+
       expect(settings.getSettings).not.toHaveBeenCalled();
     });
 
-    it('retombe sur le taux plateforme quand le vendeur n’en a pas', async () => {
-      settings.getSettings.mockResolvedValue({
-        restaurantCommissionPercent: 8,
-      });
-      prisma.order.findUnique.mockResolvedValue(readyOrder());
+    it('commission à 0 % : le vendeur reçoit l’intégralité du sous-total', async () => {
+      prisma.order.findUnique.mockResolvedValue(
+        readyOrder({ commissionPercent: 0 }),
+      );
 
       const result = await service.checkEligibility('o1');
 
       expect(result.breakdown).toMatchObject({
-        commissionPercent: 8,
-        commissionAmount: 400,
-        payoutAmount: 4600,
+        grossAmount: 5000,
+        commissionAmount: 0,
+        payoutAmount: 5000,
       });
     });
 
-    it('suit un changement de taux plateforme sans redéploiement', async () => {
-      prisma.order.findUnique.mockResolvedValue(readyOrder());
+    it('un changement de taux VENDEUR ne réécrit pas une commande passée', async () => {
+      const order = readyOrder({ commissionPercent: 10 });
+      prisma.order.findUnique.mockResolvedValue(order);
+      const before = await service.checkEligibility('o1');
+
+      order.restaurant.commissionPercent = 40 as never;
+      const after = await service.checkEligibility('o1');
+
+      expect(before.breakdown?.commissionAmount).toBe(500);
+      expect(after.breakdown?.commissionAmount).toBe(500);
+    });
+
+    it('un changement de taux PLATEFORME ne réécrit pas une commande passée', async () => {
+      prisma.order.findUnique.mockResolvedValue(
+        readyOrder({ commissionPercent: 10 }),
+      );
 
       settings.getSettings.mockResolvedValue({
         restaurantCommissionPercent: 15,
       });
       const first = await service.checkEligibility('o1');
-      expect(first.breakdown?.commissionAmount).toBe(750);
 
       settings.getSettings.mockResolvedValue({
-        restaurantCommissionPercent: 12,
+        restaurantCommissionPercent: 40,
       });
       const second = await service.checkEligibility('o1');
-      expect(second.breakdown?.commissionAmount).toBe(600);
+
+      expect(first.breakdown?.commissionAmount).toBe(500);
+      expect(second.breakdown?.commissionAmount).toBe(500);
     });
   });
 
@@ -364,6 +407,25 @@ describe('RestaurantPayoutService', () => {
             amount: 4500,
             requestedBy: 'admin-1',
             status: PayoutStatus.PENDING,
+          }),
+        }),
+      );
+    });
+
+    it('fige le taux de la COMMANDE, pas celui que le vendeur porte au moment du clic', async () => {
+      const order = readyOrder({ commissionPercent: 10 });
+      order.restaurant.commissionPercent = 40 as never;
+      prisma.order.findUnique.mockResolvedValue(order);
+      prisma.order.findUniqueOrThrow.mockResolvedValue(order);
+
+      await service.requestPayout({ orderId: 'o1', adminUserId: 'admin-1' });
+
+      expect(prisma.restaurantPayout.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            commissionPercent: 10,
+            commissionAmount: 500,
+            amount: 4500, // et surtout PAS 3000, qui serait le taux d'aujourd'hui
           }),
         }),
       );
@@ -540,6 +602,55 @@ describe('RestaurantPayoutService', () => {
         where: { id: 'pay-1', status: PayoutStatus.FAILED },
       });
       expect(ids[0]).toEqual(expect.any(String));
+    });
+
+    /**
+     * La reprise supprime la ligne échouée et rebâtit le décompte. Tant que
+     * celui-ci se calculait sur le taux vivant, une reprise après changement de
+     * taux versait un montant différent de la tentative d'origine — sans que
+     * rien ne le signale. Le snapshot rend la reprise reproductible par
+     * construction.
+     */
+    it('une reprise après changement de taux reproduit EXACTEMENT le même montant', async () => {
+      prisma.restaurantPayout.findUnique.mockResolvedValue({
+        id: 'pay-1',
+        status: PayoutStatus.FAILED,
+        failureCode: 'PAYER_NOT_FOUND',
+      });
+      prisma.restaurantPayout.deleteMany.mockResolvedValue({ count: 1 });
+
+      const order = readyOrder({ commissionPercent: 10 });
+      // Entre l'échec et la reprise, le vendeur passe à 40 % et la plateforme
+      // à 25 %. Ni l'un ni l'autre ne concerne cette commande-ci.
+      order.restaurant.commissionPercent = 40 as never;
+      settings.getSettings.mockResolvedValue({
+        restaurantCommissionPercent: 25,
+      });
+      prisma.order.findUnique.mockResolvedValue(order);
+      prisma.order.findUniqueOrThrow.mockResolvedValue(order);
+
+      prisma.restaurantPayout.create.mockImplementation(async (args: any) => ({
+        ...args.data,
+        id: 'pay-2',
+        requestedAt: new Date(),
+      }));
+      payoutProvider.createPayout.mockResolvedValue({
+        accepted: true,
+        duplicate: false,
+        raw: {},
+      });
+
+      await service.retryPayout({ orderId: 'o1', adminUserId: 'admin-1' });
+
+      expect(prisma.restaurantPayout.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            commissionPercent: 10,
+            commissionAmount: 500,
+            amount: 4500,
+          }),
+        }),
+      );
     });
   });
 

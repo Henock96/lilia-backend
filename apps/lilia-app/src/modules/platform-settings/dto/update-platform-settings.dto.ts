@@ -11,6 +11,8 @@ import {
   Min,
 } from 'class-validator';
 
+import { MAX_COMMISSION_PERCENT } from '../../payments/money.util';
+
 /**
  * Version d'application acceptée : `major.minor.patch`, `+build` optionnel.
  *
@@ -53,6 +55,31 @@ export class UpdatePlatformSettingsDto {
   @Min(0)
   @Max(100)
   serviceFeePercent?: number;
+
+  /**
+   * COMMISSION VENDEUR par défaut, en pourcentage.
+   *
+   * ⚠️ **Ce champ manquait**, et son absence était invisible. Le
+   * `ValidationPipe` global tourne en `whitelist: true` avec
+   * `forbidNonWhitelisted: false` : un `PATCH` portant
+   * `restaurantCommissionPercent` répondait **200 OK sans rien changer**, le
+   * champ étant retiré du corps avant d'atteindre le service. Passer la
+   * commission à 0 % imposait donc une écriture SQL directe.
+   *
+   * Ne s'applique qu'aux commandes **futures** : le taux est figé sur chaque
+   * commande à sa création (`Order.commissionPercent`), et c'est ce snapshot
+   * que lit le reversement. Modifier ce réglage ne réécrit aucun montant passé.
+   *
+   * Surchargé par vendeur via `PATCH /admin/vendors/:id/commerce`.
+   * Borné comme lui à `MAX_COMMISSION_PERCENT` — au-delà,
+   * `percentToBasisPoints` écrêterait en silence et le taux affiché ne serait
+   * pas celui appliqué.
+   */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(MAX_COMMISSION_PERCENT)
+  restaurantCommissionPercent?: number;
 
   /**
    * Forfait de points gagné par commande livrée.

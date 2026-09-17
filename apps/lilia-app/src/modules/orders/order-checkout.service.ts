@@ -246,7 +246,16 @@ export class OrderCheckoutService {
       // Le taux du vendeur est lu maintenant et figé sur la commande : le
       // modifier ensuite ne doit pas réécrire ce que la plateforme a prélevé
       // sur des commandes déjà passées.
-      restaurant.commissionPercent,
+      //
+      // ⚠️ C'est le SEUL endroit du système qui résout « quel taux ? ». Le
+      // repli « vendeur sinon plateforme » vivait aussi dans
+      // `RestaurantPayoutService`, avec une valeur différente (`0` ici, taux
+      // plateforme là-bas) : les 124 commandes de production portaient donc
+      // `commissionPercent = 0` pendant que les reversements prélevaient 10 %.
+      // Le reversement lit désormais ce snapshot et ne résout plus rien.
+      //
+      // `??` et non `||` : un vendeur à 0 % a bien un taux, et il vaut 0.
+      restaurant.commissionPercent ?? settings.restaurantCommissionPercent,
     );
     this.validator.validateMinimumOrderAmount(
       amounts.subTotal,

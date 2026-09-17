@@ -398,6 +398,38 @@ describe('AdminService', () => {
       );
     });
 
+    /**
+     * `totalRevenueXAF` est la somme des `Order.total` — ce que **les clients
+     * ont payé**, affiché sur la fiche d'un LIVREUR. Deux back-offices
+     * l'affichent, chacun avec un commentaire d'avertissement : preuve que le
+     * piège a déjà été rencontré au moins deux fois.
+     *
+     * Ce livreur n'a jamais touché 9 000 XAF. Le champ est renommé en
+     * `handledOrderValueXaf`, qui dit ce qu'il mesure ; l'ancien nom survit le
+     * temps que les deux fronts migrent.
+     */
+    it('nomme la valeur transportée « handledOrderValueXaf », pas un revenu', async () => {
+      prisma.user.findUnique.mockResolvedValue(mockDeliverer);
+      prisma.delivery.groupBy.mockResolvedValue([
+        { status: 'LIVRER', _count: { _all: 2 } },
+      ]);
+      prisma.delivery.findMany.mockResolvedValueOnce([
+        { order: { total: 5000 }, pickedUpAt: null, deliveredAt: null },
+        { order: { total: 4000 }, pickedUpAt: null, deliveredAt: null },
+      ]);
+      prisma.delivery.count.mockResolvedValueOnce(2);
+      prisma.delivery.findFirst.mockResolvedValueOnce(null);
+
+      const result = await service.getDelivererStats('d1');
+
+      expect(result.data.handledOrderValueXaf).toBe(9000);
+      // Alias déprécié : identique, le temps que les fronts adoptent le nouveau.
+      expect(result.data.totalRevenueXAF).toBe(9000);
+      // Ce que le livreur a réellement gagné reste inconnu — et le système
+      // doit le dire, pas laisser croire que 9 000 est sa rémunération.
+      expect(result.data.driverPayXaf).toBeNull();
+    });
+
     it('renvoie des compteurs et valeurs nullables à zéro quand aucune livraison', async () => {
       prisma.user.findUnique.mockResolvedValue(mockDeliverer);
       prisma.delivery.groupBy.mockResolvedValue([]);
@@ -413,7 +445,12 @@ describe('AdminService', () => {
         failedCount: 0,
         inProgressCount: 0,
         successRate: 0,
+        handledOrderValueXaf: 0,
         totalRevenueXAF: 0,
+        // ⚠️ `null`, pas `0`. Un livreur sans course n'a pas « coûté 0 » : on
+        // ne sait simplement pas ce qu'il a touché, et le système ne le saura
+        // pas tant que l'économie livreur n'existe pas.
+        driverPayXaf: null,
         avgDeliveryMinutes: null,
         last30dDeliveries: 0,
         lastDeliveryAt: null,

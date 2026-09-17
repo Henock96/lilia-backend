@@ -100,7 +100,22 @@ export class AdminDeliverersService {
         ? 0
         : Math.round((deliveredCount / finished) * 100 * 100) / 100;
 
-    const totalRevenueXAF = deliveredRows.reduce(
+    /**
+     * Valeur des commandes que ce livreur a portées — la somme de ce que les
+     * CLIENTS ont payé.
+     *
+     * ⚠️ Ce n'est pas son revenu, et ce champ s'appelait pourtant
+     * `totalRevenueXAF`. Sur la fiche d'un livreur, ce nom se lit « ce qu'il a
+     * gagné » : les deux back-offices l'affichaient, chacun escorté d'un
+     * commentaire d'avertissement — le signe qu'un libellé a besoin d'une note
+     * de bas de page pour ne pas tromper est qu'il est faux.
+     *
+     * Ce que le livreur a réellement touché n'existe nulle part dans le
+     * système (aucune colonne, aucune table). `driverPayXaf` le dit en toutes
+     * lettres : `null` = inconnu. Ne jamais y mettre 0 — cela transformerait
+     * « on ne sait pas » en « il n'a rien coûté ».
+     */
+    const handledOrderValueXaf = deliveredRows.reduce(
       (sum, d) => sum + (d.order?.total ?? 0),
       0,
     );
@@ -122,7 +137,20 @@ export class AdminDeliverersService {
         failedCount,
         inProgressCount,
         successRate,
-        totalRevenueXAF,
+        handledOrderValueXaf,
+        /**
+         * @deprecated Alias de `handledOrderValueXaf`, conservé le temps que
+         * les deux back-offices migrent. Le nom laissait croire qu'il s'agit
+         * du revenu du livreur ; c'est la valeur des commandes qu'il a
+         * transportées. À retirer une fois les fronts à jour.
+         */
+        totalRevenueXAF: handledOrderValueXaf,
+        /**
+         * Rémunération réelle du livreur. `null` — le coût d'une course
+         * n'existe nulle part dans le système (ni colonne, ni table, ni règle).
+         * Renseigné par la phase 2 « économie livreur ».
+         */
+        driverPayXaf: null as number | null,
         avgDeliveryMinutes,
         last30dDeliveries,
         lastDeliveryAt: lastDelivery?.deliveredAt ?? null,

@@ -13,7 +13,6 @@ import { RestaurantPayoutService } from '../../apps/lilia-app/src/modules/paymen
 import { OrderTransitionService } from '../../apps/lilia-app/src/modules/orders/order-transition.service';
 import { PaymentEventService } from '../../apps/lilia-app/src/modules/payments/services/payment-event.service';
 import { PayoutStateMachine } from '../../apps/lilia-app/src/modules/payments/payout-state.machine';
-import { PlatformSettingsService } from '../../apps/lilia-app/src/modules/platform-settings/platform-settings.service';
 import { OutboxService } from '../../apps/lilia-app/src/modules/outbox/outbox.service';
 
 /**
@@ -111,7 +110,6 @@ describeIfDb(
       );
 
       events = new PaymentEventService(prisma as never);
-      const settings = new PlatformSettingsService(prisma as never);
       const outbox = new OutboxService(prisma as never);
       const config = { get: (_k: string, d?: unknown) => d };
 
@@ -129,7 +127,6 @@ describeIfDb(
       payouts = new RestaurantPayoutService(
         prisma as never,
         registry as never,
-        settings,
         events,
         new PayoutStateMachine(),
         emitter,
@@ -174,7 +171,10 @@ describeIfDb(
           // n'avaient jamais remplie.
           payoutPhoneNumber: '242060000001',
           payoutProvider: 'MTN_MOMO',
-          // `null` = taux plateforme. On vérifie plus bas qu'il est bien résolu.
+          // `null` = « pas de taux propre à ce vendeur ». Depuis le 17/09/2026,
+          // cette colonne ne décide plus de rien au moment du reversement : elle
+          // décrit les commandes FUTURES de ce vendeur. Le reversement lit le
+          // taux figé sur la commande. On le vérifie plus bas.
           commissionPercent: null,
         },
       });
@@ -188,6 +188,12 @@ describeIfDb(
           deliveryFee: 1000,
           serviceFee: 400,
           total: TOTAL,
+          // Snapshot que `OrderCheckoutService` écrit à la création : le taux
+          // du vendeur s'il en a un, sinon celui de la plateforme — résolu UNE
+          // fois, là-bas. Ce test court-circuite le checkout, il doit donc
+          // poser lui-même ce que le checkout aurait figé.
+          commissionPercent: 10,
+          commissionAmount: 500,
           paymentMethod: 'MTN_MOMO',
           status: OrderStatus.EN_ATTENTE,
         },
