@@ -19,7 +19,6 @@ import {
 import * as Sentry from '@sentry/nestjs';
 
 import { PrismaService } from '../../../prisma/prisma.service';
-import { PlatformSettingsService } from '../../platform-settings/platform-settings.service';
 import { PaymentProviderRegistry } from '../payment-provider.registry';
 import {
   ProviderTransactionStatus,
@@ -98,7 +97,10 @@ export class RestaurantPayoutService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly registry: PaymentProviderRegistry,
-    private readonly settings: PlatformSettingsService,
+    // ⚠️ `PlatformSettingsService` a été RETIRÉ de ce service le 17/09/2026.
+    // Il n'y servait qu'au repli de commission, désormais résolu au checkout.
+    // Le réintroduire ici ferait resurgir le défaut : un taux courant qui
+    // réécrit ce que la plateforme prélève sur une commande déjà passée.
     private readonly events: PaymentEventService,
     private readonly stateMachine: PayoutStateMachine,
     private readonly eventEmitter: EventEmitter2,
@@ -143,9 +145,9 @@ export class RestaurantPayoutService {
       };
     }
 
-    const breakdown = await this.buildBreakdown(
+    const breakdown = this.buildBreakdown(
       order.subTotal,
-      order.restaurant.commissionPercent,
+      order.commissionPercent,
     );
     const withBreakdown = (result: PayoutEligibility): PayoutEligibility => ({
       ...result,
@@ -232,26 +234,36 @@ export class RestaurantPayoutService {
   }
 
   /**
-   * Taux applicable : celui du vendeur s'il en a un, sinon celui de la
-   * plateforme. Jamais une constante — le taux n'est pas arrêté et doit pouvoir
-   * varier par vendeur sans toucher au code.
+   * Décompte du reversement, à partir du taux **figé sur la commande**.
+   *
+   * ## Pourquoi le taux ne se résout pas ici
+   *
+   * Cette méthode lisait auparavant `Restaurant.commissionPercent`, et
+   * retombait sur `PlatformSettings.restaurantCommissionPercent` quand le
+   * vendeur n'en portait pas. Deux conséquences, toutes deux fausses :
+   *
+   * 1. **Le passé bougeait.** Un taux modifié aujourd'hui réécrivait ce que la
+   *    plateforme prélèverait sur une commande d'hier pas encore reversée. Un
+   *    chiffre comptable ne se recalcule pas — c'est exactement la raison
+   *    d'être de `OrderItem.snapshotPrice` et de `Order.commissionPercent`.
+   * 2. **Deux replis contradictoires coexistaient.** Le checkout retombait sur
+   *    `0`, ce reversement sur le taux plateforme. En production au 17/09/2026,
+   *    les 124 commandes portaient donc `commissionPercent = 0` pendant que les
+   *    reversements prélevaient 10 %. La commande disait une chose, le virement
+   *    en faisait une autre.
+   *
+   * Le repli n'a pas disparu : il a été ramené à l'unique endroit où il a un
+   * sens — le checkout (`OrderCheckoutService`), qui résout
+   * « taux du vendeur, sinon taux plateforme » **une fois** et fige le résultat.
+   * Ici, on lit ce qui a été figé. Un seul résolveur, un seul repli.
+   *
+   * ⚠️ Ne jamais réintroduire de lecture de `Restaurant.commissionPercent` dans
+   * ce service : le taux d'un vendeur décrit ses commandes **futures**.
    */
-  private async resolveCommissionPercent(
-    vendorPercent: number | null,
-  ): Promise<number> {
-    if (vendorPercent !== null && Number.isFinite(vendorPercent)) {
-      return vendorPercent;
-    }
-    const settings = await this.settings.getSettings();
-    return settings.restaurantCommissionPercent;
-  }
-
-  private async buildBreakdown(subTotal: number, vendorPercent: number | null) {
-    const commissionPercent =
-      await this.resolveCommissionPercent(vendorPercent);
+  private buildBreakdown(subTotal: number, orderCommissionPercent: number) {
     return computePayoutBreakdown({
       subTotalXaf: toXaf(subTotal, 'sous-total'),
-      commissionPercent,
+      commissionPercent: orderCommissionPercent,
     });
   }
 
@@ -293,11 +305,12 @@ export class RestaurantPayoutService {
       },
     });
 
-    // Le décompte est RECALCULÉ ici, côté serveur, à partir du sous-total de la
-    // commande et du taux en vigueur — jamais repris d'un corps de requête.
-    const breakdown = await this.buildBreakdown(
+    // Le décompte est reconstruit ici, côté serveur, à partir du sous-total ET
+    // du taux figés sur la commande — jamais repris d'un corps de requête, et
+    // jamais relu sur la fiche du vendeur (qui décrit ses commandes futures).
+    const breakdown = this.buildBreakdown(
       order.subTotal,
-      order.restaurant.commissionPercent,
+      order.commissionPercent,
     );
 
     if (breakdown.payoutAmount <= 0) {
@@ -786,10 +799,7 @@ export class RestaurantPayoutService {
           commissionAmount: order.payout.commissionAmount,
           payoutAmount: order.payout.amount,
         }
-      : await this.buildBreakdown(
-          order.subTotal,
-          order.restaurant.commissionPercent,
-        );
+      : this.buildBreakdown(order.subTotal, order.commissionPercent);
 
     const collectionFee = collection?.collectionFeeXaf ?? null;
     const payoutFee = order.payout?.payoutFeeXaf ?? null;

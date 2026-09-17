@@ -95,6 +95,7 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
 
   const SETTINGS = {
     serviceFeePercent: 8,
+    restaurantCommissionPercent: 10,
     loyaltyMinRedemption: 100,
     loyaltyPointValueXaf: 5,
     loyaltyPointsPer100Xaf: 1,
@@ -239,6 +240,75 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
       where: { cartId: 'cart1' },
     });
     expect(stockService.decrementInTransaction).toHaveBeenCalled();
+  });
+
+  /**
+   * Le checkout est le SEUL endroit qui résout « quel taux de commission ? ».
+   *
+   * Il retombait sur `0` quand le vendeur n'en portait pas, pendant que
+   * `RestaurantPayoutService` retombait, lui, sur le taux plateforme. Les deux
+   * replis se contredisaient : les 124 commandes de production portaient
+   * `commissionPercent = 0` alors que les reversements prélevaient 10 %.
+   *
+   * Le reversement ne résout plus rien — il lit ce snapshot. Le repli doit donc
+   * être ici, et juste, sans quoi `PlatformSettings.restaurantCommissionPercent`
+   * deviendrait un réglage sans effet.
+   */
+  describe('commission vendeur — le repli plateforme est résolu ICI, une seule fois', () => {
+    it('fige le taux du vendeur quand il en porte un', async () => {
+      validator.validateRestaurantOpen.mockResolvedValue({
+        id: 'resto1',
+        nom: 'Resto',
+        fixedDeliveryFee: 1000,
+        deliveryPriceMode: 'FIXED',
+        minimumOrderAmount: 0,
+        commissionPercent: 12,
+      });
+
+      await service.createOrderFromCart('uid', baseDto, 'idem-key-1');
+
+      expect(calculator.calculate).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        8,
+        12,
+      );
+    });
+
+    it('retombe sur le taux plateforme quand le vendeur n’en porte pas', async () => {
+      // Le vendeur nominal du fixture n'a pas de `commissionPercent`.
+      await service.createOrderFromCart('uid', baseDto, 'idem-key-1');
+
+      expect(calculator.calculate).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        8,
+        10, // et surtout PAS 0, ni `undefined`
+      );
+    });
+
+    it('un taux vendeur à 0 % reste 0 % — ce n’est pas une absence de taux', async () => {
+      validator.validateRestaurantOpen.mockResolvedValue({
+        id: 'resto1',
+        nom: 'Resto',
+        fixedDeliveryFee: 1000,
+        deliveryPriceMode: 'FIXED',
+        minimumOrderAmount: 0,
+        commissionPercent: 0,
+      });
+
+      await service.createOrderFromCart('uid', baseDto, 'idem-key-1');
+
+      expect(calculator.calculate).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        8,
+        0, // `??` et non `||` : 0 est une valeur, pas un vide
+      );
+    });
   });
 
   it('livraison sans adresseId → BadRequestException, pas de transaction', async () => {
