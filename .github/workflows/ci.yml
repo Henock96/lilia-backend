@@ -38,8 +38,20 @@ jobs:
       - name: Vérifier le schéma Prisma
         run: npx prisma validate
 
+      # ⚠️ Ne JAMAIS appeler ici un lint qui corrige.
+      #
+      # Cette étape a lancé pendant des mois `npm run lint`, dont le script
+      # portait `--fix` : eslint réparait les fichiers dans le runner, ne
+      # rapportait que l'incorrigible, et sortait en 0. Le formatage — soit
+      # l'essentiel de ce que cette configuration fait respecter — n'était donc
+      # jamais vérifié. Mesuré le 17/09/2026 : 4 erreurs `prettier/prettier`
+      # présentes depuis plusieurs commits, CI au vert, fichier réécrit.
+      #
+      # `lint` constate (--max-warnings=0 est dans le script), `lint:fix`
+      # corrige. `apps/lilia-app/test/lint-is-a-check.spec.ts` rend la propriété
+      # exigible : il échoue si `--fix` réapparaît ici ou dans le script.
       - name: Lint
-        run: npm run lint -- --max-warnings=0
+        run: npm run lint
 
       - name: Types
         run: npx tsc -p tsconfig.json --noEmit
