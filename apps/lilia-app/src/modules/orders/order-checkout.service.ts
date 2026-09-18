@@ -334,6 +334,13 @@ export class OrderCheckoutService {
           restaurantId,
           subTotal: amounts.subTotal,
           deliveryFee: finalDeliveryFee,
+          // Tarif AVANT remise commerciale — l'assiette qui rémunère le
+          // livreur. `finalDeliveryFee` ci-dessus est le montant après promo :
+          // un code FREE_DELIVERY le met à 0, et payer la course dessus ferait
+          // porter au livreur une campagne qu'il n'a pas décidée. C'est la
+          // règle déjà posée pour le vendeur, dont le reversement ignore les
+          // remises ; elle vaut des deux côtés de la course.
+          deliveryFeeGross: amounts.deliveryFee,
           serviceFee: amounts.serviceFee,
           commissionPercent: amounts.commissionPercent,
           commissionAmount: amounts.commissionAmount,

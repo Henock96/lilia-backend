@@ -23,6 +23,16 @@ export const MAX_AMOUNT_XAF = 100_000_000;
 export const MAX_COMMISSION_PERCENT = 50;
 
 /**
+ * Part maximale d'un partage de frais de livraison, en pourcentage.
+ *
+ * ⚠️ Distinct de `MAX_COMMISSION_PERCENT`, et c'est essentiel : un livreur
+ * indépendant touche 65 % de la course. Soumettre un partage au plafond de
+ * commission (50) ramènerait sa part à 50 % **en silence** — il serait sous-payé
+ * sans qu'aucune erreur ne parte. Deux notions, deux plafonds.
+ */
+export const MAX_SHARE_PERCENT = 100;
+
+/**
  * Normalise un montant venant de la base (`Float`) en entier XAF.
  *
  * Lève sur une valeur inexploitable plutôt que de propager un `NaN` jusqu'au
@@ -54,6 +64,25 @@ export function percentToBasisPoints(percent: number): number {
   }
   const bounded = Math.min(percent, MAX_COMMISSION_PERCENT);
   return Math.round(bounded * 100);
+}
+
+/**
+ * Pourcentage de partage → points de base.
+ *
+ * Asymétrie **délibérée** avec `percentToBasisPoints` : celui-ci **écrête**
+ * silencieusement à 50 %, ce qui convient à une commission (un taux aberrant
+ * saisi par erreur vaut mieux borné que refusé au moment de payer un vendeur).
+ * Un partage de course, lui, **lève** : le taux vient d'un contrat et d'un
+ * réglage d'administration, pas d'une saisie de masse. Le ramener en douce de
+ * 65 % à 50 % sous-paierait un livreur sans que rien ne le signale.
+ */
+function sharePercentToBasisPoints(percent: number): number {
+  if (!Number.isFinite(percent) || percent < 0 || percent > MAX_SHARE_PERCENT) {
+    throw new Error(
+      `Taux de partage invalide : ${percent} (attendu entre 0 et ${MAX_SHARE_PERCENT}).`,
+    );
+  }
+  return Math.round(percent * 100);
 }
 
 /**
@@ -119,5 +148,62 @@ export function computePayoutBreakdown(params: {
     commissionPercent: bps / 100,
     commissionAmount,
     payoutAmount,
+  };
+}
+
+export interface DeliverySplit {
+  /** Assiette du partage, en XAF entiers. */
+  baseXaf: number;
+  /** Taux réellement appliqué, figé avec le partage. */
+  driverSharePercent: number;
+  /** Ce que touche le livreur pour cette course. */
+  driverPayXaf: number;
+  /** Ce que Lilia Food garde. **Résidu**, jamais un second calcul. */
+  liliaShareXaf: number;
+}
+
+/**
+ * Partage les frais de livraison entre le livreur et Lilia Food.
+ *
+ * ```
+ * driverPayXaf  = round(baseXaf × driverSharePercent)
+ * liliaShareXaf = baseXaf − driverPayXaf          ← RÉSIDU
+ * ```
+ *
+ * ## Pourquoi la part de Lilia est un résidu et non un second pourcentage
+ *
+ * Appliquer deux taux complémentaires à la même base ne recompose pas la base :
+ * `round(333 × 35 %) + round(333 × 65 %)` vaut **334**, pas 333. Un franc
+ * fabriqué à chaque course. En rendant la part de Lilia égale au reste,
+ * `driverPay + liliaShare === base` devient vrai **par construction** — il n'y
+ * a pas d'arrondi à réconcilier, et aucun test ne peut le prendre en défaut.
+ *
+ * C'est aussi la raison pour laquelle un seul taux est stocké en base : deux
+ * valeurs indépendantes finissent toujours par diverger.
+ *
+ * ## Pourquoi c'est la part du LIVREUR qui est stockée
+ *
+ * C'est le nombre du contrat — « tu touches 35 % de la course » — et celui que
+ * le livreur vérifiera dans son application. Le nombre qu'un humain recompte
+ * doit être l'exact, pas le dérivé.
+ *
+ * `baseXaf` n'est **pas** `Order.deliveryFee` : c'est le tarif **avant remise
+ * commerciale** (`Order.deliveryFeeGross`). Une livraison offerte par Lilia est
+ * une campagne de Lilia ; le livreur a roulé et doit être payé. Même règle que
+ * pour le vendeur, dont le reversement ignore déjà les remises.
+ */
+export function computeDeliverySplit(params: {
+  baseXaf: number;
+  driverSharePercent: number;
+}): DeliverySplit {
+  const baseXaf = toXaf(params.baseXaf, 'base de partage de la course');
+  const bps = sharePercentToBasisPoints(params.driverSharePercent);
+  const driverPayXaf = applyBasisPoints(baseXaf, bps);
+
+  return {
+    baseXaf,
+    driverSharePercent: bps / 100,
+    driverPayXaf,
+    liliaShareXaf: baseXaf - driverPayXaf,
   };
 }

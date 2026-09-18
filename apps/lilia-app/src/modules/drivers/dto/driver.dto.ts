@@ -7,13 +7,23 @@ import {
   IsDateString,
   IsEmail,
   IsEnum,
+  IsNumber,
   IsOptional,
   IsString,
   Matches,
+  Max,
   MaxLength,
+  Min,
   MinLength,
 } from 'class-validator';
-import { DriverStatus, VehicleType } from '@prisma/client';
+import {
+  DriverCompensationModel,
+  DriverEmploymentType,
+  DriverStatus,
+  VehicleType,
+} from '@prisma/client';
+
+import { MAX_SHARE_PERCENT } from '../../payments/money.util';
 
 /**
  * Numéro congolais, même expression que `UpdateUserDto` : le livreur est
@@ -99,6 +109,39 @@ export class CreateDriverDto {
   @IsString({ each: true })
   @ArrayMaxSize(40)
   zoneIds?: string[];
+
+  /**
+   * Nature de la relation — décide du taux par défaut ET de qui supporte les
+   * coûts du véhicule. Un `INDEPENDENT` apporte sa moto et paie carburant,
+   * entretien et assurance : ces coûts ne sont jamais des charges de Lilia.
+   *
+   * Omis ⇒ `LILIA`, le défaut du schéma.
+   */
+  @ApiPropertyOptional({ enum: DriverEmploymentType })
+  @IsOptional()
+  @IsEnum(DriverEmploymentType)
+  employmentType?: DriverEmploymentType;
+
+  /** Modèle de rémunération. Omis ⇒ `PER_DELIVERY`, le seul actif aujourd'hui. */
+  @ApiPropertyOptional({ enum: DriverCompensationModel })
+  @IsOptional()
+  @IsEnum(DriverCompensationModel)
+  compensationModel?: DriverCompensationModel;
+
+  /**
+   * Part de CE livreur sur les frais de livraison, en pourcentage.
+   * Omis ou `null` ⇒ taux plateforme correspondant à son `employmentType`.
+   *
+   * ⚠️ C'est la part **du livreur**, jamais celle de Lilia. Borné à
+   * `MAX_SHARE_PERCENT` (100) et non au plafond de commission (50) : un
+   * indépendant touche 65 %, l'y soumettre le ramènerait à 50 % en silence.
+   */
+  @ApiPropertyOptional({ minimum: 0, maximum: MAX_SHARE_PERCENT })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(MAX_SHARE_PERCENT)
+  driverSharePercent?: number | null;
 }
 
 export class UpdateDriverDto {
@@ -156,6 +199,29 @@ export class UpdateDriverDto {
   @IsString({ each: true })
   @ArrayMaxSize(40)
   zoneIds?: string[];
+
+  /** Voir `CreateDriverDto.employmentType`. */
+  @ApiPropertyOptional({ enum: DriverEmploymentType })
+  @IsOptional()
+  @IsEnum(DriverEmploymentType)
+  employmentType?: DriverEmploymentType;
+
+  /** Voir `CreateDriverDto.compensationModel`. */
+  @ApiPropertyOptional({ enum: DriverCompensationModel })
+  @IsOptional()
+  @IsEnum(DriverCompensationModel)
+  compensationModel?: DriverCompensationModel;
+
+  /**
+   * Voir `CreateDriverDto.driverSharePercent`. Envoyer `null` remet
+   * explicitement le livreur au taux plateforme de son type.
+   */
+  @ApiPropertyOptional({ minimum: 0, maximum: MAX_SHARE_PERCENT })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(MAX_SHARE_PERCENT)
+  driverSharePercent?: number | null;
 }
 
 /**

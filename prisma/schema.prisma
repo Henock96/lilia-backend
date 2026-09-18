@@ -837,7 +837,19 @@ model Order {
   /// colonne restait le dernier endroit où une décimale était représentable —
   /// et donc où une écriture hors service pouvait en introduire une.
   subTotal           Int // Sous-total des articles
-  deliveryFee        Int // Frais de livraison (0 si retrait)
+  deliveryFee        Int // Frais de livraison (0 si retrait), APRÈS remise
+  /// Tarif de livraison **avant remise commerciale**, figé à la commande.
+  ///
+  /// `deliveryFee` porte la valeur après promo : un code `FREE_DELIVERY` le met
+  /// à 0 (`promo.service.ts`). Rémunérer le livreur dessus lui ferait porter une
+  /// campagne marketing qu'il n'a pas décidée — il a roulé. Même règle que pour
+  /// le vendeur, dont le reversement ignore déjà les remises.
+  ///
+  /// C'est cette colonne, et elle seule, qui sert d'assiette au partage de la
+  /// course. Elle existe parce que la valeur brute n'était persistée nulle part
+  /// et n'était reconstructible que par une soustraction à trois termes sur deux
+  /// tables — un chemin de paiement ne repose pas sur une reconstruction.
+  deliveryFeeGross   Int               @default(0)
   serviceFee         Int               @default(0) // frais de service payés par le client
   total              Int // subTotal + deliveryFee + serviceFee - discountAmount
   isDelivery         Boolean           @default(true) // true = livraison, false = retrait au restaurant
@@ -1051,6 +1063,38 @@ enum VehicleType {
   PIETON
 }
 
+/// Nature de la relation entre Lilia Food et le livreur.
+///
+/// Elle décide du taux par défaut **et** de qui supporte les coûts du véhicule.
+/// Un livreur `INDEPENDENT` apporte sa moto et paie carburant, entretien,
+/// réparations et assurance : ces coûts ne sont donc **jamais** des charges de
+/// Lilia Food et n'ont, délibérément, aucune colonne ici.
+enum DriverEmploymentType {
+  LILIA
+  INDEPENDENT
+}
+
+/// Comment un livreur est rémunéré.
+///
+/// Les trois valeurs existent dès le premier jour alors qu'une seule est
+/// utilisée (`PER_DELIVERY`, décision D-1 du 18/09/2026). Ce n'est pas de
+/// l'anticipation gratuite : c'est cet enum qui distingue
+/// « `driverPayXaf = 0` parce que le livreur est au salaire » de
+/// « `driverPayXaf` inconnu ». Sans lui, un zéro serait ambigu — et le système
+/// refuse par principe de confondre « gratuit » et « on ne sait pas ».
+///
+/// Ajouter le salaire plus tard ne coûtera qu'une table de périodes de paie,
+/// jamais une migration destructive sur l'historique des courses.
+enum DriverCompensationModel {
+  /// Salaire seul — le coût variable par course vaut 0, et c'est un vrai zéro.
+  SALARY
+  /// Part des frais de livraison, par course. Seul modèle actif au 18/09/2026.
+  PER_DELIVERY
+  /// Salaire + part par course. Le salaire reste un coût de PÉRIODE : il
+  /// n'entre jamais dans la marge de contribution d'une commande.
+  SALARY_PLUS_PER_DELIVERY
+}
+
 /// Informations métier du livreur.
 ///
 /// Séparé de `User` plutôt que fondu dedans, pour deux raisons :
@@ -1088,6 +1132,28 @@ model DriverProfile {
   /// historique et reste le défaut : restreindre par défaut rendrait
   /// inassignables tous les livreurs existants au déploiement.
   zones Quartier[] @relation("DriverZones")
+
+  // ─── Économie de la course (décisions D-1 / D-2 du 18/09/2026) ───────────
+
+  /// Nature de la relation. `LILIA` par défaut : c'est ce qu'étaient les deux
+  /// livreurs existants au moment de la migration, et le défaut le moins
+  /// coûteux si personne ne tranche (Lilia garde 65 % de la course).
+  employmentType DriverEmploymentType @default(LILIA)
+
+  /// Modèle de rémunération appliqué à ce livreur.
+  compensationModel DriverCompensationModel @default(PER_DELIVERY)
+
+  /// Part de CE livreur sur les frais de livraison, en pourcentage.
+  /// `null` = taux plateforme correspondant à son `employmentType`.
+  ///
+  /// ⚠️ C'est la part **du livreur**, pas celle de Lilia. La part de Lilia est
+  /// toujours un résidu (`base − driverPay`), jamais une seconde colonne : deux
+  /// valeurs indépendantes finissent par diverger, un résidu ne le peut pas.
+  ///
+  /// Le repli est résolu en UN seul endroit, `DriverCompensationResolver`.
+  /// Le défaut de `Restaurant.commissionPercent` a montré ce que coûtent deux
+  /// résolveurs concurrents : la commande disait 0 %, le virement prélevait 10 %.
+  driverSharePercent Float?
 
   /// Le livreur est-il en service ? Décidé par un administrateur.
   /// Défaut `false` : un livreur qu'on vient de créer n'a pas encore été
@@ -1130,6 +1196,48 @@ model Delivery {
   lastLongitude  Float?
   lastPositionAt DateTime?
   locations      DeliveryLocation[]
+
+  // ─── Snapshot économique de la course ────────────────────────────────────
+  //
+  // Écrit à l'ACCEPTATION, effacé sur ECHEC ou refus, immuable dès LIVRER.
+  //
+  // ⚠️ Ce n'est PAS un snapshot « écrit une seule fois », et la nuance compte.
+  // La politique retenue (D-3, 18/09/2026) est « seul le livreur qui termine est
+  // payé » : si A accepte puis échoue et que B livre, le snapshot DOIT être
+  // réécrit pour B. Le figer à la première acceptation paierait B au tarif de A
+  // et graverait l'économie d'un livreur défaillant.
+  //
+  // L'immuabilité réelle est portée par la machine à états, pas par une colonne
+  // de verrou : une fois `Order.status = LIVRER`, toute réassignation est
+  // refusée (`delivery-assignment.service.ts`), donc plus rien ne peut bouger.
+  // L'invariant est donc « une course LIVRÉE ne voit jamais son économie
+  // changer », pas « ces colonnes ne sont écrites qu'une fois ».
+  //
+  // Toutes nullables, sans aucun backfill : les courses antérieures n'ont pas
+  // d'économie connue, et on ne l'invente pas. `null` dit la vérité.
+
+  /// Assiette du partage — `Order.deliveryFeeGross`, donc AVANT remise.
+  driverBaseXaf Int?
+
+  /// Modèle appliqué. Sans lui, `driverPayXaf = 0` serait indistinguable de
+  /// « inconnu » : au salaire, zéro est la bonne réponse et elle est connue.
+  driverCompensationModel DriverCompensationModel?
+
+  /// Nature de la relation AU MOMENT de la course. Un livreur peut passer
+  /// d'indépendant à Lilia ; cette course-ci reste ce qu'elle était.
+  driverEmploymentType DriverEmploymentType?
+
+  /// Taux appliqué, en pourcentage. `null` quand le modèle est `SALARY`.
+  driverSharePercent Float?
+
+  /// Rémunération due au livreur pour CETTE course, en XAF.
+  /// `0` est une valeur légitime (modèle `SALARY`, ou tarif de livraison nul) —
+  /// c'est `driverCompensationModel` qui la rend lisible, pas le montant.
+  driverPayXaf Int?
+
+  /// Instant du gel. `null` = pas d'économie attachée à cette course, donc
+  /// coût livreur **inconnu**. Une donnée, pas une déduction.
+  driverEconomicsFrozenAt DateTime?
 
   review DeliveryReview? // note laissée par le client après livraison
 
@@ -1989,6 +2097,23 @@ model PlatformSettings {
   /// il est appelé à varier par vendeur. Le calcul passe TOUJOURS par
   /// `RestaurantPayoutService.resolveCommissionPercent`.
   restaurantCommissionPercent Float @default(10)
+
+  /// PART DU LIVREUR sur les frais de livraison, en pourcentage.
+  ///
+  /// ⚠️ Ces deux champs portent la part **du livreur**, jamais celle de Lilia.
+  /// Le préfixe dit à qui est la part, le suffixe dit quel type de livreur.
+  /// Un nom comme `liliaDriverSharePercent` se lirait « la part de Lilia » tout
+  /// en contenant 35 : c'est exactement l'inversion que ce modèle doit rendre
+  /// impossible à commettre.
+  ///
+  /// La part de Lilia n'est PAS stockée : elle vaut `base − driverPay`. Un
+  /// résidu ne peut pas diverger de son complément, deux colonnes si.
+  ///
+  /// Surchargés par livreur via `DriverProfile.driverSharePercent`.
+  /// N'affectent que les courses **futures** : le taux est figé sur chaque
+  /// course à l'acceptation.
+  driverSharePercentLilia       Float @default(35)
+  driverSharePercentIndependent Float @default(65)
 
   /// BARÈME DE FIDÉLITÉ — refondu en septembre 2026.
   ///

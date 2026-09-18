@@ -158,6 +158,19 @@ export class DriversService {
               ? new Date(dto.licenseExpiry)
               : null,
             isActive: false,
+            // Économie de la course. Les trois champs ne sont écrits que s'ils
+            // sont fournis : sinon les `@default` du schéma valent (LILIA /
+            // PER_DELIVERY / taux plateforme), et l'administrateur n'a pas à
+            // recopier des valeurs qu'il n'a pas choisies.
+            ...(dto.employmentType !== undefined && {
+              employmentType: dto.employmentType,
+            }),
+            ...(dto.compensationModel !== undefined && {
+              compensationModel: dto.compensationModel,
+            }),
+            ...(dto.driverSharePercent !== undefined && {
+              driverSharePercent: dto.driverSharePercent,
+            }),
             ...(dto.zoneIds?.length && {
               zones: { connect: dto.zoneIds.map((id) => ({ id })) },
             }),
@@ -374,6 +387,17 @@ export class DriversService {
             licenseExpiry: dto.licenseExpiry
               ? new Date(dto.licenseExpiry)
               : null,
+          }),
+          ...(dto.employmentType !== undefined && {
+            employmentType: dto.employmentType,
+          }),
+          ...(dto.compensationModel !== undefined && {
+            compensationModel: dto.compensationModel,
+          }),
+          // `!== undefined` et non un simple test de vérité : `null` est une
+          // valeur voulue (« remets-le au taux plateforme ») et `0` aussi.
+          ...(dto.driverSharePercent !== undefined && {
+            driverSharePercent: dto.driverSharePercent,
           }),
           // `set` et non `connect` : la liste envoyée par le formulaire est la
           // liste voulue. Avec `connect`, retirer une zone serait impossible.

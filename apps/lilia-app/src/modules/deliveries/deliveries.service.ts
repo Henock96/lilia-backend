@@ -8,6 +8,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { CLEARED_DRIVER_ECONOMICS } from './delivery-assignment.service';
 import { DeliveryStatus } from './dto/update-delivery.dto';
 import { DeliveryQueryService } from './delivery-query.service';
 import { ACTIVE_DELIVERY_STATUSES } from './delivery-statuses';
@@ -219,8 +220,13 @@ export class DeliveriesService {
         data: {
           status,
           ...(status === DeliveryStatus.LIVRER ? { deliveredAt: now } : {}),
-          ...(status === DeliveryStatus.ECHEC && delivery.delivererId
-            ? { delivererId: null }
+          // Un échec détache le livreur ET efface l'économie de la course.
+          // Les deux vont ensemble : garder le montant après avoir retiré son
+          // titulaire laisserait une rémunération due à personne, que le
+          // calcul de contribution compterait. Et puisque seul le livreur qui
+          // TERMINE est payé, une tentative échouée n'a pas d'économie.
+          ...(status === DeliveryStatus.ECHEC
+            ? { delivererId: null, ...CLEARED_DRIVER_ECONOMICS }
             : {}),
         },
       });

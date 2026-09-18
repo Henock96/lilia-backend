@@ -6,6 +6,7 @@ import { DeliveryAssignmentService } from './delivery-assignment.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
 import { OrderTransitionService } from '../orders/order-transition.service';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 
 /**
  * Les quatre conditions d'assignabilité d'un livreur — côté ÉCRITURE.
@@ -77,6 +78,12 @@ describe('DeliveryAssignmentService — assertAssignable', () => {
         // P0-4 : `Order.status` ne s'écrit plus qu'à travers ce service,
         // qui historise la transition dans la même transaction.
         OrderTransitionService,
+        // Requis depuis le gel économique de la course : `acceptDelivery` lit
+        // les taux plateforme. Non exercé ici, mais le graphe doit résoudre.
+        {
+          provide: PlatformSettingsService,
+          useValue: { getSettings: jest.fn() },
+        },
         DeliveryAssignmentService,
         { provide: PrismaService, useValue: prisma },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },

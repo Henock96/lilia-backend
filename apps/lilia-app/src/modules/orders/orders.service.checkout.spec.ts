@@ -358,6 +358,67 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
     expect(data.total).toBe(9800); // 11800 - 2000
   });
 
+  /**
+   * L'assiette qui rémunère le livreur.
+   *
+   * `deliveryFee` porte le tarif APRÈS remise : un code FREE_DELIVERY le met à
+   * 0. Payer le livreur dessus lui ferait porter une campagne marketing qu'il
+   * n'a pas décidée — il a roulé. Même règle que pour le vendeur, dont le
+   * reversement ignore déjà les remises.
+   *
+   * Le montant brut n'était persisté nulle part : il n'était reconstructible
+   * que par une soustraction à trois termes sur deux tables. Un chemin de
+   * paiement ne repose pas sur une reconstruction.
+   */
+  describe('deliveryFeeGross — le tarif AVANT remise', () => {
+    it('sans promo, brut et net coïncident', async () => {
+      await service.createOrderFromCart('uid', baseDto, 'idem-key-1');
+
+      const data = tx.order.create.mock.calls[0][0].data;
+      expect(data.deliveryFeeGross).toBe(1000);
+      expect(data.deliveryFee).toBe(1000);
+    });
+
+    it('livraison offerte : le net tombe à 0, le BRUT reste à 1 000', async () => {
+      promoService.validateCode.mockResolvedValue({
+        promoCodeId: 'pc-free',
+        discountAmount: 0,
+        newDeliveryFee: 0, // ce que fait un code FREE_DELIVERY
+      });
+
+      await service.createOrderFromCart(
+        'uid',
+        { ...baseDto, promoCode: 'LIVRAISON_OFFERTE' },
+        'idem-key-1',
+      );
+
+      const data = tx.order.create.mock.calls[0][0].data;
+      expect(data.deliveryFee).toBe(0);
+      // C'est CE montant qui rémunérera le livreur.
+      expect(data.deliveryFeeGross).toBe(1000);
+    });
+
+    it('retrait au comptoir : pas de course, donc pas de tarif', async () => {
+      // `OrderCalculatorService.calculate` applique déjà `isDelivery ? fee : 0`.
+      // Le mock doit rendre ce que rend le vrai calculateur, sinon le test
+      // exigerait du checkout qu'il duplique une règle qui vit ailleurs.
+      calculator.calculate.mockReturnValue({
+        subTotal: 10000,
+        deliveryFee: 0,
+        serviceFee: 800,
+      });
+
+      await service.createOrderFromCart(
+        'uid',
+        { ...baseDto, isDelivery: false },
+        'idem-key-1',
+      );
+
+      const data = tx.order.create.mock.calls[0][0].data;
+      expect(data.deliveryFeeGross).toBe(0);
+    });
+  });
+
   it('points fidélité : plafonne au solde, décrémente et trace dans la transaction', async () => {
     prisma.user.findUnique.mockResolvedValue({
       loyaltyPoints: 1000,

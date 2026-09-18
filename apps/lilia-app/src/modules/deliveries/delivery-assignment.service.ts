@@ -18,6 +18,25 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
 import { OrderTransitionService } from '../orders/order-transition.service';
 import { OrderStatusUpdatedEvent } from '../events/order-events';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import { computeDriverCompensation } from '../drivers/driver-compensation';
+
+/**
+ * Remise à zéro du snapshot économique d'une course.
+ *
+ * Écrit en un seul endroit parce qu'un effacement PARTIEL serait pire que pas
+ * d'effacement du tout : une ligne gardant `driverPayXaf` mais perdant
+ * `driverEmploymentType` afficherait un montant sans pouvoir dire à qui ni à
+ * quel titre. Les six colonnes vont ensemble.
+ */
+export const CLEARED_DRIVER_ECONOMICS = {
+  driverBaseXaf: null,
+  driverEmploymentType: null,
+  driverCompensationModel: null,
+  driverSharePercent: null,
+  driverPayXaf: null,
+  driverEconomicsFrozenAt: null,
+} as const;
 import {
   DeliveryAcceptedEvent,
   DeliveryAssignedEvent,
@@ -39,11 +58,25 @@ export class DeliveryAssignmentService {
     private readonly eventEmitter: EventEmitter2,
     private readonly stateMachine: OrderStateMachine,
     private readonly transitions: OrderTransitionService,
+    private readonly platformSettings: PlatformSettingsService,
   ) {}
 
   private async getUserOrThrow(firebaseUid: string) {
     const user = await this.prisma.user.findUnique({
       where: { firebaseUid },
+      // Le profil porte l'économie de la course (type d'engagement, modèle,
+      // taux). Le charger ici évite une seconde requête au moment du gel, et
+      // surtout garantit qu'on lit le profil du livreur qu'on vient
+      // d'authentifier — pas celui d'un identifiant passé en paramètre.
+      include: {
+        driverProfile: {
+          select: {
+            employmentType: true,
+            compensationModel: true,
+            driverSharePercent: true,
+          },
+        },
+      },
     });
 
     if (!user) {
@@ -225,7 +258,17 @@ export class DeliveryAssignmentService {
 
     const updated = await this.prisma.delivery.update({
       where: { id: delivery.id },
-      data: { delivererId, status: DeliveryStatus.ASSIGNER },
+      data: {
+        delivererId,
+        status: DeliveryStatus.ASSIGNER,
+        // La course change de mains : l'économie du livreur précédent n'a plus
+        // de titulaire. Seul celui qui TERMINE est payé — la conserver ferait
+        // porter à la course une rémunération attribuée à personne, que le
+        // calcul de contribution compterait et qu'un administrateur lirait
+        // comme un montant dû. Le prochain livreur réécrira la sienne en
+        // acceptant.
+        ...CLEARED_DRIVER_ECONOMICS,
+      },
       include: {
         deliverer: {
           select: { id: true, nom: true, phone: true, imageUrl: true },
@@ -313,13 +356,54 @@ export class DeliveryAssignmentService {
 
     const now = new Date();
 
+    // ── Gel de l'économie de la course ────────────────────────────────────
+    //
+    // L'acceptation est le premier moment où un contrat se forme : le livreur
+    // est connu, et il accepte un tarif. Geler plus tard laisserait un
+    // changement de taux modifier ce qu'il a accepté ; geler plus tôt figerait
+    // une économie sans livreur.
+    //
+    // ⚠️ Ce gel n'est PAS écrit une seule fois. La politique retenue est
+    // « seul le livreur qui TERMINE est payé » : si ce livreur échoue et qu'un
+    // autre reprend la course, le snapshot sera réécrit à SA propre
+    // acceptation. Le figer définitivement ici paierait le second au tarif du
+    // premier. L'immuabilité réelle vient de la machine à états — une fois la
+    // commande `LIVRER`, toute réassignation est refusée.
+    //
+    // `null` quand le livreur n'a pas de profil : son économie n'est pas
+    // déterminable, et aucune colonne n'est écrite. Le coût restera `UNKNOWN`,
+    // ce qui est la vérité. Écrire 0 en ferait « il n'a rien coûté ».
+    const settings = await this.platformSettings.getSettings();
+    const compensation = computeDriverCompensation({
+      profile: user.driverProfile,
+      settings,
+      // Le tarif AVANT remise : une livraison offerte par Lilia est une
+      // campagne de Lilia, le livreur a roulé.
+      baseXaf: delivery.order.deliveryFeeGross,
+    });
+
     const updated = await this.prisma.$transaction(async (tx) => {
       // Verrou optimiste : les gardes ci-dessus ont été évaluées hors
       // transaction, donc un double-tap peut les franchir deux fois. Seule
       // l'écriture conditionnée sur `ASSIGNER` départage.
+      //
+      // Le gel voyage dans CE `updateMany`, pas dans une écriture suivante :
+      // deux écritures séparées laisseraient une fenêtre où la course est
+      // acceptée sans économie, et un incident entre les deux la figerait ainsi.
       const claimed = await tx.delivery.updateMany({
         where: { id: deliveryId, status: DeliveryStatus.ASSIGNER },
-        data: { status: DeliveryStatus.ACCEPTER, acceptedAt: now },
+        data: {
+          status: DeliveryStatus.ACCEPTER,
+          acceptedAt: now,
+          ...(compensation && {
+            driverBaseXaf: compensation.baseXaf,
+            driverEmploymentType: compensation.employmentType,
+            driverCompensationModel: compensation.compensationModel,
+            driverSharePercent: compensation.driverSharePercent,
+            driverPayXaf: compensation.driverPayXaf,
+            driverEconomicsFrozenAt: now,
+          }),
+        },
       });
       if (claimed.count === 0) {
         throw new ConflictException(
