@@ -58,6 +58,7 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
     role: 'LIVREUR',
   };
 
+  let deliveryUpdates: Record<string, unknown>[] = [];
   const prisma = {
     delivery: { findUnique: jest.fn(), update: jest.fn() },
     user: { findUnique: jest.fn(), update: jest.fn() },
@@ -71,6 +72,7 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
     orderStatus = 'EN_ROUTE';
     deliveryStatus = DeliveryStatus.EN_TRANSIT;
     applied = [];
+    deliveryUpdates = [];
 
     // Transaction interactive simulée : les écritures s'accumulent dans
     // `applied`, et une exception les annule toutes — comme le ferait
@@ -78,11 +80,20 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
     const tx = {
       delivery: {
         updateMany: jest.fn(
-          ({ where }: { where: { status: DeliveryStatus } }) => {
+          ({
+            where,
+            data,
+          }: {
+            where: { status: DeliveryStatus };
+            data: Record<string, unknown>;
+          }) => {
             if (where.status !== deliveryStatus) {
               return Promise.resolve({ count: 0 });
             }
             applied.push('delivery');
+            // On garde le `data` écrit : c'est lui qui porte l'effacement de
+            // l'économie de la course, invisible d'un simple compteur.
+            deliveryUpdates.push(data);
             return Promise.resolve({ count: 1 });
           },
         ),
@@ -127,6 +138,7 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
         // Rollback : on remet l'état d'avant et on jette les écritures.
         orderStatus = snapshotOrder;
         applied = [];
+        deliveryUpdates = [];
         throw err;
       }
     });
@@ -233,6 +245,7 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
         } catch (err) {
           orderStatus = snapshot;
           applied = [];
+          deliveryUpdates = [];
           throw err;
         }
       });
@@ -302,6 +315,31 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
   });
 
   describe('échec de livraison (ECHEC)', () => {
+    it('efface l’économie de la course en même temps que le livreur', async () => {
+      // Le livreur est détaché (`delivererId = null`) : garder son montant
+      // laisserait une rémunération sans titulaire sur la course. Et puisque
+      // seul celui qui TERMINE est payé, cette tentative n'a pas d'économie.
+      // Les deux écritures vont donc ensemble, dans le même `updateMany`.
+      await service.updateStatus(
+        DELIVERY_ID,
+        DeliveryStatus.ECHEC,
+        DRIVER.firebaseUid,
+        'Client injoignable',
+      );
+
+      const data = deliveryUpdates[deliveryUpdates.length - 1];
+      expect(data).toMatchObject({
+        status: DeliveryStatus.ECHEC,
+        delivererId: null,
+        driverBaseXaf: null,
+        driverEmploymentType: null,
+        driverCompensationModel: null,
+        driverSharePercent: null,
+        driverPayXaf: null,
+        driverEconomicsFrozenAt: null,
+      });
+    });
+
     it('ne touche pas la commande et n’écrit aucun historique', async () => {
       // Comportement métier inchangé : c'est le vendeur qui arbitre entre
       // réassigner et annuler. Seul le livreur est détaché et libéré.

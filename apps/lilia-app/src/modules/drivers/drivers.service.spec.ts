@@ -216,6 +216,44 @@ describe('DriversService', () => {
       ).resolves.toBeDefined();
     });
 
+    it('fige l’économie du livreur à la création, avec les défauts', async () => {
+      // `LILIA` / `PER_DELIVERY` / taux plateforme : ce sont les défauts du
+      // schéma, mais l'écriture doit être explicite dès qu'un admin les choisit.
+      prisma.user.findUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue({ id: 'u-new', role: 'LIVREUR', driverProfile: {} });
+
+      await service.createDriver(
+        {
+          ...baseDto,
+          employmentType: 'INDEPENDENT' as never,
+          driverSharePercent: 70,
+        },
+        'admin-1',
+      );
+
+      expect(prisma.driverProfile.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            employmentType: 'INDEPENDENT',
+            driverSharePercent: 70,
+          }),
+        }),
+      );
+    });
+
+    it('sans précision, l’économie n’est PAS écrite — les défauts du schéma valent', async () => {
+      prisma.user.findUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue({ id: 'u-new', role: 'LIVREUR', driverProfile: {} });
+
+      await service.createDriver(baseDto, 'admin-1');
+
+      const data = prisma.driverProfile.create.mock.calls[0][0].data;
+      expect(data.employmentType).toBeUndefined();
+      expect(data.driverSharePercent).toBeUndefined();
+    });
+
     it('zone inconnue → 400 avant tout appel à Firebase', async () => {
       prisma.user.findUnique.mockResolvedValueOnce(null);
       prisma.quartier.count.mockResolvedValue(1); // 1 trouvé sur 2 demandés

@@ -53,6 +53,7 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
       Array.isArray(arg) ? Promise.all(arg) : arg(tx),
     ),
   };
+  const platformSettings = { getSettings: jest.fn() };
   const notifications = { sendPushNotification: jest.fn() };
   const stateMachine = { assertTransition: jest.fn() };
   const eventEmitter = { emit: jest.fn() };
@@ -63,6 +64,10 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
     tx.delivery.updateMany.mockResolvedValue({ count: 1 });
     tx.order.updateMany.mockResolvedValue({ count: 1 });
     tx.user.update.mockResolvedValue({});
+    platformSettings.getSettings.mockResolvedValue({
+      driverSharePercentLilia: 35,
+      driverSharePercentIndependent: 65,
+    });
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         // P0-4 : `Order.status` ne s'écrit plus qu'à travers ce service,
@@ -89,7 +94,7 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
         { provide: NotificationsService, useValue: notifications },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: OrderStateMachine, useValue: stateMachine },
-        { provide: PlatformSettingsService, useValue: {} },
+        { provide: PlatformSettingsService, useValue: platformSettings },
         { provide: TrackingGateway, useValue: {} },
         { provide: TrackingService, useValue: {} },
       ],
@@ -129,6 +134,52 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
       ).rejects.toBeInstanceOf(NotFoundException);
     });
 
+    /**
+     * Une course qui change de mains ne garde pas l'économie de l'ancien.
+     *
+     * La réassignation repasse la course en `ASSIGNER` : sans effacement, la
+     * ligne porterait encore le type, le taux et le montant du livreur
+     * précédent — qui ne sera pas payé, puisque seul celui qui TERMINE l'est.
+     * Un administrateur lisant la fiche verrait une rémunération attribuée à
+     * personne, et le calcul de contribution la compterait.
+     */
+    it('réassignation : l’économie de l’ancien livreur est EFFACÉE', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        id: 'd1',
+        orderId: 'o1',
+        delivererId: 'liv-A',
+        status: 'ACCEPTER',
+        driverPayXaf: 350,
+        driverEconomicsFrozenAt: new Date(),
+        order: {
+          isPreorder: false,
+          scheduledFor: null,
+          restaurant: { nom: 'Resto', owner: { firebaseUid: 'uid' } },
+        },
+      });
+      mockUsers(
+        { id: 'u1', role: 'RESTAURATEUR' },
+        { id: 'liv-B', role: 'LIVREUR' },
+      );
+      prisma.delivery.update.mockResolvedValue({
+        id: 'd1',
+        status: 'ASSIGNER',
+      });
+
+      await service.assignDeliverer('d1', 'liv-B', 'uid');
+
+      const data = prisma.delivery.update.mock.calls[0][0].data;
+      expect(data.delivererId).toBe('liv-B');
+      expect(data).toMatchObject({
+        driverBaseXaf: null,
+        driverEmploymentType: null,
+        driverCompensationModel: null,
+        driverSharePercent: null,
+        driverPayXaf: null,
+        driverEconomicsFrozenAt: null,
+      });
+    });
+
     it('owner assigne un LIVREUR : passe la livraison en ASSIGNER + notifie', async () => {
       prisma.delivery.findUnique.mockResolvedValue({
         id: 'd1',
@@ -150,9 +201,18 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
 
       const res = await service.assignDeliverer('d1', 'liv1', 'uid');
 
+      // L'écriture porte aussi la remise à zéro de l'économie de la course
+      // (sans objet sur une première assignation, mais posée sans condition :
+      // un effacement conditionnel finirait par oublier un chemin).
       expect(prisma.delivery.update.mock.calls[0][0].data).toEqual({
         delivererId: 'liv1',
         status: 'ASSIGNER',
+        driverBaseXaf: null,
+        driverEmploymentType: null,
+        driverCompensationModel: null,
+        driverSharePercent: null,
+        driverPayXaf: null,
+        driverEconomicsFrozenAt: null,
       });
       // La notification est désormais portée par `DeliveriesListener` : le
       // service se contente de décrire ce qui s'est passé.
@@ -321,6 +381,121 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
       await expect(service.acceptDelivery('d1', 'uid')).rejects.toBeInstanceOf(
         BadRequestException,
       );
+    });
+
+    /**
+     * Le gel économique de la course.
+     *
+     * ⚠️ Ce n'est PAS un snapshot « écrit une seule fois ». La politique
+     * retenue est « seul le livreur qui TERMINE est payé » : si A accepte puis
+     * échoue et que B livre, le snapshot doit être réécrit pour B. Le figer à
+     * la première acceptation paierait B au tarif de A.
+     *
+     * L'immuabilité réelle vient de la machine à états : une fois la commande
+     * `LIVRER`, toute réassignation est refusée, donc plus rien ne bouge.
+     */
+    describe('gel de l’économie de la course', () => {
+      const assignedWithFee = {
+        ...assigned,
+        order: { ...assigned.order, deliveryFee: 0, deliveryFeeGross: 1000 },
+      };
+
+      const acceptWith = async (driverProfile: unknown) => {
+        prisma.user.findUnique.mockResolvedValue({
+          id: 'liv1',
+          nom: 'John',
+          driverStatus: 'AVAILABLE',
+          driverProfile,
+        });
+        prisma.delivery.findUnique.mockResolvedValue(assignedWithFee);
+        tx.delivery.findUniqueOrThrow.mockResolvedValue({
+          ...assignedWithFee,
+          status: 'ACCEPTER',
+        });
+        await service.acceptDelivery('d1', 'uid');
+        return tx.delivery.updateMany.mock.calls[0][0].data;
+      };
+
+      it('livreur Lilia au taux plateforme : 35 % de 1 000 → 350', async () => {
+        const data = await acceptWith({
+          employmentType: 'LILIA',
+          compensationModel: 'PER_DELIVERY',
+          driverSharePercent: null,
+        });
+
+        expect(data).toMatchObject({
+          driverBaseXaf: 1000,
+          driverEmploymentType: 'LILIA',
+          driverCompensationModel: 'PER_DELIVERY',
+          driverSharePercent: 35,
+          driverPayXaf: 350,
+        });
+        expect(data.driverEconomicsFrozenAt).toBeInstanceOf(Date);
+      });
+
+      it('livreur indépendant : 65 % de 1 000 → 650', async () => {
+        const data = await acceptWith({
+          employmentType: 'INDEPENDENT',
+          compensationModel: 'PER_DELIVERY',
+          driverSharePercent: null,
+        });
+
+        expect(data).toMatchObject({
+          driverSharePercent: 65,
+          driverPayXaf: 650,
+        });
+      });
+
+      it('le taux propre au livreur prime', async () => {
+        const data = await acceptWith({
+          employmentType: 'LILIA',
+          compensationModel: 'PER_DELIVERY',
+          driverSharePercent: 50,
+        });
+
+        expect(data).toMatchObject({
+          driverSharePercent: 50,
+          driverPayXaf: 500,
+        });
+      });
+
+      it('l’assiette est le tarif BRUT, pas celui après remise', async () => {
+        // `deliveryFee` vaut 0 sur cette commande (livraison offerte). Payer
+        // dessus ferait porter au livreur une campagne qu'il n'a pas décidée.
+        const data = await acceptWith({
+          employmentType: 'LILIA',
+          compensationModel: 'PER_DELIVERY',
+          driverSharePercent: null,
+        });
+
+        expect(assignedWithFee.order.deliveryFee).toBe(0);
+        expect(data.driverBaseXaf).toBe(1000);
+        expect(data.driverPayXaf).toBe(350);
+      });
+
+      it('livreur sans profil : AUCUN snapshot, et l’acceptation réussit quand même', async () => {
+        // Son économie n'est pas déterminable. Écrire 0 transformerait
+        // « on ne sait pas » en « il n'a rien coûté ».
+        const data = await acceptWith(null);
+
+        expect(data.status).toBe('ACCEPTER');
+        expect(data.driverPayXaf).toBeUndefined();
+        expect(data.driverEconomicsFrozenAt).toBeUndefined();
+      });
+
+      it('le gel est écrit dans le MÊME updateMany que le verrou de statut', async () => {
+        // Deux écritures séparées laisseraient une fenêtre où la course est
+        // acceptée sans économie — et un échec entre les deux la figerait ainsi.
+        const data = await acceptWith({
+          employmentType: 'LILIA',
+          compensationModel: 'PER_DELIVERY',
+          driverSharePercent: null,
+        });
+
+        expect(data.status).toBe('ACCEPTER');
+        expect(data.driverPayXaf).toBe(350);
+        expect(tx.delivery.updateMany).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('accepte : ACCEPTER + ON_DELIVERY, la commande NE bouge PAS', async () => {
