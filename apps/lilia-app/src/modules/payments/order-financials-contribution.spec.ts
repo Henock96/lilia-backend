@@ -166,6 +166,198 @@ describe('getOrderFinancials — contribution', () => {
     });
   });
 
+  /**
+   * Le coût livreur, désormais lu sur le snapshot de la course.
+   *
+   * ⚠️ `driverCost` ne vient PAS d'un calcul fait ici : il est figé sur la
+   * `Delivery` à l'acceptation du livreur. Le recalculer à la lecture ferait
+   * varier une commande passée au rythme des changements de taux — c'est
+   * exactement le défaut que la commission vendeur a coûté.
+   */
+  describe('coût livreur — lu sur le snapshot de la course', () => {
+    const FROZEN = {
+      driverBaseXaf: 1000,
+      driverPayXaf: 350,
+      driverSharePercent: 35,
+      driverEmploymentType: 'LILIA',
+      driverCompensationModel: 'PER_DELIVERY',
+      driverEconomicsFrozenAt: new Date('2026-09-18T10:00:00Z'),
+    };
+
+    it('course gelée : le coût est connu et sort de `missingInputs`', () => {
+      const c = contribution(
+        { ...TYPICAL, delivery: FROZEN },
+        COMMISSION,
+        FEES,
+      );
+
+      expect(c.driverCost).toBe(350);
+      expect(c.missingInputs).not.toContain('driverCost');
+    });
+
+    it('la part de Lilia sur la course est rendue, et c’est le résidu', () => {
+      const c = contribution(
+        { ...TYPICAL, delivery: FROZEN },
+        COMMISSION,
+        FEES,
+      );
+
+      expect(c.liliaDeliveryShare).toBe(650);
+      expect((c.driverCost as number) + (c.liliaDeliveryShare as number)).toBe(
+        FROZEN.driverBaseXaf,
+      );
+    });
+
+    it('le coût livreur est bien DÉDUIT des coûts variables', () => {
+      const sans = contribution(
+        { ...TYPICAL, delivery: null },
+        COMMISSION,
+        FEES,
+      );
+      const avec = contribution(
+        { ...TYPICAL, delivery: FROZEN },
+        COMMISSION,
+        FEES,
+      );
+
+      expect(
+        (avec.variableCosts as number) - (sans.variableCosts as number),
+      ).toBe(350);
+    });
+
+    it('course NON gelée : le coût reste inconnu', () => {
+      // Assigné mais pas encore accepté : aucun livreur ne s'est engagé.
+      const c = contribution(
+        {
+          ...TYPICAL,
+          delivery: {
+            ...FROZEN,
+            driverEconomicsFrozenAt: null,
+            driverPayXaf: null,
+          },
+        },
+        COMMISSION,
+        FEES,
+      );
+
+      expect(c.driverCost).toBeNull();
+      expect(c.missingInputs).toContain('driverCost');
+    });
+
+    it('livraison SANS ligne de course : inconnu — le cas existe en production', () => {
+      // 7 commandes livrées n'ont aucune `Delivery` : livrées hors système.
+      const c = contribution({ ...TYPICAL, delivery: null }, COMMISSION, FEES);
+
+      expect(c.driverCost).toBeNull();
+      expect(c.missingInputs).toContain('driverCost');
+    });
+
+    it('livreur au SALAIRE : coût 0, et ce zéro NE bloque PAS la contribution', () => {
+      // Le seul cas où 0 est la bonne réponse et où elle est connue. C'est
+      // `driverCompensationModel` qui le rend lisible, pas le montant.
+      const c = contribution(
+        {
+          ...TYPICAL,
+          delivery: {
+            ...FROZEN,
+            driverPayXaf: 0,
+            driverSharePercent: null,
+            driverCompensationModel: 'SALARY',
+          },
+        },
+        COMMISSION,
+        FEES,
+      );
+
+      expect(c.driverCost).toBe(0);
+      expect(c.driverCompensationModel).toBe('SALARY');
+      expect(c.missingInputs).not.toContain('driverCost');
+    });
+
+    it('retrait au comptoir : pas de course, donc pas de poste manquant', () => {
+      const c = contribution(
+        { ...TYPICAL, isDelivery: false, deliveryFee: 0, delivery: null },
+        COMMISSION,
+        FEES,
+      );
+
+      expect(c.driverCost).toBeNull();
+      expect(c.missingInputs).not.toContain('driverCost');
+    });
+  });
+
+  /**
+   * La contribution AVANT frais prestataire.
+   *
+   * `collectionFeeXaf` et `payoutFeeXaf` ne sont **jamais écrits** : nos types
+   * pawaPay ne modélisent aucun frais, et la production n'a jamais reçu un seul
+   * webhook. Bloquer la marge sur eux revient à ne jamais l'afficher — ce que
+   * le code lui-même déplorait déjà (« patienter pour une information qui
+   * n'arrivera jamais »).
+   *
+   * On rend donc DEUX nombres, jamais confondus : la contribution stricte
+   * (`null` tant qu'un poste manque) et celle hors frais prestataire, qui est
+   * exacte dès que le coût livreur est connu. Un nombre vrai et nommé pour ce
+   * qu'il est vaut mieux qu'un tiret.
+   */
+  describe('contribution hors frais prestataire', () => {
+    const FROZEN = {
+      driverBaseXaf: 1000,
+      driverPayXaf: 350,
+      driverSharePercent: 35,
+      driverEmploymentType: 'LILIA',
+      driverCompensationModel: 'PER_DELIVERY',
+      driverEconomicsFrozenAt: new Date(),
+    };
+    const NO_FEES = { collectionFee: null, payoutFee: null };
+
+    it('calculable dès que le coût livreur est connu, même sans frais PSP', () => {
+      const c = contribution(
+        { ...TYPICAL, delivery: FROZEN },
+        COMMISSION,
+        NO_FEES,
+      );
+
+      // revenu 320 + 400 + 1 000 = 1 720 ; coûts 350 → 1 370
+      expect(c.revenue).toBe(1720);
+      expect(c.contributionMarginBeforeProviderFees).toBe(1370);
+    });
+
+    it('la contribution STRICTE reste `null` : les frais PSP manquent toujours', () => {
+      const c = contribution(
+        { ...TYPICAL, delivery: FROZEN },
+        COMMISSION,
+        NO_FEES,
+      );
+
+      expect(c.contributionMargin).toBeNull();
+      expect(c.missingInputs).toEqual(['collectionFee', 'payoutFee']);
+    });
+
+    it('inconnue elle aussi quand le coût livreur manque', () => {
+      // Sans coût livreur, retirer les frais PSP ne suffit pas : il reste un
+      // trou. Rendre un nombre ici serait le mensonge que tout ce calcul évite.
+      const c = contribution(
+        { ...TYPICAL, delivery: null },
+        COMMISSION,
+        NO_FEES,
+      );
+
+      expect(c.contributionMarginBeforeProviderFees).toBeNull();
+    });
+
+    it('les deux coïncident quand les frais PSP sont connus', () => {
+      const c = contribution(
+        { ...TYPICAL, delivery: FROZEN },
+        COMMISSION,
+        FEES,
+      );
+
+      expect(c.contributionMargin).toBe(1175); // 1 720 − 350 − 120 − 75
+      expect(c.contributionMarginBeforeProviderFees).toBe(1370);
+    });
+  });
+
   describe('coût livreur — le poste qui manque', () => {
     it('une commande LIVRÉE n’a pas de contribution calculable', () => {
       const result = contribution(TYPICAL, COMMISSION, FEES);
@@ -197,11 +389,17 @@ describe('getOrderFinancials — contribution', () => {
     });
 
     it('AUCUN coût livreur fictif n’est introduit — ni 0, ni estimation', () => {
+      // ⚠️ Ce test gardait auparavant l'ABSENCE de la clé `driverCost` : le
+      // concept n'existait pas, donc ne rien exposer était la seule honnêteté.
+      // Depuis le gel économique de la course (18/09/2026), le champ existe et
+      // vaut `null` quand le coût est inconnu. L'intention est inchangée — rien
+      // n'est inventé — mais elle s'exprime désormais sur la VALEUR.
       const result = contribution(TYPICAL, COMMISSION, FEES);
 
-      // La règle métier n'existe pas (décisions D1–D4). Le seul comportement
-      // honnête est de ne rien inventer et de nommer le manque.
-      expect(Object.keys(result)).not.toContain('driverCost');
+      expect(result.driverCost).toBeNull();
+      // Et surtout pas 0 : ce serait « il n'a rien coûté » au lieu de
+      // « on ne sait pas ».
+      expect(result.driverCost).not.toBe(0);
       expect(result.variableCosts).toBe(195); // uniquement les frais connus
       expect(result.missingInputs).toContain('driverCost');
     });

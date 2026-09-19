@@ -7,6 +7,11 @@ import { AdminAuditModule } from '../admin-audit/admin-audit.module';
 import { AuthModule } from '../auth/auth.module';
 import { VendorsCoreModule } from '../vendors/vendors-core.module';
 import { DriversService } from './drivers.service';
+import { DriverSettlementService } from './driver-settlement.service';
+import {
+  AdminDriverSettlementsController,
+  DriverEarningsController,
+} from './driver-settlement.controller';
 import {
   AdminDriversController,
   DriversController,
@@ -30,8 +35,13 @@ import {
     AuthModule,
     VendorsCoreModule,
   ],
-  controllers: [AdminDriversController, DriversController],
-  providers: [DriversService, PaginationService],
-  exports: [DriversService],
+  controllers: [
+    AdminDriverSettlementsController,
+    DriverEarningsController,
+    AdminDriversController,
+    DriversController,
+  ],
+  providers: [DriverSettlementService, DriversService, PaginationService],
+  exports: [DriverSettlementService, DriversService],
 })
 export class DriversModule {}

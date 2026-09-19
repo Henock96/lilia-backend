@@ -430,6 +430,83 @@ describe('AdminService', () => {
       expect(result.data.driverPayXaf).toBeNull();
     });
 
+    /**
+     * Ce que le livreur a RÉELLEMENT touché — désormais lisible.
+     *
+     * Au Lot 0, ce champ valait `null` en dur : le coût d'une course n'existait
+     * nulle part. Il est maintenant figé sur chaque course à l'acceptation.
+     *
+     * ⚠️ Les 26 courses antérieures au 18/09/2026 n'ont AUCUNE économie (aucun
+     * backfill : on ne fabrique pas des montants qui n'ont été versés à
+     * personne). Le total doit donc dire combien de courses il ignore, sinon il
+     * se lirait comme exhaustif.
+     */
+    describe('rémunération réelle du livreur', () => {
+      const withCourses = async (
+        rows: { driverPayXaf: number | null; frozen: boolean }[],
+      ) => {
+        prisma.user.findUnique.mockResolvedValue(mockDeliverer);
+        prisma.delivery.groupBy.mockResolvedValue([
+          { status: 'LIVRER', _count: { _all: rows.length } },
+        ]);
+        prisma.delivery.findMany.mockResolvedValueOnce(
+          rows.map((r) => ({
+            order: { total: 5000 },
+            pickedUpAt: null,
+            deliveredAt: null,
+            driverPayXaf: r.driverPayXaf,
+            driverEconomicsFrozenAt: r.frozen ? new Date() : null,
+          })),
+        );
+        prisma.delivery.count.mockResolvedValueOnce(rows.length);
+        prisma.delivery.findFirst.mockResolvedValueOnce(null);
+        const { data } = await service.getDelivererStats('d1');
+        return data;
+      };
+
+      it('somme ce qui est connu', async () => {
+        const data = await withCourses([
+          { driverPayXaf: 350, frozen: true },
+          { driverPayXaf: 650, frozen: true },
+        ]);
+
+        expect(data.driverPayXaf).toBe(1000);
+        expect(data.coursesWithoutEconomics).toBe(0);
+      });
+
+      it('compte séparément les courses sans économie connue', async () => {
+        const data = await withCourses([
+          { driverPayXaf: 350, frozen: true },
+          { driverPayXaf: null, frozen: false },
+          { driverPayXaf: null, frozen: false },
+        ]);
+
+        // Le total ne prétend pas être exhaustif : il dit ce qu'il ignore.
+        expect(data.driverPayXaf).toBe(350);
+        expect(data.coursesWithoutEconomics).toBe(2);
+      });
+
+      it('aucune course avec économie → null, JAMAIS 0', async () => {
+        // C'est l'état de toutes les fiches livreur au déploiement. Afficher 0
+        // se lirait « ce livreur n'a rien gagné ».
+        const data = await withCourses([
+          { driverPayXaf: null, frozen: false },
+          { driverPayXaf: null, frozen: false },
+        ]);
+
+        expect(data.driverPayXaf).toBeNull();
+        expect(data.coursesWithoutEconomics).toBe(2);
+      });
+
+      it('un montant à 0 gelé COMPTE — le livreur au salaire touche 0', async () => {
+        const data = await withCourses([{ driverPayXaf: 0, frozen: true }]);
+
+        // Gelé à 0 n'est pas « inconnu » : la course est comptée, le total vaut 0.
+        expect(data.driverPayXaf).toBe(0);
+        expect(data.coursesWithoutEconomics).toBe(0);
+      });
+    });
+
     it('renvoie des compteurs et valeurs nullables à zéro quand aucune livraison', async () => {
       prisma.user.findUnique.mockResolvedValue(mockDeliverer);
       prisma.delivery.groupBy.mockResolvedValue([]);
@@ -451,6 +528,7 @@ describe('AdminService', () => {
         // ne sait simplement pas ce qu'il a touché, et le système ne le saura
         // pas tant que l'économie livreur n'existe pas.
         driverPayXaf: null,
+        coursesWithoutEconomics: 0,
         avgDeliveryMinutes: null,
         last30dDeliveries: 0,
         lastDeliveryAt: null,

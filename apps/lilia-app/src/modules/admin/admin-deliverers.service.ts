@@ -66,6 +66,11 @@ export class AdminDeliverersService {
             pickedUpAt: true,
             deliveredAt: true,
             order: { select: { total: true } },
+            // Économie figée à l'acceptation. `driverEconomicsFrozenAt` est le
+            // discriminant, pas le montant : 0 gelé (livreur au salaire, ou
+            // tarif de livraison nul) est une valeur, pas une absence.
+            driverPayXaf: true,
+            driverEconomicsFrozenAt: true,
           },
         }),
         this.prisma.delivery.count({
@@ -120,6 +125,26 @@ export class AdminDeliverersService {
       0,
     );
 
+    // ── Ce que le livreur a RÉELLEMENT touché ─────────────────────────────
+    //
+    // Les 26 courses antérieures au 18/09/2026 n'ont aucune économie — aucun
+    // backfill n'a été fait, parce qu'inventer des montants jamais versés
+    // serait pire que l'absence. Le total dit donc combien de courses il
+    // ignore : sans ce compteur, il se lirait comme exhaustif.
+    // `!= null` (comparaison lâche, volontaire) : elle attrape `null` ET
+    // `undefined`. `!== null` laisserait passer un `undefined` comme « gelé »
+    // et fabriquerait un total à partir de courses sans économie.
+    const frozenRows = deliveredRows.filter(
+      (d) => d.driverEconomicsFrozenAt != null,
+    );
+    const driverPayXaf =
+      frozenRows.length === 0
+        ? // `null` et JAMAIS 0 : au déploiement, aucune fiche n'a d'économie et
+          // un 0 se lirait « ce livreur n'a rien gagné ».
+          null
+        : frozenRows.reduce((sum, d) => sum + (d.driverPayXaf ?? 0), 0);
+    const coursesWithoutEconomics = deliveredRows.length - frozenRows.length;
+
     const durations = deliveredRows
       .filter((d) => d.pickedUpAt && d.deliveredAt)
       .map((d) => (d.deliveredAt!.getTime() - d.pickedUpAt!.getTime()) / 60000);
@@ -146,11 +171,16 @@ export class AdminDeliverersService {
          */
         totalRevenueXAF: handledOrderValueXaf,
         /**
-         * Rémunération réelle du livreur. `null` — le coût d'une course
-         * n'existe nulle part dans le système (ni colonne, ni table, ni règle).
-         * Renseigné par la phase 2 « économie livreur ».
+         * Rémunération réellement due au livreur sur ses courses livrées, en
+         * XAF. `null` = aucune de ses courses ne porte d'économie connue.
+         *
+         * ⚠️ Somme des seules courses gelées. `coursesWithoutEconomics` dit
+         * combien ce total ignore — l'afficher sans lui laisserait croire à un
+         * cumul exhaustif.
          */
-        driverPayXaf: null as number | null,
+        driverPayXaf,
+        /** Courses livrées sans économie connue (antérieures au 18/09/2026). */
+        coursesWithoutEconomics,
         avgDeliveryMinutes,
         last30dDeliveries,
         lastDeliveryAt: lastDelivery?.deliveredAt ?? null,

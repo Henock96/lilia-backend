@@ -3,6 +3,9 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DeliveryStatus, PrismaClient } from '@prisma/client';
 
 import { DeliveryAssignmentService } from '../../apps/lilia-app/src/modules/deliveries/delivery-assignment.service';
+import { RestaurantPayoutService } from '../../apps/lilia-app/src/modules/payments/services/restaurant-payout.service';
+import { PaymentEventService } from '../../apps/lilia-app/src/modules/payments/services/payment-event.service';
+import { PayoutStateMachine } from '../../apps/lilia-app/src/modules/payments/payout-state.machine';
 import { OrderStateMachine } from '../../apps/lilia-app/src/modules/orders/order-state.machine';
 import { OrderTransitionService } from '../../apps/lilia-app/src/modules/orders/order-transition.service';
 import { PlatformSettingsService } from '../../apps/lilia-app/src/modules/platform-settings/platform-settings.service';
@@ -29,6 +32,7 @@ const describeIfDb = DATABASE_URL ? describe : describe.skip;
 describeIfDb('Économie de la course — gel, effacement, réassignation', () => {
   let prisma: PrismaClient;
   let assignment: DeliveryAssignmentService;
+  let payouts: RestaurantPayoutService;
 
   const OWNER = 'de-owner';
   const CLIENT = 'de-client';
@@ -71,6 +75,16 @@ describeIfDb('Économie de la course — gel, effacement, réassignation', () =>
       new OrderStateMachine(),
       new OrderTransitionService(),
       new PlatformSettingsService(prisma as never),
+    );
+
+    payouts = new RestaurantPayoutService(
+      prisma as never,
+      // Le mode courant ne permet pas de reverser : sans importance ici, on ne
+      // lit que le récapitulatif financier.
+      { currentMode: 'MANUAL', forPayout: () => null } as never,
+      new PaymentEventService(prisma as never),
+      new PayoutStateMachine(),
+      new EventEmitter2(),
     );
 
     await prisma.$executeRawUnsafe(`
@@ -314,5 +328,61 @@ describeIfDb('Économie de la course — gel, effacement, réassignation', () =>
     // Le coût reste UNKNOWN. Écrire 0 en ferait « il n'a rien coûté ».
     expect(d.driverPayXaf).toBeNull();
     expect(d.driverEconomicsFrozenAt).toBeNull();
+  });
+
+  // ── Restitution : ce que le récapitulatif financier en fait ──────────────
+
+  it('10. le récapitulatif lit le coût livreur sur la course, en base', async () => {
+    // Remet une course gelée à 35 % sur A, avec son profil.
+    await prisma.driverProfile.create({
+      data: {
+        userId: DRIVER_A,
+        vehicleType: 'MOTO',
+        isActive: true,
+        employmentType: 'LILIA',
+        compensationModel: 'PER_DELIVERY',
+      },
+    });
+    await resetDelivery(DRIVER_A);
+    await assignment.acceptDelivery(DELIVERY, 'fb-de-a');
+
+    const { liliaFood } = await payouts.getOrderFinancials(ORDER);
+
+    // C'est le `select` Prisma qui est éprouvé ici : un champ oublié rendrait
+    // `undefined`, et le coût redeviendrait « inconnu » sans que rien ne le dise.
+    expect(liliaFood.driverCost).toBe(350);
+    expect(liliaFood.liliaDeliveryShare).toBe(650);
+    expect(liliaFood.driverCompensationModel).toBe('PER_DELIVERY');
+    expect(liliaFood.driverEmploymentType).toBe('LILIA');
+    expect(liliaFood.missingInputs).not.toContain('driverCost');
+  });
+
+  it('11. le coût livreur entre dans les coûts variables', async () => {
+    const { liliaFood } = await payouts.getOrderFinancials(ORDER);
+
+    // Revenu : serviceFee 750 + commission 0 + deliveryFee encaissé 0
+    // (livraison offerte). Coûts : la course, 350.
+    expect(liliaFood.revenue).toBe(750);
+    expect(liliaFood.variableCosts).toBe(350);
+    expect(liliaFood.contributionMarginBeforeProviderFees).toBe(400);
+  });
+
+  it('12. la contribution STRICTE reste inconnue : les frais prestataire manquent', async () => {
+    const { liliaFood } = await payouts.getOrderFinancials(ORDER);
+
+    // Mesuré en production : 0/61 paiements et 0/2 reversements portent un
+    // frais. Nos types pawaPay n'en modélisent aucun.
+    expect(liliaFood.contributionMargin).toBeNull();
+    expect(liliaFood.missingInputs).toEqual(['collectionFee', 'payoutFee']);
+  });
+
+  it('13. une course sans économie laisse le coût inconnu, pas à zéro', async () => {
+    await resetDelivery(DRIVER_A);
+
+    const { liliaFood } = await payouts.getOrderFinancials(ORDER);
+
+    expect(liliaFood.driverCost).toBeNull();
+    expect(liliaFood.missingInputs).toContain('driverCost');
+    expect(liliaFood.contributionMarginBeforeProviderFees).toBeNull();
   });
 });
