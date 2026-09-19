@@ -779,6 +779,19 @@ export class RestaurantPayoutService {
         },
         payout: true,
         refund: { select: { id: true, status: true, amount: true } },
+        // Snapshot économique de la course. On ne sélectionne QUE l'économie :
+        // la position GPS et les horodatages n'ont rien à faire dans un
+        // récapitulatif financier, et les charger inviterait à les y afficher.
+        delivery: {
+          select: {
+            driverBaseXaf: true,
+            driverPayXaf: true,
+            driverSharePercent: true,
+            driverEmploymentType: true,
+            driverCompensationModel: true,
+            driverEconomicsFrozenAt: true,
+          },
+        },
       },
     });
     if (!order) throw new NotFoundException('Commande introuvable.');
@@ -937,6 +950,19 @@ export class RestaurantPayoutService {
       loyaltyDiscount: number;
       isDelivery: boolean;
       refund: { status: RefundStatus; amount: number } | null;
+      /**
+       * Snapshot économique de la course. `null` quand aucune course n'existe
+       * (retrait au comptoir, ou livraison faite hors système — 7 commandes en
+       * production).
+       */
+      delivery: {
+        driverBaseXaf: number | null;
+        driverPayXaf: number | null;
+        driverSharePercent: number | null;
+        driverEmploymentType: string | null;
+        driverCompensationModel: string | null;
+        driverEconomicsFrozenAt: Date | null;
+      } | null;
     },
     breakdown: { commissionAmount: number },
     fees: { collectionFee: number | null; payoutFee: number | null },
@@ -964,18 +990,66 @@ export class RestaurantPayoutService {
     const refundPaid =
       order.refund?.status === RefundStatus.COMPLETED ? order.refund.amount : 0;
 
+    // ── Coût du livreur — LU, jamais recalculé ────────────────────────────
+    //
+    // La valeur est figée sur la course à l'acceptation du livreur. La
+    // recalculer ici ferait varier une commande passée au rythme des
+    // changements de taux : c'est précisément ce que la commission vendeur a
+    // coûté pendant des mois.
+    //
+    // `driverEconomicsFrozenAt` est le discriminant, pas `driverPayXaf` : un
+    // montant à 0 est légitime (livreur au salaire, ou tarif de livraison nul)
+    // et doit se distinguer d'un montant absent.
+    const frozen = order.delivery?.driverEconomicsFrozenAt != null;
+    const driverCost = frozen ? (order.delivery?.driverPayXaf ?? 0) : null;
+    const liliaDeliveryShare =
+      frozen && order.delivery?.driverBaseXaf != null
+        ? order.delivery.driverBaseXaf - (order.delivery.driverPayXaf ?? 0)
+        : null;
+
     const missingInputs: string[] = [];
     if (collectionFee === null) missingInputs.push('collectionFee');
     if (payoutFee === null) missingInputs.push('payoutFee');
-    // Le trou structurel : aucune donnée, aucune règle métier. Voir
-    // `PHASE2_2026-09-16_DRIVER_ECONOMICS_DISCOVERY.md` (décisions D1–D4).
-    if (order.isDelivery) missingInputs.push('driverCost');
+    // Une livraison dont l'économie n'est pas gelée : soit aucun livreur ne
+    // s'est encore engagé, soit la course a été faite hors système. Dans les
+    // deux cas le coût est UNKNOWN — jamais 0, qui en ferait « gratuit ».
+    if (order.isDelivery && driverCost === null)
+      missingInputs.push('driverCost');
 
     const variableCosts =
-      discount + (collectionFee ?? 0) + (payoutFee ?? 0) + refundPaid;
+      discount +
+      (driverCost ?? 0) +
+      (collectionFee ?? 0) +
+      (payoutFee ?? 0) +
+      refundPaid;
 
     const contributionMargin =
       missingInputs.length === 0 ? revenue - variableCosts : null;
+
+    /**
+     * Contribution **hors frais prestataire**.
+     *
+     * `Payment.collectionFeeXaf` et `RestaurantPayout.payoutFeeXaf` ne sont
+     * jamais écrits : nos types pawaPay ne modélisent aucun frais, et la
+     * production n'a jamais reçu un seul webhook. Attendre ces deux valeurs
+     * pour afficher une marge revient à ne jamais l'afficher.
+     *
+     * On rend donc un second nombre, exact dès que le coût livreur est connu,
+     * et nommé pour ce qu'il est. ⚠️ Il ne remplace pas `contributionMargin` :
+     * les deux coexistent, et l'interface doit dire lequel elle montre. Le
+     * confondre avec la marge réelle surestimerait le résultat du montant des
+     * frais du prestataire.
+     *
+     * Reste `null` si le coût livreur manque : retirer les frais PSP ne
+     * comble pas ce trou-là.
+     */
+    const blockingBeyondProviderFees = missingInputs.filter(
+      (input) => input !== 'collectionFee' && input !== 'payoutFee',
+    );
+    const contributionMarginBeforeProviderFees =
+      blockingBeyondProviderFees.length === 0
+        ? revenue - (discount + (driverCost ?? 0) + refundPaid)
+        : null;
 
     return {
       serviceFee: order.serviceFee,
@@ -989,8 +1063,25 @@ export class RestaurantPayoutService {
       discountGranted: discount,
       loyaltyDiscount: order.loyaltyDiscount,
       refundPaid,
+
+      /**
+       * Rémunération due au livreur pour cette course, figée à l'acceptation.
+       * `null` = **inconnue**. Ne jamais l'afficher comme 0.
+       */
+      driverCost,
+      /** Part de Lilia sur la course : `driverBaseXaf − driverPayXaf`. */
+      liliaDeliveryShare,
+      /**
+       * Rend un `driverCost` de 0 lisible : au salaire, zéro est la bonne
+       * réponse. Sans ce champ, il serait indistinguable d'une anomalie.
+       */
+      driverCompensationModel: order.delivery?.driverCompensationModel ?? null,
+      driverEmploymentType: order.delivery?.driverEmploymentType ?? null,
+      driverSharePercent: order.delivery?.driverSharePercent ?? null,
+
       revenue,
       variableCosts,
+      contributionMarginBeforeProviderFees,
       /**
        * Contribution réelle, ou `null` si un poste obligatoire est inconnu.
        * `missingInputs` nomme lesquels — un nombre absent qui dit pourquoi vaut
