@@ -27,10 +27,10 @@ datasource db {
 }
 
 model User {
-  id            String         @id @default(cuid())
-  firebaseUid   String         @unique
-  email         String         @unique
-  nom           String?
+  id                String             @id @default(cuid())
+  firebaseUid       String             @unique
+  email             String             @unique
+  nom               String?
   /// ⚠️ **Volontairement NON `@unique`** (septembre 2026).
   ///
   /// La réutilisation d'un numéro est le meilleur signal d'une ferme à comptes,
@@ -46,28 +46,30 @@ model User {
   /// traité. En attendant, l'abus est fermé par le signal `PHONE_REUSED` du
   /// scoring de parrainage — qui envoie la récompense en revue humaine au lieu
   /// de refuser une inscription potentiellement légitime.
-  phone         String?
-  imageUrl      String?
-  role          Role           @default(CLIENT)
+  phone             String?
+  imageUrl          String?
+  role              Role               @default(CLIENT)
   /// Disponibilité **du moment**, changée plusieurs fois par jour par le livreur
   /// lui-même. À ne pas confondre avec `DriverProfile.isActive` (le livreur
   /// est-il en service sur la plateforme ?) ni avec `statusUser` (son compte
   /// est-il valide ?). Reste sur `User` et non sur `DriverProfile` : c'est un
   /// état volatil, déjà indexé et lu à chaque assignation.
-  driverStatus  DriverStatus?
+  driverStatus      DriverStatus?
   /// Profil métier du livreur. `null` pour tous les autres rôles.
-  driverProfile DriverProfile?
-  lastLogin     DateTime?
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  restaurant    Restaurant?
-  deliveries    Delivery[]
-  cart          Cart?
-  adresses      Adresses[] // Ajout de la relation aux adresses
-  fcmTokens     FcmToken[]
-  reviews       Review[]
-  orders        Order[] // Commandes passées par l'utilisateur
-  promoUsages   PromoUsage[]   @relation("UserPromoUsages")
+  driverProfile     DriverProfile?
+  lastLogin         DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  restaurant        Restaurant?
+  deliveries        Delivery[]
+  /// Règlements de ce que Lilia Food lui doit, s'il est livreur.
+  driverSettlements DriverSettlement[] @relation("DriverSettlements")
+  cart              Cart?
+  adresses          Adresses[] // Ajout de la relation aux adresses
+  fcmTokens         FcmToken[]
+  reviews           Review[]
+  orders            Order[] // Commandes passées par l'utilisateur
+  promoUsages       PromoUsage[]       @relation("UserPromoUsages")
 
   // Ajout recent 04/04/2026
   statusUser StatusUser @default(ACTIVE)
@@ -1239,8 +1241,21 @@ model Delivery {
   /// coût livreur **inconnu**. Une donnée, pas une déduction.
   driverEconomicsFrozenAt DateTime?
 
+  /// Règlement qui couvre cette course, s'il existe.
+  ///
+  /// ⚠️ C'est CE champ qui interdit de payer deux fois la même course : une
+  /// course rattachée n'est plus éligible au prochain arrêté de compte, et
+  /// c'est la base qui l'arbitre, pas un `if`. Même raisonnement que
+  /// `@@unique([orderId])` sur `restaurant_payouts`.
+  driverSettlementId String?
+  driverSettlement   DriverSettlement? @relation(fields: [driverSettlementId], references: [id], onDelete: SetNull)
+
   review DeliveryReview? // note laissée par le client après livraison
 
+  @@index([driverSettlementId])
+  // Sélection des courses réglables : un livreur, ses courses livrées, non
+  // encore rattachées à un règlement.
+  @@index([delivererId, status, driverSettlementId])
   @@index([delivererId, status]) // missions d'un livreur filtrees par statut (LFD-9)
   @@index([delivererId])
   @@index([status]) // ← manquait
@@ -2023,6 +2038,9 @@ enum AdminAuditAction {
   DRIVER_UPDATED
   DRIVER_ACTIVATED
   DRIVER_DEACTIVATED
+  /// Versement au livreur enregistré — l'argent a été remis HORS application.
+  DRIVER_SETTLEMENT_RECORDED
+  DRIVER_SETTLEMENT_CANCELLED
   // Mise en ordre et mise en avant du catalogue — décisions éditoriales qui
   // changent ce que voit chaque client sur la page d'accueil.
   VENDOR_DISPLAY_ORDER_CHANGED
@@ -2175,4 +2193,124 @@ model PlatformSettings {
   updateMessage String?
 
   updatedAt DateTime @updatedAt
+}
+
+/// Comment l'argent a été remis au livreur.
+///
+/// Déclaratif : le versement se fait **hors application** (espèces de la main à
+/// la main, virement Mobile Money passé à la main). Un enum plutôt qu'un texte
+/// libre — un champ de saisie libre dans une pièce financière devient
+/// illisible en agrégat au bout de trois mois.
+enum DriverSettlementMethod {
+  CASH
+  MOBILE_MONEY
+  BANK_TRANSFER
+  OTHER
+}
+
+/// État d'un règlement livreur.
+///
+/// ⚠️ Deux valeurs seulement, et **aucun état d'attente**. Un règlement n'est
+/// enregistré qu'APRÈS que l'argent a été remis : il n'y a donc rien à
+/// attendre. Un `PENDING` aurait décrit un moment qui n'existe pas dans ce
+/// modèle, et son vrai effet aurait été de verrouiller les courses d'un livreur
+/// si personne ne revenait le confirmer — un administrateur interrompu suffit.
+///
+/// `CANCELLED` couvre la saisie erronée, pas un flux : il libère les courses.
+enum DriverSettlementStatus {
+  PAID
+  CANCELLED
+}
+
+/// Ce que Lilia Food a versé à un livreur, pour un ensemble de courses.
+///
+/// ## Un registre de dette, pas un rail de paiement
+///
+/// Aucun virement n'est déclenché par cette table (décision D-6 du 19/09/2026).
+/// Le rail automatique est éteint en production (`PAYMENT_MODE=MANUAL`,
+/// `ManualProvider.supportsPayout = false`), la capacité PAYOUT de pawaPay n'a
+/// jamais été validée, et aucun livreur n'a de compte de versement enregistré.
+/// Construire dessus aurait produit du code incapable de tourner.
+///
+/// De `Refund` on ne reprend qu'une chose, la seule qui se transpose : un
+/// statut terminal signifie « **un humain** a remis l'argent », jamais « le
+/// système l'a envoyé ». Le reste diffère — un remboursement est 1:1 avec une
+/// commande, un règlement couvre N courses.
+///
+/// ## Enregistré en UN temps, avec une coupure explicite
+///
+/// Le montant dû se consulte par une **lecture pure** qui ne crée rien et ne
+/// verrouille rien. Le règlement, lui, n'est écrit qu'une fois l'argent remis,
+/// et il porte la date de coupure de l'aperçu consulté.
+///
+/// ⚠️ `coveredUntil` doit venir de l'appelant, **jamais** d'un `now()` au
+/// moment de l'écriture : entre l'instant où l'administrateur lit « 3 500 XAF »
+/// et celui où il enregistre, le livreur a pu terminer deux courses. Les
+/// absorber dans un montant déjà convenu le sous-paierait, en silence.
+///
+/// ## Pourquoi par période et non par course
+///
+/// Une course rapporte ~350 XAF. Régler à l'unité multiplierait les frais
+/// Mobile Money pour des sommes dérisoires. `RestaurantPayout` ne pouvait pas
+/// l'exprimer : son `orderId @unique` lie une ligne à une seule commande.
+///
+/// ## Ce qui rend le double paiement impossible
+///
+/// `Delivery.driverSettlementId`. Une course rattachée n'est plus éligible, et
+/// c'est la **base** qui l'arbitre. Le rattachement passe par un
+/// `updateMany WHERE driverSettlementId IS NULL` dans la transaction
+/// d'enregistrement : deux administrateurs simultanés ne peuvent pas couvrir
+/// deux fois les mêmes courses.
+model DriverSettlement {
+  id       String @id @default(cuid())
+  driverId String
+  driver   User   @relation("DriverSettlements", fields: [driverId], references: [id], onDelete: Restrict)
+
+  // ─── Snapshot figé à l'enregistrement ───────────────────────────────────
+  // Jamais recalculé : c'est une pièce comptable. Recompter les courses à la
+  // lecture ferait varier un règlement passé — ce que la commission vendeur a
+  // coûté pendant des mois.
+
+  /// Somme des `Delivery.driverPayXaf` des courses couvertes, en XAF.
+  amountXaf    Int
+  /// Nombre de courses couvertes, figé. Redondant avec la relation, et voulu :
+  /// il dit ce qui a été arrêté même si une course était détachée ensuite.
+  courseCount  Int
+  /// Première course couverte (`min(deliveredAt)`), pour l'affichage.
+  periodStart  DateTime
+  /// Coupure **choisie par l'appelant**. Aucune course livrée après cet
+  /// instant n'entre dans ce règlement.
+  coveredUntil DateTime
+  currency     String   @default("XAF")
+
+  status DriverSettlementStatus @default(PAID)
+
+  /// Comment l'argent a été remis.
+  method    DriverSettlementMethod
+  /// Référence externe : numéro de transaction Mobile Money, numéro de reçu.
+  /// Seule trace opposable d'un versement fait hors application.
+  reference String?
+  note      String?
+
+  /// Instant déclaré de la remise. Distinct de `recordedAt` : un règlement
+  /// d'hier peut être saisi ce matin, et confondre les deux fausserait toute
+  /// lecture par période.
+  paidAt DateTime
+
+  /// `User.id` de l'administrateur — pas de FK, comme `requestedBy` sur les
+  /// reversements vendeurs.
+  recordedBy String
+  recordedAt DateTime @default(now())
+
+  cancelledBy  String?
+  cancelledAt  DateTime?
+  cancelReason String?
+
+  updatedAt DateTime @updatedAt
+
+  deliveries Delivery[]
+
+  @@index([driverId, status])
+  @@index([driverId, paidAt])
+  @@map("driver_settlements")
 }
