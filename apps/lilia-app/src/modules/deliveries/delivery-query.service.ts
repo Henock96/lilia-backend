@@ -6,6 +6,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { DeliveryStatus } from './dto/update-delivery.dto';
 import { ACTIVE_DELIVERY_STATUSES } from './delivery-statuses';
+import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
 
 /**
  * Lectures de livraisons (queries) extraites de `DeliveriesService` (LIL-134).
@@ -16,7 +17,10 @@ import { ACTIVE_DELIVERY_STATUSES } from './delivery-statuses';
  */
 @Injectable()
 export class DeliveryQueryService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly assignmentLog: DeliveryAssignmentLogService,
+  ) {}
 
   /**
    * Contrôle de propriété pour la consultation d'une livraison (anti-IDOR).
@@ -116,6 +120,72 @@ export class DeliveryQueryService {
         page,
         limit,
         totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * Toutes les mains par lesquelles une course est passée.
+   *
+   * Réservé à l'ADMIN et au vendeur propriétaire — **pas au livreur**. Il est
+   * légitime qu'il voie sa propre mission ; savoir à qui elle a été retirée
+   * avant lui, ou à qui elle est passée après, ne le regarde pas et nourrirait
+   * une conversation qu'on n'a aucune raison d'ouvrir.
+   *
+   * Le client non plus : il lui suffit de savoir qui livre **maintenant**
+   * (`GET /deliveries/by-order/:orderId`), et l'historique des désistements
+   * n'apprendrait rien d'utile à quelqu'un qui attend son repas.
+   */
+  async findAssignmentHistory(deliveryId: string, firebaseUid: string) {
+    const delivery = await this.prisma.delivery.findUnique({
+      where: { id: deliveryId },
+      select: {
+        id: true,
+        orderId: true,
+        order: {
+          select: {
+            restaurant: {
+              select: { owner: { select: { firebaseUid: true } } },
+            },
+          },
+        },
+      },
+    });
+
+    if (!delivery) {
+      throw new NotFoundException(
+        `Livraison avec l'ID "${deliveryId}" non trouvée.`,
+      );
+    }
+
+    const estProprietaire =
+      delivery.order.restaurant.owner?.firebaseUid === firebaseUid;
+
+    if (!estProprietaire) {
+      const user = await this.prisma.user.findUnique({
+        where: { firebaseUid },
+        select: { role: true },
+      });
+      if (user?.role !== 'ADMIN') {
+        throw new ForbiddenException(
+          "Vous n'êtes pas autorisé à consulter l'historique de cette livraison.",
+        );
+      }
+    }
+
+    const assignments = await this.assignmentLog.history(
+      this.prisma,
+      deliveryId,
+    );
+
+    return {
+      data: assignments,
+      meta: {
+        deliveryId: delivery.id,
+        orderId: delivery.orderId,
+        /// Combien de fois la course a changé de mains. La question du §6-C,
+        /// qui n'avait aucune réponse avant le journal.
+        handoverCount: Math.max(0, assignments.length - 1),
       },
     };
   }
@@ -317,6 +387,11 @@ export class DeliveryQueryService {
 
   async getMyAssignedDeliveries(firebaseUid: string) {
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    // `user.id` sur `null` levait un TypeError, donc un 500 : une panne serveur
+    // là où le cas est parfaitement connu. Les deux autres lectures de ce
+    // fichier posaient déjà ce contrôle.
+    if (!user) throw new NotFoundException('Utilisateur non trouvé.');
+
     return this.prisma.delivery.findMany({
       where: {
         delivererId: user.id,

@@ -3,6 +3,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   PUBLIC_VENDOR_ORDER_BY,
+  PUBLIC_VENDOR_SELECT,
   PUBLIC_VENDOR_WHERE,
 } from '../../common/vendor-visibility';
 import {
@@ -49,7 +50,10 @@ export class RestaurantQueryService {
     const [restaurants, total] = await Promise.all([
       this.prisma.restaurant.findMany({
         where: PUBLIC_VENDOR_WHERE,
-        include: RESTAURANT_LIST_INCLUDE,
+        // `select` et non `include` : cf. PUBLIC_VENDOR_SELECT. Un `include`
+        // laisse partir tous les scalaires du modèle, `payoutPhoneNumber`
+        // compris, sur une route que personne n'authentifie.
+        select: { ...PUBLIC_VENDOR_SELECT, ...RESTAURANT_LIST_INCLUDE },
         // Ordre partagé avec `GET /vendors` (cf. PUBLIC_VENDOR_ORDER_BY) : les
         // deux routes listent la même entité et divergeaient jusqu'ici.
         orderBy: [...PUBLIC_VENDOR_ORDER_BY],
@@ -94,7 +98,8 @@ export class RestaurantQueryService {
 
     const restaurant = await this.prisma.restaurant.findFirst({
       where: { id, ...PUBLIC_VENDOR_WHERE },
-      include: {
+      select: {
+        ...PUBLIC_VENDOR_SELECT,
         ...vendorMenuInclude(this.prisma.product.fields, now),
         ...RESTAURANT_INCLUDE,
       },
@@ -157,7 +162,7 @@ export class RestaurantQueryService {
 
     const restaurants = await this.prisma.restaurant.findMany({
       where: { id: { in: ids }, ...PUBLIC_VENDOR_WHERE },
-      include: RESTAURANT_LIST_INCLUDE,
+      select: { ...PUBLIC_VENDOR_SELECT, ...RESTAURANT_LIST_INCLUDE },
     });
 
     const ratings = await aggregateRatings(this.prisma, restaurants.map((r) => r.id));
@@ -178,7 +183,11 @@ export class RestaurantQueryService {
   async findRestaurant() {
     const resto = await this.prisma.restaurant.findMany({
       where: PUBLIC_VENDOR_WHERE,
-      include: {
+      // Aucun contrôleur ne monte cette méthode aujourd'hui. Elle porte quand
+      // même la projection publique : une route ajoutée demain sur un `include`
+      // rouvrirait la fuite sans que personne ne relise ce fichier.
+      select: {
+        ...PUBLIC_VENDOR_SELECT,
         specialties: true,
         operatingHours: true,
         photos: PHOTOS_GALLERY,

@@ -3,6 +3,8 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 
 import { DeliveryAssignmentService } from './delivery-assignment.service';
+import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
+import { TrackingService } from '../tracking/tracking.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
 import { OrderTransitionService } from '../orders/order-transition.service';
@@ -24,10 +26,17 @@ import { PlatformSettingsService } from '../platform-settings/platform-settings.
 describe('DeliveryAssignmentService — assertAssignable', () => {
   let service: DeliveryAssignmentService;
 
+  // L'assignation est désormais transactionnelle : verrou optimiste sur la
+  // livraison + écriture du journal d'assignation, en un seul geste.
+  const tx = {
+    delivery: { updateMany: jest.fn(), findUniqueOrThrow: jest.fn() },
+    deliveryAssignment: { create: jest.fn(), updateMany: jest.fn() },
+  };
   const prisma = {
     delivery: { findUnique: jest.fn(), update: jest.fn() },
     user: { findUnique: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
     order: { findUnique: jest.fn() },
+    $transaction: jest.fn((fn: (t: unknown) => unknown) => fn(tx)),
   };
 
   /** Livraison assignable, appartenant au vendeur dont le uid est `owner-uid`. */
@@ -67,7 +76,8 @@ describe('DeliveryAssignmentService — assertAssignable', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     prisma.delivery.findUnique.mockResolvedValue(delivery);
-    prisma.delivery.update.mockResolvedValue({
+    tx.delivery.updateMany.mockResolvedValue({ count: 1 });
+    tx.delivery.findUniqueOrThrow.mockResolvedValue({
       id: 'd1',
       order: delivery.order,
       deliverer: { id: 'liv1', nom: 'Jean' },
@@ -86,7 +96,18 @@ describe('DeliveryAssignmentService — assertAssignable', () => {
         },
         DeliveryAssignmentService,
         { provide: PrismaService, useValue: prisma },
+        // Service réel : le journal d'assignation s'écrit dans la même
+        // transaction que le statut, ses écritures doivent être exercées.
+        DeliveryAssignmentLogService,
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        // Purge de la position live à la réassignation : best-effort, non
+        // exercée ici, mais le graphe doit résoudre.
+        {
+          provide: TrackingService,
+          useValue: {
+            forgetLastPosition: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         {
           provide: OrderStateMachine,
           useValue: { assertTransition: jest.fn() },
@@ -102,7 +123,7 @@ describe('DeliveryAssignmentService — assertAssignable', () => {
   it('ACTIF + profil actif + AVAILABLE → assignable', async () => {
     withDriver(driver());
     await expect(assign()).resolves.toBeDefined();
-    expect(prisma.delivery.update).toHaveBeenCalled();
+    expect(tx.delivery.updateMany).toHaveBeenCalled();
   });
 
   it('ACTIF + profil actif + ON_DELIVERY → assignable (une 2e course est permise)', async () => {

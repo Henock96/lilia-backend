@@ -5,6 +5,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DeliveriesService } from './deliveries.service';
 import { DeliveryQueryService } from './delivery-query.service';
 import { DeliveryAssignmentService } from './delivery-assignment.service';
+import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
@@ -35,6 +36,8 @@ describe('DeliveriesService.updateLocation (convergence Redis — LIL-54)', () =
   const tracking = {
     cacheLivePosition: jest.fn().mockResolvedValue(undefined),
     calculateETA: jest.fn().mockResolvedValue(7),
+    // Purge de la position à la réassignation (cache par commande).
+    forgetLastPosition: jest.fn().mockResolvedValue(undefined),
   };
   const gateway = { server: undefined }; // broadcast court-circuité (?. ) — non testé ici
 
@@ -61,6 +64,9 @@ describe('DeliveriesService.updateLocation (convergence Redis — LIL-54)', () =
         },
         DeliveriesService,
         { provide: PrismaService, useValue: prisma },
+        // Service réel : le journal d'assignation s'écrit dans la même
+        // transaction que le statut, ses écritures doivent être exercées.
+        DeliveryAssignmentLogService,
         { provide: NotificationsService, useValue: {} },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         { provide: OrderStateMachine, useValue: {} },

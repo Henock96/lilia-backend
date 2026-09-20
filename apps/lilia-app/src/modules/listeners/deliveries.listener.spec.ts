@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import {
+  DeliveryAssignmentOutcome,
   DeliveryStatus,
   DriverStatus,
   IncidentSeverity,
@@ -10,6 +11,8 @@ import { DeliveriesListener } from './deliveries.listener';
 import { NotificationsService } from '../notifications/notifications.service';
 import { IncidentsService } from '../incidents/incidents.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { DeliveryAssignmentLogService } from '../deliveries/delivery-assignment-log.service';
+import { ACTIVE_DELIVERY_STATUSES } from '../deliveries/delivery-statuses';
 import {
   DeliveryAssignedEvent,
   DeliveryFailedEvent,
@@ -27,8 +30,17 @@ describe('DeliveriesListener', () => {
   const incidents = { create: jest.fn() };
   const prisma = {
     restaurant: { findUnique: jest.fn() },
-    delivery: { findUnique: jest.fn() },
+    delivery: { findUnique: jest.fn(), updateMany: jest.fn() },
     user: { updateMany: jest.fn() },
+    // La fermeture d'une course annulée est transactionnelle : le statut et la
+    // ligne de journal partent ensemble.
+    $transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(prisma)),
+  };
+  const assignmentLog = {
+    open: jest.fn(),
+    close: jest.fn(),
+    markAccepted: jest.fn(),
+    markPickedUp: jest.fn(),
   };
 
   /** Titres des notifications envoyées à un destinataire donné. */
@@ -42,6 +54,7 @@ describe('DeliveriesListener', () => {
     notifications.sendPushNotification.mockResolvedValue(undefined);
     incidents.create.mockResolvedValue({ id: 'inc-1' });
     prisma.user.updateMany.mockResolvedValue({ count: 1 });
+    prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
     prisma.restaurant.findUnique.mockResolvedValue({ ownerId: 'owner-1' });
 
     const module: TestingModule = await Test.createTestingModule({
@@ -50,6 +63,7 @@ describe('DeliveriesListener', () => {
         { provide: NotificationsService, useValue: notifications },
         { provide: IncidentsService, useValue: incidents },
         { provide: PrismaService, useValue: prisma },
+        { provide: DeliveryAssignmentLogService, useValue: assignmentLog },
       ],
     }).compile();
 
@@ -67,6 +81,9 @@ describe('DeliveriesListener', () => {
       (over.isPreorder as boolean) ?? false,
       (over.scheduledFor as Date | null) ?? null,
       (over.previousDelivererId as string | null) ?? null,
+      (over.previousDeliveryStatus as DeliveryStatus) ??
+        DeliveryStatus.EN_ATTENTE,
+      (over.customerUserId as string) ?? 'client-1',
     );
 
   describe('assignation', () => {
@@ -110,6 +127,36 @@ describe('DeliveriesListener', () => {
       await listener.handleAssigned(assigned());
 
       expect(prisma.user.updateMany).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Même arbitrage que sur l'échec : ce qui compte est de savoir si le repas
+     * avait quitté le comptoir. Tant qu'il y est, le client n'a jamais entendu
+     * parler d'un livreur.
+     */
+    it('ne dit rien au client tant que le repas est au comptoir', async () => {
+      await listener.handleAssigned(
+        assigned({
+          previousDelivererId: 'liv-old',
+          previousDeliveryStatus: DeliveryStatus.ACCEPTER,
+        } as never),
+      );
+
+      expect(titlesFor('client-1')).toEqual([]);
+    });
+
+    it('prévient le client quand le livreur change EN PLEINE COURSE', async () => {
+      await listener.handleAssigned(
+        assigned({
+          previousDelivererId: 'liv-old',
+          previousDeliveryStatus: DeliveryStatus.EN_TRANSIT,
+        } as never),
+      );
+
+      // Il a reçu « votre commande est en route » et regarde un point sur une
+      // carte : ce point va se figer puis réapparaître ailleurs. Le silence
+      // serait la faute.
+      expect(titlesFor('client-1')).toContain('🔄 Changement de livreur');
     });
   });
 
@@ -291,7 +338,7 @@ describe('DeliveriesListener', () => {
       expect(notifications.sendPushNotification).not.toHaveBeenCalled();
     });
 
-    it('ne fait rien si aucun livreur n’était mobilisé', async () => {
+    it('ne fait rien si aucune livraison n’existe', async () => {
       prisma.delivery.findUnique.mockResolvedValue(null);
 
       await listener.handleOrderCancelled({
@@ -300,6 +347,87 @@ describe('DeliveriesListener', () => {
       });
 
       expect(notifications.sendPushNotification).not.toHaveBeenCalled();
+      expect(prisma.delivery.updateMany).not.toHaveBeenCalled();
+    });
+
+    /**
+     * La course restait ouverte avec son livreur attaché, indéfiniment.
+     *
+     * Elle continuait donc d'apparaître dans `GET /deliveries/my-missions` —
+     * le livreur pouvait encore l'**accepter**, pour se retrouver ensuite
+     * incapable de la récupérer (`ANNULER → EN_ROUTE` n'existe pas) et
+     * incapable de la refuser (`decline` n'accepte que `ASSIGNER`). Et
+     * `setDriverStatus` refusant `OFFLINE` à qui a une course active, il ne
+     * pouvait plus se mettre hors ligne en fin de journée.
+     */
+    it('ferme la livraison et détache le livreur', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        id: 'd1',
+        delivererId: 'liv-1',
+        status: 'ACCEPTER',
+      });
+
+      await listener.handleOrderCancelled({
+        orderId: 'o1abcdef',
+        restaurantId: 'resto1',
+      });
+
+      const [{ where, data }] = prisma.delivery.updateMany.mock.calls[0];
+      // Conditionné sur l'état lu : un événement rejoué ne doit pas réécrire
+      // une course entre-temps terminée.
+      expect(where).toEqual({
+        id: 'd1',
+        status: { in: ACTIVE_DELIVERY_STATUSES },
+      });
+      expect(data).toMatchObject({
+        status: DeliveryStatus.ECHEC,
+        delivererId: null,
+        driverPayXaf: null,
+        driverEconomicsFrozenAt: null,
+      });
+    });
+
+    /**
+     * `DeliveryStatus` n'a pas de valeur `ANNULER` — en ajouter une imposerait
+     * un `ALTER TYPE` que les trois applications Flutter déployées ne savent
+     * pas lire. La vraie raison vit donc dans le journal, où elle est
+     * **distincte** d'un échec : le livreur n'a rien manqué, et aucune
+     * statistique de fiabilité ne doit le lui reprocher.
+     */
+    it('trace ORDER_CANCELLED au journal, pas FAILED', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        id: 'd1',
+        delivererId: 'liv-1',
+        status: 'EN_TRANSIT',
+      });
+
+      await listener.handleOrderCancelled({
+        orderId: 'o1abcdef',
+        restaurantId: 'resto1',
+      });
+
+      expect(assignmentLog.close).toHaveBeenCalledWith(
+        expect.anything(),
+        'd1',
+        DeliveryAssignmentOutcome.ORDER_CANCELLED,
+        'Commande annulée',
+      );
+    });
+
+    it('n’écrit pas au journal si la course avait déjà changé d’état', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        id: 'd1',
+        delivererId: 'liv-1',
+        status: 'ASSIGNER',
+      });
+      prisma.delivery.updateMany.mockResolvedValue({ count: 0 });
+
+      await listener.handleOrderCancelled({
+        orderId: 'o1abcdef',
+        restaurantId: 'resto1',
+      });
+
+      expect(assignmentLog.close).not.toHaveBeenCalled();
     });
   });
 });

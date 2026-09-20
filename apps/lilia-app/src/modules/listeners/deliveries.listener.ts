@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import {
+  DeliveryAssignmentOutcome,
   DeliveryStatus,
   DriverStatus,
   IncidentSeverity,
@@ -10,6 +11,9 @@ import {
 import { NotificationsService } from '../notifications/notifications.service';
 import { IncidentsService } from '../incidents/incidents.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { DeliveryAssignmentLogService } from '../deliveries/delivery-assignment-log.service';
+import { CLEARED_DRIVER_ECONOMICS } from '../deliveries/delivery-assignment.service';
+import { ACTIVE_DELIVERY_STATUSES } from '../deliveries/delivery-statuses';
 import {
   DeliveryAcceptedEvent,
   DeliveryAssignedEvent,
@@ -35,6 +39,7 @@ export class DeliveriesListener {
     private readonly notifications: NotificationsService,
     private readonly incidents: IncidentsService,
     private readonly prisma: PrismaService,
+    private readonly assignmentLog: DeliveryAssignmentLogService,
   ) {}
 
   // ─── ASSIGNATION ───────────────────────────────────────────────────────────
@@ -77,6 +82,36 @@ export class DeliveriesListener {
             type: 'delivery_unassigned',
             deliveryId: event.deliveryId,
             orderId: event.orderId,
+          },
+        ),
+      );
+    }
+
+    // ── Le client, et seulement s'il avait quelque chose à apprendre ────────
+    //
+    // Même arbitrage que sur l'échec (`wasEnRoute`) : tant que le repas est au
+    // comptoir, le client n'a jamais entendu parler d'un livreur — lui annoncer
+    // qu'il change l'alarmerait pour un incident qu'il n'aurait jamais dû voir.
+    // Mais si le repas était DÉJÀ parti, il a reçu « votre commande est en
+    // route » et regarde un point sur une carte : ce point va se figer, puis
+    // réapparaître ailleurs, sans un mot. C'est le seul cas où le silence est
+    // la faute.
+    if (
+      event.previousDelivererId &&
+      event.previousDelivererId !== event.delivererId &&
+      event.previousDeliveryStatus === DeliveryStatus.EN_TRANSIT
+    ) {
+      const shortId = event.orderId.slice(-6).toUpperCase();
+      tasks.push(
+        this.notifications.sendPushNotification(
+          event.customerUserId,
+          '🔄 Changement de livreur',
+          `Un autre livreur prend en charge votre commande #${shortId}. ` +
+            'Le suivi se met à jour dès qu’il récupère votre commande.',
+          {
+            type: 'delivery_driver_changed',
+            orderId: event.orderId,
+            deliveryId: event.deliveryId,
           },
         ),
       );
@@ -337,6 +372,32 @@ export class DeliveriesListener {
     );
   }
 
+  /**
+   * La commande est annulée : la course doit se fermer avec elle.
+   *
+   * Avant, ce chemin ne faisait que **prévenir et libérer** le livreur. La
+   * `Delivery`, elle, gardait son statut (`ASSIGNER` / `ACCEPTER` /
+   * `EN_TRANSIT`) et son `delivererId` indéfiniment. Trois conséquences, toutes
+   * constatables :
+   *
+   *  - la mission restait affichée dans `GET /deliveries/my-missions`, et le
+   *    livreur pouvait encore l'**accepter** — pour se retrouver ensuite
+   *    incapable de la récupérer (`ANNULER → EN_ROUTE` n'existe pas) et
+   *    incapable de la refuser (`decline` n'accepte que `ASSIGNER`). Seul un
+   *    « signaler un échec » l'en sortait, en traçant un incident à son nom ;
+   *  - `setDriverStatus` refuse `AVAILABLE`/`OFFLINE` à qui a une course
+   *    active : le livreur ne pouvait plus se mettre hors ligne en fin de
+   *    journée ;
+   *  - la course comptait dans le `_count` de la liste d'assignation, faisant
+   *    passer un livreur libre pour occupé.
+   *
+   * ⚠️ `ECHEC` est employé faute d'une valeur `ANNULER` dans `DeliveryStatus`.
+   * En ajouter une imposerait un `ALTER TYPE` que les trois applications
+   * Flutter déployées ne savent pas lire. Le journal d'assignation porte la
+   * vraie raison (`ORDER_CANCELLED`), distincte de `FAILED` : le livreur n'a
+   * rien manqué, et aucune statistique de fiabilité ne doit le lui reprocher.
+   * `delivererId` est détaché, donc la course ne compte pas dans ses échecs.
+   */
   @OnEvent('order.cancelled')
   async handleOrderCancelled(event: { orderId: string; restaurantId: string }) {
     const delivery = await this.prisma.delivery.findUnique({
@@ -344,15 +405,21 @@ export class DeliveriesListener {
       select: { id: true, delivererId: true, status: true },
     });
 
-    // Rien à faire si aucun livreur n'a été mobilisé, ou si la course est déjà
-    // terminée (une commande livrée puis annulée pour remboursement).
+    // Rien à faire si la course est déjà terminée (une commande livrée puis
+    // annulée pour remboursement) : y toucher effacerait l'économie du livreur
+    // qui l'a réellement faite.
     if (
-      !delivery?.delivererId ||
-      delivery.status === 'LIVRER' ||
-      delivery.status === 'ECHEC'
+      !delivery ||
+      delivery.status === DeliveryStatus.LIVRER ||
+      delivery.status === DeliveryStatus.ECHEC
     ) {
       return;
     }
+
+    await this.closeCancelledDelivery(delivery.id, event.orderId);
+
+    // Pas de livreur mobilisé : la course est fermée, personne à prévenir.
+    if (!delivery.delivererId) return;
 
     await this.handleUnassigned(
       new DeliveryUnassignedEvent(
@@ -363,6 +430,47 @@ export class DeliveriesListener {
         'order_cancelled',
       ),
     );
+  }
+
+  /**
+   * Ferme une course dont la commande a disparu.
+   *
+   * Best-effort, comme tout ce listener : un échec ici ne doit pas empêcher
+   * l'annulation de la commande, déjà commise. Mais la fermeture est
+   * **conditionnée à l'état lu** (`status: { in: ACTIVE_DELIVERY_STATUSES }`)
+   * pour qu'un événement rejoué ne puisse pas rouvrir ni réécrire une course
+   * entre-temps terminée.
+   */
+  private async closeCancelledDelivery(
+    deliveryId: string,
+    orderId: string,
+  ): Promise<void> {
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const closed = await tx.delivery.updateMany({
+          where: { id: deliveryId, status: { in: ACTIVE_DELIVERY_STATUSES } },
+          data: {
+            status: DeliveryStatus.ECHEC,
+            delivererId: null,
+            // Aucune course n'a eu lieu : garder un montant reviendrait à
+            // devoir de l'argent pour une commande qui n'existe plus.
+            ...CLEARED_DRIVER_ECONOMICS,
+          },
+        });
+        if (closed.count === 0) return;
+
+        await this.assignmentLog.close(
+          tx,
+          deliveryId,
+          DeliveryAssignmentOutcome.ORDER_CANCELLED,
+          'Commande annulée',
+        );
+      });
+    } catch (err) {
+      this.logger.error(
+        `Fermeture de la livraison ${deliveryId} (commande ${orderId} annulée) échouée : ${(err as Error).message}`,
+      );
+    }
   }
 
   // ─── DÉSASSIGNATION (annulation de la commande) ────────────────────────────

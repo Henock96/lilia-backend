@@ -2,6 +2,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DeliveryStatus, PrismaClient } from '@prisma/client';
 
+import { DeliveryAssignmentLogService } from '../../apps/lilia-app/src/modules/deliveries/delivery-assignment-log.service';
 import { DeliveryAssignmentService } from '../../apps/lilia-app/src/modules/deliveries/delivery-assignment.service';
 import { RestaurantPayoutService } from '../../apps/lilia-app/src/modules/payments/services/restaurant-payout.service';
 import { PaymentEventService } from '../../apps/lilia-app/src/modules/payments/services/payment-event.service';
@@ -75,6 +76,10 @@ describeIfDb('Économie de la course — gel, effacement, réassignation', () =>
       new OrderStateMachine(),
       new OrderTransitionService(),
       new PlatformSettingsService(prisma as never),
+      new DeliveryAssignmentLogService(),
+      // Le tracking n'est pas exercé ici ; seule la purge de position est
+      // appelée à la réassignation, et elle est best-effort.
+      { forgetLastPosition: async () => undefined } as never,
     );
 
     payouts = new RestaurantPayoutService(

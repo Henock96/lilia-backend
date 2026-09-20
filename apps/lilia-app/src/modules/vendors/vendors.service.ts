@@ -11,6 +11,7 @@ import { AdminAuditAction, Prisma, User, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   PUBLIC_VENDOR_ORDER_BY,
+  PUBLIC_VENDOR_SELECT,
   PUBLIC_VENDOR_WHERE,
 } from '../../common/vendor-visibility';
 import { PaginationService } from '../../common/pagination/pagination.service';
@@ -28,7 +29,20 @@ import { FilterVendorsDto } from './dto/filter-vendors.dto';
 import { UpdateVendorProfileDto } from './dto/update-vendor-profile.dto';
 import { VendorApprovedEvent, VendorCreatedEvent } from './events/vendor-events';
 
-const VENDOR_PUBLIC_INCLUDE = {
+/**
+ * Relations servies avec une fiche vendeur.
+ *
+ * ⚠️ Le nom dit « public » au sens de « ce que le client voit », pas au sens
+ * d'une projection sûre : employé dans un `include:`, il laisse partir **tous**
+ * les champs scalaires du modèle, colonnes de reversement comprises. C'est
+ * exactement ce qui a rendu `payoutPhoneNumber` lisible sans authentification.
+ *
+ * Les deux lectures publiques (`findAll`, `findOne`) le combinent désormais à
+ * {@link PUBLIC_VENDOR_SELECT} dans un `select:`. Les deux lectures **admin**
+ * (`create`, `approve`) gardent l'`include:` : leur destinataire a le droit de
+ * tout voir, et l'événement `vendor.approved` transporte l'entité complète.
+ */
+const VENDOR_RELATIONS = {
   vendorProfile: true,
   operatingHours: true,
   specialties: true,
@@ -60,11 +74,12 @@ const VENDOR_PUBLIC_INCLUDE = {
  * fonction vit hors de la classe, `this` y vaut `undefined`. Le lui faire lire
  * a déjà mis `GET /vendors/:id` en 500 en production.
  */
-function vendorDetailInclude(fields: ProductTimeFields, now = new Date()) {
+function vendorDetailSelect(fields: ProductTimeFields, now = new Date()) {
   return {
-    ...VENDOR_PUBLIC_INCLUDE,
+    ...PUBLIC_VENDOR_SELECT,
+    ...VENDOR_RELATIONS,
     ...vendorMenuInclude(fields, now),
-  } satisfies Prisma.RestaurantInclude;
+  } satisfies Prisma.RestaurantSelect;
 }
 
 @Injectable()
@@ -125,7 +140,7 @@ export class VendorsService {
             vendorProfile: { create: profileFields },
           }),
         },
-        include: VENDOR_PUBLIC_INCLUDE,
+        include: VENDOR_RELATIONS,
       });
       return restaurant;
     });
@@ -157,7 +172,7 @@ export class VendorsService {
     const [vendors, total] = await this.prisma.$transaction([
       this.prisma.restaurant.findMany({
         where,
-        include: VENDOR_PUBLIC_INCLUDE,
+        select: { ...PUBLIC_VENDOR_SELECT, ...VENDOR_RELATIONS },
         orderBy: [...PUBLIC_VENDOR_ORDER_BY],
         skip: (page - 1) * limit,
         take: limit,
@@ -197,7 +212,7 @@ export class VendorsService {
     const now = new Date();
     const vendor = await this.prisma.restaurant.findFirst({
       where: { id, ...PUBLIC_VENDOR_WHERE },
-      include: vendorDetailInclude(this.prisma.product.fields, now),
+      select: vendorDetailSelect(this.prisma.product.fields, now),
     });
     if (!vendor) throw new NotFoundException(`Vendeur "${id}" introuvable.`);
 
@@ -300,7 +315,7 @@ export class VendorsService {
         adminApprovedAt: new Date(),
         adminApprovedById: adminUserId,
       },
-      include: VENDOR_PUBLIC_INCLUDE,
+      include: VENDOR_RELATIONS,
     });
 
     this.logger.log(`Admin ${adminUserId} a approuvé le vendeur ${vendor.nom} (${id})`);

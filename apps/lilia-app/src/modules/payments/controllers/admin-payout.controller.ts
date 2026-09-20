@@ -29,6 +29,7 @@ import {
 } from '../dto/payout.dto';
 import { toMsisdn } from '../providers/pawapay/pawapay.mapper';
 import { PawaPaySignatureService } from '../providers/pawapay/pawapay-signature.service';
+import { WebhookReceptionMonitor } from '../services/webhook-reception.monitor';
 import { PlatformSettingsService } from '../../platform-settings/platform-settings.service';
 
 /**
@@ -55,6 +56,7 @@ export class AdminPayoutController {
     private readonly prisma: PrismaService,
     private readonly signature: PawaPaySignatureService,
     private readonly config: ConfigService,
+    private readonly reception: WebhookReceptionMonitor,
     private readonly settingsService: PlatformSettingsService,
   ) {}
 
@@ -358,21 +360,24 @@ export class AdminPayoutController {
     const days = Math.min(Math.max(Number(daysRaw) || 7, 1), 90);
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-    const [bySource, lastWebhookAt, allTimeWebhooks] = await Promise.all([
-      this.events.countBySource(since),
-      this.events.lastWebhookAt(),
-      this.prisma.paymentEvent.count({ where: { source: 'WEBHOOK' } }),
-    ]);
+    const [bySource, lastWebhookAt, allTimeWebhooks, rejected] =
+      await Promise.all([
+        this.events.countBySource(since),
+        this.events.lastWebhookAt(),
+        this.prisma.paymentEvent.count({ where: { source: 'WEBHOOK' } }),
+        this.reception.summary(days),
+      ]);
 
     const signatureConfigured = this.signature.isEnabled;
     const allowlist = (this.config.get<string>('PAWAPAY_CALLBACK_IPS') ?? '')
       .split(',')
       .map((ip) => ip.trim())
       .filter(Boolean);
+    const paymentMode = this.config.get<string>('PAYMENT_MODE') ?? 'MANUAL';
 
     return {
       data: {
-        paymentMode: this.config.get<string>('PAYMENT_MODE') ?? 'MANUAL',
+        paymentMode,
         authentication: {
           // Fail-closed : sans l'un des deux, tout callback est refusé en 401.
           configured: signatureConfigured || allowlist.length > 0,
@@ -391,7 +396,132 @@ export class AdminPayoutController {
          * de paiement n'a jamais été bouclée par sa voie nominale.
          */
         webhooksEverReceived: allTimeWebhooks,
+        /**
+         * Callbacks **refusés à la porte**, comptés hors base (cf.
+         * `WebhookReceptionMonitor`). C'est ce qui sépare « personne ne frappe »
+         * de « nous n'ouvrons pas ».
+         */
+        rejectedCallbacks: rejected,
+        diagnosis: diagnoseWebhookReception({
+          paymentMode,
+          authConfigured: signatureConfigured || allowlist.length > 0,
+          webhooksEverReceived: allTimeWebhooks,
+          rejectedTotal: rejected.total,
+          rejectedByReason: rejected.byReason,
+          monitorAvailable: rejected.available,
+        }),
       },
     };
   }
+}
+
+/** Ce que l'exploitant doit faire, déduit de ce qu'on observe. */
+export interface WebhookDiagnosis {
+  /** `ok` | `not-applicable` | `unknown` | `action-required` */
+  state: 'ok' | 'not-applicable' | 'unknown' | 'action-required';
+  summary: string;
+  /** Le geste à faire, dans l'ordre. Vide quand `state = ok`. */
+  nextSteps: string[];
+}
+
+/**
+ * Traduit l'état observé en **conduite à tenir**.
+ *
+ * ## Pourquoi cette fonction existe
+ *
+ * L'endpoint servait déjà les bons chiffres. Il ne servait pas de conclusion —
+ * et c'est la conclusion qui manquait : la production a tourné trois semaines
+ * en `PAYMENT_MODE=PAWAPAY` avec `webhooksEverReceived: 0`, sans que personne
+ * n'en tire quoi que ce soit, parce que ce zéro admet deux lectures opposées.
+ *
+ * | Observé | Ce que ça veut dire | Geste |
+ * |---|---|---|
+ * | 0 reçu, 0 refusé | personne ne frappe | déclarer l'URL chez le prestataire |
+ * | 0 reçu, N refusés `signature:*` | il frappe, on refuse | corriger `PAWAPAY_PUBLIC_KEY` |
+ * | 0 reçu, N refusés `ip-*` | il frappe, on refuse | corriger `PAWAPAY_CALLBACK_IPS` |
+ * | 0 reçu, N refusés `not-configured` | on n'a armé aucune authentification | poser l'une des deux |
+ * | ≥ 1 reçu | la voie nominale a fonctionné | — |
+ *
+ * Fonction **pure**, isolée du contrôleur : c'est une règle de décision, elle
+ * se teste sur une table de cas et non en montant un module Nest.
+ */
+export function diagnoseWebhookReception(input: {
+  paymentMode: string;
+  authConfigured: boolean;
+  webhooksEverReceived: number;
+  rejectedTotal: number;
+  rejectedByReason: Record<string, number>;
+  monitorAvailable: boolean;
+}): WebhookDiagnosis {
+  if (input.paymentMode !== 'PAWAPAY') {
+    return {
+      state: 'not-applicable',
+      summary: `Mode ${input.paymentMode} : le prestataire n'émet pas de callback.`,
+      nextSteps: [],
+    };
+  }
+
+  if (input.webhooksEverReceived > 0) {
+    return {
+      state: 'ok',
+      summary: `${input.webhooksEverReceived} callback(s) reçus et authentifiés depuis l'origine.`,
+      nextSteps: [],
+    };
+  }
+
+  if (!input.authConfigured) {
+    return {
+      state: 'action-required',
+      summary:
+        'Aucune authentification de callback armée : le webhook refuse tout ' +
+        'en 401, et seul le cron de réconciliation confirme les paiements.',
+      nextSteps: [
+        'Poser PAWAPAY_PUBLIC_KEY (recommandé) ou PAWAPAY_CALLBACK_IPS sur Render.',
+      ],
+    };
+  }
+
+  if (input.rejectedTotal > 0) {
+    const motif = Object.keys(input.rejectedByReason).sort(
+      (a, b) => input.rejectedByReason[b] - input.rejectedByReason[a],
+    )[0];
+    const geste = motif.startsWith('signature')
+      ? 'Vérifier PAWAPAY_PUBLIC_KEY : elle doit être la clé publique du compte marchand, et « Sign all callbacks » doit être activé côté prestataire.'
+      : motif.startsWith('ip')
+        ? 'Compléter PAWAPAY_CALLBACK_IPS avec les adresses réellement observées dans les logs de refus.'
+        : 'Lire le motif de refus dans les journaux et corriger la configuration correspondante.';
+
+    return {
+      state: 'action-required',
+      summary:
+        `Le prestataire appelle bien (${input.rejectedTotal} tentative(s) sur ` +
+        `la fenêtre) mais **toutes sont refusées** — motif principal : ${motif}.`,
+      nextSteps: [geste],
+    };
+  }
+
+  if (!input.monitorAvailable) {
+    return {
+      state: 'unknown',
+      summary:
+        'Aucun callback reçu, et le compteur de refus est indisponible ' +
+        '(Redis) : impossible de dire si le prestataire appelle.',
+      nextSteps: ['Rétablir Redis, puis relire ce diagnostic.'],
+    };
+  }
+
+  return {
+    state: 'action-required',
+    summary:
+      'Aucun callback reçu et aucun refus enregistré : le prestataire ne ' +
+      "nous appelle pas. Les paiements ne sont confirmés que par l'interrogation " +
+      'du client et le cron de réconciliation.',
+    nextSteps: [
+      "Déclarer l'URL de callback dans le tableau de bord pawaPay " +
+        '(Callback URLs) : <base>/webhooks/pawapay/deposits pour les ' +
+        'encaissements, <base>/webhooks/pawapay/payouts pour les reversements.',
+      'Activer « Sign all callbacks » dans la section API Tokens.',
+      'Rejouer un encaissement réel et vérifier que ce diagnostic passe à « ok ».',
+    ],
+  };
 }

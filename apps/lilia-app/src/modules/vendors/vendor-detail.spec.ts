@@ -61,8 +61,16 @@ describe('VendorsService.findOne — détail vendeur', () => {
     product: { fields: { availableFrom: 'F', availableUntil: 'U' } },
   };
 
+  /**
+   * Le bloc de lecture réellement passé à Prisma.
+   *
+   * ⚠️ `select` et non `include` depuis le 20/09/2026 : `findOne` sert une
+   * projection en liste blanche (`PUBLIC_VENDOR_SELECT`), un `include` laissant
+   * partir tous les scalaires du modèle sur une route publique — dont les
+   * colonnes de reversement du vendeur.
+   */
   const includeOf = () =>
-    prisma.restaurant.findFirst.mock.calls[0][0].include as Record<
+    prisma.restaurant.findFirst.mock.calls[0][0].select as Record<
       string,
       Record<string, unknown>
     >;

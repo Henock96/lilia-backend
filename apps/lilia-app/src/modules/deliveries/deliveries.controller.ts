@@ -141,6 +141,31 @@ export class DeliveriesController {
   }
 
   /**
+   * GET /deliveries/:id/assignments
+   *
+   * L'historique des livreurs d'une course : qui, quand, combien de temps,
+   * pourquoi retiré, qui a réassigné. Aucune de ces questions n'avait de
+   * réponse avant le journal — `Delivery.delivererId` ne porte que la main
+   * courante, et une réassignation l'écrase.
+   *
+   * ⚠️ Cette route existe **aussi** pour rendre l'écriture observable : une
+   * table qu'on remplit sans jamais la lire se dégrade en silence, jusqu'au
+   * jour où on en a besoin — c'est-à-dire pendant un litige.
+   *
+   * Ni le livreur ni le client n'y ont accès (cf. `findAssignmentHistory`).
+   */
+  @Get(':id/assignments')
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @ApiOperation({ summary: 'Historique des livreurs d\'une course' })
+  @ApiParam({ name: 'id' })
+  findAssignmentHistory(
+    @Param('id') id: string,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return this.deliveriesService.findAssignmentHistory(id, fbUser.uid);
+  }
+
+  /**
    * PATCH /deliveries/:id/status
    * Met à jour le statut d'une livraison
    */

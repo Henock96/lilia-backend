@@ -75,3 +75,140 @@ export const PUBLIC_VENDOR_ORDER_BY = [
   { isFeatured: 'desc' },
   { createdAt: 'desc' },
 ] as const satisfies Prisma.RestaurantOrderByWithRelationInput[];
+
+/**
+ * Colonnes de `Restaurant` que les lectures **publiques** ont le droit de
+ * servir. Liste blanche, jamais liste noire — voir plus bas pourquoi.
+ *
+ * ## Le défaut que cette constante supprime
+ *
+ * Les cinq lectures publiques de vendeur (`GET /vendors`, `/vendors/:id`,
+ * `GET /restaurants`, `/restaurants/:id`, `/restaurants/popular`) passaient un
+ * `include:` Prisma. Or `include` ne choisit que des **relations** : tous les
+ * champs scalaires du modèle partent avec, sans qu'on ait à les nommer.
+ *
+ * Elles publiaient donc, sans authentification :
+ *
+ * | Champ | Ce que ça donne à un inconnu |
+ * |---|---|
+ * | `payoutPhoneNumber` | le numéro Mobile Money qui encaisse **tout** le chiffre d'affaires du vendeur |
+ * | `payoutAccountName` | le nom du titulaire de ce compte |
+ * | `payoutProvider` | son opérateur |
+ * | `commissionPercent` | les conditions commerciales négociées, lisibles par ses concurrents |
+ * | `email` | l'adresse personnelle du propriétaire |
+ * | `ownerId` | un identifiant interne de compte |
+ *
+ * L'**écriture** de ces colonnes était pourtant soigneusement fermée :
+ * `payoutPhoneNumber` et `payoutProvider` sont réservés à
+ * `PATCH /admin/vendors/:id/payout-account` et volontairement absents
+ * d'`UpdateRestaurantDto`, précisément parce qu'« un compte compromis
+ * détournerait tous les reversements suivants ». La lecture, elle, n'a jamais
+ * été fermée. Vérifié en production le 20/09/2026 : quatre numéros en clair sur
+ * un simple `curl`.
+ *
+ * ## Pourquoi une liste blanche, et pas une liste d'exclusion
+ *
+ * Une liste noire (`omit: { payoutPhoneNumber: true, … }`) aurait corrigé le
+ * symptôme du jour et reproduit le défaut au suivant : c'est l'ajout des
+ * colonnes de reversement, en août 2026, qui a rendu publique une information
+ * qui ne l'était pas la veille — **sans qu'une seule ligne des cinq requêtes ne
+ * change**. Une liste blanche a la propriété inverse : une colonne ajoutée au
+ * modèle n'est pas servie tant que personne ne l'a inscrite ici.
+ *
+ * `vendor-public-projection.spec.ts` rend ce choix exigible : il compare cette
+ * liste et {@link WITHHELD_VENDOR_FIELDS} à `Prisma.RestaurantScalarFieldEnum`
+ * et échoue tant qu'une colonne du schéma n'est pas classée d'un côté ou de
+ * l'autre. Ajouter un champ au modèle casse donc la compilation des tests, et
+ * c'est un humain qui tranche — pas un `include`.
+ *
+ * ⚠️ Réservée aux lectures **publiques**. Les vues d'administration
+ * (`/admin/vendors`), la vue du propriétaire sur sa propre boutique
+ * (`GET /restaurants/mine`) et les réponses de création/approbation continuent
+ * de servir le modèle entier : ce sont leurs destinataires légitimes.
+ */
+export const PUBLIC_VENDOR_SELECT = {
+  // ── Identité et localisation ────────────────────────────────────────────
+  id: true,
+  nom: true,
+  description: true,
+  adresse: true,
+  // Le téléphone **de l'établissement**, pas celui du propriétaire : c'est le
+  // numéro que le client appelle quand il cherche sa commande. Il est déjà sur
+  // la devanture.
+  phone: true,
+  imageUrl: true,
+  imagePublicId: true,
+  latitude: true,
+  longitude: true,
+  quartierId: true,
+  deliveryInstructions: true,
+  vendorType: true,
+
+  // ── État commandable ────────────────────────────────────────────────────
+  isOpen: true,
+  // Toujours `true` sur une réponse publique (cf. PUBLIC_VENDOR_WHERE), mais
+  // servi quand même : les clients déployés désérialisent ces champs, et les
+  // retirer casserait leur parsing pour un gain de confidentialité nul.
+  isActive: true,
+  adminApproved: true,
+  onboardingStatus: true,
+  // Classement : les clients les lisent pour le badge « en vedette » et pour
+  // reproduire l'ordre du serveur lors d'une fusion de pages.
+  displayOrder: true,
+  isFeatured: true,
+
+  // ── Ce qu'il faut pour composer un panier ───────────────────────────────
+  deliveryPriceMode: true,
+  fixedDeliveryFee: true,
+  estimatedDeliveryTimeMin: true,
+  estimatedDeliveryTimeMax: true,
+  minimumOrderAmount: true,
+  supportsDelivery: true,
+  supportsPickup: true,
+  acceptsPreorders: true,
+  preorderLeadHours: true,
+  maxOrdersPerDay: true,
+
+  createdAt: true,
+  updatedAt: true,
+} as const satisfies Prisma.RestaurantSelect;
+
+/**
+ * Colonnes de `Restaurant` **délibérément retenues** hors des lectures
+ * publiques, avec la raison de chacune.
+ *
+ * Ce n'est pas une constante décorative : `vendor-public-projection.spec.ts`
+ * exige que `PUBLIC_VENDOR_SELECT ∪ WITHHELD_VENDOR_FIELDS` couvre exactement
+ * les colonnes du modèle. Elle existe pour qu'« on a oublié d'y penser » et
+ * « on a décidé de ne pas le publier » cessent d'être indiscernables.
+ */
+export const WITHHELD_VENDOR_FIELDS = {
+  /** Compte de reversement — un numéro qui encaisse tout le CA d'un commerce. */
+  payoutPhoneNumber: 'compte de reversement',
+  payoutProvider: 'compte de reversement',
+  payoutAccountName: 'compte de reversement',
+  payoutVerifiedAt: 'compte de reversement',
+  payoutVerifiedById: 'compte de reversement',
+
+  /** Conditions commerciales, négociées vendeur par vendeur. */
+  commissionPercent: 'condition commerciale',
+
+  /** Identité du propriétaire, distincte du contact de l'établissement. */
+  email: 'donnée personnelle du propriétaire',
+  ownerId: 'identifiant interne de compte',
+
+  /** Journal d'administration : qui a validé quoi, et quand. */
+  adminApprovedAt: 'trace d’administration',
+  adminApprovedById: 'trace d’administration',
+  activatedAt: 'trace d’administration',
+  activatedById: 'trace d’administration',
+
+  /** Drapeau d'exploitation lu par le cron d'ouverture — sans sens pour un client. */
+  manualOverride: 'drapeau d’exploitation',
+
+  /**
+   * Champ mort : conservé pour une réintroduction de l'alcool sans migration,
+   * mais `ProductValidatorService` rejette `ALCOHOL` et rien ne le lit.
+   */
+  minAgeRequired: 'champ mort (alcool non commercialisé)',
+} as const satisfies Partial<Record<keyof Prisma.RestaurantSelect, string>>;
