@@ -5,6 +5,7 @@ import { RestaurantScheduleService } from './restaurant-schedule.service';
 import { PreorderReminderService } from './preorder-reminder.service';
 import { OrderExpiryService } from './order-expiry.service';
 import { PaymentReconciliationService } from './payment-reconciliation.service';
+import { WebhookSilenceService } from './webhook-silence.service';
 import { TrackingRetentionService } from './tracking-retention.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsCoreModule } from '../notifications/notifications-core.module';
@@ -31,6 +32,7 @@ import { PaymentCoreModule } from '../payments/payment-core.module';
         PreorderReminderService,
         OrderExpiryService,
         PaymentReconciliationService,
+        WebhookSilenceService,
         TrackingRetentionService,
         PrismaService,
     ],

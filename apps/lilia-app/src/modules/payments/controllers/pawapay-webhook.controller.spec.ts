@@ -11,6 +11,7 @@ import { PaymentService } from '../services/payment.service';
 import { RestaurantPayoutService } from '../services/restaurant-payout.service';
 import { PaymentEventService } from '../services/payment-event.service';
 import { PawaPaySignatureService } from '../providers/pawapay/pawapay-signature.service';
+import { WebhookReceptionMonitor } from '../services/webhook-reception.monitor';
 import { PawaPayCallbackDto } from '../dto/pawapay-webhook.dto';
 
 /**
@@ -60,6 +61,14 @@ describe('PawaPayWebhookController', () => {
       rawBody: Buffer.from('{}'),
     }) as unknown as Request;
 
+  /**
+   * Comptage des refus — best-effort, et volontairement muet ici : ce fichier
+   * vérifie la **décision** de sécurité, qui est prise avant lui.
+   */
+  const reception = {
+    recordRejection: jest.fn().mockResolvedValue(undefined),
+  };
+
   const depositCallback = (
     overrides: Partial<PawaPayCallbackDto> = {},
   ): PawaPayCallbackDto =>
@@ -87,6 +96,13 @@ describe('PawaPayWebhookController', () => {
         { provide: PaymentEventService, useValue: events },
         { provide: PawaPaySignatureService, useValue: signature },
         { provide: ConfigService, useValue: config },
+        {
+          provide: WebhookReceptionMonitor,
+          // Comptage best-effort des refus : il rend distinguables « personne
+          // ne frappe » et « on refuse tout ». Sans effet sur la décision de
+          // sécurité, qui est prise avant lui.
+          useValue: reception,
+        },
       ],
     }).compile();
 

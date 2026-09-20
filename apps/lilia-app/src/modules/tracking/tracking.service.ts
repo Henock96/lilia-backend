@@ -208,6 +208,34 @@ export class TrackingService implements OnModuleDestroy {
     return raw ? JSON.parse(raw) : null;
   }
 
+  /**
+   * Oublie la dernière position connue d'une commande.
+   *
+   * Appelé à la **réassignation**. Sans lui, `delivery:{orderId}` gardait la
+   * position de l'ancien livreur jusqu'à son TTL (5 min) : un client ouvrant le
+   * suivi dans cet intervalle recevait, dès son `order:watch`, un point figé
+   * appartenant à quelqu'un qui n'est plus sur la course — et il le suivait,
+   * puisque rien ne le distingue d'une position vivante.
+   *
+   * ⚠️ On n'efface **pas** l'entrée GEO `driver_positions` : elle est indexée
+   * par livreur, pas par commande. L'ancien livreur peut très bien être en
+   * course sur une autre commande ; supprimer sa position y couperait le suivi.
+   * C'est la clé par commande qui portait la donnée périmée, et elle seule.
+   *
+   * Best-effort, comme toute écriture de tracking : une panne Redis ne doit pas
+   * empêcher une réassignation, qui est un geste d'exploitation.
+   */
+  async forgetLastPosition(orderId: string): Promise<void> {
+    if (!this.redis) return;
+    try {
+      await this.redis.del(`delivery:${orderId}`);
+    } catch (err) {
+      this.logger.warn(
+        `Position live non purgée pour ${orderId} : ${(err as Error).message}`,
+      );
+    }
+  }
+
   async assertCanWatchOrder(
     orderId: string,
     firebaseUid: string,

@@ -22,6 +22,7 @@ import { PaymentService, maskRef } from '../services/payment.service';
 import { RestaurantPayoutService } from '../services/restaurant-payout.service';
 import { PaymentEventService } from '../services/payment-event.service';
 import { PawaPaySignatureService } from '../providers/pawapay/pawapay-signature.service';
+import { WebhookReceptionMonitor } from '../services/webhook-reception.monitor';
 import { PawaPayCallbackDto } from '../dto/pawapay-webhook.dto';
 import {
   mapPawaPayState,
@@ -64,6 +65,7 @@ export class PawaPayWebhookController {
     private readonly events: PaymentEventService,
     private readonly signature: PawaPaySignatureService,
     private readonly config: ConfigService,
+    private readonly reception: WebhookReceptionMonitor,
   ) {}
 
   @Public()
@@ -276,12 +278,26 @@ export class PawaPayWebhookController {
    *
    * Un refus est donc toujours une anomalie : soit la configuration est
    * incomplète, soit quelqu'un frappe à la porte. Les deux méritent d'être vus.
+   *
+   * ⚠️ **Sentry ne suffisait pas.** Une alerte part vers un service tiers que
+   * personne n'interroge depuis l'application ; en base, le refus ne laissait
+   * *rien*, puisque le 401 est levé avant toute écriture. Résultat :
+   * `webhooksEverReceived: 0` se lisait aussi bien comme « le prestataire ne
+   * nous appelle pas » que comme « nous refusons tous ses appels » — deux
+   * situations qui appellent des gestes opposés. Le compteur ci-dessous rend
+   * les deux cas distinguables depuis `GET /admin/payments/webhook-health`.
    */
   private alertRejected(route: string, reason: string) {
     Sentry.captureMessage(
       `pawapay.callback_rejected — ${route} refusé (${reason})`,
       'warning',
     );
+    // Best-effort et volontairement non attendu : un refus est une décision de
+    // sécurité, elle ne doit pas dépendre de la disponibilité de Redis. Le
+    // `catch` est ici, pas seulement dans le moniteur — une promesse rejetée
+    // qu'on se contente d'ignorer devient un rejet non capturé, et Node tue le
+    // processus.
+    void this.reception.recordRejection(route, reason).catch(() => undefined);
   }
 
   private toResponseStatus(

@@ -5,6 +5,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DeliveriesService } from './deliveries.service';
 import { DeliveryQueryService } from './delivery-query.service';
 import { DeliveryAssignmentService } from './delivery-assignment.service';
+import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
@@ -22,6 +23,12 @@ import { OrderTransitionService } from '../orders/order-transition.service';
  * assertCanViewDelivery). Fige le comportement avant extraction d'un
  * DeliveryQueryService. Doit rester vert après extraction.
  */
+/// Double du service de tracking : seule la purge de position est appelée
+/// depuis le dispatch (à la réassignation), et elle est best-effort.
+const trackingServiceDouble = {
+  forgetLastPosition: jest.fn().mockResolvedValue(undefined),
+};
+
 describe('DeliveriesService (caractérisation — lectures)', () => {
   let service: DeliveriesService;
 
@@ -56,12 +63,15 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
         DeliveryQueryService, // service réel : DeliveriesService y délègue les lectures
         DeliveryAssignmentService, // requis par DeliveriesService — non sollicité ici
         { provide: PrismaService, useValue: prisma },
+        // Service réel : le journal d'assignation s'écrit dans la même
+        // transaction que le statut, ses écritures doivent être exercées.
+        DeliveryAssignmentLogService,
         { provide: NotificationsService, useValue: {} },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         { provide: OrderStateMachine, useValue: {} },
         { provide: PlatformSettingsService, useValue: {} },
         { provide: TrackingGateway, useValue: {} },
-        { provide: TrackingService, useValue: {} },
+        { provide: TrackingService, useValue: trackingServiceDouble },
       ],
     }).compile();
     service = module.get<DeliveriesService>(DeliveriesService);

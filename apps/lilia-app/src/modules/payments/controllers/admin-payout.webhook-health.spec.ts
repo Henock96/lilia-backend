@@ -7,6 +7,7 @@ import { AdminAuditService } from '../../admin-audit/admin-audit.service';
 import { RestaurantPayoutService } from '../services/restaurant-payout.service';
 import { PaymentEventService } from '../services/payment-event.service';
 import { PawaPaySignatureService } from '../providers/pawapay/pawapay-signature.service';
+import { WebhookReceptionMonitor } from '../services/webhook-reception.monitor';
 import { PlatformSettingsService } from '../../platform-settings/platform-settings.service';
 
 /**
@@ -46,6 +47,21 @@ describe('AdminPayoutController — webhookHealth', () => {
   let env: Record<string, string | undefined> = {};
   const config = { get: (key: string) => env[key] };
 
+  /**
+   * Compteur des callbacks **refusés à la porte** (cf. `WebhookReceptionMonitor`).
+   * Par défaut : Redis répond, et personne n'a frappé — c'est la situation
+   * constatée en production, celle qui envoie déclarer l'URL chez le
+   * prestataire plutôt que corriger une clé.
+   */
+  const reception = {
+    summary: jest.fn().mockResolvedValue({
+      total: 0,
+      byReason: {},
+      lastRejectedAt: null,
+      available: true,
+    }),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
     signatureEnabled = false;
@@ -68,6 +84,7 @@ describe('AdminPayoutController — webhookHealth', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: PawaPaySignatureService, useValue: signature },
         { provide: ConfigService, useValue: config },
+        { provide: WebhookReceptionMonitor, useValue: reception },
         { provide: PlatformSettingsService, useValue: settingsService },
       ],
     }).compile();

@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  DeliveryAssignmentOutcome,
   DeliveryStatus,
   DriverStatus,
   OrderStatus,
@@ -43,6 +44,27 @@ import {
   DeliveryPickedUpEvent,
   DeliveryUnassignedEvent,
 } from '../events/delivery-events';
+import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
+import { TrackingService } from '../tracking/tracking.service';
+
+/**
+ * Statuts de commande pour lesquels confier une course a un sens.
+ *
+ * Écrit **une fois** : la liste vivait dans `assignDelivererToOrder`, et
+ * `assignDeliverer` (`PATCH /deliveries/:id/assign`) ne la consultait pas du
+ * tout. On pouvait donc réassigner une course **déjà livrée** par l'autre
+ * porte — ce qui effaçait l'économie du livreur qui l'avait terminée
+ * (`CLEARED_DRIVER_ECONOMICS`) et rattachait sa course à quelqu'un d'autre.
+ * Le commentaire du schéma affirmait pourtant l'invariant « une fois
+ * `Order.status = LIVRER`, toute réassignation est refusée » : il n'était vrai
+ * que sur un des deux chemins.
+ */
+export const ASSIGNABLE_ORDER_STATUSES: OrderStatus[] = [
+  OrderStatus.PAYER,
+  OrderStatus.EN_PREPARATION,
+  OrderStatus.PRET,
+  OrderStatus.EN_ROUTE,
+];
 
 /**
  * Assignation et acceptation de livraisons (LIL-134).
@@ -59,7 +81,62 @@ export class DeliveryAssignmentService {
     private readonly stateMachine: OrderStateMachine,
     private readonly transitions: OrderTransitionService,
     private readonly platformSettings: PlatformSettingsService,
+    private readonly assignmentLog: DeliveryAssignmentLogService,
+    private readonly tracking: TrackingService,
   ) {}
+
+  /**
+   * La commande est-elle dans un état où confier une course a un sens ?
+   *
+   * Séparée de `assertGroundAllowsAssignment` parce qu'`assignDelivererToOrder`
+   * doit pouvoir la poser **avant** de créer la ligne `Delivery` : sinon une
+   * commande annulée se voyait dotée d'une livraison vide avant d'être refusée.
+   */
+  private assertOrderAssignable(status: OrderStatus): void {
+    if (!ASSIGNABLE_ORDER_STATUSES.includes(status)) {
+      throw new BadRequestException(
+        `Impossible d'assigner un livreur à une commande au statut « ${status} ».`,
+      );
+    }
+  }
+
+  /**
+   * Le terrain permet-il encore de changer de main ?
+   *
+   * Trois refus, et chacun protège de l'argent :
+   *
+   *  - **commande terminée ou annulée** — réassigner une commande `LIVRER`
+   *    effaçait le snapshot économique du livreur qui l'avait livrée et
+   *    attribuait sa course à un autre. Le montant dû disparaissait, et
+   *    `DriverSettlementService` cessait de le voir (`payableWhere` exige
+   *    `driverEconomicsFrozenAt`) ;
+   *  - **course déjà livrée** — même chose, vue depuis la livraison : une
+   *    commande peut être `EN_ROUTE` avec une `Delivery` en `LIVRER` le temps
+   *    d'une transaction, et surtout `Order.status` ne suffit pas à décrire le
+   *    terrain ;
+   *  - **course déjà réglée** — le livreur a été payé pour elle. Changer son
+   *    titulaire ferait couvrir par son règlement une course attribuée à
+   *    quelqu'un d'autre.
+   */
+  private assertGroundAllowsAssignment(delivery: {
+    status: DeliveryStatus;
+    driverSettlementId?: string | null;
+    order: { status: OrderStatus };
+  }): void {
+    this.assertOrderAssignable(delivery.order.status);
+
+    if (delivery.status === DeliveryStatus.LIVRER) {
+      throw new BadRequestException(
+        'Cette course a été livrée : elle ne peut plus changer de livreur.',
+      );
+    }
+
+    if (delivery.driverSettlementId) {
+      throw new BadRequestException(
+        'Cette course est déjà couverte par un règlement livreur : elle ne peut plus changer de main.',
+      );
+    }
+  }
 
   private async getUserOrThrow(firebaseUid: string) {
     const user = await this.prisma.user.findUnique({
@@ -193,17 +270,9 @@ export class DeliveryAssignmentService {
 
     // Un livreur ne peut être assigné que sur une commande payée et en cours de
     // traitement — pas sur EN_ATTENTE (non payée) ni sur une commande terminée.
-    const assignableStatuses: OrderStatus[] = [
-      OrderStatus.PAYER,
-      OrderStatus.EN_PREPARATION,
-      OrderStatus.PRET,
-      OrderStatus.EN_ROUTE,
-    ];
-    if (!assignableStatuses.includes(order.status)) {
-      throw new BadRequestException(
-        `Impossible d'assigner un livreur à une commande au statut « ${order.status} ».`,
-      );
-    }
+    // Le contrôle est posé ici pour ne pas créer de `Delivery` sur une commande
+    // qu'on va refuser juste après ; `_doAssign` le rejoue, il est l'arbitre.
+    this.assertOrderAssignable(order.status);
 
     // Trouver ou créer l'enregistrement Delivery
     let delivery = await this.prisma.delivery.findUnique({
@@ -242,6 +311,7 @@ export class DeliveryAssignmentService {
       );
     }
 
+    this.assertGroundAllowsAssignment(delivery);
     await this.assertAssignable(delivererId);
 
     // Livreur qui tenait la mission avant ce changement. On le mémorise
@@ -249,6 +319,7 @@ export class DeliveryAssignmentService {
     // en `ON_DELIVERY` à vie — il ne pouvait plus accepter aucune course et
     // n'était jamais prévenu que la mission lui avait été retirée.
     const previousDelivererId: string | null = delivery.delivererId ?? null;
+    const previousDeliveryStatus: DeliveryStatus = delivery.status;
 
     if (previousDelivererId === delivererId) {
       throw new BadRequestException(
@@ -256,26 +327,89 @@ export class DeliveryAssignmentService {
       );
     }
 
-    const updated = await this.prisma.delivery.update({
-      where: { id: delivery.id },
-      data: {
-        delivererId,
-        status: DeliveryStatus.ASSIGNER,
-        // La course change de mains : l'économie du livreur précédent n'a plus
-        // de titulaire. Seul celui qui TERMINE est payé — la conserver ferait
-        // porter à la course une rémunération attribuée à personne, que le
-        // calcul de contribution compterait et qu'un administrateur lirait
-        // comme un montant dû. Le prochain livreur réécrira la sienne en
-        // acceptant.
-        ...CLEARED_DRIVER_ECONOMICS,
-      },
-      include: {
-        deliverer: {
-          select: { id: true, nom: true, phone: true, imageUrl: true },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // ── Verrou optimiste ───────────────────────────────────────────────
+      //
+      // L'écriture était un `update` **inconditionnel**, et toutes les gardes
+      // ci-dessus sont évaluées hors transaction. Deux vendeurs (ou deux
+      // onglets d'administration) qui assignaient à la même seconde lisaient
+      // tous deux `delivererId = null`, passaient tous deux les contrôles, et
+      // la dernière écriture gagnait — en silence. Les DEUX livreurs
+      // recevaient « 🚚 Nouvelle mission » ; celui qui avait perdu ne
+      // l'apprenait jamais, parce que l'événement de l'autre annonçait
+      // `previousDelivererId = null` et ne libérait donc personne.
+      //
+      // On revendique l'état **lu** : le statut ET le titulaire. Le second
+      // appel ne trouve plus rien à mettre à jour et reçoit un 409.
+      const claimed = await tx.delivery.updateMany({
+        where: {
+          id: delivery.id,
+          status: previousDeliveryStatus,
+          delivererId: previousDelivererId,
         },
-        order: true,
-      },
+        data: {
+          delivererId,
+          status: DeliveryStatus.ASSIGNER,
+          // La course change de mains : l'économie du livreur précédent n'a
+          // plus de titulaire. Seul celui qui TERMINE est payé — la conserver
+          // ferait porter à la course une rémunération attribuée à personne,
+          // que le calcul de contribution compterait et qu'un administrateur
+          // lirait comme un montant dû. Le prochain livreur réécrira la sienne
+          // en acceptant.
+          ...CLEARED_DRIVER_ECONOMICS,
+        },
+      });
+
+      if (claimed.count === 0) {
+        throw new ConflictException(
+          'Cette livraison vient d’être modifiée par quelqu’un d’autre. ' +
+            'Rechargez la commande avant de réassigner.',
+        );
+      }
+
+      // Le journal suit l'écriture dans la MÊME transaction : une trace qui
+      // peut diverger de l'état qu'elle décrit ne vaut pas mieux que pas de
+      // trace.
+      if (previousDelivererId) {
+        await this.assignmentLog.close(
+          tx,
+          delivery.id,
+          DeliveryAssignmentOutcome.REASSIGNED,
+        );
+      }
+      await this.assignmentLog.open(tx, {
+        deliveryId: delivery.id,
+        orderId: delivery.orderId,
+        delivererId,
+        assignedByUserId: user.id,
+        assignedByRole: user.role,
+      });
+
+      return tx.delivery.findUniqueOrThrow({
+        where: { id: delivery.id },
+        include: {
+          deliverer: {
+            select: { id: true, nom: true, phone: true, imageUrl: true },
+          },
+          order: true,
+        },
+      });
     });
+
+    // La course change de mains : la dernière position connue appartient à
+    // quelqu'un qui n'y est plus. La laisser en cache la ferait servir au
+    // prochain `order:watch` du client, figée, indiscernable d'une position
+    // vivante — pendant les 5 minutes du TTL.
+    //
+    // Après la transaction, et sans `await` : c'est un cache, son échec ne doit
+    // pas défaire une réassignation. Le pire cas est le comportement d'avant.
+    //
+    // ⚠️ Le `catch` est **ici**, pas seulement dans `forgetLastPosition`. Une
+    // promesse rejetée qu'on se contente de `void` devient un rejet non
+    // capturé, et Node tue le processus — la garde interne du service ne
+    // protège que tant que personne ne la retire. Un nettoyage de cache ne
+    // doit jamais pouvoir faire tomber l'API.
+    this.tracking.forgetLastPosition(delivery.orderId).catch(() => undefined);
 
     // Note: dépend de Prisma include sur order (cf. assignDeliverer / assignDelivererToOrder)
     // pour que isPreorder/scheduledFor arrivent. Ne pas narrow avec un select sans les ajouter.
@@ -296,6 +430,8 @@ export class DeliveryAssignmentService {
         isPreorder,
         scheduledFor ?? null,
         previousDelivererId,
+        previousDeliveryStatus,
+        delivery.order.userId,
       ),
     );
 
@@ -416,6 +552,11 @@ export class DeliveryAssignmentService {
         data: { driverStatus: DriverStatus.ON_DELIVERY },
       });
 
+      // Le délai de réponse du livreur ne se déduit d'aucune colonne de
+      // `Delivery` après une réassignation : `acceptedAt` y est écrasé à chaque
+      // main. Il vit donc sur la ligne de journal de CETTE main.
+      await this.assignmentLog.markAccepted(tx, deliveryId, now);
+
       return tx.delivery.findUniqueOrThrow({ where: { id: deliveryId } });
     });
 
@@ -475,15 +616,33 @@ export class DeliveryAssignmentService {
       );
     }
 
-    const claimed = await this.prisma.delivery.updateMany({
-      where: { id: deliveryId, status: DeliveryStatus.ASSIGNER },
-      data: { status: DeliveryStatus.EN_ATTENTE, delivererId: null },
-    });
-    if (claimed.count === 0) {
-      throw new ConflictException(
-        'Cette mission a changé d’état entre-temps. Rechargez vos missions.',
+    await this.prisma.$transaction(async (tx) => {
+      // Le titulaire est revendiqué en plus du statut : entre la lecture et
+      // l'écriture, un vendeur a pu confier la course à quelqu'un d'autre.
+      // Sans cette condition, le refus du livreur écarté effacerait le livreur
+      // fraîchement assigné, qui garderait sa notification pour une mission
+      // qui ne lui appartient plus.
+      const claimed = await tx.delivery.updateMany({
+        where: {
+          id: deliveryId,
+          status: DeliveryStatus.ASSIGNER,
+          delivererId: user.id,
+        },
+        data: { status: DeliveryStatus.EN_ATTENTE, delivererId: null },
+      });
+      if (claimed.count === 0) {
+        throw new ConflictException(
+          'Cette mission a changé d’état entre-temps. Rechargez vos missions.',
+        );
+      }
+
+      await this.assignmentLog.close(
+        tx,
+        deliveryId,
+        DeliveryAssignmentOutcome.DECLINED,
+        reason,
       );
-    }
+    });
 
     this.eventEmitter.emit(
       'delivery.unassigned',
@@ -538,23 +697,70 @@ export class DeliveryAssignmentService {
     // pas encore. La state machine porte déjà la règle PRET → EN_ROUTE par un
     // LIVREUR — c'est ICI qu'elle devait être évaluée, pas à l'acceptation.
     const previousOrderStatus = delivery.order.status;
-    this.stateMachine.assertTransition(
-      previousOrderStatus,
-      OrderStatus.EN_ROUTE,
-      'LIVREUR',
-    );
+
+    // ── Reprise après un premier livreur ──────────────────────────────────
+    //
+    // Une commande dont le premier livreur a échoué EN PLEINE COURSE reste
+    // `EN_ROUTE` : c'est délibéré (l'échec n'annule pas la commande, le vendeur
+    // arbitre). Le livreur suivant traversait alors ASSIGNER → ACCEPTER sans
+    // difficulté, puis butait ici sur `EN_ROUTE → EN_ROUTE`, qui n'existe pas
+    // dans la matrice. Il ne pouvait donc jamais atteindre `EN_TRANSIT` — et
+    // `LIVRER` n'étant atteignable que depuis `EN_TRANSIT`, la commande
+    // devenait **définitivement non livrable**. Le seul recours était un ADMIN
+    // forçant `LIVRER` par `PATCH /orders/:id/status`, ce qui laissait le
+    // second livreur `ON_DELIVERY` à vie et sans rémunération (son économie
+    // n'ayant jamais été gelée par une transition réussie).
+    //
+    // La commande n'a rien à faire : elle est déjà où elle doit être. Seule la
+    // livraison avance. On ne rejoue donc pas la transition — et on ne renvoie
+    // pas au client un second « votre commande est en route », qu'il a déjà
+    // reçu du premier livreur.
+    const resumesAfterFailure = previousOrderStatus === OrderStatus.EN_ROUTE;
+
+    if (!resumesAfterFailure) {
+      this.stateMachine.assertTransition(
+        previousOrderStatus,
+        OrderStatus.EN_ROUTE,
+        'LIVREUR',
+      );
+    }
 
     const now = new Date();
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const claimed = await tx.delivery.updateMany({
-        where: { id: deliveryId, status: DeliveryStatus.ACCEPTER },
+        where: {
+          id: deliveryId,
+          status: DeliveryStatus.ACCEPTER,
+          // Le titulaire fait partie de l'état revendiqué : réassigné entre sa
+          // lecture et son écriture, l'ancien livreur ne doit pas emporter la
+          // course avec lui.
+          delivererId: user.id,
+        },
         data: { status: DeliveryStatus.EN_TRANSIT, pickedUpAt: now },
       });
       if (claimed.count === 0) {
         throw new ConflictException(
           'Cette livraison a changé d’état entre-temps. Rechargez la mission.',
         );
+      }
+
+      await this.assignmentLog.markPickedUp(tx, deliveryId, now);
+
+      if (resumesAfterFailure) {
+        // Rien à faire avancer, mais tout à vérifier : le vendeur a pu annuler
+        // la commande pendant que ce second livreur était au comptoir. Sans ce
+        // contrôle, la reprise serait le seul chemin vers `EN_TRANSIT` à ne
+        // poser aucun verrou sur la commande.
+        const stillEnRoute = await tx.order.count({
+          where: { id: delivery.orderId, status: OrderStatus.EN_ROUTE },
+        });
+        if (stillEnRoute === 0) {
+          throw new ConflictException(
+            'Le statut de la commande a changé. Rechargez la mission avant de continuer.',
+          );
+        }
+        return tx.delivery.findUniqueOrThrow({ where: { id: deliveryId } });
       }
 
       // Verrou optimiste sur la commande aussi : le vendeur peut l'avoir
@@ -592,21 +798,30 @@ export class DeliveryAssignmentService {
 
     // 2. Le client reçoit « votre commande est en route » — maintenant, et
     // seulement maintenant.
-    this.eventEmitter.emit(
-      'order.status.updated',
-      new OrderStatusUpdatedEvent(
-        delivery.orderId,
-        delivery.order.userId,
-        delivery.order.restaurantId,
-        previousOrderStatus,
-        OrderStatus.EN_ROUTE,
-        user.id,
-        {
-          restaurantName: delivery.order.restaurant.nom,
-          totalAmount: delivery.order.total,
-        },
-      ),
-    );
+    //
+    // Sauf sur une reprise : aucune transition n'a eu lieu, la commande était
+    // déjà `EN_ROUTE`, et le client a reçu ce message du premier livreur.
+    // Émettre ici un `order.status.updated` de `EN_ROUTE` vers `EN_ROUTE`
+    // annoncerait un changement qui n'a pas eu lieu — et `DeliveriesListener`
+    // comme `OrdersListener` le traduiraient en push. C'est le changement de
+    // livreur, et lui seul, qui est annoncé au client (`delivery.assigned`).
+    if (!resumesAfterFailure) {
+      this.eventEmitter.emit(
+        'order.status.updated',
+        new OrderStatusUpdatedEvent(
+          delivery.orderId,
+          delivery.order.userId,
+          delivery.order.restaurantId,
+          previousOrderStatus,
+          OrderStatus.EN_ROUTE,
+          user.id,
+          {
+            restaurantName: delivery.order.restaurant.nom,
+            totalAmount: delivery.order.total,
+          },
+        ),
+      );
+    }
 
     return updated;
   }

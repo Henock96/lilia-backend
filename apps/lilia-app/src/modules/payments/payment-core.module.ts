@@ -19,6 +19,7 @@ import { MtnMomoProvider } from './providers/mtn-momo.provider';
 import { PawaPayProvider } from './providers/pawapay/pawapay.provider';
 import { PawaPayHttpService } from './providers/pawapay/pawapay-http.service';
 import { PawaPaySignatureService } from './providers/pawapay/pawapay-signature.service';
+import { WebhookReceptionMonitor } from './services/webhook-reception.monitor';
 
 /**
  * Paiements et reversements — **sans aucun controller**.
@@ -61,6 +62,7 @@ import { PawaPaySignatureService } from './providers/pawapay/pawapay-signature.s
     PaymentEventService,
     RestaurantPayoutService,
     PayoutStateMachine,
+    WebhookReceptionMonitor,
     // Fourni localement plutôt qu'importé d'`OrdersCoreModule` : le service est
     // sans état et sans dépendance, et l'importer tirerait ici tout le graphe
     // des commandes (fidélité, remboursements, parrainage). Même choix que
@@ -75,6 +77,7 @@ import { PawaPaySignatureService } from './providers/pawapay/pawapay-signature.s
     PawaPayHttpService,
     PawaPaySignatureService,
     PayoutStateMachine,
+    WebhookReceptionMonitor,
   ],
 })
 export class PaymentCoreModule {}

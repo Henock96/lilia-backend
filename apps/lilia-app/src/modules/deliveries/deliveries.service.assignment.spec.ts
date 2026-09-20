@@ -10,6 +10,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DeliveriesService } from './deliveries.service';
 import { DeliveryQueryService } from './delivery-query.service';
 import { DeliveryAssignmentService } from './delivery-assignment.service';
+import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
@@ -25,6 +26,12 @@ import { OrderTransitionService } from '../orders/order-transition.service';
  * (LIL-134) : assignDeliverer, assignDelivererToOrder, acceptDelivery.
  * Fige le comportement avant extraction d'un DeliveryAssignmentService.
  */
+/// Double du service de tracking : seule la purge de position est appelée
+/// depuis le dispatch (à la réassignation), et elle est best-effort.
+const trackingServiceDouble = {
+  forgetLastPosition: jest.fn().mockResolvedValue(undefined),
+};
+
 describe('DeliveriesService (caractérisation — assignation)', () => {
   let service: DeliveriesService;
 
@@ -38,6 +45,9 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
     // P0-4 : toute transition de statut écrit sa ligne d'historique dans la
     // MÊME transaction. Le client de transaction doit donc l'exposer.
     orderHistory: { create: jest.fn() },
+    // Journal d'assignation : ouvert et clos dans la même transaction que le
+    // statut de la livraison.
+    deliveryAssignment: { create: jest.fn(), updateMany: jest.fn() },
   };
   const prisma = {
     delivery: {
@@ -91,12 +101,15 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
         DeliveryQueryService,
         DeliveryAssignmentService, // service réel : DeliveriesService y délègue l'assignation
         { provide: PrismaService, useValue: prisma },
+        // Service réel : le journal d'assignation s'écrit dans la même
+        // transaction que le statut, ses écritures doivent être exercées.
+        DeliveryAssignmentLogService,
         { provide: NotificationsService, useValue: notifications },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: OrderStateMachine, useValue: stateMachine },
         { provide: PlatformSettingsService, useValue: platformSettings },
         { provide: TrackingGateway, useValue: {} },
-        { provide: TrackingService, useValue: {} },
+        { provide: TrackingService, useValue: trackingServiceDouble },
       ],
     }).compile();
     service = module.get<DeliveriesService>(DeliveriesService);
@@ -152,6 +165,7 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
         driverPayXaf: 350,
         driverEconomicsFrozenAt: new Date(),
         order: {
+          status: 'PRET',
           isPreorder: false,
           scheduledFor: null,
           restaurant: { nom: 'Resto', owner: { firebaseUid: 'uid' } },
@@ -161,14 +175,14 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
         { id: 'u1', role: 'RESTAURATEUR' },
         { id: 'liv-B', role: 'LIVREUR' },
       );
-      prisma.delivery.update.mockResolvedValue({
+      tx.delivery.findUniqueOrThrow.mockResolvedValue({
         id: 'd1',
         status: 'ASSIGNER',
       });
 
       await service.assignDeliverer('d1', 'liv-B', 'uid');
 
-      const data = prisma.delivery.update.mock.calls[0][0].data;
+      const data = tx.delivery.updateMany.mock.calls[0][0].data;
       expect(data.delivererId).toBe('liv-B');
       expect(data).toMatchObject({
         driverBaseXaf: null,
@@ -184,7 +198,9 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
       prisma.delivery.findUnique.mockResolvedValue({
         id: 'd1',
         orderId: 'o1',
+        status: 'EN_ATTENTE',
         order: {
+          status: 'PRET',
           isPreorder: false,
           scheduledFor: null,
           restaurant: { nom: 'Resto', owner: { firebaseUid: 'uid' } },
@@ -194,7 +210,7 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
         { id: 'u1', role: 'RESTAURATEUR' },
         { id: 'liv1', role: 'LIVREUR' },
       );
-      prisma.delivery.update.mockResolvedValue({
+      tx.delivery.findUniqueOrThrow.mockResolvedValue({
         id: 'd1',
         status: 'ASSIGNER',
       });
@@ -204,7 +220,7 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
       // L'écriture porte aussi la remise à zéro de l'économie de la course
       // (sans objet sur une première assignation, mais posée sans condition :
       // un effacement conditionnel finirait par oublier un chemin).
-      expect(prisma.delivery.update.mock.calls[0][0].data).toEqual({
+      expect(tx.delivery.updateMany.mock.calls[0][0].data).toEqual({
         delivererId: 'liv1',
         status: 'ASSIGNER',
         driverBaseXaf: null,
@@ -244,7 +260,7 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
         { id: 'u1', role: 'RESTAURATEUR' },
         { id: 'liv-new', role: 'LIVREUR' },
       );
-      prisma.delivery.update.mockResolvedValue({
+      tx.delivery.findUniqueOrThrow.mockResolvedValue({
         id: 'd1',
         status: 'ASSIGNER',
       });
@@ -282,14 +298,17 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
       await expect(
         service.assignDeliverer('d1', 'liv1', 'uid'),
       ).rejects.toThrow('déjà assigné');
-      expect(prisma.delivery.update).not.toHaveBeenCalled();
+      expect(tx.delivery.updateMany).not.toHaveBeenCalled();
     });
 
     it('refuse une cible qui n’est pas LIVREUR', async () => {
       prisma.delivery.findUnique.mockResolvedValue({
         id: 'd1',
         orderId: 'o1',
-        order: { restaurant: { nom: 'Resto', owner: { firebaseUid: 'uid' } } },
+        order: {
+          status: 'PRET',
+          restaurant: { nom: 'Resto', owner: { firebaseUid: 'uid' } },
+        },
       });
       mockUsers({ id: 'u1', role: 'ADMIN' }, { id: 'x', role: 'CLIENT' });
       await expect(
@@ -325,14 +344,16 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
           // rechargée avec relations pour _doAssign
           id: 'd1',
           orderId: 'o1',
+          status: 'EN_ATTENTE',
           order: {
+            status: 'PRET',
             isPreorder: false,
             scheduledFor: null,
             restaurant: { nom: 'Resto', owner: { firebaseUid: 'other' } },
           },
         });
       prisma.delivery.create.mockResolvedValue({ id: 'd1' });
-      prisma.delivery.update.mockResolvedValue({
+      tx.delivery.findUniqueOrThrow.mockResolvedValue({
         id: 'd1',
         status: 'ASSIGNER',
       });
@@ -591,7 +612,9 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
         'LIVREUR',
       );
       expect(tx.delivery.updateMany).toHaveBeenCalledWith({
-        where: { id: 'd1', status: 'ACCEPTER' },
+        // Le titulaire fait partie de l'état revendiqué : réassigné entre la
+        // lecture et l'écriture, l'ancien livreur n'emporte pas la course.
+        where: { id: 'd1', status: 'ACCEPTER', delivererId: 'liv1' },
         data: expect.objectContaining({
           status: 'EN_TRANSIT',
           pickedUpAt: expect.any(Date),

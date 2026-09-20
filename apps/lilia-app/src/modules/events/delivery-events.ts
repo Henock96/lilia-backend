@@ -38,6 +38,20 @@ export class DeliveryAssignedEvent extends BaseDeliveryEvent {
      * pouvait plus accepter aucune course.
      */
     public readonly previousDelivererId: string | null,
+    /**
+     * État de la livraison **avant** ce changement de main.
+     *
+     * Il départage deux réassignations que rien ne distinguait : celle d'une
+     * course encore au comptoir (`EN_ATTENTE` / `ASSIGNER` / `ACCEPTER`), dont
+     * le client n'a jamais rien su, et celle d'une course dont le repas était
+     * DÉJÀ parti (`EN_TRANSIT`) — là, le client a reçu « votre commande est en
+     * route », il regarde un point sur une carte, et ce point va changer de
+     * propriétaire sans un mot. Même distinction que `previousStatus` sur
+     * `DeliveryFailedEvent`.
+     */
+    public readonly previousDeliveryStatus: DeliveryStatus,
+    /** Client de la commande — destinataire de l'annonce ci-dessus. */
+    public readonly customerUserId: string,
     timestamp?: Date,
   ) {
     super(deliveryId, orderId, restaurantId, timestamp);

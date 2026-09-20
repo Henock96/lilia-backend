@@ -5,6 +5,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DeliveriesService } from './deliveries.service';
 import { DeliveryQueryService } from './delivery-query.service';
 import { DeliveryAssignmentService } from './delivery-assignment.service';
+import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
 import { DeliveryStatus } from './dto/update-delivery.dto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -59,11 +60,16 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
   };
 
   let deliveryUpdates: Record<string, unknown>[] = [];
+  /** `data` de chaque clôture de main : c'est là que vit l'issue de la course. */
+  let assignmentCloses: Record<string, unknown>[] = [];
   const prisma = {
     delivery: { findUnique: jest.fn(), update: jest.fn() },
     user: { findUnique: jest.fn(), update: jest.fn() },
     order: { updateMany: jest.fn() },
     orderHistory: { create: jest.fn() },
+    // Journal d'assignation : ouvert et clos dans la même transaction que le
+    // statut de la livraison.
+    deliveryAssignment: { create: jest.fn(), updateMany: jest.fn() },
     $transaction: jest.fn(),
   };
 
@@ -73,6 +79,7 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
     deliveryStatus = DeliveryStatus.EN_TRANSIT;
     applied = [];
     deliveryUpdates = [];
+    assignmentCloses = [];
 
     // Transaction interactive simulée : les écritures s'accumulent dans
     // `applied`, et une exception les annule toutes — comme le ferait
@@ -128,6 +135,19 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
           return Promise.resolve({});
         }),
       },
+      // Journal d'assignation : la clôture de la main courante appartient à la
+      // même transaction que la clôture de la course.
+      deliveryAssignment: {
+        create: jest.fn(() => {
+          applied.push('assignment-open');
+          return Promise.resolve({});
+        }),
+        updateMany: jest.fn(({ data }: { data: Record<string, unknown> }) => {
+          applied.push('assignment-close');
+          assignmentCloses.push(data);
+          return Promise.resolve({ count: 1 });
+        }),
+      },
     };
 
     prisma.$transaction.mockImplementation(async (arg: unknown) => {
@@ -139,6 +159,7 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
         orderStatus = snapshotOrder;
         applied = [];
         deliveryUpdates = [];
+        assignmentCloses = [];
         throw err;
       }
     });
@@ -178,6 +199,9 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
         OrderStateMachine,
         OrderTransitionService,
         { provide: PrismaService, useValue: prisma },
+        // Service réel : le journal d'assignation s'écrit dans la même
+        // transaction que le statut, ses écritures doivent être exercées.
+        DeliveryAssignmentLogService,
         { provide: EventEmitter2, useValue: emitter },
         { provide: LoyaltyService, useValue: loyalty },
         { provide: ReferralService, useValue: referral },
@@ -191,7 +215,10 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
         },
         {
           provide: TrackingService,
-          useValue: { cacheLivePosition: jest.fn() },
+          useValue: {
+            cacheLivePosition: jest.fn(),
+            forgetLastPosition: jest.fn().mockResolvedValue(undefined),
+          },
         },
         { provide: DeliveryQueryService, useValue: {} },
         { provide: DeliveryAssignmentService, useValue: {} },

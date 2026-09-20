@@ -1,10 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { DeliveryStatus } from '@prisma/client';
 
 import { DeliveriesListener } from './deliveries.listener';
 import { OrdersListener } from './orders.listener';
 import { NotificationsService } from '../notifications/notifications.service';
 import { IncidentsService } from '../incidents/incidents.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { DeliveryAssignmentLogService } from '../deliveries/delivery-assignment-log.service';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { OutboxService } from '../outbox/outbox.service';
 import {
@@ -54,6 +56,15 @@ describe('Notifications du flux de livraison', () => {
         { provide: NotificationsService, useValue: notifications },
         { provide: IncidentsService, useValue: { create: jest.fn() } },
         { provide: PrismaService, useValue: prisma },
+        {
+          provide: DeliveryAssignmentLogService,
+          useValue: {
+            open: jest.fn(),
+            close: jest.fn(),
+            markAccepted: jest.fn(),
+            markPickedUp: jest.fn(),
+          },
+        },
         { provide: TrackingGateway, useValue: trackingGateway },
         { provide: OutboxService, useValue: { markSent: jest.fn() } },
       ],
@@ -86,6 +97,8 @@ describe('Notifications du flux de livraison', () => {
           false,
           null,
           null,
+          DeliveryStatus.EN_ATTENTE,
+          CLIENT,
         ),
       );
 

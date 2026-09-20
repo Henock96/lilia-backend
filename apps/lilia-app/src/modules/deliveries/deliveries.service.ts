@@ -13,7 +13,12 @@ import { DeliveryStatus } from './dto/update-delivery.dto';
 import { DeliveryQueryService } from './delivery-query.service';
 import { ACTIVE_DELIVERY_STATUSES } from './delivery-statuses';
 import { DeliveryAssignmentService } from './delivery-assignment.service';
-import { DriverStatus, OrderStatus } from '@prisma/client';
+import {
+  DeliveryAssignmentOutcome,
+  DriverStatus,
+  OrderStatus,
+} from '@prisma/client';
+import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
@@ -65,6 +70,7 @@ export class DeliveriesService {
     private readonly assignmentService: DeliveryAssignmentService,
     private readonly loyalty: LoyaltyService,
     private readonly referral: ReferralService,
+    private readonly assignmentLog: DeliveryAssignmentLogService,
   ) {}
 
   private resolveActor(role: string): ActorRole | null {
@@ -106,6 +112,13 @@ export class DeliveriesService {
    */
   async findOne(id: string, firebaseUid: string) {
     return this.queryService.findOne(id, firebaseUid);
+  }
+
+  /**
+   * Toutes les mains par lesquelles une course est passée (ADMIN / vendeur).
+   */
+  async findAssignmentHistory(id: string, firebaseUid: string) {
+    return this.queryService.findAssignmentHistory(id, firebaseUid);
   }
 
   /**
@@ -261,6 +274,20 @@ export class DeliveriesService {
           data: { driverStatus: DriverStatus.AVAILABLE },
         });
       }
+
+      // Clôture de la main en cours, dans la MÊME transaction que le statut.
+      // `COMPLETED` est le seul cas où une rémunération est due — c'est la
+      // ligne de journal qui dit lequel des livreurs successifs a terminé,
+      // information que `Delivery.delivererId` perdait à chaque réassignation.
+      await this.assignmentLog.close(
+        tx,
+        id,
+        status === DeliveryStatus.LIVRER
+          ? DeliveryAssignmentOutcome.COMPLETED
+          : DeliveryAssignmentOutcome.FAILED,
+        reason,
+        now,
+      );
     });
 
     const updated = await this.prisma.delivery.findUnique({

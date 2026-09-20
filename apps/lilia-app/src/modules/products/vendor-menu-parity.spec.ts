@@ -109,15 +109,23 @@ describe('Parité de la carte — GET /vendors/:id vs GET /restaurants/:id', () 
     jest.useRealTimers();
   });
 
-  /** Les deux `include`, capturés en appelant réellement les deux services. */
+  /**
+   * Les deux blocs de lecture, capturés en appelant réellement les deux
+   * services.
+   *
+   * ⚠️ On lit `select` et non `include` depuis le 20/09/2026 : les deux
+   * lectures publiques ont basculé sur une projection en liste blanche
+   * (`PUBLIC_VENDOR_SELECT`), un `include` laissant partir tous les scalaires
+   * du modèle — `payoutPhoneNumber` compris. La parité de la **carte**, elle,
+   * est inchangée : les clés de relation sont les mêmes des deux côtés.
+   */
   async function bothIncludes() {
     await vendors.findOne('v1');
-    const fromVendors = prisma.restaurant.findFirst.mock.calls[0][0].include;
+    const fromVendors = prisma.restaurant.findFirst.mock.calls[0][0].select;
 
     prisma.restaurant.findFirst.mockClear();
     await restaurants.findOne('v1');
-    const fromRestaurants =
-      prisma.restaurant.findFirst.mock.calls[0][0].include;
+    const fromRestaurants = prisma.restaurant.findFirst.mock.calls[0][0].select;
 
     return { fromVendors, fromRestaurants };
   }

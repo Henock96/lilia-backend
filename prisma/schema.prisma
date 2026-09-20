@@ -62,6 +62,9 @@ model User {
   updatedAt         DateTime           @updatedAt
   restaurant        Restaurant?
   deliveries        Delivery[]
+  /// Toutes les fois où une course lui a été confiée — y compris celles qu'il
+  /// n'a pas terminées. `deliveries` ne porte que la main COURANTE.
+  deliveryAssignments DeliveryAssignment[] @relation("DelivererAssignments")
   /// Règlements de ce que Lilia Food lui doit, s'il est livreur.
   driverSettlements DriverSettlement[] @relation("DriverSettlements")
   cart              Cart?
@@ -1252,6 +1255,9 @@ model Delivery {
 
   review DeliveryReview? // note laissée par le client après livraison
 
+  /// Toutes les mains par lesquelles cette course est passée.
+  assignments DeliveryAssignment[]
+
   @@index([driverSettlementId])
   // Sélection des courses réglables : un livreur, ses courses livrées, non
   // encore rattachées à un règlement.
@@ -1259,6 +1265,90 @@ model Delivery {
   @@index([delivererId, status]) // missions d'un livreur filtrees par statut (LFD-9)
   @@index([delivererId])
   @@index([status]) // ← manquait
+}
+
+/// Journal des mains par lesquelles une course est passée.
+///
+/// ## Pourquoi une table, et pas `OrderHistory`
+///
+/// `OrderHistory` enregistre les transitions de `Order.status`. Or une
+/// assignation **ne change pas le statut de la commande** : on assigne dès
+/// `PAYER`, on réassigne en `PRET` ou en `EN_ROUTE`, et la commande ne bouge
+/// pas. Y loger l'assignation imposerait des lignes `PRET → PRET`, que toute
+/// agrégation de durée par étape compterait comme une transition — c'est
+/// exactement la raison pour laquelle `recordCreation` écrit `fromStatus = null`
+/// plutôt que `EN_ATTENTE → EN_ATTENTE`.
+///
+/// ## Pourquoi pas `DeliveryAttempt` avec son économie propre
+///
+/// La politique est « seul le livreur qui TERMINE est payé » (D-3). Le coût
+/// d'une tentative avortée est donc **connu et constant : zéro**. Recopier ici
+/// les six colonnes économiques de `Delivery` stockerait des zéros, dupliquerait
+/// la source que `DriverSettlementService` interroge, et inviterait quelqu'un à
+/// les régler un jour. L'économie reste sur `Delivery` — une seule autorité.
+///
+/// ## Ce que cette table répond, et que rien ne répondait
+///
+/// qui était assigné · quand · combien de temps (`assignedAt` → `releasedAt`) ·
+/// délai de réponse (`acceptedAt`) · pourquoi il a été retiré (`outcome` +
+/// `releaseReason`) · **qui** a réassigné (`assignedByUserId`) · combien de fois
+/// la course a changé de mains (`count`) · quel livreur a terminé (`COMPLETED`).
+///
+/// Append-only : une ligne ouverte (`releasedAt = null`) par course au plus.
+model DeliveryAssignment {
+  id         String   @id @default(cuid())
+  delivery   Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  deliveryId String
+  /// Dénormalisé : la supervision part toujours d'une commande, jamais d'une
+  /// livraison. Évite une jointure sur l'écran d'incident.
+  orderId    String
+
+  deliverer   User   @relation("DelivererAssignments", fields: [delivererId], references: [id], onDelete: Restrict)
+  delivererId String
+
+  assignedAt DateTime @default(now())
+  /// Auteur de l'assignation. `null` pour une assignation automatique — il n'y
+  /// en a aucune aujourd'hui, la colonne le restera tant que le dispatch est
+  /// humain.
+  assignedByUserId String?
+  /// Rôle de l'auteur (`ADMIN` / `RESTAURATEUR`). Conservé à part parce que le
+  /// rôle d'un compte peut changer après coup ; celui qui a agi, non.
+  assignedByRole   String
+
+  /// Moment de l'acceptation par ce livreur. `null` = il n'a jamais répondu.
+  acceptedAt DateTime?
+  /// Moment où il a eu le repas en main. `null` = il n'est jamais parti.
+  pickedUpAt DateTime?
+
+  /// `null` tant que la tentative est en cours. C'est le discriminant de la
+  /// ligne ouverte.
+  releasedAt    DateTime?
+  outcome       DeliveryAssignmentOutcome?
+  releaseReason String?                    @db.Text
+
+  /// La course en cours, pour une livraison donnée : une seule ligne ouverte.
+  @@index([deliveryId, releasedAt])
+  @@index([deliveryId, assignedAt])
+  @@index([delivererId, assignedAt(sort: Desc)])
+  @@index([orderId])
+}
+
+/// Comment une main s'est terminée.
+///
+/// `ORDER_CANCELLED` est distinct de `FAILED` : le livreur n'a rien manqué, la
+/// commande a disparu sous lui. Les confondre le pénaliserait dans toute
+/// statistique de fiabilité.
+enum DeliveryAssignmentOutcome {
+  /// Ce livreur a livré la commande. Seul cas où une rémunération est due.
+  COMPLETED
+  /// La course lui a été retirée au profit d'un autre livreur.
+  REASSIGNED
+  /// Il a rendu la mission avant de l'accepter.
+  DECLINED
+  /// Il a signalé un échec (avant ou après récupération).
+  FAILED
+  /// La commande a été annulée pendant qu'il la tenait.
+  ORDER_CANCELLED
 }
 
 /// Note du LIVREUR par le client, après livraison.

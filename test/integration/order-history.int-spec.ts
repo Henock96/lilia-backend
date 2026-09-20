@@ -91,7 +91,9 @@ describeIfDb('OrderHistory — atomicité réelle (P0-4)', () => {
       }),
     );
 
-    const order = await prisma.order.findUniqueOrThrow({ where: { id: 'o-1' } });
+    const order = await prisma.order.findUniqueOrThrow({
+      where: { id: 'o-1' },
+    });
     const history = await prisma.orderHistory.findMany({
       where: { orderId: 'o-1' },
     });
@@ -149,7 +151,9 @@ describeIfDb('OrderHistory — atomicité réelle (P0-4)', () => {
       }),
     ).rejects.toThrow('échec en aval');
 
-    const order = await prisma.order.findUniqueOrThrow({ where: { id: 'o-1' } });
+    const order = await prisma.order.findUniqueOrThrow({
+      where: { id: 'o-1' },
+    });
     const history = await prisma.orderHistory.findMany({
       where: { orderId: 'o-1' },
     });
@@ -193,7 +197,9 @@ describeIfDb('OrderHistory — atomicité réelle (P0-4)', () => {
     expect(gagnants).toHaveLength(1);
     expect(perdants).toHaveLength(1);
 
-    const order = await prisma.order.findUniqueOrThrow({ where: { id: 'o-1' } });
+    const order = await prisma.order.findUniqueOrThrow({
+      where: { id: 'o-1' },
+    });
     const history = await prisma.orderHistory.findMany({
       where: { orderId: 'o-1' },
     });
@@ -235,7 +241,9 @@ describeIfDb('OrderHistory — atomicité réelle (P0-4)', () => {
     expect(history).toHaveLength(1);
     expect(history[0].toStatus).toBe('PAYER');
 
-    const order = await prisma.order.findUniqueOrThrow({ where: { id: 'o-1' } });
+    const order = await prisma.order.findUniqueOrThrow({
+      where: { id: 'o-1' },
+    });
     expect(order.paidAt).not.toBeNull();
   });
 
