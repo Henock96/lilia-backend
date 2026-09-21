@@ -39,8 +39,21 @@
 //
 // ⚠️ Vérifier la base ciblée AVANT : `npm run db:target`.
 
-require('dotenv').config();
+// ⚠️ `loadEnv()` et NON `require('dotenv').config()`.
+//
+// dotenv nu ne lit que `.env`, c'est-à-dire — dans ce dépôt — les identifiants
+// de PRODUCTION. Ce script a d'abord été écrit ainsi : il annonçait la base
+// locale et interrogeait Neon. La lecture était inoffensive (session en
+// `read_only`), le malentendu ne l'était pas — des commandes réelles ont été
+// lues pour des données de test.
+//
+// `load-env.js` applique la même cascade que l'application
+// (`.env.local` → `.env.<NODE_ENV>` → `.env`), et `describeTarget()` NOMME la
+// base atteinte. C'est le seul garde-fou qui vaille : ne pas déduire la cible
+// du fichier qu'on croit lire, mais la faire dire par la connexion.
+require('../load-env').loadEnv();
 const { Client } = require('pg');
+const { describeTarget } = require('./target-database');
 
 /** Statuts à partir desquels un vendeur peut être reversé. */
 const PAYOUT_ELIGIBLE = ['PRET', 'EN_ROUTE', 'LIVRER'];
@@ -93,6 +106,20 @@ const RECONCILE_SQL = `
 `;
 
 (async () => {
+  // La cible est annoncée AVANT toute requête, et avant toute écriture
+  // éventuelle : un opérateur qui lance `--apply` doit lire où il écrit.
+  const target = describeTarget();
+  console.log(
+    `\nBase ciblée : ${target.label}${target.isLocal ? '' : '  ⚠️  NON LOCALE'}`,
+  );
+  if (APPLY && !target.isLocal) {
+    console.log(
+      '⚠️  --apply sur une base NON LOCALE : cette exécution va écrire sur des\n' +
+        '    commandes réelles. Ctrl-C dans les 5 secondes pour annuler.\n',
+    );
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+
   const client = new Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
   // Toute écriture accidentelle serait refusée par la session elle-même.

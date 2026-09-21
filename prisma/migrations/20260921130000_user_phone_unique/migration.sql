@@ -1,52 +1,45 @@
--- Unicité du téléphone utilisateur (F-12, dette ouverte depuis septembre 2026).
+-- Normalisation des téléphones vides. **NE CRÉE PLUS L'INDEX UNIQUE.**
 --
--- ## Les deux temps, et pourquoi ils sont dans la même migration
+-- ⚠️ LE NOM DU DOSSIER MENT, ET C'EST DÉLIBÉRÉ.
 --
--- Le schéma documente un plan en trois temps : (1) écrire `NULL` et jamais `''`,
--- (2) recenser les doublons réels en lecture seule, (3) poser l'unicité une fois
--- le rapport traité. Le temps (1) est fait côté code depuis septembre ; il
--- restait les lignes HISTORIQUES, créées avec la chaîne vide.
+-- Ce répertoire s'appelle `user_phone_unique` et ne pose aucune contrainte
+-- d'unicité. Le renommer serait plus honnête mais casserait la production :
+-- cette migration y est enregistrée **en échec** dans `_prisma_migrations`, et
+-- un nom de dossier qui disparaît laisse une entrée orpheline que Prisma refuse
+-- ensuite de dépiler. On garde le nom, et on écrit ici ce que le nom ne dit pas.
 --
--- `''` est le vrai blocage : PostgreSQL accorde à `NULL` une échappatoire à
--- l'unicité — autant de `NULL` que l'on veut — mais **pas** à la chaîne vide.
--- Deux comptes sans téléphone portaient donc « le même numéro » aux yeux d'un
--- index unique, et rendaient la contrainte impossible à créer.
+-- ## Ce qui s'est passé
+--
+-- La première version normalisait PUIS créait un index unique partiel, derrière
+-- un bloc qui levait une exception explicite si des numéros réels étaient
+-- partagés. Elle a fait exactement cela en production, le 21/09/2026 : trois
+-- numéros portés par dix comptes, migration interrompue, déploiement bloqué.
+--
+-- Le garde-fou a fonctionné — il valait mieux que le message générique de
+-- PostgreSQL, et infiniment mieux qu'une contrainte silencieusement absente.
+-- Mais livrer une migration dont on sait qu'elle échouera n'est pas une
+-- stratégie de déploiement : deux des trois groupes contiennent des comptes
+-- AVEC des commandes, qu'on ne peut ni supprimer (pièces comptables) ni fusionner
+-- sans arbitrage humain.
+--
+-- ## Ce qui reste, et pourquoi
+--
+-- La normalisation seule. Elle est le temps (1) du plan en trois temps écrit
+-- dans `schema.prisma` : `''` n'échappe pas à l'unicité en PostgreSQL, là où
+-- `NULL` le fait — tant que des chaînes vides traînent, aucune contrainte n'est
+-- posable, même sur une base sans vrai doublon.
+--
+-- Idempotente, et déjà sans effet en production (0 chaîne vide au 21/09/2026).
+-- Elle est conservée parce qu'elle protège l'avenir : une écriture hors service
+-- qui réintroduirait des `''` rendrait l'unicité impossible à nouveau.
+--
+-- ## Ce qui reste à faire, hors migration
+--
+--   node scripts/db/audit-phone-duplicates.js   # la liste nominative
+--
+-- Arbitrer chaque groupe — garder un compte, anonymiser les autres via
+-- `UserDeletionService` —, puis poser l'index dans une migration dédiée. En
+-- attendant, l'abus reste fermé par le signal `PHONE_REUSED` du scoring de
+-- parrainage, qui envoie la récompense en revue humaine.
 
 UPDATE "User" SET "phone" = NULL WHERE "phone" = '';
-
--- ## Pourquoi l'index est GARDÉ par un bloc qui lève
---
--- On ne pose pas une contrainte qu'on n'a pas pu vérifier. Si des numéros réels
--- sont portés par plusieurs comptes, `CREATE UNIQUE INDEX` échouerait de toute
--- façon — mais sur un message PostgreSQL générique (« could not create unique
--- index … Key (phone)=(…) is duplicated »), au milieu d'un déploiement, sans
--- dire quoi faire.
---
--- Le bloc ci-dessous échoue au même endroit, en disant **quoi exécuter**. Un
--- déploiement qui s'arrête avec une consigne vaut mieux qu'un déploiement qui
--- s'arrête avec une énigme — et infiniment mieux qu'une contrainte silencieusement
--- absente, qui laisserait croire l'abus fermé alors qu'il ne l'est pas.
-DO $$
-DECLARE
-  doublons INT;
-BEGIN
-  SELECT COUNT(*) INTO doublons FROM (
-    SELECT "phone" FROM "User"
-    WHERE "phone" IS NOT NULL
-    GROUP BY "phone" HAVING COUNT(*) > 1
-  ) AS d;
-
-  IF doublons > 0 THEN
-    RAISE EXCEPTION
-      'Unicité du téléphone impossible : % numéro(s) porté(s) par plusieurs comptes. '
-      'Exécuter `node scripts/db/audit-phone-duplicates.js` pour la liste nominative, '
-      'arbitrer chaque cas (fusion, anonymisation, ou conservation délibérée), '
-      'puis rejouer cette migration.', doublons;
-  END IF;
-
-  -- Index PARTIEL : `WHERE phone IS NOT NULL` est redondant avec le traitement
-  -- natif des `NULL` par PostgreSQL, mais il rend l'intention lisible — et
-  -- protège si la colonne devenait un jour `NOT NULL DEFAULT ''`.
-  CREATE UNIQUE INDEX IF NOT EXISTS "User_phone_key"
-    ON "User"("phone") WHERE "phone" IS NOT NULL;
-END $$;
