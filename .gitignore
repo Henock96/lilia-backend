@@ -67,3 +67,4 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Clés APNs Apple (.p8) — un secret, jamais versionné
 *.p8
+backups/
