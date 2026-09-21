@@ -35,8 +35,31 @@
 //
 //   node scripts/db/purge-traceless-users.js                 # liste, n'écrit rien
 //   node scripts/db/purge-traceless-users.js --apply         # supprime
+//   node scripts/db/purge-traceless-users.js --apply --emails=a@b.com,c@d.com
 //   node scripts/db/purge-traceless-users.js --apply --only=id1,id2
 //   node scripts/db/purge-traceless-users.js --include-admins # lève la garde ADMIN
+//   node scripts/db/purge-traceless-users.js --with-dead-orders
+//
+// ## `--emails` plutôt que `--only`
+//
+// Les deux existent, mais `--emails` est celui à employer. Une liste de `cuid`
+// est illisible : ni l'opérateur qui lance la commande, ni l'outillage qui
+// l'encadre ne peut vérifier ce qu'elle désigne. Sur une suppression définitive
+// en production, une portée invérifiable est un défaut à part entière — on ne
+// valide pas ce qu'on ne peut pas lire.
+//
+// ## `--with-dead-orders` : la seule concession, et ses sept conditions
+//
+// Un compte porteur d'une commande est protégé, c'est la règle. Ce drapeau
+// l'assouplit pour un cas précis : une commande **annulée qui n'a jamais rien
+// encaissé** n'a aucune valeur comptable — elle n'entre dans aucun chiffre
+// d'affaires, aucun tableau de bord vendeur, aucune statistique.
+//
+// Elle n'est emportée que si TOUTES ces conditions tiennent, revérifiées dans la
+// transaction : statut `ANNULER`, aucun encaissement réussi, aucune livraison,
+// aucun remboursement, aucun reversement, aucun usage de code promo, aucune
+// écriture de fidélité, aucune récompense de parrainage. Une seule ligne dans
+// l'une de ces tables, et le compte redevient protégé.
 //
 // ⚠️ Vérifier la base ciblée AVANT : `npm run db:target`.
 
@@ -46,11 +69,45 @@ const { describeTarget } = require('./target-database');
 
 const APPLY = process.argv.includes('--apply');
 const INCLUDE_ADMINS = process.argv.includes('--include-admins');
-const ONLY = (process.argv.find((a) => a.startsWith('--only=')) ?? '')
-  .replace('--only=', '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
+const WITH_DEAD_ORDERS = process.argv.includes('--with-dead-orders');
+
+const listeArg = (nom) =>
+  (process.argv.find((a) => a.startsWith(`--${nom}=`)) ?? '')
+    .replace(`--${nom}=`, '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+const ONLY = listeArg('only');
+const EMAILS = listeArg('emails');
+
+/**
+ * Une commande sans aucune valeur comptable.
+ *
+ * Écrite une fois, utilisée deux fois — à l'affichage et dans la transaction.
+ * Deux copies de cette liste finiraient par diverger, et c'est la copie oubliée
+ * qui laisserait passer une suppression.
+ */
+const COMMANDE_MORTE = `
+  o."status" = 'ANNULER'
+  AND NOT EXISTS (SELECT 1 FROM payments             x WHERE x."orderId" = o.id AND x.status = 'SUCCESS')
+  AND NOT EXISTS (SELECT 1 FROM "Delivery"           x WHERE x."orderId" = o.id)
+  AND NOT EXISTS (SELECT 1 FROM "Refund"             x WHERE x."orderId" = o.id)
+  AND NOT EXISTS (SELECT 1 FROM restaurant_payouts   x WHERE x."orderId" = o.id)
+  AND NOT EXISTS (SELECT 1 FROM "PromoUsage"         x WHERE x."orderId" = o.id)
+  AND NOT EXISTS (SELECT 1 FROM "LoyaltyTransaction" x WHERE x."orderId" = o.id)
+  AND NOT EXISTS (SELECT 1 FROM "ReferralReward"     x WHERE x."orderId" = o.id)
+`;
+
+/**
+ * La clause qui protège les comptes porteurs d'une commande.
+ *
+ * Sans `--with-dead-orders` : toute commande protège. Avec : seules les
+ * commandes qui ne sont PAS mortes protègent encore.
+ */
+const clauseOrder = WITH_DEAD_ORDERS
+  ? `NOT EXISTS (SELECT 1 FROM "Order" o WHERE o."userId" = u.id AND NOT (${COMMANDE_MORTE}))`
+  : `NOT EXISTS (SELECT 1 FROM "Order" x WHERE x."userId" = u.id)`;
 
 /**
  * Les dix tables dont une seule ligne suffit à protéger un compte.
@@ -60,7 +117,7 @@ const ONLY = (process.argv.find((a) => a.startsWith('--only=')) ?? '')
  * diverger, et c'est la copie oubliée qui laisserait passer une suppression.
  */
 const TRACES = `
-  NOT EXISTS (SELECT 1 FROM "Order"              x WHERE x."userId"        = u.id)
+  ${clauseOrder}
   AND NOT EXISTS (SELECT 1 FROM "Restaurant"         x WHERE x."ownerId"       = u.id)
   AND NOT EXISTS (SELECT 1 FROM driver_settlements   x WHERE x."driverId"      = u.id)
   AND NOT EXISTS (SELECT 1 FROM "PromoUsage"         x WHERE x."userId"        = u.id)
@@ -91,6 +148,31 @@ const SATELLITES = [
   ['Review', 'DELETE FROM "Review" WHERE "userId" = ANY($1)'],
 ];
 
+/**
+ * Commandes mortes emportées avec leur compte, quand `--with-dead-orders`.
+ *
+ * ⚠️ La condition `COMMANDE_MORTE` est **réappliquée ici**, dans la même
+ * transaction que la suppression. Elle l'a déjà été à la sélection du compte,
+ * mais une commande n'est pas figée : entre les deux, un encaissement peut
+ * aboutir. Faire confiance au filtre amont reviendrait à supprimer une commande
+ * qui vient de recevoir de l'argent.
+ *
+ * `OrderItem` avant `Order` : la FK est en `RESTRICT`, PostgreSQL refuserait
+ * l'ordre inverse. `OrderHistory` est en `CASCADE`, `Review.orderId` en
+ * `SET NULL` — ni l'un ni l'autre n'a besoin d'être listé.
+ */
+const COMMANDES_MORTES = [
+  [
+    'OrderItem',
+    `DELETE FROM "OrderItem" WHERE "orderId" IN
+       (SELECT o.id FROM "Order" o WHERE o."userId" = ANY($1) AND ${COMMANDE_MORTE})`,
+  ],
+  [
+    'Order',
+    `DELETE FROM "Order" o WHERE o."userId" = ANY($1) AND ${COMMANDE_MORTE}`,
+  ],
+];
+
 (async () => {
   const target = describeTarget();
   console.log(
@@ -100,17 +182,42 @@ const SATELLITES = [
   const client = new Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
 
-  const filtreOnly = ONLY.length ? 'AND u.id = ANY($1)' : '';
-  const params = ONLY.length ? [ONLY] : [];
+  let filtre = '';
+  const params = [];
+  if (EMAILS.length) {
+    params.push(EMAILS);
+    filtre = `AND lower(u.email) = ANY($${params.length})`;
+  } else if (ONLY.length) {
+    params.push(ONLY);
+    filtre = `AND u.id = ANY($${params.length})`;
+  }
 
   const { rows } = await client.query(
     `SELECT u.id, u.email, u.role, u."statusUser", u."createdAt"::date AS d,
-            u."lastLogin"
+            u."lastLogin",
+            (SELECT COUNT(*) FROM "Order" o WHERE o."userId" = u.id)::int AS commandes
        FROM "User" u
-      WHERE ${TRACES} ${filtreOnly}
+      WHERE ${TRACES} ${filtre}
       ORDER BY u."createdAt"`,
     params,
   );
+
+  // ⚠️ Un e-mail demandé qui ne ressort pas est une information, pas un détail.
+  // Il signifie soit « ce compte n'existe pas », soit — bien plus important —
+  // « ce compte porte une trace métier et a été protégé ». Se taire laisserait
+  // croire à une suppression qui n'a pas eu lieu.
+  if (EMAILS.length) {
+    const rendus = new Set(rows.map((r) => r.email.toLowerCase()));
+    const absents = EMAILS.filter((e) => !rendus.has(e.toLowerCase()));
+    if (absents.length) {
+      console.log(
+        `⚠️  ${absents.length} e-mail(s) demandé(s) NON retenu(s) — inexistants, ` +
+          'ou porteurs d’une trace métier qui les protège :',
+      );
+      for (const e of absents) console.log(`      ${e}`);
+      console.log('');
+    }
+  }
 
   const admins = rows.filter((r) => r.role === 'ADMIN');
   const cibles = INCLUDE_ADMINS ? rows : rows.filter((r) => r.role !== 'ADMIN');
@@ -118,7 +225,11 @@ const SATELLITES = [
   for (const r of cibles) {
     console.log(
       `  ${String(r.email).slice(0, 38).padEnd(38)} ${String(r.role).padEnd(12)} ` +
-        `${r.d.toISOString().slice(0, 10)}  ${r.lastLogin ? 'connecté' : 'jamais connecté'}`,
+        `${r.d.toISOString().slice(0, 10)}  ${(r.lastLogin ? 'connecté' : 'jamais connecté').padEnd(16)}` +
+        // Le nombre de commandes est affiché même quand il vaut 0 : sous
+        // `--with-dead-orders`, c'est la seule façon de voir qu'une commande
+        // part avec le compte.
+        `${r.commandes > 0 ? `commande morte emportée (${r.commandes})` : ''}`,
     );
   }
   console.log(`\n${cibles.length} compte(s) sans aucune trace métier.`);
@@ -177,6 +288,17 @@ const SATELLITES = [
       console.log('Rien à supprimer.\n');
       await client.end();
       return;
+    }
+
+    // Les commandes mortes AVANT les satellites : `OrderItem` référence des
+    // `Product`, pas le compte, mais l'ordre reste celui des dépendances.
+    if (WITH_DEAD_ORDERS) {
+      for (const [nom, sql] of COMMANDES_MORTES) {
+        const res = await client.query(sql, [finaux]);
+        if (res.rowCount) {
+          console.log(`  ${nom.padEnd(20)} ${res.rowCount} ligne(s)  [commande morte]`);
+        }
+      }
     }
 
     for (const [nom, sql] of SATELLITES) {
