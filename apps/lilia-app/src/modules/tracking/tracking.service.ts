@@ -67,8 +67,8 @@ export class TrackingService implements OnModuleDestroy {
   }
 
   /**
-   * Écrit la position "live" dans Redis : GEO (`driver_positions`) + métadonnées
-   * TTL (`delivery:{orderId}`). C'est la SOURCE DE VÉRITÉ temps réel, partagée
+   * Écrit la position "live" dans Redis : métadonnées à TTL
+   * (`delivery:{orderId}`). C'est la SOURCE DE VÉRITÉ temps réel, partagée
    * par les deux paths d'update :
    *   - WS    : POST /tracking/position  → updatePosition (ci-dessous)
    *   - HTTP  : PATCH /deliveries/:id/location → DeliveriesService.updateLocation
@@ -97,18 +97,30 @@ export class TrackingService implements OnModuleDestroy {
    */
   private queueLivePosition(
     pipeline: ReturnType<Redis['pipeline']>,
-    { orderId, driverId, lat, lng, accuracy }: PositionPayload,
+    { orderId, lat, lng, accuracy }: PositionPayload,
   ): ReturnType<Redis['pipeline']> {
-    return (
-      pipeline
-        // GEO — position instantanée, lecture < 1ms
-        .geoadd('driver_positions', lng, lat, driverId)
-        // Métadonnées avec TTL — effacé si livreur déconnecté 5min
-        .setex(
-          `delivery:${orderId}`,
-          this.POSITION_TTL,
-          JSON.stringify({ lat, lng, accuracy, ts: Date.now() }),
-        )
+    // ⚠️ `GEOADD driver_positions` a été **retiré** le 21/09/2026.
+    //
+    // Il était écrit ici toutes les 5 secondes par livreur en course, et
+    // **jamais lu** : un balayage du dépôt ne trouve aucun `GEOPOS`,
+    // `GEORADIUS` ni `GEOSEARCH`. Un ensemble trié Redis n'a pas de TTL par
+    // membre, et rien ne l'émondait — les coordonnées d'un livreur y
+    // survivaient donc à sa déconnexion, à sa sortie de la plateforme et à la
+    // suppression de son compte par `UserDeletionService`, indexées par son
+    // UID Firebase. `TRACKING_RETENTION_DAYS`, qui purge `DeliveryLocation` en
+    // base, ne le touchait pas non plus.
+    //
+    // Une structure écrite sans jamais être lue n'est pas une fondation pour
+    // plus tard : c'est une rétention de données de déplacement que rien ne
+    // borne, doublée d'une commande réseau par position. Le jour où « trouver
+    // le livreur le plus proche » sera construit, le `GEOADD` reviendra — avec
+    // son lecteur et son émondage, c'est-à-dire vérifiable.
+    //
+    // La position vivante reste `delivery:{orderId}`, qui porte un TTL.
+    return pipeline.setex(
+      `delivery:${orderId}`,
+      this.POSITION_TTL,
+      JSON.stringify({ lat, lng, accuracy, ts: Date.now() }),
     );
   }
 
@@ -116,16 +128,25 @@ export class TrackingService implements OnModuleDestroy {
     const { orderId, lat, lng, accuracy } = payload;
     const redis = this.getRedis();
 
-    // Les TROIS commandes en un seul aller-retour.
+    // Les deux commandes en un seul aller-retour.
     //
-    // Elles étaient enchaînées par trois `await` successifs alors qu'aucune ne
+    // Elles étaient enchaînées par des `await` successifs alors qu'aucune ne
     // dépend du résultat de la précédente. Avec un Redis distant, cela coûtait
-    // trois fois le temps de trajet — sur un message émis toutes les 5 secondes
-    // par livreur en course.
+    // autant de fois le temps de trajet — sur un message émis toutes les
+    // 5 secondes par livreur en course.
     //
-    // Rien d'autre ne change : mêmes commandes, même TTL (300 s), même
-    // intervalle de persistance (60 s), même sémantique de verrou `NX`.
-    //   [0] GEOADD   [1] SETEX   [2] SET NX EX ← le seul résultat qu'on lit
+    // Même TTL (300 s), même intervalle de persistance (60 s), même sémantique
+    // de verrou `NX`.
+    //
+    // ⚠️ **L'indice compte** : c'est la position dans le pipeline qui désigne
+    // le résultat lu, et la suppression du `GEOADD` (mort, cf.
+    // `queueLivePosition`) a décalé tout ce qui suit. Un indice figé en dur
+    // aurait fait lire le résultat du `SETEX` comme un verrou — c'est-à-dire
+    // persister à chaque position au lieu d'une fois par minute, sans qu'aucun
+    // test ne le voie si l'on n'en écrit pas un.
+    //   [0] SETEX   [1] SET NX EX ← le seul résultat qu'on lit
+    const PERSIST_LOCK_INDEX = 1;
+
     const results = await this.queueLivePosition(redis.pipeline(), payload)
       .set(
         `persist_lock:${orderId}`,
@@ -142,7 +163,7 @@ export class TrackingService implements OnModuleDestroy {
     // propageaient. On relance donc la première, à l'identique.
     this.assertPipelineSucceeded(results);
 
-    const shouldPersist = results?.[2]?.[1];
+    const shouldPersist = results?.[PERSIST_LOCK_INDEX]?.[1];
 
     if (shouldPersist === 'OK') {
       // Fire-and-forget — n'attend pas la DB pour répondre au livreur
@@ -217,10 +238,11 @@ export class TrackingService implements OnModuleDestroy {
    * appartenant à quelqu'un qui n'est plus sur la course — et il le suivait,
    * puisque rien ne le distingue d'une position vivante.
    *
-   * ⚠️ On n'efface **pas** l'entrée GEO `driver_positions` : elle est indexée
-   * par livreur, pas par commande. L'ancien livreur peut très bien être en
-   * course sur une autre commande ; supprimer sa position y couperait le suivi.
-   * C'est la clé par commande qui portait la donnée périmée, et elle seule.
+   * ⚠️ La clé est indexée **par commande**, et c'est ce qui rend cet effacement
+   * sûr : l'ancien livreur peut très bien être en course ailleurs, sa position
+   * sur CETTE commande est la seule chose qui devient périmée.
+   * (L'ensemble GEO indexé par livreur, qui compliquait ce raisonnement, a été
+   * retiré le 21/09/2026 — il n'était lu nulle part.)
    *
    * Best-effort, comme toute écriture de tracking : une panne Redis ne doit pas
    * empêcher une réassignation, qui est un geste d'exploitation.

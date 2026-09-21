@@ -47,7 +47,9 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
       create: jest.fn(),
       update: jest.fn(),
     },
-    incident: { create: jest.fn() },
+    // Un double doit parler le contrat réel : `create` rend une promesse,
+    // et l'appelant y chaîne un `.catch`. Un `jest.fn()` nu rend `undefined`.
+    incident: { create: jest.fn().mockResolvedValue({ id: 'inc-1' }) },
     $transaction: jest.fn(),
   };
   const eventEmitter = { emit: jest.fn() };
@@ -84,6 +86,9 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
     events.record.mockResolvedValue('evt-1');
     outbox.enqueueInTransaction.mockResolvedValue('ob-1');
     prisma.paymentEvent.findFirst.mockResolvedValue(null);
+    // `jest.resetAllMocks()` efface la valeur posée à la déclaration : sans
+    // cette ligne, `create` rend `undefined` et le `.catch` de l'appelant lève.
+    prisma.incident.create.mockResolvedValue({ id: 'inc-1' });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [

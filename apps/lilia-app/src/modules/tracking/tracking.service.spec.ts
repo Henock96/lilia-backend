@@ -35,7 +35,7 @@ describe('TrackingService', () => {
 
   // ─── cacheLivePosition : source de vérité Redis partagée WS/HTTP (LIL-54) ───
   describe('cacheLivePosition', () => {
-    it('écrit GEO + métadonnées TTL dans Redis', async () => {
+    it('écrit les métadonnées de position avec TTL', async () => {
       const redis = fakeRedis();
       (service as any).redis = redis;
 
@@ -46,13 +46,6 @@ describe('TrackingService', () => {
         lng: 15.24,
         accuracy: 5,
       });
-
-      expect(redis.geoadd).toHaveBeenCalledWith(
-        'driver_positions',
-        15.24,
-        -4.26,
-        'd1',
-      );
       const [key, ttl, payload] = redis.setex.mock.calls[0];
       expect(key).toBe('delivery:o1');
       expect(ttl).toBe(300);
@@ -77,7 +70,7 @@ describe('TrackingService', () => {
   });
 
   describe('updatePosition', () => {
-    it('alimente le cache live (geoadd + setex) puis pose le verrou persist', async () => {
+    it('alimente le cache live (setex) puis pose le verrou persist', async () => {
       // set NX → null : le verrou existe déjà, pas de write DB (Prisma non sollicité)
       const redis = fakeRedis({ setResult: null });
       (service as any).redis = redis;
@@ -88,13 +81,6 @@ describe('TrackingService', () => {
         lat: -4.2,
         lng: 15.2,
       });
-
-      expect(redis.geoadd).toHaveBeenCalledWith(
-        'driver_positions',
-        15.2,
-        -4.2,
-        'd1',
-      );
       expect(redis.setex).toHaveBeenCalledWith(
         'delivery:o1',
         300,

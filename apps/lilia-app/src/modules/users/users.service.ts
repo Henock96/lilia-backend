@@ -1,6 +1,6 @@
 /* eslint-disable prettier/prettier */
 // src/user/user.service.ts
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { Prisma, User } from '@prisma/client';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -113,6 +113,33 @@ export class UserService {
   ) {
     const { uid, email, name, picture } = decoded;
 
+    // ⚠️ `email` alimente une colonne **`@unique`**, et il était écrit
+    // `email ?? ''`. Le premier compte sans adresse passait ; le deuxième
+    // heurtait la contrainte et recevait un 409 de doublon — sur un chemin où
+    // l'utilisateur n'a jamais saisi d'e-mail, donc avec un message
+    // incompréhensible. C'est la même erreur que celle documentée sur
+    // `User.phone` : `''` **n'échappe pas** à l'unicité PostgreSQL, là où
+    // `NULL` l'aurait fait, et il rend tous les comptes concernés « porteurs
+    // de la même valeur ».
+    //
+    // On refuse donc explicitement, en nommant la cause. Rendre la colonne
+    // nullable serait l'autre issue, mais elle imposerait une migration et
+    // rendrait `email` optionnel partout où il est aujourd'hui garanti — pour
+    // un mode d'authentification qui n'est pas ouvert.
+    //
+    // Normalisation au passage : Firebase rend l'adresse telle que saisie, et
+    // « Jean@Example.com » désigne la même personne que « jean@example.com ».
+    // Sans cela, l'unicité ne protège de rien.
+    const normalizedEmail = email?.trim().toLowerCase();
+    if (!normalizedEmail) {
+      this.logger.warn(
+        `[SYNC] Refus : aucun e-mail dans le token Firebase (uid=${uid}).`,
+      );
+      throw new BadRequestException(
+        'Aucune adresse e-mail associée à ce compte. Connectez-vous avec un e-mail ou un compte Google.',
+      );
+    }
+
     // Log structuré début sync pour tracer signups manquants en BDD (LIL-XX).
     // Fix L4 : plus d'e-mail en clair (stdout Render + Sentry `enableLogs`).
     // Le firebaseUid identifie le compte tout aussi bien pour le diagnostic.
@@ -169,8 +196,8 @@ export class UserService {
       where: { firebaseUid: uid },
       create: {
         firebaseUid: uid,
-        email: email ?? '',
-        nom: name ?? email?.split('@')[0] ?? 'Utilisateur',
+        email: normalizedEmail,
+        nom: name ?? normalizedEmail.split('@')[0] ?? 'Utilisateur',
         phone: normalizedPhone,
         imageUrl: picture ?? null,
         role: 'CLIENT',
@@ -178,7 +205,7 @@ export class UserService {
         referredByCode: validReferredByCode,
       },
       update: {
-        ...(email && { email }),
+        ...(normalizedEmail && { email: normalizedEmail }),
         ...(name && { nom: name }),
         ...(picture && { imageUrl: picture }),
         ...(normalizedPhone && { phone: normalizedPhone }),

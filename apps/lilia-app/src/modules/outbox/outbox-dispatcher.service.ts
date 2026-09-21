@@ -2,11 +2,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { OrderStatus, OutboxEvent } from '@prisma/client';
+import * as Sentry from '@sentry/nestjs';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { CronLockService } from '../../common/locks/cron-lock.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { SmsService } from '../sms/sms.service';
+import { SmsService, SmsOutcome } from '../sms/sms.service';
 import { OutboxService } from './outbox.service';
 import { VendorInvitationService } from '../vendors/vendor-invitation.service';
 import { VENDOR_INVITATION_EVENT } from '../vendors/events/vendor-events';
@@ -73,6 +74,46 @@ export class OutboxDispatcherService {
         });
       }
     });
+  }
+
+  /**
+   * N'acquitte une escalade que si le SMS est **réellement parti**.
+   *
+   * ⚠️ `markEscalated` était appelé inconditionnellement, juste après
+   * `sms.send()`, sans lire son retour. Or ce retour valait `true` dans deux cas
+   * où rien ne partait : service non configuré, et — surtout — message refusé
+   * par Infobip, qui répond **HTTP 200** pour un message rejeté. Le dernier
+   * filet avant qu'une commande **payée** ne reste sans réponse vendeur était
+   * donc consommé à vide, et `escalatedAt` empêchait définitivement tout rejeu.
+   *
+   * Ne pas acquitter ne crée pas de boucle de SMS facturés : le rejeu est
+   * espacé par le backoff exponentiel de `scheduleRetry` (30 s → 15 min) et
+   * borné par `MAX_ATTEMPTS`, au bout duquel l'événement passe `FAILED`.
+   */
+  private async acknowledgeEscalation(
+    outcome: SmsOutcome,
+    eventId: string,
+    orderId: string,
+    ageMinutes: number,
+  ): Promise<void> {
+    if (outcome === 'SENT') {
+      await this.outbox.markEscalated(eventId);
+      this.logger.warn(
+        `📨 Escalade SMS au vendeur pour la commande ${orderId} (${Math.round(ageMinutes)} min sans prise en charge)`,
+      );
+      return;
+    }
+
+    // Volontairement `error` et non `warn` : une commande payée dont le vendeur
+    // n'est joignable ni par push ni par SMS demande une action humaine.
+    this.logger.error(
+      `📨 Escalade SMS NON partie pour la commande ${orderId} (issue : ${outcome}) — ` +
+        `l'événement reste ouvert et sera rejoué.`,
+    );
+    Sentry.captureMessage(
+      `outbox.escalation_not_delivered — commande ${orderId} (${outcome})`,
+      'warning',
+    );
   }
 
   private async dispatchOne(event: OutboxEvent): Promise<void> {
@@ -148,14 +189,11 @@ export class OutboxDispatcherService {
     if (shouldEscalate) {
       const phone = order.restaurant.owner?.phone;
       if (phone) {
-        await this.sms.send(
+        const outcome = await this.sms.send(
           phone,
           `Lilia Food : une commande de ${Math.round(order.total)} FCFA attend depuis ${Math.round(ageMinutes)} min. Ouvrez l'application pour la preparer.`,
         );
-        await this.outbox.markEscalated(event.id);
-        this.logger.warn(
-          `📨 Escalade SMS au vendeur pour la commande ${order.id} (${Math.round(ageMinutes)} min sans prise en charge)`,
-        );
+        await this.acknowledgeEscalation(outcome, event.id, order.id, ageMinutes);
       } else {
         this.logger.error(
           `Escalade impossible pour la commande ${order.id} : le vendeur n'a pas de téléphone renseigné.`,
@@ -231,14 +269,11 @@ export class OutboxDispatcherService {
     if (shouldEscalate) {
       const phone = order.restaurant.owner?.phone;
       if (phone) {
-        await this.sms.send(
+        const outcome = await this.sms.send(
           phone,
           `Lilia Food : une commande payee de ${Math.round(order.total)} FCFA attend depuis ${Math.round(ageMinutes)} min. Ouvrez l'application pour la preparer.`,
         );
-        await this.outbox.markEscalated(event.id);
-        this.logger.warn(
-          `📨 Escalade SMS au vendeur pour la commande payée ${order.id} (${Math.round(ageMinutes)} min)`,
-        );
+        await this.acknowledgeEscalation(outcome, event.id, order.id, ageMinutes);
       } else {
         this.logger.error(
           `Escalade impossible pour la commande ${order.id} : le vendeur n'a pas de téléphone renseigné.`,

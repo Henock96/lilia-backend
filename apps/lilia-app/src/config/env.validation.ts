@@ -75,6 +75,23 @@ export const envValidationSchema = Joi.object({
     otherwise: Joi.optional().allow(''),
   }),
 
+  // Le trafic passe-t-il OBLIGATOIREMENT par l'edge Cloudflare ?
+  //
+  // Cloudflare écrase `CF-Connecting-IP` sur chaque requête entrante, ce qui
+  // rend cet en-tête digne de confiance — **tant qu'aucun chemin direct
+  // n'existe vers le service**. Or Render expose toujours un hôte
+  // `*.onrender.com` joignable sans passer par l'edge : un appelant peut donc
+  // poser l'en-tête lui-même.
+  //
+  // Défaut `false`, délibérément : la liste blanche d'IP du webhook pawaPay
+  // s'appuie dessus, et se tromper y signifie « accepter une confirmation de
+  // paiement forgée ». Ne passer à `true` qu'une fois le chemin direct
+  // réellement fermé (règle Render / Cloudflare Access).
+  TRUST_CLOUDFLARE_IP_HEADER: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .default(false),
+
   // ─── Redis — REQUIS en production (fix M11) ───────────────────────────────
   // Sans Redis, trois contrôles se dégradent **en silence** :
   //  · idempotence du checkout désactivée (doubles commandes) ;

@@ -9,6 +9,7 @@ import type { Request } from 'express';
 import { PawaPayWebhookController } from './pawapay-webhook.controller';
 import { PaymentService } from '../services/payment.service';
 import { RestaurantPayoutService } from '../services/restaurant-payout.service';
+import { RefundProviderService } from '../../refunds/refund-provider.service';
 import { PaymentEventService } from '../services/payment-event.service';
 import { PawaPaySignatureService } from '../providers/pawapay/pawapay-signature.service';
 import { WebhookReceptionMonitor } from '../services/webhook-reception.monitor';
@@ -34,6 +35,12 @@ describe('PawaPayWebhookController', () => {
     findByProviderPayoutId: jest.fn(),
     applyPayoutProviderStatus: jest.fn(),
   };
+  // Les remboursements client empruntent la MÊME route `/payouts` : pawaPay ne
+  // connaît qu'un type de virement sortant.
+  const refunds = {
+    findByProviderRefundId: jest.fn(),
+    applyProviderStatus: jest.fn(),
+  };
   const events = { record: jest.fn().mockResolvedValue('evt-1') };
 
   let signatureEnabled = true;
@@ -46,9 +53,26 @@ describe('PawaPayWebhookController', () => {
   };
 
   let allowlist = '';
+  /** Topologie déclarée : Cloudflare est-il garanti devant le service ? */
+  let trustCloudflare = false;
+
+  /** Charge utile d'un callback de virement sortant (vendeur OU remboursement). */
+  const payoutCallback = (overrides: Partial<PawaPayCallbackDto> = {}) =>
+    ({
+      payoutId: 'po-uuid',
+      status: 'COMPLETED',
+      amount: '4500',
+      requestedAmount: '4500',
+      currency: 'XAF',
+      ...overrides,
+    }) as PawaPayCallbackDto;
+
   const config = {
-    get: (key: string) =>
-      key === 'PAWAPAY_CALLBACK_IPS' ? allowlist : undefined,
+    get: (key: string, fallback?: unknown) => {
+      if (key === 'PAWAPAY_CALLBACK_IPS') return allowlist;
+      if (key === 'TRUST_CLOUDFLARE_IP_HEADER') return trustCloudflare;
+      return fallback;
+    },
   };
 
   const req = (ip = '1.2.3.4'): Request =>
@@ -86,6 +110,11 @@ describe('PawaPayWebhookController', () => {
     signatureEnabled = true;
     signatureFailure = null;
     allowlist = '';
+    // Défaut fail-safe, comme en production tant que personne n'a déclaré que
+    // le chemin direct vers le service est fermé.
+    trustCloudflare = false;
+    refunds.findByProviderRefundId.mockResolvedValue(null);
+    refunds.applyProviderStatus.mockResolvedValue('IGNORED');
     events.record.mockResolvedValue('evt-1');
 
     const module: TestingModule = await Test.createTestingModule({
@@ -93,6 +122,7 @@ describe('PawaPayWebhookController', () => {
       providers: [
         { provide: PaymentService, useValue: payments },
         { provide: RestaurantPayoutService, useValue: payouts },
+        { provide: RefundProviderService, useValue: refunds },
         { provide: PaymentEventService, useValue: events },
         { provide: PawaPaySignatureService, useValue: signature },
         { provide: ConfigService, useValue: config },
@@ -110,6 +140,61 @@ describe('PawaPayWebhookController', () => {
   });
 
   // ══════════════════════════════════════════════════════════════════════════
+  describe('aiguillage reversement vendeur / remboursement client', () => {
+    it('applique un callback de REMBOURSEMENT quand aucun reversement ne porte la référence', async () => {
+      // Les deux empruntent la même route `/payouts` et le même identifiant
+      // `payoutId` : pawaPay ne connaît qu'un type de virement sortant. C'est
+      // donc à NOUS de savoir de quoi il s'agit — et le faire par « essaie
+      // l'un, sinon l'autre » est la seule façon correcte, puisque les deux
+      // identifiants sont uniques et disjoints.
+      //
+      // Sans cet aiguillage, un remboursement client restait PROCESSING pour
+      // toujours : le callback arrivait, ne trouvait pas de reversement, et
+      // repartait en `unknown-transaction`.
+      signatureEnabled = true;
+      payouts.findByProviderPayoutId.mockResolvedValue(null);
+      refunds.findByProviderRefundId.mockResolvedValue({ id: 'ref-1' });
+      refunds.applyProviderStatus.mockResolvedValue('APPLIED');
+
+      const res = await controller.handlePayoutCallback(
+        payoutCallback(),
+        req(),
+      );
+
+      expect(refunds.applyProviderStatus).toHaveBeenCalledWith(
+        expect.objectContaining({ refundId: 'ref-1' }),
+      );
+      expect(res).toEqual({ status: 'processed' });
+    });
+
+    it('privilégie le reversement vendeur quand il existe', async () => {
+      signatureEnabled = true;
+      payouts.findByProviderPayoutId.mockResolvedValue({ id: 'payout-1' });
+      payouts.applyPayoutProviderStatus.mockResolvedValue('APPLIED');
+
+      await controller.handlePayoutCallback(payoutCallback(), req());
+
+      expect(payouts.applyPayoutProviderStatus).toHaveBeenCalled();
+      expect(refunds.applyProviderStatus).not.toHaveBeenCalled();
+    });
+
+    it('ignore proprement une référence inconnue des DEUX tables', async () => {
+      signatureEnabled = true;
+      payouts.findByProviderPayoutId.mockResolvedValue(null);
+      refunds.findByProviderRefundId.mockResolvedValue(null);
+
+      const res = await controller.handlePayoutCallback(
+        payoutCallback(),
+        req(),
+      );
+
+      expect(res).toEqual({
+        status: 'ignored',
+        reason: 'unknown-transaction',
+      });
+    });
+  });
+
   describe('authentification', () => {
     it('signature invalide → 401, et RIEN n’est traité', async () => {
       signatureFailure = 'signature-mismatch';
@@ -170,12 +255,34 @@ describe('PawaPayWebhookController', () => {
       ).rejects.toBeInstanceOf(UnauthorizedException);
     });
 
-    it('derrière Cloudflare : compare l’IP du client, pas celle de l’edge', async () => {
-      // Le cas réel de production. `req.ip` vaut l'edge Cloudflare parce que
-      // `TRUST_PROXY_HOPS=1` s'arrête là ; comparer cette adresse à la liste
-      // blanche de pawaPay ne matcherait JAMAIS, et le repli serait donc
+    it('⚠️ CF-Connecting-IP forgé ne franchit PAS la liste blanche par défaut', async () => {
+      // LE défaut corrigé le 21/09/2026. `CF-Connecting-IP` n'est écrasé par
+      // Cloudflare que pour le trafic qui passe par son edge — or le service
+      // reste joignable en direct sur son hôte `*.onrender.com`. Un appelant
+      // qui frappe cette adresse pose l'en-tête lui-même et se faisait ainsi
+      // passer pour pawaPay sur un endpoint qui écrit de l'argent.
+      //
+      // Défaut fail-safe : sans déclaration de topologie, l'en-tête est ignoré.
+      signatureEnabled = false;
+      trustCloudflare = false;
+      allowlist = '3.64.89.224';
+
+      const request = req('162.158.42.108');
+      request.headers['cf-connecting-ip'] = '3.64.89.224';
+
+      await expect(
+        controller.handleDepositCallback(depositCallback(), request),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
+    it('derrière Cloudflare DÉCLARÉ : compare l’IP du client, pas celle de l’edge', async () => {
+      // Le cas réel de production, une fois la topologie déclarée par
+      // `TRUST_CLOUDFLARE_IP_HEADER=true`. `req.ip` vaut l'edge Cloudflare
+      // parce que `TRUST_PROXY_HOPS=1` s'arrête là ; comparer cette adresse à
+      // la liste blanche de pawaPay ne matcherait JAMAIS, et le repli serait
       // inopérant sans que rien ne le signale.
       signatureEnabled = false;
+      trustCloudflare = true;
       allowlist = '3.64.89.224';
       payments.findByProviderTransactionId.mockResolvedValue({ id: 'pay-1' });
       payments.applyCollectionProviderStatus.mockResolvedValue('APPLIED');
@@ -299,16 +406,6 @@ describe('PawaPayWebhookController', () => {
 
   // ══════════════════════════════════════════════════════════════════════════
   describe('callback de reversement', () => {
-    const payoutCallback = (overrides: Partial<PawaPayCallbackDto> = {}) =>
-      ({
-        payoutId: 'po-uuid',
-        status: 'COMPLETED',
-        amount: '4500',
-        requestedAmount: '4500',
-        currency: 'XAF',
-        ...overrides,
-      }) as PawaPayCallbackDto;
-
     it('COMPLETED sur un reversement connu → processed', async () => {
       payouts.findByProviderPayoutId.mockResolvedValue({ id: 'pay-out-1' });
       payouts.applyPayoutProviderStatus.mockResolvedValue('APPLIED');

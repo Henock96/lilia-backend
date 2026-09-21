@@ -34,6 +34,9 @@ describe('AdminService (caractérisation — deliverers/payments/vendors)', () =
       count: jest.fn(),
       findFirst: jest.fn(),
     },
+    // `getDelivererStats` agrège côté base depuis le 21/09/2026 : une requête
+    // au lieu d'un `findMany` non borné sur tout l'historique du livreur.
+    $queryRaw: jest.fn().mockResolvedValue([]),
     payment: { findMany: jest.fn(), count: jest.fn(), aggregate: jest.fn() },
     restaurant: {
       findMany: jest.fn(),
@@ -86,16 +89,15 @@ describe('AdminService (caractérisation — deliverers/payments/vendors)', () =
         { status: 'LIVRER', _count: { _all: 3 } },
         { status: 'ECHEC', _count: { _all: 1 } },
       ]);
-      prisma.delivery.findMany.mockResolvedValue([
+      // Deux courses de 1000 et 2000, durées 30 et 10 min : la base rend déjà
+      // les sommes et la moyenne.
+      prisma.$queryRaw.mockResolvedValue([
         {
-          pickedUpAt: new Date('2026-01-01T10:00:00Z'),
-          deliveredAt: new Date('2026-01-01T10:30:00Z'),
-          order: { total: 1000 },
-        },
-        {
-          pickedUpAt: new Date('2026-01-01T11:00:00Z'),
-          deliveredAt: new Date('2026-01-01T11:10:00Z'),
-          order: { total: 2000 },
+          deliveredCount: 2,
+          handledOrderValueXaf: 3000,
+          frozenCount: 0,
+          driverPayXaf: null,
+          avgDeliveryMinutes: 20,
         },
       ]);
       prisma.delivery.count.mockResolvedValue(5);

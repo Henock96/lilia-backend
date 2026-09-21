@@ -10,6 +10,9 @@ export interface SseMessage {
 
 @Injectable()
 export class NotificationsService {
+  /** Plafond imposé par FCM sur `sendEachForMulticast`. */
+  private static readonly FCM_BATCH_SIZE = 500;
+
   private readonly logger = new Logger(NotificationsService.name);
 
   constructor(
@@ -74,6 +77,109 @@ export class NotificationsService {
       where: { token, userId: user.id },
     });
     this.logger.log(`FCM token supprimé — user: ${user.id}`);
+  }
+
+  /**
+   * Diffuse une notification à une **audience**, en lots.
+   *
+   * ## Pourquoi cette méthode existe
+   *
+   * `MenusListener` bouclait sur tous les clients historiques d'un vendeur avec
+   * un `await sendPushNotification(...)` par client : une requête `FcmToken`
+   * **et** un aller-retour FCM chacun, en série, dans le processus web. Pour
+   * mille clients, deux mille opérations bloquantes déclenchées par un simple
+   * `POST /menus`.
+   *
+   * FCM accepte 500 jetons par appel (`sendEachForMulticast`). Les mêmes mille
+   * clients coûtent désormais **une** requête de jetons et **deux** appels
+   * réseau.
+   *
+   * ## Ce qu'elle ne fait pas
+   *
+   * Elle ne borne pas l'audience — c'est à l'appelant de décider combien de
+   * personnes il a le droit de déranger, parce que la réponse dépend du geste
+   * métier et pas du transport.
+   */
+  async sendPushToUsers(
+    userIds: string[],
+    title: string,
+    body: string,
+    data?: Record<string, string>,
+  ): Promise<{ sent: number; failed: number; devices: number }> {
+    const empty = { sent: 0, failed: 0, devices: 0 };
+    if (userIds.length === 0) return empty;
+    if (!this.firebase.isReady()) {
+      this.logger.error('Firebase non prêt — diffusion annulée');
+      return empty;
+    }
+
+    // UNE requête pour toute l'audience, au lieu d'une par destinataire.
+    const rows = await this.prisma.fcmToken.findMany({
+      where: { userId: { in: userIds } },
+      select: { token: true },
+    });
+    if (rows.length === 0) {
+      this.logger.warn(
+        `Aucun FCM token pour les ${userIds.length} destinataire(s) visés`,
+      );
+      return empty;
+    }
+
+    const tokens = rows.map((r) => r.token);
+    const stale: string[] = [];
+    let sent = 0;
+    let failed = 0;
+
+    for (
+      let i = 0;
+      i < tokens.length;
+      i += NotificationsService.FCM_BATCH_SIZE
+    ) {
+      const batch = tokens.slice(i, i + NotificationsService.FCM_BATCH_SIZE);
+      const result = await this.firebase.getMessaging().sendEachForMulticast({
+        tokens: batch,
+        notification: { title, body },
+        data: data ?? {},
+        android: {
+          priority: 'high',
+          notification: {
+            channelId: 'high_importance_channel',
+            sound: 'default',
+          },
+        },
+        apns: {
+          headers: { 'apns-priority': '10' },
+          payload: { aps: { sound: 'default', badge: 1 } },
+        },
+      });
+
+      sent += result.successCount;
+      failed += result.failureCount;
+
+      // Même nettoyage que l'envoi unitaire : un jeton périmé qui reste en base
+      // est un échec rejoué à chaque diffusion.
+      result.responses.forEach((r, idx) => {
+        const code = (r as { error?: { code?: string } }).error?.code;
+        if (
+          code === 'messaging/invalid-registration-token' ||
+          code === 'messaging/registration-token-not-registered'
+        ) {
+          stale.push(batch[idx]);
+        }
+      });
+    }
+
+    if (stale.length > 0) {
+      await this.prisma.fcmToken.deleteMany({
+        where: { token: { in: stale } },
+      });
+      this.logger.warn(`${stale.length} token(s) périmé(s) supprimé(s)`);
+    }
+
+    this.logger.log(
+      `Diffusion : ${sent}/${tokens.length} appareil(s) — ${userIds.length} destinataire(s)`,
+    );
+    return { sent, failed, devices: tokens.length };
   }
 
   async sendPushNotification(

@@ -619,8 +619,67 @@ export class PaymentService {
     });
 
     if (!claimed) {
-      await this.events.setOutcome(eventId, PaymentEventOutcome.DUPLICATE);
-      return 'DUPLICATE';
+      // ⚠️ `count === 0` ne suffit PAS à conclure au rejeu — audit du
+      // 21/09/2026, reproduit sur un PostgreSQL réel.
+      //
+      // Deux situations opposées produisent le même compteur :
+      //
+      //  · la ligne est déjà `SUCCESS` → rejeu **bénin**. Le webhook de pawaPay
+      //    est rejoué pendant 15 minutes, et le sondage client comme le cron
+      //    peuvent arriver en même temps : c'est le cas nominal, il ne doit
+      //    rien déclencher.
+      //
+      //  · la ligne est `FAILED` ou `CANCELLED` → **le prestataire contredit
+      //    notre conclusion locale**. L'argent est parti, la commande n'existe
+      //    plus. C'est exactement ce que produit l'expiration d'une commande
+      //    (`OrderLifecycleService.expireUnpaidOrder` clôt les `Payment`
+      //    PENDING en `CANCELLED`) suivie d'une confirmation tardive.
+      //
+      // Les confondre rendait le second cas **totalement silencieux** : pas
+      // d'incident, pas d'alerte, pas de remboursement ouvert, et pour seule
+      // trace une ligne `PaymentEvent` `DUPLICATE` indiscernable d'un rejeu.
+      const current = await this.prisma.payment.findUnique({
+        where: { id: payment.id },
+        select: { status: true },
+      });
+
+      // On ne conclut à la contradiction que sur un statut local **terminal et
+      // négatif**, jamais par défaut. Un `SUCCESS` est le rejeu nominal ; un
+      // `PENDING` relu (ou une ligne introuvable) est une ambiguïté, pas une
+      // preuve — et ouvrir un incident CRITICAL sur une ambiguïté apprendrait
+      // à l'exploitation à ignorer ces incidents, ce qui coûterait plus cher
+      // que le silence qu'on corrige ici.
+      const contradicted =
+        current?.status === PaymentStatus.FAILED ||
+        current?.status === PaymentStatus.CANCELLED;
+
+      if (!contradicted) {
+        await this.events.setOutcome(eventId, PaymentEventOutcome.DUPLICATE);
+        return 'DUPLICATE';
+      }
+
+      await this.events.setOutcome(eventId, PaymentEventOutcome.MISMATCH);
+      this.logger.error(
+        `🚨 [PAIEMENT] Confirmation tardive sur un encaissement clos — paiement ${payment.id} ` +
+          `(local: ${current?.status ?? 'introuvable'}), commande ${payment.orderId}`,
+      );
+      Sentry.captureMessage(
+        `payment.resurrected — encaissement ${payment.id} confirmé COMPLETED alors que local=${current?.status}`,
+        'error',
+      );
+      await this.openOrphanIncident(
+        payment.id,
+        payment.orderId,
+        payment.amount,
+        `Le prestataire a confirmé cet encaissement alors qu'il avait été clos localement ` +
+          `(statut ${current?.status ?? 'introuvable'}). Le débit a bien eu lieu.`,
+      );
+      this.eventEmitter.emit('payment.orphaned', {
+        orderId: payment.orderId,
+        paymentId: payment.id,
+        amount: payment.amount,
+      });
+      return 'MISMATCH';
     }
 
     await this.events.setOutcome(eventId, PaymentEventOutcome.APPLIED);
@@ -635,6 +694,13 @@ export class PaymentService {
       Sentry.captureMessage(
         `payment.orphan — encaissement ${payment.id} sur commande ${payment.orderId} hors EN_ATTENTE`,
         'error',
+      );
+      await this.openOrphanIncident(
+        payment.id,
+        payment.orderId,
+        payment.amount,
+        "La commande n'était plus en attente de paiement (expirée ou annulée) " +
+          'au moment où le prestataire a confirmé.',
       );
       this.eventEmitter.emit('payment.orphaned', {
         orderId: payment.orderId,
@@ -684,6 +750,46 @@ export class PaymentService {
       return `montant attendu ${expected}, reçu ${status.amountXaf}`;
     }
     return null;
+  }
+
+  /**
+   * Ouvre l'incident « argent encaissé, commande non honorable ».
+   *
+   * ⚠️ **Écrit ici, dans le service, et non plus dans un `@OnEvent`.**
+   * `applyCollectionProviderStatus` est appelé depuis le webhook (processus
+   * web) **et** depuis `PaymentReconciliationService` (processus worker). Or le
+   * graphe du worker ne contient aucun listener : `WorkerModule` n'enregistre
+   * que `EventEmitterModule`, jamais `PayoutListener`. Un orphelin détecté par
+   * le cron n'ouvrait donc **aucun** incident — c'est-à-dire précisément dans le
+   * cas où personne ne regarde, puisqu'aucun humain n'a déclenché l'appel.
+   *
+   * L'événement `payment.orphaned` continue d'être émis pour qui voudrait y
+   * réagir ; il ne porte simplement plus l'obligation d'ouvrir l'incident.
+   */
+  private async openOrphanIncident(
+    paymentId: string,
+    orderId: string,
+    amount: number,
+    detail: string,
+  ) {
+    await this.prisma.incident
+      .create({
+        data: {
+          type: 'REFUND_REQUEST',
+          severity: 'CRITICAL',
+          title: 'Encaissement sur une commande non honorable',
+          description:
+            `Un paiement de ${Math.round(amount)} FCFA a été confirmé par le prestataire sur la ` +
+            `commande ${orderId}. ${detail} La commande ne sera pas honorée : ouvrir un remboursement.`,
+          orderId,
+          metadata: { paymentId, amount },
+        },
+      })
+      .catch((error) =>
+        this.logger.error(
+          `Incident d'encaissement orphelin non créé : ${(error as Error).message}`,
+        ),
+      );
   }
 
   private async openMismatchIncident(

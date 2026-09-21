@@ -423,9 +423,9 @@ export class DeliveriesService {
    * Fix M4 (audit du 28/08/2026) : la méthode n'avait AUCUNE garde. Le contrôle
    * de `acceptDelivery` (qui exige `AVAILABLE`) devenait donc contournable —
    * accepter la course A, se remettre `AVAILABLE`, accepter la course B. Deux
-   * livraisons `EN_TRANSIT` simultanées, alors qu'il n'existe **qu'une seule**
-   * clé GEO `driver_positions` par livreur : les deux clients voyaient la même
-   * position, et l'un des deux suivait une course qui n'était pas la sienne.
+   * livraisons `EN_TRANSIT` simultanées pour un seul téléphone : la position
+   * publiée ne peut décrire qu'une des deux courses, et l'autre client suit un
+   * livreur qui ne vient pas chez lui.
    */
   async setDriverStatus(firebaseUid: string, status: DriverStatus) {
     const user = await this.getUserOrThrow(firebaseUid); // 404 si introuvable (plus de TypeError 500)

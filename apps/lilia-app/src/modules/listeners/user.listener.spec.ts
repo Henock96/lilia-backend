@@ -21,7 +21,7 @@ describe('UserListener', () => {
       isReady: jest.fn().mockReturnValue(true),
       sendWelcomeEmail: jest.fn().mockResolvedValue(true),
     };
-    sms = { sendWelcome: jest.fn().mockResolvedValue(true) };
+    sms = { sendWelcome: jest.fn().mockResolvedValue('SENT') };
     listener = new UserListener(
       prisma as PrismaService,
       email as EmailService,
@@ -95,8 +95,12 @@ describe('UserListener', () => {
       expect(sms.sendWelcome).toHaveBeenCalledTimes(1);
     });
 
-    it("ne pose pas le flag SMS quand l'envoi echoue (sendWelcome renvoie false)", async () => {
-      sms.sendWelcome.mockResolvedValue(false);
+    it("ne pose pas le flag SMS quand Infobip a refuse l'envoi", async () => {
+      // ⚠️ `FAILED` est une chaîne, donc **truthy** : un `if (ok)` la laisse
+      // passer. C'est exactement le piège que le passage de `boolean` à
+      // `SmsOutcome` introduit si l'appelant n'est pas corrigé — et le flag
+      // `welcomeSmsSentAt` est DÉFINITIF, le SMS serait perdu pour toujours.
+      sms.sendWelcome.mockResolvedValue('FAILED');
       prisma.user.findUnique.mockResolvedValue({
         email: 'a@b.com',
         nom: 'A',
@@ -108,6 +112,23 @@ describe('UserListener', () => {
         new UserCreatedEvent('u1', 'A', new Date()),
       );
       expect(sms.sendWelcome).toHaveBeenCalledTimes(1);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it("ne pose pas le flag SMS quand le service n'est pas configure", async () => {
+      // Sans clés Infobip, rien n'est tenté. Poser le flag consommerait le SMS
+      // de bienvenue avant même que le service existe.
+      sms.sendWelcome.mockResolvedValue('SKIPPED');
+      prisma.user.findUnique.mockResolvedValue({
+        email: 'a@b.com',
+        nom: 'A',
+        phone: '061234567',
+        welcomeEmailSentAt: new Date(),
+        welcomeSmsSentAt: null,
+      });
+      await listener.handleUserCreated(
+        new UserCreatedEvent('u1', 'A', new Date()),
+      );
       expect(prisma.user.update).not.toHaveBeenCalled();
     });
   });
@@ -123,6 +144,19 @@ describe('UserListener', () => {
       await listener.handlePhoneCompleted(new UserPhoneCompletedEvent('u2'));
       expect(sms.sendWelcome).toHaveBeenCalledWith('061234567', 'Gina');
       expect(prisma.user.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("ne pose pas le flag quand l'envoi a ete refuse", async () => {
+      sms.sendWelcome.mockResolvedValue('FAILED');
+      prisma.user.findUnique.mockResolvedValue({
+        nom: 'Gina',
+        phone: '061234567',
+        welcomeSmsSentAt: null,
+        createdAt: new Date(),
+      });
+      await listener.handlePhoneCompleted(new UserPhoneCompletedEvent('u2'));
+      expect(sms.sendWelcome).toHaveBeenCalledTimes(1);
+      expect(prisma.user.update).not.toHaveBeenCalled();
     });
 
     it("n'envoie pas si le compte est ancien (> 24h)", async () => {

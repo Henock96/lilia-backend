@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { SentryModule } from '@sentry/nestjs/setup';
 import { LoggerModule } from 'nestjs-pino';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { RedisModule } from '@nestjs-modules/ioredis';
@@ -43,6 +44,10 @@ import { WorkerService } from './worker.service';
  */
 @Module({
   imports: [
+    // Sentry — doit être l'un des tout premiers modules importés, comme dans
+    // `AppModule`. `main.ts` a déjà appelé `Sentry.init()` via `instrument` ;
+    // ce module branche l'intégration Nest par-dessus.
+    SentryModule.forRoot(),
     ConfigModule.forRoot({
       isGlobal: true,
       // Même cascade que `AppModule` — sans quoi le worker, qui exécute les

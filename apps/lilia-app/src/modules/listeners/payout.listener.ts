@@ -116,34 +116,27 @@ export class PayoutListener {
   /**
    * Encaissement abouti sur une commande qui n'attend plus de paiement.
    *
-   * Ce n'est pas un cas nominal : de l'argent est entré pour une commande
-   * expirée ou annulée. On ouvre un incident CRITICAL — c'est une dette envers
-   * le client, et elle doit être visible sans que personne n'ait à lire les logs.
+   * ⚠️ **L'incident n'est plus ouvert ici** (audit du 21/09/2026).
+   * `PaymentService.openOrphanIncident` s'en charge, pour une raison de
+   * portée : `applyCollectionProviderStatus` tourne aussi dans le **worker**,
+   * dont le graphe de modules ne contient aucun listener. Un orphelin détecté
+   * par le cron de réconciliation n'ouvrait donc aucun incident — exactement le
+   * cas où personne ne regarde, puisque aucun humain n'a déclenché l'appel.
+   *
+   * Le handler est conservé pour la seule trace applicative : l'événement reste
+   * le point d'accroche naturel pour tout ce qu'on voudra brancher ensuite
+   * (relance support, message au client), sans rouvrir la question de savoir
+   * qui écrit l'incident.
    */
   @OnEvent('payment.orphaned')
-  async handleOrphanedPayment(event: {
+  handleOrphanedPayment(event: {
     orderId: string;
     paymentId: string;
     amount: number;
   }) {
-    await this.prisma.incident
-      .create({
-        data: {
-          type: 'REFUND_REQUEST',
-          severity: 'CRITICAL',
-          title: 'Encaissement sur une commande non payable',
-          description:
-            `Un paiement de ${Math.round(event.amount)} FCFA a été confirmé sur la commande ` +
-            `${event.orderId}, qui n'était plus en attente de paiement (expirée ou annulée). ` +
-            `L'argent est encaissé, la commande ne sera pas honorée : ouvrir un remboursement.`,
-          orderId: event.orderId,
-          metadata: { paymentId: event.paymentId, amount: event.amount },
-        },
-      })
-      .catch((error) =>
-        this.logger.error(
-          `Incident d'encaissement orphelin non créé : ${(error as Error).message}`,
-        ),
-      );
+    this.logger.error(
+      `🚨 Encaissement orphelin — ${Math.round(event.amount)} FCFA sur la commande ` +
+        `${event.orderId} (paiement ${event.paymentId}). Incident ouvert par PaymentService.`,
+    );
   }
 }

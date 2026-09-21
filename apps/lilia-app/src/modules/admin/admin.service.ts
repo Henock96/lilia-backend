@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateRestaurantWithOwnerDto } from './dto/create-restaurant-with-owner.dto';
-import { Role, StatusUser } from '@prisma/client';
+import { OrderStatus, Role, StatusUser } from '@prisma/client';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 import { DelivererMissionStatus } from './dto/get-deliverer-missions.dto';
 import { UserCacheService } from '../auth/services/user-cache.service';
@@ -20,6 +20,12 @@ import { AdminOrdersService } from './admin-orders.service';
 
 @Injectable()
 export class AdminService {
+  /**
+   * Plafond de l'écran de supervision. Au-delà, ce n'est plus un écran de
+   * supervision mais un export — qui a ses propres routes, paginées.
+   */
+  private static readonly ACTIVE_ORDERS_LIMIT = 200;
+
   private readonly logger = new Logger(AdminService.name);
 
   constructor(
@@ -174,23 +180,57 @@ export class AdminService {
   // ─── SUPERVISION COMMANDES ─────────────────────────────────────────────────
 
   /**
-   * Toutes les commandes actives (pas encore livrées ni annulées).
-   * Utile pour la supervision en temps réel depuis le dashboard admin.
+   * Commandes actives (pas encore livrées ni annulées) — supervision temps réel.
+   *
+   * ⚠️ **Bornée**, et le compteur dit si la borne a mordu.
+   *
+   * La requête n'avait ni `take` ni pagination : elle rendait toutes les
+   * commandes non terminales avec trois jointures. Le cron d'expiration la
+   * maintient petite en pratique, mais « petite en pratique » n'est pas une
+   * borne — une panne de paiement, un vendeur qui n'ouvre pas, un samedi
+   * chargé, et l'écran de supervision devient le plus coûteux de l'API.
+   *
+   * `total` est compté séparément : sans lui, un écran plafonné à 200 lignes se
+   * lirait « il y a 200 commandes actives » alors qu'il y en a peut-être 900 —
+   * c'est-à-dire exactement l'information qu'un écran de supervision existe
+   * pour donner.
    */
-  async getActiveOrders() {
-    const orders = await this.prisma.order.findMany({
-      where: {
-        status: { in: ['EN_ATTENTE', 'PAYER', 'EN_PREPARATION', 'PRET'] },
+  async getActiveOrders(limit = AdminService.ACTIVE_ORDERS_LIMIT) {
+    const where = {
+      status: {
+        in: [
+          OrderStatus.EN_ATTENTE,
+          OrderStatus.PAYER,
+          OrderStatus.EN_PREPARATION,
+          OrderStatus.PRET,
+        ],
       },
-      include: {
-        restaurant: { select: { nom: true } },
-        user: { select: { nom: true, phone: true } },
-        delivery: { select: { status: true, delivererId: true } },
-      },
-      orderBy: { createdAt: 'asc' }, // les plus anciennes en premier
-    });
+    };
+    const capped = Math.min(
+      Math.max(1, limit),
+      AdminService.ACTIVE_ORDERS_LIMIT,
+    );
 
-    return { data: orders, count: orders.length };
+    const [orders, total] = await Promise.all([
+      this.prisma.order.findMany({
+        where,
+        include: {
+          restaurant: { select: { nom: true } },
+          user: { select: { nom: true, phone: true } },
+          delivery: { select: { status: true, delivererId: true } },
+        },
+        orderBy: { createdAt: 'asc' }, // les plus anciennes en premier
+        take: capped,
+      }),
+      this.prisma.order.count({ where }),
+    ]);
+
+    return {
+      data: orders,
+      // Conservé : deux back-offices lisent `count` comme la taille de la liste.
+      count: orders.length,
+      meta: { total, limit: capped, truncated: total > orders.length },
+    };
   }
 
   // ─── FIDÉLITÉ & PARRAINAGE ─────────────────────────────────────────────────

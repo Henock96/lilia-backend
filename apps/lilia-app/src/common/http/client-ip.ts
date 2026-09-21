@@ -45,11 +45,15 @@
  * falsifiable **tant que tout le trafic passe par Cloudflare** — ce qui est le
  * cas de l'edge de Render.
  *
- * ⚠️ Cette garantie disparaîtrait si l'application devenait joignable
- * directement, sans passer par l'edge. C'est pourquoi elle ne doit **jamais**
- * servir seule à authentifier quoi que ce soit : pour les callbacks pawaPay, la
- * signature RFC-9421 reste le dispositif de référence, insensible à la
- * topologie réseau. La liste blanche d'IP n'est qu'un repli.
+ * ⚠️ **Cette garantie ne tient pas ici, et c'est le sujet de
+ * `resolveTrustedClientIp` ci-dessous** : le service reste joignable en direct
+ * sur son hôte `*.onrender.com`, sans passer par l'edge. Un appelant qui frappe
+ * cette adresse pose l'en-tête lui-même.
+ *
+ * Cette fonction reste donc un **meilleur effort**, réservé au rate limiting :
+ * y forger son adresse ne déplace que son propre compteur. Elle ne doit
+ * **jamais** servir à autoriser quoi que ce soit — pour cela, voir
+ * `resolveTrustedClientIp`.
  */
 export function resolveClientIp(req: {
   headers?: Record<string, unknown>;
@@ -60,6 +64,43 @@ export function resolveClientIp(req: {
 
   // Pas de Cloudflare devant (développement local, tests, autre hébergeur) :
   // `req.ip` est déjà l'adresse réelle.
+  return req.ip;
+}
+
+/**
+ * Adresse client utilisable pour une **décision de sécurité**.
+ *
+ * ## Pourquoi elle est distincte de `resolveClientIp`
+ *
+ * Les deux usages de l'adresse n'ont pas le même coût d'erreur :
+ *
+ * | Usage | Forger `CF-Connecting-IP` permet de… |
+ * |---|---|
+ * | rate limiting | déplacer **son propre** compteur — sans intérêt |
+ * | liste blanche du webhook pawaPay | **se faire passer pour le prestataire** |
+ *
+ * Le second cas autorise une écriture d'argent. Il ne peut pas reposer sur un
+ * en-tête que l'appelant contrôle dès lors qu'un chemin direct existe vers le
+ * service — et il en existe un : l'hôte `*.onrender.com`.
+ *
+ * `trustCloudflareHeader` est donc une **déclaration explicite de topologie**,
+ * portée par `TRUST_CLOUDFLARE_IP_HEADER`, dont le défaut est `false`. Tant que
+ * personne n'a écrit « tout le trafic passe par Cloudflare et le chemin direct
+ * est fermé », l'en-tête ne décide de rien et on retombe sur `req.ip`.
+ *
+ * ⚠️ Même déclarée, cette confiance reste une **défense en profondeur**. Le
+ * dispositif de référence pour les callbacks pawaPay est la signature RFC-9421
+ * (`PAWAPAY_PUBLIC_KEY`), insensible à la topologie réseau. La liste blanche
+ * d'IP n'est qu'un repli, et ce repli est faible par nature.
+ */
+export function resolveTrustedClientIp(
+  req: { headers?: Record<string, unknown>; ip?: string },
+  options: { trustCloudflareHeader: boolean },
+): string | undefined {
+  if (options.trustCloudflareHeader) {
+    const cloudflare = firstHeaderValue(req.headers?.['cf-connecting-ip']);
+    if (cloudflare) return cloudflare;
+  }
   return req.ip;
 }
 
