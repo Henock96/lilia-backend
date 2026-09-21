@@ -11,6 +11,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsCoreModule } from '../notifications/notifications-core.module';
 import { OrdersCoreModule } from '../orders/orders-core.module';
 import { PaymentCoreModule } from '../payments/payment-core.module';
+import { RefundsCoreModule } from '../refunds/refunds-core.module';
 
 @Module({
     imports: [
@@ -21,6 +22,8 @@ import { PaymentCoreModule } from '../payments/payment-core.module';
         // le worker, qui ne monte aucun guard. Importer le module complet y
         // exposerait `POST /admin/orders/:id/payout` sans authentification.
         PaymentCoreModule,
+        // Le cron réconcilie aussi les remboursements client restés PROCESSING.
+        RefundsCoreModule,
     ],
     providers: [
         // Les 5 crons sont toujours enregistrés. Le choix « ce processus

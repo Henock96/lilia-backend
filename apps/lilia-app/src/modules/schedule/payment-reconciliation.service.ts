@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
-import { PaymentEventSource, PayoutStatus } from '@prisma/client';
+import { PaymentEventSource, PayoutStatus, RefundStatus } from '@prisma/client';
 import * as Sentry from '@sentry/nestjs';
 
 import { PrismaService } from '../../prisma/prisma.service';
@@ -9,6 +9,7 @@ import { CronLockService } from '../../common/locks/cron-lock.service';
 import { PaymentService, maskRef } from '../payments/services/payment.service';
 import { RestaurantPayoutService } from '../payments/services/restaurant-payout.service';
 import { PaymentProviderRegistry } from '../payments/payment-provider.registry';
+import { RefundProviderService } from '../refunds/refund-provider.service';
 
 /**
  * Réconciliation des transactions restées en attente.
@@ -48,6 +49,7 @@ export class PaymentReconciliationService {
     private readonly prisma: PrismaService,
     private readonly payments: PaymentService,
     private readonly payouts: RestaurantPayoutService,
+    private readonly refunds: RefundProviderService,
     private readonly registry: PaymentProviderRegistry,
     private readonly cronLock: CronLockService,
     config: ConfigService,
@@ -67,7 +69,93 @@ export class PaymentReconciliationService {
   }
 
   private async reconcileUnlocked(): Promise<void> {
-    await Promise.all([this.reconcileCollections(), this.reconcilePayouts()]);
+    await Promise.all([
+      this.reconcileCollections(),
+      this.reconcilePayouts(),
+      this.reconcileRefunds(),
+    ]);
+  }
+
+  // ─── Remboursements client ──────────────────────────────────────────────────
+
+  /**
+   * Rattrape un remboursement resté `PROCESSING`.
+   *
+   * Sans lui, le rail de remboursement aurait exactement le défaut qu'il
+   * corrige : un callback perdu laisserait la dette envers le client « en
+   * cours » indéfiniment, avec le virement peut-être déjà parti — et personne
+   * pour le savoir.
+   *
+   * ⚠️ Même asymétrie que pour les reversements vendeur : un remboursement dont
+   * le prestataire ne sait rien **n'est jamais clos automatiquement**. Le
+   * marquer en échec à tort inviterait un administrateur à réessayer, et si la
+   * demande était partie, le client serait remboursé deux fois. On alerte, un
+   * humain tranche.
+   */
+  private async reconcileRefunds(): Promise<void> {
+    const cutoff = new Date(
+      Date.now() - PaymentReconciliationService.GRACE_SECONDS * 1000,
+    );
+
+    const stale = await this.prisma.refund.findMany({
+      where: {
+        status: RefundStatus.PROCESSING,
+        updatedAt: { lt: cutoff },
+        providerRefundId: { not: null },
+        provider: { not: null },
+      },
+      select: {
+        id: true,
+        provider: true,
+        providerRefundId: true,
+        updatedAt: true,
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: PaymentReconciliationService.MAX_PER_RUN,
+    });
+
+    if (stale.length === 0) return;
+
+    let resolved = 0;
+
+    for (const refund of stale) {
+      try {
+        const provider = this.registry.forStoredProvider(refund.provider!);
+        if (!provider.supportsPayout) continue;
+
+        const status = await provider.getPayoutStatus(refund.providerRefundId!);
+        if (status) {
+          const outcome = await this.refunds.applyProviderStatus({
+            refundId: refund.id,
+            status,
+            source: PaymentEventSource.RECONCILIATION,
+          });
+          if (outcome === 'APPLIED') resolved++;
+          continue;
+        }
+
+        if (this.isAbandoned(refund.updatedAt)) {
+          this.logger.error(
+            `🚨 Remboursement ${refund.id} sans statut après ${this.abandonAfterMinutes} min — ` +
+              `ref ${maskRef(refund.providerRefundId)}. Vérification manuelle requise.`,
+          );
+          Sentry.captureMessage(
+            `refund.unknown_status — remboursement ${refund.id} introuvable chez le prestataire`,
+            'error',
+          );
+        }
+      } catch (error) {
+        this.logger.error(
+          `Réconciliation du remboursement ${refund.id} échouée : ${(error as Error).message}`,
+        );
+      }
+    }
+
+    if (resolved) {
+      this.logger.log(
+        `🔄 Remboursements réconciliés : ${resolved} résolu(s) sur ${stale.length}`,
+      );
+    }
   }
 
   // ─── Encaissements ──────────────────────────────────────────────────────────

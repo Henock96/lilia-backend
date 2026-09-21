@@ -15,11 +15,12 @@ import { PaymentEventKind, PaymentEventSource } from '@prisma/client';
 import type { Request } from 'express';
 import * as Sentry from '@sentry/nestjs';
 
-import { resolveClientIp } from '../../../common/http/client-ip';
+import { resolveTrustedClientIp } from '../../../common/http/client-ip';
 import { Public } from '../../auth/decorators/public.decorator';
 import { SkipResponseWrap } from '../../../common/interceptors/api-response.interceptor';
 import { PaymentService, maskRef } from '../services/payment.service';
 import { RestaurantPayoutService } from '../services/restaurant-payout.service';
+import { RefundProviderService } from '../../refunds/refund-provider.service';
 import { PaymentEventService } from '../services/payment-event.service';
 import { PawaPaySignatureService } from '../providers/pawapay/pawapay-signature.service';
 import { WebhookReceptionMonitor } from '../services/webhook-reception.monitor';
@@ -62,6 +63,7 @@ export class PawaPayWebhookController {
   constructor(
     private readonly payments: PaymentService,
     private readonly payouts: RestaurantPayoutService,
+    private readonly refunds: RefundProviderService,
     private readonly events: PaymentEventService,
     private readonly signature: PawaPaySignatureService,
     private readonly config: ConfigService,
@@ -160,7 +162,34 @@ export class PawaPayWebhookController {
         externalId,
       );
 
+      // ⚠️ Deux virements sortants empruntent cette route, et pawaPay ne les
+      // distingue pas : il ne connaît qu'un `payoutId`. Le **reversement
+      // vendeur** et le **remboursement client** ont pourtant des tables, des
+      // bénéficiaires et des conséquences opposés.
+      //
+      // L'aiguillage se fait par essai successif sur les deux tables, et c'est
+      // la seule façon correcte : les deux identifiants sont générés par nous,
+      // uniques et disjoints, donc une référence ne peut appartenir qu'à l'un.
+      // Le deviner d'après la forme du payload serait une heuristique — et ce
+      // contrôleur existe précisément pour n'en faire aucune.
+      //
+      // Sans cet aiguillage, un remboursement client restait `PROCESSING` pour
+      // toujours : le callback arrivait, ne trouvait pas de reversement, et
+      // repartait en `unknown-transaction`.
       if (!payout) {
+        const refund = await this.refunds.findByProviderRefundId(
+          'PAWAPAY',
+          externalId,
+        );
+        if (refund) {
+          const outcome = await this.refunds.applyProviderStatus({
+            refundId: refund.id,
+            status: this.toProviderStatus(payload),
+            source: PaymentEventSource.WEBHOOK,
+          });
+          return { status: this.toResponseStatus(outcome) };
+        }
+
         await this.events.record({
           kind: PaymentEventKind.PAYOUT,
           provider: 'PAWAPAY',
@@ -171,7 +200,7 @@ export class PawaPayWebhookController {
           outcome: 'IGNORED',
         });
         this.logger.warn(
-          `Callback reversement : aucun reversement pour la ref ${maskRef(externalId)}`,
+          `Callback reversement : aucun reversement NI remboursement pour la ref ${maskRef(externalId)}`,
         );
         return { status: 'ignored', reason: 'unknown-transaction' };
       }
@@ -234,6 +263,15 @@ export class PawaPayWebhookController {
       return;
     }
 
+    // Repli. La signature RFC-9421 est le dispositif de référence : elle prouve
+    // l'origine ET l'intégrité du corps, sans rien supposer du réseau. Une liste
+    // blanche d'adresses ne prouve que l'origine, et seulement si la topologie
+    // garantit qu'on lit la bonne adresse.
+    this.logger.warn(
+      'Callback pawaPay authentifié par liste blanche d’IP — repli faible. ' +
+        'Configurer PAWAPAY_PUBLIC_KEY (signature RFC-9421) en production.',
+    );
+
     const allowlist = (this.config.get<string>('PAWAPAY_CALLBACK_IPS') ?? '')
       .split(',')
       .map((ip) => ip.trim())
@@ -248,13 +286,27 @@ export class PawaPayWebhookController {
       throw new UnauthorizedException('Callback non configuré');
     }
 
-    // ⚠️ `req.ip` ne convient pas : derrière Cloudflare + Render, il vaut
-    // l'adresse de l'edge Cloudflare, jamais celle de pawaPay — la liste
-    // blanche ne matcherait donc **jamais**. Et augmenter `TRUST_PROXY_HOPS`
-    // pour « corriger » cela laisserait un appelant forger son adresse via
-    // `X-Forwarded-For`, donc se faire passer pour pawaPay. Voir
-    // `common/http/client-ip.ts`.
-    const source = resolveClientIp(req) ?? '';
+    // ⚠️ Trois pièges se croisent ici, et la fonction appelée les tranche.
+    //
+    //  1. `req.ip` seul ne convient pas : derrière Cloudflare + Render, il vaut
+    //     l'adresse de l'edge, jamais celle de pawaPay — la liste blanche ne
+    //     matcherait donc jamais.
+    //  2. Augmenter `TRUST_PROXY_HOPS` pour « corriger » cela laisserait forger
+    //     l'adresse via `X-Forwarded-For`.
+    //  3. Et faire confiance à `CF-Connecting-IP` **sans condition** — ce qui
+    //     était le cas — laisse un appelant frapper l'hôte `*.onrender.com` en
+    //     direct, poser l'en-tête lui-même, et se faire passer pour le
+    //     prestataire sur un endpoint qui écrit de l'argent.
+    //
+    // D'où `TRUST_CLOUDFLARE_IP_HEADER`, dont le défaut est `false` : tant que
+    // personne n'a déclaré la topologie, l'en-tête ne décide de rien.
+    const source =
+      resolveTrustedClientIp(req, {
+        trustCloudflareHeader: this.config.get<boolean>(
+          'TRUST_CLOUDFLARE_IP_HEADER',
+          false,
+        ),
+      }) ?? '';
     if (!allowlist.includes(source)) {
       this.logger.error(
         `Callback pawaPay/${route} refusé — adresse ${source} hors liste blanche`,
@@ -298,6 +350,29 @@ export class PawaPayWebhookController {
     // qu'on se contente d'ignorer devient un rejet non capturé, et Node tue le
     // processus.
     void this.reception.recordRejection(route, reason).catch(() => undefined);
+  }
+
+  /**
+   * Traduit un callback pawaPay en statut normalisé.
+   *
+   * Extrait parce que trois chemins l'utilisent désormais (dépôt, reversement
+   * vendeur, remboursement client) : trois copies finiraient par diverger sur
+   * la lecture du montant, qui est déjà subtile (`requestedAmount` d'abord,
+   * `amount` en repli).
+   */
+  private toProviderStatus(payload: PawaPayCallbackDto) {
+    return {
+      state: mapPawaPayState(payload.status),
+      rawStatus: payload.status,
+      amountXaf:
+        parseAmountToXaf(payload.requestedAmount) ??
+        parseAmountToXaf(payload.amount),
+      currency: payload.currency,
+      providerTransactionId: payload.providerTransactionId,
+      failureCode: payload.failureReason?.failureCode,
+      failureMessage: payload.failureReason?.failureMessage,
+      raw: payload,
+    };
   }
 
   private toResponseStatus(

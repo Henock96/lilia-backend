@@ -54,7 +54,8 @@ describe('OutboxDispatcherService', () => {
       scheduleRetry: jest.fn().mockResolvedValue(undefined),
     };
     notifications = { sendPushNotification: jest.fn().mockResolvedValue(true) };
-    sms = { send: jest.fn().mockResolvedValue(true) };
+    // Le double rend ce que rend le vrai service : une issue, pas un booléen.
+    sms = { send: jest.fn().mockResolvedValue('SENT') };
     invitations = {
       sendForVendor: jest
         .fn()
@@ -194,6 +195,64 @@ describe('OutboxDispatcherService', () => {
       expect(sms.send).not.toHaveBeenCalled();
       // Le rappel push, lui, continue : l'obligation demeure.
       expect(outbox.scheduleRetry).toHaveBeenCalled();
+    });
+
+    it("n'acquitte PAS l'escalade quand le SMS a été refusé", async () => {
+      // Le cœur du défaut : `markEscalated` était appelé sans lire le retour de
+      // `send()`. Un SMS refusé par l'opérateur — ou un compte d'essai qui ne
+      // livre qu'aux numéros vérifiés — marquait donc le dernier filet comme
+      // consommé, et il n'était jamais rejoué.
+      outbox.claimDue.mockResolvedValue([event()]);
+      prisma.order.findUnique.mockResolvedValue(
+        order({ createdAt: minutesAgo(20) }),
+      );
+      sms.send.mockResolvedValue('FAILED');
+
+      await service.dispatchPending();
+
+      expect(sms.send).toHaveBeenCalled();
+      expect(outbox.markEscalated).not.toHaveBeenCalled();
+      // L'obligation demeure : le backoff rejouera, borné par MAX_ATTEMPTS.
+      expect(outbox.scheduleRetry).toHaveBeenCalled();
+    });
+
+    it("n'acquitte PAS l'escalade quand le SMS n'est pas configuré", async () => {
+      outbox.claimDue.mockResolvedValue([event()]);
+      prisma.order.findUnique.mockResolvedValue(
+        order({ createdAt: minutesAgo(20) }),
+      );
+      sms.send.mockResolvedValue('SKIPPED');
+
+      await service.dispatchPending();
+
+      expect(outbox.markEscalated).not.toHaveBeenCalled();
+    });
+
+    it("n'acquitte PAS l'escalade d'une commande PAYÉE quand le SMS échoue", async () => {
+      // Même garantie sur `order.paid`, qui est le chemin réel depuis pawaPay :
+      // c'est celui où le client a déjà payé.
+      outbox.claimDue.mockResolvedValue([event({ type: 'order.paid' })]);
+      prisma.order.findUnique.mockResolvedValue(
+        order({ paidAt: minutesAgo(20), createdAt: minutesAgo(40) }),
+      );
+      sms.send.mockResolvedValue('FAILED');
+
+      await service.dispatchPending();
+
+      expect(sms.send).toHaveBeenCalled();
+      expect(outbox.markEscalated).not.toHaveBeenCalled();
+    });
+
+    it('acquitte une escalade réellement partie sur une commande payée', async () => {
+      outbox.claimDue.mockResolvedValue([event({ type: 'order.paid' })]);
+      prisma.order.findUnique.mockResolvedValue(
+        order({ paidAt: minutesAgo(20), createdAt: minutesAgo(40) }),
+      );
+      sms.send.mockResolvedValue('SENT');
+
+      await service.dispatchPending();
+
+      expect(outbox.markEscalated).toHaveBeenCalledWith('evt-1');
     });
 
     it('continue sans SMS si le vendeur n’a pas de téléphone', async () => {

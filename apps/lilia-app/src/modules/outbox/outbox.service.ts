@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { OutboxEventStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { RequestContext } from '../../common/context/request-context';
 
 /**
  * Boîte d'envoi transactionnelle (fix H7 — audit du 28/08/2026).
@@ -29,11 +30,23 @@ export class OutboxService {
       payload: Prisma.InputJsonValue;
     },
   ): Promise<string> {
+    // L'identifiant de la requête qui a créé l'obligation est écrit DANS la
+    // charge utile, et non lu à la volée au moment du dépilage : l'outbox est
+    // dépilée plus tard, souvent par un autre processus, où plus aucun contexte
+    // asynchrone n'existe. C'est la seule forme durable de la corrélation —
+    // elle relie une notification, et jusqu'à son escalade SMS, à la requête
+    // HTTP dont elle découle.
+    const requestId = RequestContext.requestId();
+    const payload =
+      requestId && typeof params.payload === 'object' && params.payload !== null
+        ? { ...(params.payload as Record<string, unknown>), requestId }
+        : params.payload;
+
     const event = await tx.outboxEvent.create({
       data: {
         type: params.type,
         aggregateId: params.aggregateId,
-        payload: params.payload,
+        payload: payload as Prisma.InputJsonValue,
       },
       select: { id: true },
     });

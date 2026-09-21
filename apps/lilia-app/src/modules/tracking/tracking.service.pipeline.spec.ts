@@ -54,32 +54,39 @@ describe('TrackingService — écritures de position en pipeline', () => {
     accuracy: 8,
   };
 
-  it('envoie les TROIS commandes en un seul aller-retour', async () => {
+  it('envoie les commandes en un seul aller-retour', async () => {
     const redis = fakeRedis();
     (service as any).redis = redis;
 
     await service.updatePosition(position);
 
-    // C'est l'objet même du correctif : un `exec`, pas trois `await`.
+    // C'est l'objet même du correctif : un `exec`, pas plusieurs `await`.
     expect(redis.execCount()).toBe(1);
     expect(redis.pipeline).toHaveBeenCalledTimes(1);
-    expect(redis.geoadd).toHaveBeenCalledTimes(1);
     expect(redis.setex).toHaveBeenCalledTimes(1);
     expect(redis.set).toHaveBeenCalledTimes(1);
   });
 
-  it('conserve exactement les mêmes commandes, TTL et verrou qu’avant', async () => {
+  it("⚠️ n'écrit AUCUNE coordonnée sans expiration", async () => {
+    // `GEOADD driver_positions` était écrit toutes les 5 s par livreur en
+    // course — et **jamais lu** : aucun `GEOPOS`, `GEORADIUS` ni `GEOSEARCH`
+    // n'existe dans le dépôt. Un ensemble trié n'a pas de TTL par membre et
+    // rien ne l'émondait : les coordonnées d'un livreur y survivaient à sa
+    // déconnexion, à sa sortie de la plateforme et à la suppression de son
+    // compte (`UserDeletionService`), indexées par son UID Firebase.
+    //
+    // Une structure qu'on écrit sans jamais la lire n'est pas une fondation
+    // pour plus tard : c'est une rétention de données de déplacement que rien
+    // ne borne. Le jour où « le livreur le plus proche » sera construit, le
+    // `GEOADD` reviendra — avec son lecteur et son émondage.
+    //
+    // Ce qui reste, `delivery:{orderId}`, porte un TTL de 5 minutes.
     const redis = fakeRedis();
     (service as any).redis = redis;
 
     await service.updatePosition(position);
 
-    expect(redis.geoadd).toHaveBeenCalledWith(
-      'driver_positions',
-      15.2429,
-      -4.2634,
-      'd1',
-    );
+    expect(redis.geoadd).not.toHaveBeenCalled();
     expect(redis.setex).toHaveBeenCalledWith(
       'delivery:o1',
       300, // TTL position inchangé
@@ -140,7 +147,6 @@ describe('TrackingService — écritures de position en pipeline', () => {
     await service.cacheLivePosition(position);
 
     expect(redis.execCount()).toBe(1);
-    expect(redis.geoadd).toHaveBeenCalledTimes(1);
     expect(redis.setex).toHaveBeenCalledTimes(1);
     // Le repli HTTP ne pose PAS de verrou de persistance : c'est
     // `DeliveriesService.updateLocation` qui écrit déjà en base de son côté.

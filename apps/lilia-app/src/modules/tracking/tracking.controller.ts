@@ -1,17 +1,11 @@
 // tracking/tracking.controller.ts
-import {
-  BadRequestException,
-  Body,
-  Controller,
-  HttpCode,
-  HttpStatus,
-  Post,
-} from '@nestjs/common';
+import { Body, Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
 import { DecodedIdToken } from 'firebase-admin/auth';
 import { TrackingService } from './tracking.service';
 import { TrackingGateway } from './tracking.gateway';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { BatchPositionsDto, PositionDto } from './dto/tracking-http.dto';
 
 /**
  * Fallback HTTP quand le WebSocket est impossible (réseau très faible).
@@ -29,8 +23,10 @@ export class TrackingController {
   @HttpCode(HttpStatus.OK)
   async updatePosition(
     @FirebaseUser() fbUser: DecodedIdToken,
-    @Body()
-    body: { orderId: string; lat: number; lng: number; accuracy?: number },
+    // ⚠️ Une CLASSE, pas un type inline : un type n'existe pas au runtime, donc
+    // le `ValidationPipe` global n'avait rien à valider et `lat`/`lng`
+    // arrivaient bruts dans `GEOADD` Redis et dans le calcul de l'ETA.
+    @Body() body: PositionDto,
   ) {
     // Sécurité : seul le livreur assigné peut publier sa position
     await this.trackingService.assertCanUpdatePosition(
@@ -72,23 +68,12 @@ export class TrackingController {
   @HttpCode(HttpStatus.OK)
   async batchPositions(
     @FirebaseUser() fbUser: DecodedIdToken,
-    @Body()
-    body: {
-      orderId: string;
-      positions: {
-        lat: number;
-        lng: number;
-        timestamp: number;
-        accuracy?: number;
-      }[];
-    },
+    // Le lot est borné et **chaque** point validé (`@ValidateNested`) : le
+    // contrôleur n'utilise que le dernier, une validation superficielle
+    // laisserait donc passer précisément la valeur qui atteint Redis.
+    // La garde « tableau vide » vit désormais dans le DTO (`@ArrayMinSize(1)`).
+    @Body() body: BatchPositionsDto,
   ) {
-    if (!body.positions || body.positions.length === 0) {
-      throw new BadRequestException(
-        'Le tableau positions ne peut pas être vide',
-      );
-    }
-
     await this.trackingService.assertCanUpdatePosition(
       body.orderId,
       fbUser.uid,

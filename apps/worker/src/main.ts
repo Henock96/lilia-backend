@@ -1,3 +1,18 @@
+// ⚠️ DOIT rester le tout premier import — initialise Sentry avant que les
+// autres modules ne soient chargés (auto-instrumentation de http, pg, etc.).
+//
+// Il manquait ici jusqu'au 21/09/2026, alors qu'il était bien présent côté web.
+// Ce processus exécute les neuf crons — réconciliation des paiements,
+// expiration des commandes, détection du silence des webhooks, alerte
+// « reversement au statut inconnu » — dont les alertes passent toutes par
+// `Sentry.captureMessage`. Sans initialisation, ces appels sont des **no-ops** :
+// le jour où le worker est déployé et le web passé à `RUN_BACKGROUND_JOBS=false`,
+// tout l'alerting financier de fond s'éteint, sans que rien ne le signale.
+//
+// Le module est partagé avec `apps/lilia-app`, comme le reste du code métier :
+// deux copies d'une configuration Sentry finiraient par diverger.
+import '../../lilia-app/src/instrument';
+
 import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { Logger as PinoLogger } from 'nestjs-pino';

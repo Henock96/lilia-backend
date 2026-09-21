@@ -1,4 +1,4 @@
-import { resolveClientIp } from './client-ip';
+import { resolveClientIp, resolveTrustedClientIp } from './client-ip';
 
 /**
  * Résolution de l'adresse client derrière Cloudflare + Render.
@@ -68,6 +68,62 @@ describe('resolveClientIp', () => {
         headers: { 'x-forwarded-for': '3.64.89.224' },
         ip: '162.158.42.108',
       }),
+    ).toBe('162.158.42.108');
+  });
+});
+
+/**
+ * Résolution utilisée pour une **décision de sécurité** (liste blanche d'IP du
+ * webhook pawaPay), par opposition au meilleur effort du rate limiting.
+ *
+ * ## Pourquoi les deux ne peuvent pas être la même fonction
+ *
+ * `CF-Connecting-IP` n'est digne de confiance que **tant que tout le trafic
+ * passe par l'edge Cloudflare**, qui écrase cet en-tête. Or ce backend est
+ * aussi joignable en direct sur son hôte `*.onrender.com`. Un appelant qui
+ * frappe cette adresse peut donc poser l'en-tête lui-même et se faire passer
+ * pour pawaPay auprès de la liste blanche — c'est-à-dire fabriquer une
+ * confirmation de paiement.
+ *
+ * Les deux usages n'ont pas le même coût d'erreur :
+ *  · rate limiting — forger son adresse ne déplace que son propre compteur ;
+ *  · liste blanche — forger son adresse **autorise une écriture d'argent**.
+ *
+ * D'où deux fonctions, et un nom qui dit laquelle engage la sécurité.
+ */
+describe('resolveTrustedClientIp', () => {
+  it("ignore CF-Connecting-IP quand la topologie n'est pas déclarée", () => {
+    // Défaut fail-safe : sans garantie écrite que Cloudflare est devant, un
+    // en-tête forgeable ne décide de rien.
+    expect(
+      resolveTrustedClientIp(
+        {
+          headers: { 'cf-connecting-ip': '3.64.89.224' },
+          ip: '162.158.42.108',
+        },
+        { trustCloudflareHeader: false },
+      ),
+    ).toBe('162.158.42.108');
+  });
+
+  it('accepte CF-Connecting-IP quand la topologie est déclarée de confiance', () => {
+    expect(
+      resolveTrustedClientIp(
+        {
+          headers: { 'cf-connecting-ip': '160.113.0.103' },
+          ip: '162.158.42.108',
+        },
+        { trustCloudflareHeader: true },
+      ),
+    ).toBe('160.113.0.103');
+  });
+
+  it("n'utilise JAMAIS X-Forwarded-For, quelle que soit la configuration", () => {
+    expect(
+      resolveTrustedClientIp(
+        { headers: { 'x-forwarded-for': '3.64.89.224' }, ip: '162.158.42.108' },
+        { trustCloudflareHeader: true },
+      ),
     ).toBe('162.158.42.108');
   });
 });

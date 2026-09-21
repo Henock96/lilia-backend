@@ -270,12 +270,21 @@ describe('PaymentService — transitions et concurrence', () => {
       expect(prisma.payment.updateMany).not.toHaveBeenCalled();
     });
 
+    /**
+     * ⚠️ `FAILED → SUCCESS` et `CANCELLED → SUCCESS` ont **quitté** cette
+     * liste (audit du 21/09/2026). Ce ne sont pas des rejeux : ce sont les deux
+     * seules combinaisons où le prestataire **contredit** notre conclusion
+     * locale — l'argent est parti, la commande n'existe plus. Les traiter
+     * comme les quatre autres rendait cette perte totalement silencieuse.
+     *
+     * La propriété « aucune écriture » qu'exerce ce test reste vraie pour eux
+     * et continue d'être vérifiée, dans le test dédié ci-dessous : ce qui
+     * change est l'issue rendue et l'alerte levée, pas l'état de la base.
+     */
     it.each([
       ['SUCCESS', 'FAILED'],
       ['SUCCESS', 'SUCCESS'],
-      ['FAILED', 'SUCCESS'],
       ['FAILED', 'FAILED'],
-      ['CANCELLED', 'SUCCESS'],
       ['CANCELLED', 'FAILED'],
     ] as const)(
       'un encaissement %s ne devient pas %s : DUPLICATE, aucune écriture',
@@ -292,6 +301,59 @@ describe('PaymentService — transitions et concurrence', () => {
         );
         expect(outbox.enqueueInTransaction).not.toHaveBeenCalled();
         expect(eventEmitter.emit).not.toHaveBeenCalled();
+      },
+    );
+
+    it('SUCCESS → SUCCESS : rejeu bénin, DUPLICATE sans incident', async () => {
+      // Le cas nominal d'un webhook rejoué : la vérité locale et celle du
+      // prestataire coïncident. Rien à signaler.
+      paymentRow.status = 'SUCCESS';
+      orderRow.status = 'PAYER';
+
+      await expect(apply('SUCCESS')).resolves.toBe('DUPLICATE');
+
+      expect(incidents).toHaveLength(0);
+      const emitted = eventEmitter.emit.mock.calls.map((c: unknown[]) => c[0]);
+      expect(emitted).not.toContain('payment.orphaned');
+    });
+
+    it.each(['CANCELLED', 'FAILED'])(
+      '%s → SUCCESS : le prestataire nous contredit, incident + payment.orphaned',
+      async (localStatus) => {
+        // ⚠️ LE défaut trouvé par l'audit du 21/09/2026, reproduit en base.
+        //
+        // La commande a expiré (cron), le `Payment` PENDING a été clos dans la
+        // même transaction — puis pawaPay confirme le dépôt. Le code concluait
+        // `DUPLICATE` : aucun incident, aucune alerte, aucun remboursement
+        // ouvert. Le client était débité, la commande annulée, le stock rendu,
+        // et la seule trace était une ligne `PaymentEvent` indiscernable d'un
+        // rejeu ordinaire.
+        //
+        // `count === 0` sur la réclamation ne suffit donc PAS à conclure au
+        // rejeu : il faut savoir si l'état local est `SUCCESS` (rejeu) ou
+        // terminal-négatif (contradiction).
+        paymentRow.status = localStatus;
+        orderRow.status = 'ANNULER';
+
+        await expect(apply('SUCCESS')).resolves.toBe('MISMATCH');
+
+        // On ne force RIEN : ni le paiement, ni la commande. Constater n'est
+        // pas réparer — c'est un humain qui tranche le remboursement.
+        expect(paymentRow.status).toBe(localStatus);
+        expect(orderRow.status).toBe('ANNULER');
+        expect(outbox.enqueueInTransaction).not.toHaveBeenCalled();
+
+        // L'incident est le canal que l'exploitation regarde déjà. Il est écrit
+        // par le service et non par un listener : ce chemin tourne aussi dans
+        // le worker, où aucun listener n'est enregistré.
+        expect(incidents).toHaveLength(1);
+        const emitted = eventEmitter.emit.mock.calls.map(
+          (c: unknown[]) => c[0],
+        );
+        expect(emitted).toContain('payment.orphaned');
+        // Et surtout : aucune annonce de confirmation au client ni au vendeur.
+        expect(emitted).not.toContain('order.payment.confirmed');
+        expect(emitted).not.toContain('order.paid');
       },
     );
 
@@ -397,10 +459,27 @@ describe('PaymentService — transitions et concurrence', () => {
       ]);
 
       assertReadsRacedBeforeFirstWrite();
-      expect(outcomes.sort()).toEqual(['APPLIED', 'DUPLICATE']);
-      // Quel que soit l'ordre d'ordonnancement, l'état final est cohérent :
-      // jamais un paiement SUCCESS sur une commande restée EN_ATTENTE, jamais
-      // un paiement FAILED sur une commande passée PAYER.
+
+      // Une seule écriture aboutit, quel que soit l'ordonnancement.
+      expect(outcomes.filter((o) => o === 'APPLIED')).toHaveLength(1);
+
+      // ⚠️ L'issue du PERDANT dépend de qui a écrit en premier, et les deux
+      // valeurs sont justes :
+      //
+      //  · FAILED écrit d'abord → le SUCCESS trouve un encaissement `FAILED`
+      //    et rend `MISMATCH` : deux statuts TERMINAUX et contradictoires ont
+      //    été annoncés pour la même transaction, ce qui mérite un incident ;
+      //  · SUCCESS écrit d'abord → le FAILED ne peut rien défaire et rend
+      //    `DUPLICATE`, sans bruit.
+      //
+      // Figer une seule des deux valeurs rendrait ce test dépendant de la file
+      // des micro-tâches — il passerait, puis casserait sur une version de Node.
+      const loser = outcomes.find((o) => o !== 'APPLIED');
+      expect(['DUPLICATE', 'MISMATCH']).toContain(loser);
+
+      // Ce qui, lui, ne dépend d'aucun ordonnancement : l'état final est
+      // cohérent. Jamais un paiement SUCCESS sur une commande restée
+      // EN_ATTENTE, jamais un paiement FAILED sur une commande passée PAYER.
       if (paymentRow.status === 'SUCCESS') {
         expect(orderRow.status).toBe('PAYER');
       } else {

@@ -31,6 +31,14 @@ type PrismaMock = {
     groupBy: jest.Mock;
     aggregate: jest.Mock;
   };
+  /**
+   * `getDelivererStats` agrège désormais côté base (une requête au lieu d'un
+   * `findMany` non borné). Le SQL lui-même est prouvé contre un vrai
+   * PostgreSQL par `test/integration/deliverer-stats.int-spec.ts` ; ce qui
+   * reste testable ici est la **dérivation** : `null` vs `0`, la soustraction
+   * des courses sans économie, le taux de réussite, l'arrondi.
+   */
+  $queryRaw: jest.Mock;
 };
 
 function createPrismaMock(): PrismaMock {
@@ -49,6 +57,7 @@ function createPrismaMock(): PrismaMock {
       groupBy: jest.fn(),
       aggregate: jest.fn(),
     },
+    $queryRaw: jest.fn().mockResolvedValue([]),
   };
 }
 
@@ -361,17 +370,15 @@ describe('AdminService', () => {
         { status: 'EN_TRANSIT', _count: { _all: 1 } },
         { status: 'ECHEC', _count: { _all: 2 } },
       ]);
-      // Revenue : somme order.total des LIVRER
-      prisma.delivery.findMany.mockResolvedValueOnce([
+      // Ce que la requête d'agrégat rend pour deux courses de 5000 et 4000,
+      // durées 30 et 45 min : la base a déjà fait les sommes et la moyenne.
+      prisma.$queryRaw.mockResolvedValueOnce([
         {
-          order: { total: 5000 },
-          pickedUpAt: new Date('2026-05-20T10:00:00Z'),
-          deliveredAt: new Date('2026-05-20T10:30:00Z'),
-        },
-        {
-          order: { total: 4000 },
-          pickedUpAt: new Date('2026-05-21T12:00:00Z'),
-          deliveredAt: new Date('2026-05-21T12:45:00Z'),
+          deliveredCount: 2,
+          handledOrderValueXaf: 9000,
+          frozenCount: 0,
+          driverPayXaf: null,
+          avgDeliveryMinutes: 37.5,
         },
       ]);
       // last30dDeliveries count
@@ -413,9 +420,14 @@ describe('AdminService', () => {
       prisma.delivery.groupBy.mockResolvedValue([
         { status: 'LIVRER', _count: { _all: 2 } },
       ]);
-      prisma.delivery.findMany.mockResolvedValueOnce([
-        { order: { total: 5000 }, pickedUpAt: null, deliveredAt: null },
-        { order: { total: 4000 }, pickedUpAt: null, deliveredAt: null },
+      prisma.$queryRaw.mockResolvedValueOnce([
+        {
+          deliveredCount: 2,
+          handledOrderValueXaf: 9000,
+          frozenCount: 0,
+          driverPayXaf: null,
+          avgDeliveryMinutes: null,
+        },
       ]);
       prisma.delivery.count.mockResolvedValueOnce(2);
       prisma.delivery.findFirst.mockResolvedValueOnce(null);
@@ -449,15 +461,23 @@ describe('AdminService', () => {
         prisma.delivery.groupBy.mockResolvedValue([
           { status: 'LIVRER', _count: { _all: rows.length } },
         ]);
-        prisma.delivery.findMany.mockResolvedValueOnce(
-          rows.map((r) => ({
-            order: { total: 5000 },
-            pickedUpAt: null,
-            deliveredAt: null,
-            driverPayXaf: r.driverPayXaf,
-            driverEconomicsFrozenAt: r.frozen ? new Date() : null,
-          })),
-        );
+        // Traduction du scénario en ce que rend la requête d'agrégat. Le
+        // fixture compte et somme ; la RÈGLE testée — `null` quand aucune
+        // course gelée, et la soustraction des courses sans économie — reste
+        // entièrement dans le service.
+        const frozen = rows.filter((r) => r.frozen);
+        prisma.$queryRaw.mockResolvedValueOnce([
+          {
+            deliveredCount: rows.length,
+            handledOrderValueXaf: rows.length * 5000,
+            frozenCount: frozen.length,
+            driverPayXaf:
+              frozen.length === 0
+                ? null
+                : frozen.reduce((sum, r) => sum + (r.driverPayXaf ?? 0), 0),
+            avgDeliveryMinutes: null,
+          },
+        ]);
         prisma.delivery.count.mockResolvedValueOnce(rows.length);
         prisma.delivery.findFirst.mockResolvedValueOnce(null);
         const { data } = await service.getDelivererStats('d1');
@@ -510,7 +530,16 @@ describe('AdminService', () => {
     it('renvoie des compteurs et valeurs nullables à zéro quand aucune livraison', async () => {
       prisma.user.findUnique.mockResolvedValue(mockDeliverer);
       prisma.delivery.groupBy.mockResolvedValue([]);
-      prisma.delivery.findMany.mockResolvedValueOnce([]);
+      // Aucune course : la base rend une ligne de zéros, `SUM`/`AVG` à `null`.
+      prisma.$queryRaw.mockResolvedValueOnce([
+        {
+          deliveredCount: 0,
+          handledOrderValueXaf: 0,
+          frozenCount: 0,
+          driverPayXaf: null,
+          avgDeliveryMinutes: null,
+        },
+      ]);
       prisma.delivery.count.mockResolvedValueOnce(0);
       prisma.delivery.findFirst.mockResolvedValueOnce(null);
 
@@ -540,8 +569,16 @@ describe('AdminService', () => {
       prisma.delivery.groupBy.mockResolvedValue([
         { status: 'LIVRER', _count: { _all: 3 } },
       ]);
-      prisma.delivery.findMany.mockResolvedValueOnce([
-        { order: { total: 1000 }, pickedUpAt: null, deliveredAt: new Date() },
+      // Une course sans `pickedUpAt` : elle n'a pas de durée, donc `AVG` sur
+      // un ensemble vide vaut `null` — et non 0.
+      prisma.$queryRaw.mockResolvedValueOnce([
+        {
+          deliveredCount: 1,
+          handledOrderValueXaf: 1000,
+          frozenCount: 0,
+          driverPayXaf: null,
+          avgDeliveryMinutes: null,
+        },
       ]);
       prisma.delivery.count.mockResolvedValueOnce(3);
       prisma.delivery.findFirst.mockResolvedValueOnce({

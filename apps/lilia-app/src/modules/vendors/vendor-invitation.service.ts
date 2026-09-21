@@ -136,9 +136,14 @@ export class VendorInvitationService {
         ? `Lilia Food : votre compte livreur est cree. Consultez votre email (${params.email}) pour definir votre mot de passe.`
         : `Lilia Food : votre espace vendeur "${(params.boutique ?? '').slice(0, 30)}" est cree. Consultez votre email (${params.email}) pour definir votre mot de passe.`;
 
-    const smsSent = params.phone
+    // `smsSent` reste un booléen dans le contrat rendu à l'administrateur, mais
+    // il est désormais dérivé de l'issue réelle : un envoi refusé par Infobip
+    // (compte d'essai, opérateur qui rejette) répondait 200 et se lisait
+    // « envoyé ». `SKIPPED` et `FAILED` valent tous deux « non parti ».
+    const smsOutcome = params.phone
       ? await this.sms.send(params.phone, smsBody)
-      : false;
+      : 'SKIPPED';
+    const smsSent = smsOutcome === 'SENT';
 
     if (emailSent) {
       this.logger.log(`Invitation ${audience} envoyée à ${params.email}`);

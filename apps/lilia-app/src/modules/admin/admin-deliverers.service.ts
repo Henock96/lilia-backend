@@ -8,6 +8,25 @@ import { DelivererMissionStatus } from './dto/get-deliverer-missions.dto';
  * de missions. Extrait de `AdminService` (lectures Prisma uniquement).
  * `AdminService` y délègue — API publique inchangée.
  */
+/**
+ * Une ligne d'agrégat renvoyée par la requête de statistiques.
+ *
+ * Les `::int` / `::float` du SQL sont là pour une raison : PostgreSQL rend
+ * `COUNT` en `bigint` et `SUM`/`AVG` en `numeric`, que le pilote traduit
+ * respectivement en `BigInt` et en **chaîne**. Sans transtypage, `frozenCount`
+ * serait un `BigInt` (que `JSON.stringify` refuse de sérialiser) et
+ * `driverPayXaf` une chaîne qui se concaténerait au lieu de s'additionner.
+ */
+interface DelivererAggregateRow {
+  deliveredCount: number;
+  handledOrderValueXaf: number;
+  frozenCount: number;
+  /** `null` quand aucune course gelée — `SUM` d'un ensemble vide vaut `NULL`. */
+  driverPayXaf: number | null;
+  /** `null` quand aucune course n'a de durée mesurable. */
+  avgDeliveryMinutes: number | null;
+}
+
 @Injectable()
 export class AdminDeliverersService {
   constructor(private prisma: PrismaService) {}
@@ -52,27 +71,50 @@ export class AdminDeliverersService {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const [grouped, deliveredRows, last30dDeliveries, lastDelivery] =
+    const [grouped, aggregates, last30dDeliveries, lastDelivery] =
       await Promise.all([
         this.prisma.delivery.groupBy({
           by: ['status'],
           where: { delivererId },
           _count: { _all: true },
         }),
-        // Toutes les deliveries LIVRER pour calculer revenue et avg duration
-        this.prisma.delivery.findMany({
-          where: { delivererId, status: DeliveryStatus.LIVRER },
-          select: {
-            pickedUpAt: true,
-            deliveredAt: true,
-            order: { select: { total: true } },
-            // Économie figée à l'acceptation. `driverEconomicsFrozenAt` est le
-            // discriminant, pas le montant : 0 gelé (livreur au salaire, ou
-            // tarif de livraison nul) est une valeur, pas une absence.
-            driverPayXaf: true,
-            driverEconomicsFrozenAt: true,
-          },
-        }),
+        // ⚠️ Agrégats calculés **par la base**, et non par un `findMany` suivi
+        // de quatre `reduce` en mémoire.
+        //
+        // La version précédente chargeait TOUTES les courses livrées du livreur
+        // depuis toujours, jointes à `Order`. Le coût de la fiche croissait
+        // donc sans borne avec l'ancienneté : à vingt courses par jour, sept
+        // mille lignes au bout d'un an, pour en tirer quatre nombres.
+        //
+        // Les `FILTER (WHERE …)` reproduisent exactement les filtres qui
+        // vivaient dans le TypeScript, y compris les deux qui portent une règle
+        // métier et non une commodité :
+        //  · `driverEconomicsFrozenAt IS NOT NULL` — seule une course dont
+        //    l'économie a été gelée entre dans la rémunération ; les autres
+        //    sont comptées à part (`coursesWithoutEconomics`) au lieu d'être
+        //    silencieusement additionnées à zéro ;
+        //  · `pickedUpAt IS NOT NULL` — une course sans récupération n'a pas
+        //    de durée, et l'inclure avec 0 tirerait la moyenne vers le bas.
+        this.prisma.$queryRaw<DelivererAggregateRow[]>`
+          SELECT
+            COUNT(*)::int AS "deliveredCount",
+            COALESCE(SUM(o."total"), 0)::int AS "handledOrderValueXaf",
+            COUNT(*) FILTER (
+              WHERE d."driverEconomicsFrozenAt" IS NOT NULL
+            )::int AS "frozenCount",
+            SUM(d."driverPayXaf") FILTER (
+              WHERE d."driverEconomicsFrozenAt" IS NOT NULL
+            )::int AS "driverPayXaf",
+            AVG(
+              EXTRACT(EPOCH FROM (d."deliveredAt" - d."pickedUpAt")) / 60
+            ) FILTER (
+              WHERE d."pickedUpAt" IS NOT NULL AND d."deliveredAt" IS NOT NULL
+            )::float AS "avgDeliveryMinutes"
+          FROM "Delivery" d
+          JOIN "Order" o ON o."id" = d."orderId"
+          WHERE d."delivererId" = ${delivererId}
+            AND d."status" = ${DeliveryStatus.LIVRER}::"DeliveryStatus"
+        `,
         this.prisma.delivery.count({
           where: { delivererId, createdAt: { gte: thirtyDaysAgo } },
         }),
@@ -120,10 +162,8 @@ export class AdminDeliverersService {
      * lettres : `null` = inconnu. Ne jamais y mettre 0 — cela transformerait
      * « on ne sait pas » en « il n'a rien coûté ».
      */
-    const handledOrderValueXaf = deliveredRows.reduce(
-      (sum, d) => sum + (d.order?.total ?? 0),
-      0,
-    );
+    const agg = aggregates[0];
+    const handledOrderValueXaf = agg?.handledOrderValueXaf ?? 0;
 
     // ── Ce que le livreur a RÉELLEMENT touché ─────────────────────────────
     //
@@ -131,29 +171,18 @@ export class AdminDeliverersService {
     // backfill n'a été fait, parce qu'inventer des montants jamais versés
     // serait pire que l'absence. Le total dit donc combien de courses il
     // ignore : sans ce compteur, il se lirait comme exhaustif.
-    // `!= null` (comparaison lâche, volontaire) : elle attrape `null` ET
-    // `undefined`. `!== null` laisserait passer un `undefined` comme « gelé »
-    // et fabriquerait un total à partir de courses sans économie.
-    const frozenRows = deliveredRows.filter(
-      (d) => d.driverEconomicsFrozenAt != null,
-    );
-    const driverPayXaf =
-      frozenRows.length === 0
-        ? // `null` et JAMAIS 0 : au déploiement, aucune fiche n'a d'économie et
-          // un 0 se lirait « ce livreur n'a rien gagné ».
-          null
-        : frozenRows.reduce((sum, d) => sum + (d.driverPayXaf ?? 0), 0);
-    const coursesWithoutEconomics = deliveredRows.length - frozenRows.length;
+    // `null` et JAMAIS 0 : au déploiement, aucune fiche n'a d'économie et un 0
+    // se lirait « ce livreur n'a rien gagné ». Le discriminant est le NOMBRE de
+    // courses gelées, pas la somme — un livreur au salaire a légitimement
+    // `SUM = 0` sur des courses parfaitement gelées.
+    const frozenCount = agg?.frozenCount ?? 0;
+    const driverPayXaf = frozenCount === 0 ? null : (agg?.driverPayXaf ?? 0);
+    const coursesWithoutEconomics = (agg?.deliveredCount ?? 0) - frozenCount;
 
-    const durations = deliveredRows
-      .filter((d) => d.pickedUpAt && d.deliveredAt)
-      .map((d) => (d.deliveredAt!.getTime() - d.pickedUpAt!.getTime()) / 60000);
     const avgDeliveryMinutes =
-      durations.length === 0
+      agg?.avgDeliveryMinutes == null
         ? null
-        : Math.round(
-            (durations.reduce((s, x) => s + x, 0) / durations.length) * 100,
-          ) / 100;
+        : Math.round(agg.avgDeliveryMinutes * 100) / 100;
 
     return {
       data: {

@@ -20,6 +20,7 @@ import {
 import { buildRedisOptions } from './common/redis/redis-options';
 import { instrumentIoredis } from './common/redis/redis-metrics';
 import { RedisMetricsMiddleware } from './common/redis/redis-metrics.middleware';
+import { RequestContextMiddleware } from './common/context/request-context.middleware';
 
 import { PrismaModule } from './prisma/prisma.module';
 import { FirebaseModule } from './modules/firebase/firebase.module';
@@ -287,6 +288,7 @@ import { envValidationSchema } from './config/env.validation';
     VendorsListener,
     LoyaltyListener,
     RedisMetricsMiddleware,
+    RequestContextMiddleware,
   ],
 })
 export class AppModule implements NestModule {
@@ -303,6 +305,12 @@ export class AppModule implements NestModule {
     // les guards, les intercepteurs APRÈS. Les trois appels Redis les plus
     // coûteux (2 × ThrottlerGuard + 1 × cache utilisateur du RolesGuard) ont
     // lieu dans les guards — un intercepteur les raterait tous.
-    consumer.apply(RedisMetricsMiddleware).forRoutes('*');
+    //
+    // `RequestContextMiddleware` vient en PREMIER, pour la même raison poussée
+    // un cran plus loin : il ouvre le périmètre de corrélation, et tout ce qui
+    // s'exécute ensuite — guards compris — doit s'y trouver.
+    consumer
+      .apply(RequestContextMiddleware, RedisMetricsMiddleware)
+      .forRoutes('*');
   }
 }

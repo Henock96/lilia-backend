@@ -46,12 +46,20 @@ export class UserListener {
       }
 
       if (user.phone && !user.welcomeSmsSentAt) {
-        const ok = await this.smsService.sendWelcome(user.phone, user.nom || 'client');
-        if (ok) {
+        const outcome = await this.smsService.sendWelcome(user.phone, user.nom || 'client');
+        // ⚠️ `outcome === 'SENT'` et NON `if (outcome)` : `SmsOutcome` est une
+        // chaîne, donc `'FAILED'` et `'SKIPPED'` sont l'un et l'autre *truthy*.
+        // Et ce flag est DÉFINITIF — le poser sur un envoi qui n'a pas eu lieu
+        // consomme le SMS de bienvenue pour toujours.
+        if (outcome === 'SENT') {
           await this.prisma.user.update({
             where: { id: event.userId },
             data: { welcomeSmsSentAt: new Date() },
           });
+        } else {
+          this.logger.warn(
+            `SMS de bienvenue non parti pour ${event.userId} (${outcome}) — le flag reste ouvert, un prochain envoi reste possible.`,
+          );
         }
       }
     } catch (error) {
@@ -75,12 +83,17 @@ export class UserListener {
       const oneDayAgo = new Date(Date.now() - WELCOME_SMS_WINDOW_MS);
       if (user.createdAt < oneDayAgo) return;
 
-      const ok = await this.smsService.sendWelcome(user.phone, user.nom || 'client');
-      if (ok) {
+      const outcome = await this.smsService.sendWelcome(user.phone, user.nom || 'client');
+      // Même règle que sur `user.created` : seul `SENT` donne le droit d'écrire.
+      if (outcome === 'SENT') {
         await this.prisma.user.update({
           where: { id: event.userId },
           data: { welcomeSmsSentAt: new Date() },
         });
+      } else {
+        this.logger.warn(
+          `SMS de bienvenue non parti pour ${event.userId} (${outcome}) — flag non pose.`,
+        );
       }
     } catch (error) {
       this.logger.error(

@@ -80,9 +80,18 @@ export class CartItemsService {
     if (reason) throw new BadRequestException(reason);
 
     if (existingItem) {
+      // ⚠️ `increment` et non `existingItem.quantite + dto.quantite`.
+      //
+      // La seconde forme est un read-then-write : la quantité a été lue plus
+      // haut, hors transaction. Deux appareils du même compte ajoutant chacun
+      // une unité lisaient tous deux `1` et écrivaient tous deux `2` — le
+      // client voyait un de ses ajouts disparaître, sans aucune erreur.
+      //
+      // `increment` fait faire l'addition par PostgreSQL sur la valeur courante
+      // de la ligne : les deux ajouts se composent au lieu de s'écraser.
       await this.prisma.cartItem.update({
         where: { id: existingItem.id },
-        data: { quantite: existingItem.quantite + dto.quantite },
+        data: { quantite: { increment: dto.quantite } },
       });
     } else {
       await this.prisma.cartItem.create({

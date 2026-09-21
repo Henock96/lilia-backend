@@ -88,6 +88,59 @@ describe('CronLockService', () => {
       expect(task).not.toHaveBeenCalled();
     });
 
+    it('libère le verrou en fin de tâche, sans attendre le TTL', async () => {
+      const redis = grantingRedis();
+      const service = new CronLockService(redis);
+
+      await service.runExclusively('un-job', 60, async () => 'fait');
+
+      // La libération passe par un script Lua conditionnel, pas par un `DEL`
+      // nu : voir le test suivant.
+      expect(redis.eval).toHaveBeenCalled();
+    });
+
+    it('⚠️ ne libère QUE son propre verrou — jeton de garde', async () => {
+      // Le défaut : la libération était un `DEL` inconditionnel dans un
+      // `finally`. Si une tâche dépasse son TTL, une AUTRE instance acquiert le
+      // verrou pendant qu'elle tourne encore — et le `DEL` de la première
+      // supprime alors le verrou de la seconde, qui se retrouve sans
+      // protection au milieu de son travail.
+      //
+      // La parade est le motif classique du verrou distribué : la valeur n'est
+      // plus `'1'` mais un jeton unique, et la libération est un `EVAL`
+      // conditionné sur ce jeton — comparaison et suppression dans la même
+      // opération atomique, côté serveur.
+      const redis = grantingRedis();
+      const service = new CronLockService(redis);
+
+      await service.runExclusively('un-job', 60, async () => 'fait');
+
+      const [script, numKeys, key, token] = redis.eval.mock.calls[0];
+      expect(String(script)).toContain('redis.call');
+      expect(numKeys).toBe(1);
+      expect(key).toBe('cron_lock:un-job');
+      // Le jeton envoyé à la libération est EXACTEMENT celui posé à
+      // l'acquisition : c'est ce qui rend la comparaison significative.
+      const posed = redis.set.mock.calls[0][1];
+      expect(token).toBe(posed);
+      // Et ce n'est plus la constante '1', qui serait identique pour toutes
+      // les instances et ne distinguerait donc rien.
+      expect(posed).not.toBe('1');
+    });
+
+    it('libère le verrou même quand la tâche échoue', async () => {
+      const redis = grantingRedis();
+      const service = new CronLockService(redis);
+
+      await expect(
+        service.runExclusively('un-job', 60, async () => {
+          throw new Error('boum');
+        }),
+      ).rejects.toThrow('boum');
+
+      expect(redis.eval).toHaveBeenCalled();
+    });
+
     it('exécute quand même la tâche sans Redis (mono-instance)', async () => {
       // Une panne Redis ne doit pas éteindre l'expiration des commandes : le
       // doublon est moins grave que l'absence.

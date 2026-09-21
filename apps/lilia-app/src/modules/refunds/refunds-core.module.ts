@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { RefundsService } from './refunds.service';
+import { RefundExecutionService } from './refund-execution.service';
+import { RefundProviderService } from './refund-provider.service';
+import { PaymentCoreModule } from '../payments/payment-core.module';
 
 /**
  * `RefundsService` seul, **sans controller**.
@@ -17,8 +20,11 @@ import { RefundsService } from './refunds.service';
  * ouverte sans authentification.
  */
 @Module({
-  imports: [PrismaModule],
-  providers: [RefundsService],
-  exports: [RefundsService],
+  // `PaymentCoreModule` (sans controllers) et jamais `PaymentModule` : la règle
+  // ci-dessus vaut dans les deux sens — importer le module complet ferait
+  // remonter `POST /admin/orders/:id/payout` dans le graphe du worker.
+  imports: [PrismaModule, PaymentCoreModule],
+  providers: [RefundsService, RefundExecutionService, RefundProviderService],
+  exports: [RefundsService, RefundExecutionService, RefundProviderService],
 })
 export class RefundsCoreModule {}

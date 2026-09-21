@@ -110,10 +110,18 @@ export class VendorsListener {
       select: { phone: true },
     });
     if (owner?.phone) {
-      await this.sms.send(
+      const outcome = await this.sms.send(
         owner.phone,
         `Lilia Food : votre boutique a ete suspendue. Contactez le support pour en savoir plus.`,
       );
+      // Rien n'est acquitté ici — une suspension n'attend pas d'accusé — mais
+      // l'issue est journalisée : un vendeur qui découvre sa suspension en
+      // constatant l'absence de commandes est un incident de support.
+      if (outcome !== 'SENT') {
+        this.logger.warn(
+          `SMS de suspension non parti pour le vendeur ${event.vendor.id} (${outcome}).`,
+        );
+      }
     }
   }
 

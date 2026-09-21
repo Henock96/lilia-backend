@@ -21,7 +21,7 @@ import Redis from 'ioredis';
  * |--------------------------------------------|----------------------------------|
  * | `GET user:fbuid:<uid>`                     | l'UID Firebase, en clair         |
  * | `SET idempotency:<uid>:<clé>`              | l'UID et la clé d'idempotence    |
- * | `GEOADD driver_positions <lng> <lat> <id>` | la position GPS du livreur       |
+ * | `SETEX delivery:<orderId> …`               | la position GPS du livreur       |
  *
  * L'option `redisIntegration({...})` de cette version n'expose que
  * `cachePrefixes` : aucun moyen de fournir un sérialiseur. On mesure donc
