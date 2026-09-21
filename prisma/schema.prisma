@@ -31,28 +31,39 @@ model User {
   firebaseUid       String             @unique
   email             String             @unique
   nom               String?
-  /// **Unique depuis le 21/09/2026** — la dette est soldée.
+  /// ⚠️ **TOUJOURS NON UNIQUE.** Dette ouverte, mesurée, et documentée ici.
   ///
-  /// La réutilisation d'un numéro est le meilleur signal d'une ferme à comptes.
-  /// L'unicité SQL était la garde idéale et restait inapplicable : les comptes
-  /// historiques portaient `''` (chaîne vide, pas `NULL`), et `''` ne bénéficie
-  /// **pas** de l'échappatoire que PostgreSQL accorde à `NULL` — deux comptes
-  /// sans téléphone comptaient donc comme un doublon.
+  /// La réutilisation d'un numéro est le meilleur signal d'une ferme à comptes,
+  /// et l'unicité SQL serait la garde idéale. Deux obstacles, dans cet ordre :
   ///
-  /// Les trois temps annoncés ont été tenus : (1) le code écrit `NULL` et jamais
-  /// `''` ; (2) `scripts/db/audit-phone-duplicates.js` recense les doublons réels
-  /// en lecture seule ; (3) la migration `20260921130000_user_phone_unique`
-  /// normalise l'existant puis pose l'index — **et refuse de le poser** si des
-  /// numéros réels sont partagés, en nommant le script à exécuter.
+  /// 1. **`''` au lieu de `NULL`.** Les comptes historiques portaient la chaîne
+  ///    vide, qui ne bénéficie **pas** de l'échappatoire que PostgreSQL accorde
+  ///    à `NULL` : deux comptes sans téléphone comptaient comme un doublon.
+  ///    Réglé — le code écrit `NULL`, et la migration
+  ///    `20260921130000_user_phone_unique` normalise l'existant.
   ///
-  /// ⚠️ L'index est déclaré ici sans `@unique` mais **créé en SQL** par cette
-  /// migration, en index PARTIEL (`WHERE phone IS NOT NULL`) : Prisma ne sait
-  /// pas déclarer un index partiel, exactement comme pour
-  /// `payments_order_pending_uq` et `CartItem`.
+  /// 2. **De vrais doublons.** Mesuré en production le 21/09/2026 : trois
+  ///    numéros portés par dix comptes. Deux de ces groupes contiennent des
+  ///    comptes **avec des commandes** — donc ni supprimables (ce sont des
+  ///    pièces comptables) ni fusionnables sans arbitrage humain.
   ///
-  /// Le signal `PHONE_REUSED` du scoring de parrainage reste en place : il
-  /// couvre les réutilisations que l'unicité ne voit pas (numéro légèrement
-  /// reformaté, compte supprimé puis recréé).
+  /// Une première version de cette migration créait l'index derrière un garde
+  /// qui levait sur doublon. Il a fonctionné : la migration s'est interrompue en
+  /// production, et a bloqué les déploiements. Livrer une migration dont on sait
+  /// qu'elle échouera n'est pas une stratégie — la création d'index en a donc
+  /// été retirée.
+  ///
+  /// **Pour solder la dette** : `node scripts/db/audit-phone-duplicates.js`
+  /// donne la liste nominative ; arbitrer chaque groupe (garder un compte,
+  /// anonymiser les autres via `UserDeletionService`) ; puis poser l'index dans
+  /// une migration dédiée — en PARTIEL (`WHERE phone IS NOT NULL`), Prisma ne
+  /// sachant pas le déclarer, comme `payments_order_pending_uq` et `CartItem`.
+  ///
+  /// En attendant, l'abus est fermé par le signal `PHONE_REUSED` du scoring de
+  /// parrainage : il envoie la récompense en revue humaine au lieu de refuser
+  /// une inscription potentiellement légitime. Il couvre d'ailleurs ce que
+  /// l'unicité ne verrait pas — un numéro reformaté (`06…` contre `+24206…`),
+  /// que l'index laisse passer et que la normalisation du script attrape.
   phone             String?
   imageUrl          String?
   role              Role               @default(CLIENT)
