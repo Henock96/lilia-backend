@@ -15,6 +15,7 @@
  */
 import * as Sentry from '@sentry/nestjs';
 import { nodeProfilingIntegration } from '@sentry/profiling-node';
+import { readOptionalText, readSampleRate } from './config/env-readers';
 
 const dsn = process.env.SENTRY_DSN;
 
@@ -22,18 +23,26 @@ if (dsn) {
   Sentry.init({
     dsn,
     environment:
-      process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? 'development',
+      readOptionalText(process.env.SENTRY_ENVIRONMENT) ??
+      process.env.NODE_ENV ??
+      'development',
     release: process.env.SENTRY_RELEASE,
 
     // Performance tracing + profiling continu (instrumentation complète).
     // profileLifecycle 'trace' : le profiling démarre/s'arrête avec les traces.
     integrations: [nodeProfilingIntegration()],
-    tracesSampleRate: parseFloat(
-      process.env.SENTRY_TRACES_SAMPLE_RATE ?? '0.1',
+    // ⚠️ `parseFloat(process.env.X ?? '0.1')` ne rattrapait que `undefined` :
+    // une variable posée VIDE — la forme documentée dans `.env.example` —
+    // donnait `NaN`, et Sentry abandonne alors toutes les transactions. Le
+    // traçage s'éteignait en silence. Voir `config/env-readers.ts`.
+    tracesSampleRate: readSampleRate(
+      process.env.SENTRY_TRACES_SAMPLE_RATE,
+      0.1,
     ),
     profileLifecycle: 'trace',
-    profileSessionSampleRate: parseFloat(
-      process.env.SENTRY_PROFILES_SAMPLE_RATE ?? '0.1',
+    profileSessionSampleRate: readSampleRate(
+      process.env.SENTRY_PROFILES_SAMPLE_RATE,
+      0.1,
     ),
 
     // Logs structurés remontés à Sentry

@@ -1,6 +1,8 @@
 /* eslint-disable prettier/prettier */
 // health/health.controller.ts
 import { Controller, Get, HttpStatus, Res } from '@nestjs/common';
+import { InjectRedis } from '@nestjs-modules/ioredis';
+import type Redis from 'ioredis';
 import type { Response } from 'express';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
@@ -16,7 +18,23 @@ export class HealthController {
   constructor(
     private readonly firebase: FirebaseService,
     private readonly prisma: PrismaService,
+    /**
+     * ⚠️ Non optionnel, contrairement à une première version.
+     *
+     * `RedisModule.forRootAsync` est enregistré sans condition dans
+     * `app.module.ts` et `RedisCoreModule` est `@Global()` : le client est
+     * **toujours** résolu, même sans serveur Redis en face. Un troisième état
+     * « absent » était donc inatteignable, et le commentaire qui le justifiait
+     * décrivait une situation qui n'existe pas.
+     *
+     * Sans serveur joignable, `ping()` échoue et la sonde annonce `error` —
+     * ce qui est exact, en développement comme en production.
+     */
+    @InjectRedis() private readonly redis: Redis,
   ) {}
+
+  /** Plafond d'attente de la sonde sur Redis. Voir `checkRedis`. */
+  private static readonly REDIS_PROBE_TIMEOUT_MS = 1_000;
 
   /**
    * Health check public — utilisé par Render pour les checks de liveness.
@@ -102,16 +120,73 @@ export class HealthController {
       db = 'error';
     }
     const firebase = this.firebase.isReady() ? 'ok' : 'error';
+    const redis = await this.checkRedis();
     const healthy = db === 'ok';
 
     res
       .status(healthy ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE)
       .json({
-        status: healthy ? 'ok' : 'error',
+        // Trois valeurs, parce qu'il y a trois situations distinctes :
+        // `error` (la base ne répond pas — l'instance ne peut pas servir),
+        // `degraded` (elle sert, mais avec des garanties en moins),
+        // `ok`. Les fondre ferait choisir entre crier pour rien et se taire
+        // quand il faut parler.
+        status: !healthy ? 'error' : redis === 'error' ? 'degraded' : 'ok',
         db,
         firebase,
+        /**
+         * ⚠️ Redis n'est **pas** bloquant, et c'est délibéré.
+         *
+         * Son absence dégrade trois contrôles — idempotence du checkout, rate
+         * limiting partagé, verrous de cron — mais les replis existent et
+         * fonctionnent : sortir l'instance du service la rendrait moins
+         * disponible sans rien réparer.
+         *
+         * Ce qui manquait n'était pas un verdict, c'était l'information :
+         * `status: ok` se lisait « tout va bien » alors qu'il ne voulait dire
+         * que « la base répond ».
+         */
+        redis,
         timestamp: new Date().toISOString(),
       });
+  }
+
+  /**
+   * État de Redis, **borné localement**.
+   *
+   * ⚠️ Le client injecté est le profil « métier » : son seul plafond est
+   * `commandTimeout`, 3 000 ms par défaut — et `.env.example` documente
+   * `REDIS_COMMAND_TIMEOUT_MS` jusqu'à 30 000 ms comme le levier à poser sur
+   * Render pendant un incident. Sans la borne ci-dessous, la sonde hériterait
+   * de cette patience : elle attendrait jusqu'à trente secondes, et
+   * l'orchestrateur retirerait du service une instance qui sert parfaitement —
+   * l'exact inverse de « Redis n'est pas bloquant ».
+   *
+   * La borne appartient donc à la sonde, pas au client : une question de
+   * disponibilité ne se règle pas avec la patience d'un profil dimensionné pour
+   * préserver une garantie métier.
+   *
+   * Cette route paie déjà un aller-retour Redis pour le throttler (elle n'est
+   * volontairement pas exemptée) : une seconde de plus est un plafond large.
+   */
+  private async checkRedis(): Promise<'ok' | 'error'> {
+    let minuteur: NodeJS.Timeout | undefined;
+    try {
+      const borne = new Promise<never>((_, rejeter) => {
+        minuteur = setTimeout(
+          () => rejeter(new Error('ping Redis hors délai')),
+          HealthController.REDIS_PROBE_TIMEOUT_MS,
+        );
+      });
+      await Promise.race([this.redis.ping(), borne]);
+      return 'ok';
+    } catch {
+      return 'error';
+    } finally {
+      // Sans ce nettoyage, le minuteur maintient la boucle d'événements en vie
+      // jusqu'à son échéance — y compris à l'arrêt du processus.
+      if (minuteur) clearTimeout(minuteur);
+    }
   }
 
   @Public()
