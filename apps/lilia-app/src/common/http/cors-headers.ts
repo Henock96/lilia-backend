@@ -58,4 +58,11 @@ export const CORS_ALLOWED_HEADERS = [
 
   /** Plateforme déclarée (`android` | `ios` | `web`), indicative. */
   'X-Lilia-Platform',
+
+  /**
+   * Version du binaire mobile (`1.3.1+35`), lue par `MinAppVersionGuard` sur
+   * `POST /orders/checkout`. Seule l'app Flutter l'envoie aujourd'hui ; déclarée
+   * ici pour qu'une build web de cette app ne casse pas au préflight.
+   */
+  'X-Lilia-App-Version',
 ] as const;

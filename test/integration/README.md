@@ -42,6 +42,7 @@ erreurs rouges qui ne le concernent pas. La CI, elle, la définit.
 | Deux lignes de panier identiques | index unique partiel `WHERE menuId IS NULL` |
 | Deux acceptations de la même mission | `updateMany` conditionné sur le statut |
 | **Chaîne de l'argent complète** (`money-chain.int-spec.ts`) | encaissement → callback → `PAYER` → commission → reversement → callback → `SUCCESS`, sur **une seule commande**, sans réinitialisation entre les étapes |
+| Deux administrateurs sur la configuration plateforme (`platform-settings.int-spec.ts`) | `updateMany` conditionné sur `updatedAt` : formulaire périmé → 409, deux PATCH parallèles → un seul passe |
 
 ## `money-chain.int-spec.ts` — pourquoi il est à part
 

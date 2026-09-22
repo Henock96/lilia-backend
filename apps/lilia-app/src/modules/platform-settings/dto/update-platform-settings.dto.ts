@@ -1,32 +1,64 @@
+import { Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsInt,
+  IsISO8601,
   IsNumber,
   IsOptional,
   IsString,
-  IsUrl,
   Matches,
   Max,
   MaxLength,
   Min,
+  ValidateBy,
+  ValidationOptions,
 } from 'class-validator';
 
 import { MAX_COMMISSION_PERCENT } from '../../payments/money.util';
+import {
+  ANDROID_APPLICATION_ID,
+  APP_VERSION_PATTERN,
+  isAllowedAndroidStoreUrl,
+  isAllowedIosStoreUrl,
+} from '../app-update-policy';
+
+export { APP_VERSION_PATTERN };
 
 /**
- * Version d'application acceptée : `major.minor.patch`, `+build` optionnel.
+ * Texte libre facultatif : blanc ⇒ `null`.
  *
- * Volontairement **plus strict** que le parseur des applications mobiles
- * (`AppVersion.tryParse`, qui tolère en plus un « v » initial et des espaces).
- * L'asymétrie est le bon sens : on est exigeant sur ce qu'on **enregistre**,
- * tolérant sur ce qu'on **reçoit**.
- *
- * Ce qui ne doit jamais s'inverser, c'est la direction : le serveur ne doit
- * pas accepter une forme que les clients rejetteraient. L'administrateur
- * croirait avoir posé un seuil qui n'existe nulle part — une panne silencieuse
- * dans le sens le plus dangereux, celui où l'on se croit protégé.
+ * La prod stockait `maintenanceMessage: ""` — ni absent ni présent. Les
+ * clients testent tantôt `?? défaut`, tantôt `|| défaut` : `""` passe le
+ * premier et affiche une bulle vide. Une seule représentation du « rien ».
  */
-export const APP_VERSION_PATTERN = /^\d+\.\d+\.\d+(\+\d+)?$/;
+const blankToNull = ({ value }: { value: unknown }) =>
+  typeof value === 'string' && value.trim() === '' ? null : value;
+
+function IsAndroidStoreUrl(options?: ValidationOptions) {
+  return ValidateBy(
+    {
+      name: 'isAndroidStoreUrl',
+      validator: {
+        validate: (value: unknown) =>
+          typeof value === 'string' && isAllowedAndroidStoreUrl(value),
+      },
+    },
+    options,
+  );
+}
+
+function IsIosStoreUrl(options?: ValidationOptions) {
+  return ValidateBy(
+    {
+      name: 'isIosStoreUrl',
+      validator: {
+        validate: (value: unknown) =>
+          typeof value === 'string' && isAllowedIosStoreUrl(value),
+      },
+    },
+    options,
+  );
+}
 
 /**
  * Bornes du barème plateforme.
@@ -129,9 +161,10 @@ export class UpdatePlatformSettingsDto {
   maintenanceMode?: boolean;
 
   @IsOptional()
+  @Transform(blankToNull)
   @IsString()
   @MaxLength(500)
-  maintenanceMessage?: string;
+  maintenanceMessage?: string | null;
 
   // ── Pilotage du parc installé ────────────────────────────────────────────
   //
@@ -153,37 +186,63 @@ export class UpdatePlatformSettingsDto {
     message:
       'minAppVersion doit être au format major.minor.patch (ex : 1.3.0 ou 1.3.0+41).',
   })
-  minAppVersion?: string;
+  minAppVersion?: string | null;
 
   @IsOptional()
   @Matches(APP_VERSION_PATTERN, {
     message:
       'latestAppVersion doit être au format major.minor.patch (ex : 1.3.0 ou 1.3.0+41).',
   })
-  latestAppVersion?: string;
+  latestAppVersion?: string | null;
 
+  /**
+   * Fiche Play de **notre** application, et rien d'autre (UPD-002).
+   *
+   * `@IsUrl` acceptait `https://example.com/typo` : combiné à un blocage, le
+   * client se retrouvait devant un dialogue non fermable dont le seul bouton
+   * menait ailleurs. Formes admises : `app-update-policy.ts`.
+   */
   @IsOptional()
-  @IsUrl(
-    {
-      protocols: ['https', 'market'],
-      require_protocol: true,
-      require_tld: false, // market://details?id=x n'a pas de TLD, contrairement à https://
-    },
-    { message: 'updateUrlAndroid doit être une URL https ou market complète.' },
-  )
+  @IsAndroidStoreUrl({
+    message:
+      'updateUrlAndroid doit être la fiche Google Play de Lilia Food : ' +
+      `https://play.google.com/store/apps/details?id=${ANDROID_APPLICATION_ID} ` +
+      `ou market://details?id=${ANDROID_APPLICATION_ID}.`,
+  })
   @MaxLength(500)
-  updateUrlAndroid?: string;
+  updateUrlAndroid?: string | null;
 
+  /** Fiche App Store (`apps.apple.com/…/id<chiffres>`), jamais une recherche. */
   @IsOptional()
-  @IsUrl(
-    { protocols: ['https', 'itms-apps'], require_protocol: true },
-    { message: 'updateUrlIos doit être une URL https ou itms-apps complète.' },
-  )
+  @IsIosStoreUrl({
+    message:
+      'updateUrlIos doit être une fiche App Store : ' +
+      'https://apps.apple.com/app/lilia-food/id<identifiant App Store Connect> ' +
+      '(ou itms-apps://…). Les identifiants de gabarit sont refusés.',
+  })
   @MaxLength(500)
-  updateUrlIos?: string;
+  updateUrlIos?: string | null;
 
   @IsOptional()
+  @Transform(blankToNull)
   @IsString()
   @MaxLength(300)
-  updateMessage?: string;
+  updateMessage?: string | null;
+
+  /**
+   * Verrou optimiste (SET-001) : l'`updatedAt` de la configuration **telle que
+   * l'administrateur l'a chargée**.
+   *
+   * Sans lui, deux administrateurs s'écrasaient en silence : A ouvre l'écran,
+   * B pose un blocage de sécurité, A enregistre un changement de frais… et
+   * efface le blocage avec la valeur périmée de son formulaire. Si la ligne a
+   * bougé depuis, le serveur répond **409** au lieu d'écrire.
+   *
+   * Facultatif pour ne pas casser les back-offices déjà installés ; les deux
+   * interfaces à jour l'envoient toujours. Ce n'est pas une colonne : il n'est
+   * jamais écrit.
+   */
+  @IsOptional()
+  @IsISO8601({ strict: true })
+  expectedUpdatedAt?: string;
 }

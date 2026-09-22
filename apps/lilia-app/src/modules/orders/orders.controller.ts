@@ -33,6 +33,7 @@ import { DecodedIdToken } from 'firebase-admin/auth';
 import { User } from '@prisma/client';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { MaintenanceGuard } from '../platform-settings/guards/maintenance.guard';
+import { MinAppVersionGuard } from '../platform-settings/guards/min-app-version.guard';
 import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
 
 /**
@@ -69,7 +70,9 @@ export class OrdersController {
   // un script qui boucle. Limites alignées sur /promo/validate et /reviews.
   @Throttle({ short: { limit: 1, ttl: 1000 }, long: { limit: 10, ttl: 60000 } })
   @Post('checkout')
-  @UseGuards(MaintenanceGuard)
+  // Maintenance d'abord : pendant une fenêtre de maintenance, « mettez à jour »
+  // serait un mauvais conseil — la mise à jour ne débloquerait rien.
+  @UseGuards(MaintenanceGuard, MinAppVersionGuard)
   @ApiOperation({ summary: 'Créer une commande depuis le panier' })
   @ApiResponse({ status: 201, description: 'Commande créée avec succès' })
   @ApiResponse({ status: 400, description: 'Panier vide ou restaurant fermé' })
