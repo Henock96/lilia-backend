@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { PlatformSettingsService } from './platform-settings.service';
 import { MaintenanceGuard } from './guards/maintenance.guard';
+import { MinAppVersionGuard } from './guards/min-app-version.guard';
 
 /**
  * Lecture/écriture des réglages de plateforme, **sans les controllers**.
@@ -18,7 +19,7 @@ import { MaintenanceGuard } from './guards/maintenance.guard';
  */
 @Module({
   imports: [PrismaModule],
-  providers: [PlatformSettingsService, MaintenanceGuard],
-  exports: [PlatformSettingsService, MaintenanceGuard],
+  providers: [PlatformSettingsService, MaintenanceGuard, MinAppVersionGuard],
+  exports: [PlatformSettingsService, MaintenanceGuard, MinAppVersionGuard],
 })
 export class PlatformSettingsCoreModule {}

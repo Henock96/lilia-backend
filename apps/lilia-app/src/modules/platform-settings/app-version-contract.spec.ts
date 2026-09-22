@@ -89,14 +89,24 @@ describe('Contrat de version applicative', () => {
       ).toContain('updateUrlAndroid');
     });
 
-    it('accepte les schémas de store natifs', async () => {
+    it('accepte les fiches de store de Lilia Food', async () => {
       expect(
         await errorsFor({
           updateUrlAndroid:
             'https://play.google.com/store/apps/details?id=com.dreesis.lilia.lilia_app',
-          updateUrlIos: 'https://apps.apple.com/app/lilia-food/id6740000000',
+          updateUrlIos: 'https://apps.apple.com/app/lilia-food/id1234567890',
         }),
       ).toEqual([]);
+    });
+
+    it("refuse l'identifiant App Store de gabarit qui a circulé dans le code", async () => {
+      // `id6740000000` était le repli compilé de lilia-app : une fiche
+      // inexistante. L'accepter ici, c'était accepter un blocage sans issue.
+      expect(
+        await errorsFor({
+          updateUrlIos: 'https://apps.apple.com/app/lilia-food/id6740000000',
+        }),
+      ).toContain('updateUrlIos');
     });
   });
 });
