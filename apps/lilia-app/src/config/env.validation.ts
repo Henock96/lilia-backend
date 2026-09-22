@@ -11,6 +11,25 @@ import * as Joi from 'joi';
  *  - `.required()` : strictement nécessaire au fonctionnement (DB + Firebase).
  *  - le reste est optionnel (features dégradables) avec defaults raisonnables.
  */
+/**
+ * ⚠️ Convention `.empty('')` — « vide » veut dire « non posée ».
+ *
+ * `KEY=` dans un `.env` produit la chaîne vide, pas `undefined`. Sans
+ * `.empty('')`, Joi la valide comme une vraie valeur : `Joi.number()` refuse
+ * `''` (« must be a number ») et `Joi.string()` aussi (« is not allowed to be
+ * empty »). Or **treize** gabarits de `.env.example` étaient dans ce cas —
+ * `LOG_LEVEL`, les cinq secrets MTN, `WEB_REVALIDATE_SECRET`, les trois délais
+ * Redis et les deux taux Sentry.
+ *
+ * Copier `.env.example` en `.env` est *la* façon documentée de provisionner un
+ * environnement : le fichier censé faire démarrer le backend l'en empêchait, et
+ * `env-example-parity.spec.ts` — qui ne compare que les **noms** — restait vert.
+ * `env-example-values.spec.ts` valide désormais aussi les **valeurs**.
+ *
+ * `.empty('')` ne relâche rien : la valeur devient `undefined`, donc un
+ * `.required()` conditionnel (mode MTN, par exemple) échoue toujours. Il dit
+ * seulement qu'une ligne laissée vide est une ligne qu'on n'a pas remplie.
+ */
 export const envValidationSchema = Joi.object({
   // ─── Runtime ────────────────────────────────────────────────────────────
   NODE_ENV: Joi.string()
@@ -39,6 +58,7 @@ export const envValidationSchema = Joi.object({
   // Niveau pino. Défaut résolu au runtime (info en prod, debug sinon).
   LOG_LEVEL: Joi.string()
     .valid('fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent')
+    .empty('')
     .optional(),
 
   // ─── Base de données (requis) ───────────────────────────────────────────
@@ -67,7 +87,7 @@ export const envValidationSchema = Joi.object({
   // n'importe qui pourrait purger le cache en boucle et faire du site un
   // amplificateur de charge vers ce backend.
   WEB_REVALIDATE_URL: Joi.string().uri().optional(),
-  WEB_REVALIDATE_SECRET: Joi.string().min(16).optional(),
+  WEB_REVALIDATE_SECRET: Joi.string().min(16).empty('').optional(),
 
   ALLOWED_ORIGINS: Joi.string().when('NODE_ENV', {
     is: 'production',
@@ -108,6 +128,53 @@ export const envValidationSchema = Joi.object({
       then: Joi.required(),
       otherwise: Joi.optional(),
     }),
+
+  // Délais du client Redis, par usage (`common/redis/redis-options.ts`).
+  //
+  // ⚠️ Ces trois variables étaient **lues sans être déclarées ni documentées**.
+  // Leur en-tête les présente pourtant comme le levier à poser sur Render « sans
+  // attendre un redéploiement » quand le RTT Redis dérive — ce qui s'est produit
+  // le 16/09/2026, le plafond du throttler étant passé sous le temps de
+  // réponse réel. Un levier introuvable le jour de l'incident n'est pas un
+  // levier, et `.unknown(true)` faisait qu'une valeur aberrante passait sans un
+  // mot.
+  //
+  // Elles restent lues via une clé dynamique (`config.get(key, fallback)`), donc
+  // invisibles pour `env-read-sites.spec.ts` : c'est leur déclaration ici qui
+  // les met sous la garde de `env-example-parity.spec.ts`.
+  //
+  // Bornes : au-dessous de 100 ms, aucune commande n'aboutit depuis Render
+  // (RTT mesuré ≈ 395 ms) ; au-dessus de 30 s, l'échec rapide n'en est plus un.
+  REDIS_COMMAND_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(30000)
+    .empty('')
+    .optional(),
+  REDIS_THROTTLER_COMMAND_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(30000)
+    .empty('')
+    .optional(),
+  REDIS_CONNECT_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(100)
+    .max(60000)
+    .empty('')
+    .optional(),
+
+  // Journalise le détail de chaque appel Redis. Outil de diagnostic : à laisser
+  // éteint hors mesure, il écrit une ligne par commande.
+  // `.empty('')` **et** `.insensitive()` : un opérateur qui efface la variable
+  // après une session de mesure (`REDIS_METRICS_LOG=`) ou qui écrit `TRUE` ne
+  // doit pas faire échouer le démarrage pour un drapeau de diagnostic — que
+  // `redis-metrics.middleware.ts` lit déjà défensivement (`=== 'true'`).
+  REDIS_METRICS_LOG: Joi.string()
+    .valid('true', 'false')
+    .insensitive()
+    .empty('')
+    .default('false'),
 
   // ─── Cloudinary ───────────────────────────────────────────────────────────
   CLOUDINARY_CLOUD_NAME: Joi.string().allow('').optional(),
@@ -174,18 +241,20 @@ export const envValidationSchema = Joi.object({
   // (cf. PaymentService) — mais un client Airtel ne peut pas envoyer sur un
   // numéro MTN : à définir dès qu'Airtel Money est proposé au checkout.
   LILIA_AIRTEL_PAYMENT_PHONE: Joi.string().allow('').optional(),
-  MTN_MOMO_API_KEY: Joi.string().optional(),
-  MTN_MOMO_API_USER: Joi.string().optional(),
+  MTN_MOMO_API_KEY: Joi.string().empty('').optional(),
+  MTN_MOMO_API_USER: Joi.string().empty('').optional(),
 
   // Dès qu'on quitte le mode MANUAL, MTN émet des callbacks signés. Le webhook
   // est fail-closed : sans secret configuré il rejette TOUT en 401, et aucun
   // paiement ne se confirme jamais — panne silencieuse le jour du go-live.
   // On préfère donc refuser de démarrer plutôt que de démarrer à moitié.
-  MTN_MOMO_WEBHOOK_SECRET: Joi.string().when('PAYMENT_MODE', {
-    is: Joi.valid('SANDBOX', 'MTN_PRODUCTION'),
-    then: Joi.required(),
-    otherwise: Joi.optional(),
-  }),
+  MTN_MOMO_WEBHOOK_SECRET: Joi.string()
+    .empty('')
+    .when('PAYMENT_MODE', {
+      is: Joi.valid('SANDBOX', 'MTN_PRODUCTION'),
+      then: Joi.required(),
+      otherwise: Joi.optional(),
+    }),
   // Attention : le code a un défaut `sandbox.momodeveloper.mtn.com`. En
   // MTN_PRODUCTION, oublier cette variable enverrait les paiements réels vers
   // le sandbox sans le moindre message d'erreur. D'où le `.required()`.
@@ -197,12 +266,14 @@ export const envValidationSchema = Joi.object({
       otherwise: Joi.optional(),
     }),
   MTN_MOMO_CALLBACK_URL: Joi.string().uri().optional(),
-  MTN_MOMO_DISBURSEMENT_SUBSCRIPTION_KEY: Joi.string().optional(),
-  MTN_MOMO_COLLECTION_SUBSCRIPTION_KEY: Joi.string().when('PAYMENT_MODE', {
-    is: Joi.valid('SANDBOX', 'MTN_PRODUCTION'),
-    then: Joi.required(),
-    otherwise: Joi.optional(),
-  }),
+  MTN_MOMO_DISBURSEMENT_SUBSCRIPTION_KEY: Joi.string().empty('').optional(),
+  MTN_MOMO_COLLECTION_SUBSCRIPTION_KEY: Joi.string()
+    .empty('')
+    .when('PAYMENT_MODE', {
+      is: Joi.valid('SANDBOX', 'MTN_PRODUCTION'),
+      then: Joi.required(),
+      otherwise: Joi.optional(),
+    }),
 
   // ─── Expiration des commandes impayées ────────────────────────────────────
   // Le stock est réservé au checkout : sans expiration il reste bloqué
@@ -250,6 +321,13 @@ export const envValidationSchema = Joi.object({
 
   // ─── Sentry ───────────────────────────────────────────────────────────────
   SENTRY_DSN: Joi.string().uri().allow('').optional(),
+  // Ces trois-là étaient lues par `instrument.ts` et documentées dans son
+  // en-tête, mais absentes du schéma : une fraction saisie en pourcentage
+  // (`10` au lieu de `0.1`) aurait tracé **dix fois** chaque requête, sans
+  // qu'aucun contrôle ne s'y oppose. Les bornes sont celles que Sentry accepte.
+  SENTRY_ENVIRONMENT: Joi.string().allow('').optional(),
+  SENTRY_TRACES_SAMPLE_RATE: Joi.number().min(0).max(1).empty('').optional(),
+  SENTRY_PROFILES_SAMPLE_RATE: Joi.number().min(0).max(1).empty('').optional(),
 })
   // tolère les variables non listées (PATH, etc.) sans les rejeter
   .unknown(true)

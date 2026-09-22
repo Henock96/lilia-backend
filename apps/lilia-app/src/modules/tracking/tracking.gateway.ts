@@ -138,6 +138,46 @@ export class TrackingGateway
   }
 
   /**
+   * CLIENT quitte la room d'une commande.
+   *
+   * ⚠️ Cet événement était **émis sans être écouté**. `lilia-food-admin`
+   * l'envoie depuis trois endroits de `tracking_socket_service.dart` quand un
+   * écran de suivi se ferme ; faute de handler, l'appel était un no-op
+   * silencieux et la socket restait dans la room jusqu'à sa déconnexion. Avec
+   * l'adapter Redis, les positions continuaient donc d'être routées entre
+   * instances vers des écrans qui ne les affichent plus.
+   *
+   * **Aucune autorisation n'est demandée** : partir n'expose rien. Exiger un
+   * droit ici enfermerait dans la room exactement celui qui vient de le perdre
+   * — le livreur réassigné, par exemple. On ne revalide pas non plus la
+   * session : une socket au token expiré doit pouvoir se libérer proprement.
+   */
+  @SubscribeMessage('order:unwatch')
+  @UsePipes(wsValidationPipe)
+  async onUnwatchOrder(client: Socket, @MessageBody() payload: WatchOrderDto) {
+    await client.leave(`order:${payload.orderId}`);
+  }
+
+  /**
+   * ⚠️ Une révocation d'appartenance a été écrite ici puis **retirée**, et il
+   * vaut mieux dire pourquoi que la voir réapparaître.
+   *
+   * `assertCanWatchOrder` n'est effectivement vérifiée qu'à l'entrée dans la
+   * room. Le scénario qu'on croyait couvrir — un livreur réassigné qui continue
+   * de recevoir la position du nouveau — **n'existe pas** : l'application
+   * livreur n'émet jamais `order:watch`, elle ne fait qu'émettre sa position.
+   * Seuls le client, le vendeur et l'administrateur rejoignent une room, et
+   * aucun des trois ne perd son droit lors d'une réassignation.
+   *
+   * Le rappel coûtait donc un `fetchSockets` plus une requête d'autorisation
+   * par spectateur, à chaque réassignation, pour n'évincer personne.
+   *
+   * Si l'application livreur se met un jour à suivre une commande, le besoin
+   * revient avec elle — et c'est à ce moment-là qu'il faudra revalider
+   * l'appartenance, pas avant.
+   */
+
+  /**
    * LIVREUR envoie sa position toutes les 5 secondes.
    * → stocke dans Redis GEO
    * → broadcast à tous les clients de la room
