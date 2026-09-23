@@ -33,6 +33,14 @@ describe('RestaurantPayoutService', () => {
       groupBy: jest.fn(),
     },
     incident: { create: jest.fn() },
+    refund: { findUnique: jest.fn() },
+    // Compte de reversement relu sous verrou (fix F-08).
+    restaurant: { findUniqueOrThrow: jest.fn() },
+    // Verrou de la ligne `Order` sous lequel naît le reversement (fix F-04).
+    $queryRaw: jest.fn(),
+    // La transaction reçoit le client lui-même : les assertions sur
+    // `restaurantPayout.create` restent valables à l'intérieur.
+    $transaction: jest.fn(async (fn: (tx: unknown) => unknown) => fn(prisma)),
   };
 
   const events = {
@@ -96,6 +104,20 @@ describe('RestaurantPayoutService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    prisma.$queryRaw.mockResolvedValue([{ status: 'PRET' }]);
+    prisma.refund.findUnique.mockResolvedValue(null);
+    // Par défaut, le compte relu est celui de la commande, hors délai de carence.
+    prisma.restaurant.findUniqueOrThrow.mockImplementation(async () => {
+      const order =
+        await prisma.order.findUniqueOrThrow.mock.results[
+          prisma.order.findUniqueOrThrow.mock.results.length - 1
+        ]?.value;
+      return {
+        payoutPhoneNumber: order?.restaurant?.payoutPhoneNumber ?? null,
+        payoutProvider: order?.restaurant?.payoutProvider ?? null,
+        payoutVerifiedAt: null,
+      };
+    });
     payoutSupported = true;
     settings.getSettings.mockResolvedValue({ restaurantCommissionPercent: 10 });
     events.record.mockResolvedValue('evt-1');
@@ -374,7 +396,15 @@ describe('RestaurantPayoutService', () => {
     beforeEach(() => {
       prisma.order.findUnique.mockResolvedValue(readyOrder());
       prisma.order.findUniqueOrThrow.mockResolvedValue(readyOrder());
-      prisma.restaurantPayout.create.mockResolvedValue(createdPayout);
+      // Comme la vraie base : la ligne rendue porte ce qui a été écrit — dont
+      // le compte relu sous verrou, sur lequel le virement part (F-08).
+      prisma.restaurantPayout.create.mockImplementation(
+        async (args: { data: Record<string, unknown> }) => ({
+          ...createdPayout,
+          phoneNumber: args.data.phoneNumber,
+          providerCode: args.data.providerCode,
+        }),
+      );
       payoutProvider.createPayout.mockResolvedValue({
         accepted: true,
         duplicate: false,

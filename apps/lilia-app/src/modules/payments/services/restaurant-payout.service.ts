@@ -9,6 +9,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { randomUUID } from 'node:crypto';
 import {
   OrderStatus,
+  PayoutProvider,
   PaymentEventKind,
   PaymentEventOutcome,
   PaymentEventSource,
@@ -30,6 +31,7 @@ import {
   PayoutStateMachine,
 } from '../payout-state.machine';
 import { PaymentEventService } from './payment-event.service';
+import { lockOrderRow } from '../../orders/order-row-lock';
 import { maskPhone, maskRef, PaymentStatus } from './payment.service';
 
 /**
@@ -58,6 +60,7 @@ export type PayoutIneligibilityCode =
   | 'PAYMENT_NOT_COMPLETED'
   | 'ORDER_REFUNDED'
   | 'VENDOR_PAYOUT_ACCOUNT_MISSING'
+  | 'VENDOR_PAYOUT_ACCOUNT_COOLING_DOWN'
   | 'PAYOUT_ALREADY_COMPLETED'
   | 'PAYOUT_IN_PROGRESS'
   | 'PROVIDER_DOES_NOT_SUPPORT_PAYOUT';
@@ -129,6 +132,7 @@ export class RestaurantPayoutService {
             commissionPercent: true,
             payoutPhoneNumber: true,
             payoutProvider: true,
+            payoutVerifiedAt: true,
           },
         },
         Payment: { select: { status: true, amount: true } },
@@ -217,6 +221,18 @@ export class RestaurantPayoutService {
         reason:
           'Impossible de payer le vendeur : aucun compte Mobile Money de reversement ' +
           'configuré. Renseignez-le dans la fiche du vendeur.',
+      });
+    }
+
+    const coolingUntil = payoutAccountCoolingUntil(
+      order.restaurant.payoutVerifiedAt,
+      new Date(),
+    );
+    if (coolingUntil) {
+      return withBreakdown({
+        eligible: false,
+        code: 'VENDOR_PAYOUT_ACCOUNT_COOLING_DOWN',
+        reason: payoutCoolingMessage(coolingUntil),
       });
     }
 
@@ -333,28 +349,97 @@ export class RestaurantPayoutService {
     // L'identifiant prestataire est persisté d'abord : si l'appel se perd, la
     // reprise repartira avec le MÊME identifiant, et pawaPay répondra
     // `DUPLICATE_IGNORED` au lieu de virer une seconde fois.
+    //
+    // ⚠️ Fix F-04 (Master Audit v1) — la ligne naît SOUS le verrou de la
+    // commande. `checkEligibility` ci-dessus a été évalué hors transaction :
+    // entre cette lecture et l'insertion, un vendeur ou un admin pouvait
+    // annuler la commande, et un remboursement s'ouvrir — le vendeur était
+    // alors payé d'une commande remboursée au client. Les conditions qui
+    // engagent de l'argent sont donc revérifiées ici, verrou tenu ; une
+    // annulation concurrente attend notre commit, puis voit le reversement
+    // (et la refuse au vendeur, cf. `OrderLifecycleService`).
     let payout;
     try {
-      payout = await this.prisma.restaurantPayout.create({
-        data: {
-          orderId: order.id,
-          restaurantId: order.restaurantId,
-          grossAmount: breakdown.grossAmount,
-          commissionPercent: breakdown.commissionPercent,
-          commissionAmount: breakdown.commissionAmount,
-          amount: breakdown.payoutAmount,
-          currency: 'XAF',
-          phoneNumber: order.restaurant.payoutPhoneNumber!,
-          providerCode: order.restaurant.payoutProvider!,
-          status: PayoutStatus.PENDING,
-          provider: provider.name,
-          providerPayoutId,
-          requestedBy: params.adminUserId,
-          metadata: {
-            orderRef: this.orderRef(order.id),
-            vendorName: order.restaurant.nom,
+      payout = await this.prisma.$transaction(async (tx) => {
+        const locked = await lockOrderRow(tx, order.id);
+        if (
+          !locked ||
+          !PAYOUT_ELIGIBLE_ORDER_STATUSES.includes(locked.status)
+        ) {
+          throw new ConflictException({
+            message:
+              locked?.status === OrderStatus.ANNULER
+                ? 'Cette commande vient d’être annulée : aucun reversement.'
+                : 'Le statut de la commande a changé. Rechargez la fiche.',
+            code:
+              locked?.status === OrderStatus.ANNULER
+                ? 'ORDER_CANCELLED'
+                : 'ORDER_NOT_READY',
+          });
+        }
+        const refund = await tx.refund.findUnique({
+          where: { orderId: order.id },
+          select: { status: true },
+        });
+        if (refund && refund.status !== RefundStatus.REJECTED) {
+          throw new ConflictException({
+            message:
+              'Un remboursement est ouvert sur cette commande. Traitez-le avant de payer le vendeur.',
+            code: 'ORDER_REFUNDED',
+          });
+        }
+        // Fix F-08 — le compte de reversement est RELU sous verrou : c'est lui
+        // qui reçoit l'argent, et il a pu changer depuis la lecture ci-dessus.
+        // Un numéro saisi il y a moins de `PAYOUT_ACCOUNT_COOLDOWN_HOURS` ne
+        // reçoit rien : un compte administrateur compromis qui remplace le
+        // numéro d'un vendeur puis déclenche aussitôt le virement est arrêté,
+        // et le vendeur — prévenu du changement — a le temps de réagir.
+        const account = await tx.restaurant.findUniqueOrThrow({
+          where: { id: order.restaurantId },
+          select: {
+            payoutPhoneNumber: true,
+            payoutProvider: true,
+            payoutVerifiedAt: true,
           },
-        },
+        });
+        if (!account.payoutPhoneNumber || !account.payoutProvider) {
+          throw new ConflictException({
+            message:
+              'Aucun compte Mobile Money de reversement configuré pour ce vendeur.',
+            code: 'VENDOR_PAYOUT_ACCOUNT_MISSING',
+          });
+        }
+        const cooling = payoutAccountCoolingUntil(
+          account.payoutVerifiedAt,
+          new Date(),
+        );
+        if (cooling) {
+          throw new ConflictException({
+            message: payoutCoolingMessage(cooling),
+            code: 'VENDOR_PAYOUT_ACCOUNT_COOLING_DOWN',
+          });
+        }
+        return tx.restaurantPayout.create({
+          data: {
+            orderId: order.id,
+            restaurantId: order.restaurantId,
+            grossAmount: breakdown.grossAmount,
+            commissionPercent: breakdown.commissionPercent,
+            commissionAmount: breakdown.commissionAmount,
+            amount: breakdown.payoutAmount,
+            currency: 'XAF',
+            phoneNumber: account.payoutPhoneNumber,
+            providerCode: account.payoutProvider,
+            status: PayoutStatus.PENDING,
+            provider: provider.name,
+            providerPayoutId,
+            requestedBy: params.adminUserId,
+            metadata: {
+              orderRef: this.orderRef(order.id),
+              vendorName: order.restaurant.nom,
+            },
+          },
+        });
       });
     } catch (error) {
       if (
@@ -376,7 +461,7 @@ export class RestaurantPayoutService {
       `💸 Reversement demandé — commande ${order.id}, vendeur ${order.restaurant.nom}, ` +
         `brut ${breakdown.grossAmount}, commission ${breakdown.commissionPercent}% ` +
         `(${breakdown.commissionAmount}), net ${breakdown.payoutAmount} XAF, ` +
-        `tel ${maskPhone(order.restaurant.payoutPhoneNumber!)}, ` +
+        `tel ${maskPhone(payout.phoneNumber)}, ` +
         `ref ${maskRef(providerPayoutId)}, par ${params.adminUserId}`,
     );
 
@@ -388,8 +473,10 @@ export class RestaurantPayoutService {
         providerPayoutId,
         amountXaf: breakdown.payoutAmount,
         currency: 'XAF',
-        phoneNumber: order.restaurant.payoutPhoneNumber!,
-        payoutProvider: order.restaurant.payoutProvider!,
+        // Le compte relu sous verrou, figé sur la ligne — pas la lecture
+        // d'avant la transaction.
+        phoneNumber: payout.phoneNumber,
+        payoutProvider: payout.providerCode as PayoutProvider,
         orderRef: this.orderRef(order.id),
       });
     } catch (error) {
@@ -616,6 +703,7 @@ export class RestaurantPayoutService {
         ownerId: payout.restaurant.ownerId,
         amount: payout.amount,
       });
+      await this.flagPaidOnCancelledOrder(payout);
     } else {
       this.logger.warn(
         `💸 [REVERSEMENT] ❌ Échec — payout ${payout.id}, code ${input.status.failureCode ?? 'n/a'}`,
@@ -646,6 +734,57 @@ export class RestaurantPayoutService {
       return `montant attendu ${expected}, reçu ${status.amountXaf}`;
     }
     return null;
+  }
+
+  /**
+   * Un reversement confirmé sur une commande annulée entre-temps (F-04).
+   *
+   * C'est le seul chemin restant : un ADMIN peut annuler une commande dont le
+   * reversement est déjà parti chez le prestataire (un virement émis ne se
+   * rappelle pas). Le vendeur est alors payé ET le client a un remboursement
+   * ouvert — que `RefundExecutionService` refuse d'exécuter tant que le
+   * reversement est PENDING ou SUCCESS. Ce n'est pas un bug à cacher, c'est
+   * une décision financière à prendre : on l'inscrit dans la file des
+   * incidents, où elle ne peut pas être oubliée.
+   */
+  private async flagPaidOnCancelledOrder(payout: {
+    id: string;
+    orderId: string;
+    amount: number;
+  }): Promise<void> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: payout.orderId },
+      select: { status: true },
+    });
+    if (order?.status !== OrderStatus.ANNULER) return;
+
+    this.logger.error(
+      `🚨 [REVERSEMENT] Vendeur payé sur une commande annulée — payout ${payout.id}, commande ${payout.orderId}`,
+    );
+    Sentry.captureMessage(
+      `payout.on_cancelled_order — reversement ${payout.id}, commande ${payout.orderId}`,
+      'error',
+    );
+    await this.prisma.incident
+      .create({
+        data: {
+          type: 'REFUND_REQUEST',
+          severity: 'CRITICAL',
+          title: 'Vendeur payé sur une commande annulée',
+          description:
+            `Le reversement de ${payout.amount} FCFA a abouti alors que la commande a été ` +
+            `annulée pendant qu'il était en cours. Le remboursement du client est bloqué ` +
+            `tant que cet arbitrage n'est pas fait : récupérer la somme auprès du vendeur, ` +
+            `ou rembourser le client à la charge de Lilia Food.`,
+          orderId: payout.orderId,
+          metadata: { payoutId: payout.id, amount: payout.amount },
+        },
+      })
+      .catch((error) =>
+        this.logger.error(
+          `Incident « payé sur annulée » non créé : ${(error as Error).message}`,
+        ),
+      );
   }
 
   private async openMismatchIncident(
@@ -1141,4 +1280,36 @@ export class RestaurantPayoutService {
   private orderRef(orderId: string): string {
     return orderId.slice(-6).toUpperCase();
   }
+}
+
+/**
+ * Délai de carence après modification du compte de reversement (F-08), en
+ * heures. `PAYOUT_ACCOUNT_COOLDOWN_HOURS=0` le désactive. Lu à chaque appel :
+ * pas de valeur figée au chargement du module.
+ */
+export function payoutAccountCooldownHours(): number {
+  const raw = Number(process.env.PAYOUT_ACCOUNT_COOLDOWN_HOURS ?? 24);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 24;
+}
+
+/**
+ * Fin du délai de carence, ou `null` si le compte peut recevoir un virement.
+ * Un compte jamais horodaté (antérieur au dispositif) n'est pas bloqué.
+ */
+export function payoutAccountCoolingUntil(
+  changedAt: Date | null | undefined,
+  now: Date,
+): Date | null {
+  const hours = payoutAccountCooldownHours();
+  if (!changedAt || hours === 0) return null;
+  const until = new Date(changedAt.getTime() + hours * 3_600_000);
+  return until > now ? until : null;
+}
+
+function payoutCoolingMessage(until: Date): string {
+  return (
+    'Le compte de reversement de ce vendeur vient d’être modifié. Par sécurité, ' +
+    `aucun virement n’y part avant le ${until.toLocaleString('fr-FR', { timeZone: 'Africa/Brazzaville' })}. ` +
+    'Le vendeur a été prévenu du changement.'
+  );
 }

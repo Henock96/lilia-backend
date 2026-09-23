@@ -1,3 +1,5 @@
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
+import { OutboxService } from '../outbox/outbox.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -45,6 +47,13 @@ describe('DeliveriesService.updateLocation (convergence Redis — LIL-54)', () =
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        // Journal d'audit : conclusion d'une course par un ADMIN (F-06).
+        { provide: AdminAuditService, useValue: { record: jest.fn() } },
+        // Obligations durables écrites dans la transaction `LIVRER` (lot 4).
+        {
+          provide: OutboxService,
+          useValue: { enqueueInTransaction: jest.fn() },
+        },
         // P0-4 : `Order.status` ne s'écrit plus qu'à travers ce service,
         // qui historise la transition dans la même transaction.
         OrderTransitionService,

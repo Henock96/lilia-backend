@@ -183,6 +183,7 @@ export class DeliveriesController {
       dto.status,
       fbUser.uid,
       dto.reason,
+      dto.handoverCode,
     );
   }
 

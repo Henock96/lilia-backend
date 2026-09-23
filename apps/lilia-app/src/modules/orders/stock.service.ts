@@ -2,6 +2,7 @@
 // orders/stock.service.ts
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { countMenus } from './menu-quantities';
 
 @Injectable()
 export class StockService {
@@ -13,20 +14,14 @@ export class StockService {
   ): Promise<void> {
     // Quantités par produit
     const qtyByProduct = new Map<string, number>();
-    const qtyByMenu = new Map<string, number>();
-
     for (const item of cartItems) {
       qtyByProduct.set(
         item.productId,
         (qtyByProduct.get(item.productId) ?? 0) + item.quantite,
       );
-      if (item.menuId) {
-        qtyByMenu.set(
-          item.menuId,
-          (qtyByMenu.get(item.menuId) ?? 0) + item.quantite,
-        );
-      }
     }
+    // Un menu = q unités, pas N × q (N lignes, une par produit) — fix F-01.
+    const qtyByMenu = countMenus(cartItems);
 
     const [limitedProducts, limitedMenus] = await Promise.all([
       tx.product.findMany({
@@ -124,8 +119,6 @@ export class StockService {
     items: { productId: string; menuId?: string | null; quantite: number }[],
   ): Promise<void> {
     const qtyByProduct = new Map<string, number>();
-    const qtyByMenu = new Map<string, number>();
-
     for (const item of items) {
       if (item.productId) {
         qtyByProduct.set(
@@ -133,13 +126,9 @@ export class StockService {
           (qtyByProduct.get(item.productId) ?? 0) + item.quantite,
         );
       }
-      if (item.menuId) {
-        qtyByMenu.set(
-          item.menuId,
-          (qtyByMenu.get(item.menuId) ?? 0) + item.quantite,
-        );
-      }
     }
+    // Symétrique de la décrémentation : on rend q menus, pas N × q (F-01).
+    const qtyByMenu = countMenus(items);
 
     // Même discipline de verrouillage que `decrementInTransaction` (fix S-7) :
     // identifiants triés, produits avant menus, écritures séquentielles.

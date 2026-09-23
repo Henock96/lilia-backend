@@ -35,7 +35,9 @@ describe('OrderCheckoutService — idempotence', () => {
     order: { create: jest.fn() },
     user: { update: jest.fn() },
     loyaltyTransaction: { create: jest.fn() },
-    cartItem: { deleteMany: jest.fn() },
+    cartItem: { deleteMany: jest.fn(), findMany: jest.fn() },
+    // Verrou `SELECT … FOR UPDATE` sur le panier (fix F-11).
+    $queryRaw: jest.fn(),
     $executeRaw: jest.fn(),
   };
 
@@ -95,6 +97,20 @@ describe('OrderCheckoutService — idempotence', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    // Sous verrou, le panier relu est par défaut celui qui a servi au calcul :
+    // aucun checkout concurrent. Les cas de course le surchargent.
+    tx.cartItem.findMany.mockImplementation(async () => {
+      const user =
+        await validator.validateAndGetUser.mock.results[
+          validator.validateAndGetUser.mock.results.length - 1
+        ]?.value;
+      return (user?.cart?.items ?? []).map(
+        ({ id, quantite }: { id: string; quantite: number }) => ({
+          id,
+          quantite,
+        }),
+      );
+    });
 
     validator.validateAndGetUser.mockResolvedValue({
       id: 'u1',

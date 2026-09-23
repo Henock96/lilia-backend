@@ -222,6 +222,14 @@ export const envValidationSchema = Joi.object({
   // OBLIGATOIRE côté Lilia : à défaut de clé, `PAWAPAY_CALLBACK_IPS` doit être
   // renseignée, sinon le webhook refuse tout (fail-closed). Un endpoint public
   // qui mute des lignes d'argent ne s'ouvre pas « en attendant ».
+  // Délai de carence après modification du compte de reversement d'un vendeur
+  // (Master Audit v1, F-08), en heures. 0 le désactive.
+  PAYOUT_ACCOUNT_COOLDOWN_HOURS: Joi.number().min(0).default(24),
+  // Preuve de remise (Master Audit v1, F-06). `false` pendant la transition :
+  // le code est vérifié dès qu'il est fourni, mais pas exigé, le temps que
+  // les applications livreur installées soient mises à jour. À passer à
+  // `true` une fois `lilia_food_delivery` ≥ la version qui le demande.
+  DELIVERY_HANDOVER_CODE_REQUIRED: Joi.boolean().default(false),
   PAWAPAY_PUBLIC_KEY: Joi.string().allow('').optional(),
   PAWAPAY_CALLBACK_IPS: Joi.string().allow('').optional(),
 

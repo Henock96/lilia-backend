@@ -50,6 +50,8 @@ describe('RefundExecutionService', () => {
   const make = (
     refund: unknown,
     providerOver: Record<string, unknown> = {},
+    /** Reversement relu SOUS le verrou de la commande (fix F-04). */
+    payoutUnderLock: { status: string } | null = null,
   ) => {
     const createPayout = jest.fn().mockResolvedValue({
       accepted: true,
@@ -63,6 +65,12 @@ describe('RefundExecutionService', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         update: jest.fn().mockResolvedValue({}),
       },
+      restaurantPayout: {
+        findUnique: jest.fn().mockResolvedValue(payoutUnderLock),
+      },
+      // Verrou de la ligne `Order` (fix F-04).
+      $queryRaw: jest.fn().mockResolvedValue([{ status: 'ANNULER' }]),
+      $transaction: jest.fn(async (fn: (tx: unknown) => unknown) => fn(prisma)),
     };
     const registry = {
       currentMode: 'PAWAPAY',
@@ -218,5 +226,48 @@ describe('RefundExecutionService', () => {
     await expect(service.execute('ref-1', ADMIN)).rejects.toBeInstanceOf(
       BadRequestException,
     );
+  });
+
+  describe('F-04 — jamais deux sorties d’argent pour une commande', () => {
+    it('reversement PENDING lu d’emblée → refusé, aucun virement', async () => {
+      const { service, prisma, createPayout } = make(
+        buildRefund({
+          order: { id: 'o1', status: 'ANNULER', payout: { status: 'PENDING' } },
+        }),
+      );
+      await expect(service.execute('ref-1', ADMIN)).rejects.toThrow(
+        /reversement au vendeur est en cours/,
+      );
+      expect(prisma.refund.updateMany).not.toHaveBeenCalled();
+      expect(createPayout).not.toHaveBeenCalled();
+    });
+
+    it('reversement apparu entre la lecture et le verrou → refusé sous verrou', async () => {
+      const { service, prisma, createPayout } = make(
+        buildRefund(),
+        {},
+        {
+          status: 'PENDING',
+        },
+      );
+      await expect(service.execute('ref-1', ADMIN)).rejects.toThrow(
+        /reversement au vendeur est en cours/,
+      );
+      expect(prisma.$queryRaw).toHaveBeenCalled();
+      expect(prisma.refund.updateMany).not.toHaveBeenCalled();
+      expect(createPayout).not.toHaveBeenCalled();
+    });
+
+    it('reversement FAILED : le vendeur n’a rien reçu, on rembourse', async () => {
+      const { service, createPayout } = make(
+        buildRefund(),
+        {},
+        {
+          status: 'FAILED',
+        },
+      );
+      await service.execute('ref-1', ADMIN);
+      expect(createPayout).toHaveBeenCalledTimes(1);
+    });
   });
 });

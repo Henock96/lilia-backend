@@ -1,3 +1,4 @@
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 
@@ -78,6 +79,7 @@ describe('AdminPayoutController — webhookHealth', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [AdminPayoutController],
       providers: [
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         { provide: RestaurantPayoutService, useValue: {} },
         { provide: PaymentEventService, useValue: events },
         { provide: AdminAuditService, useValue: {} },

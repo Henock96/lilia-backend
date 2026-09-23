@@ -1273,6 +1273,15 @@ model Delivery {
 
   review DeliveryReview? // note laissée par le client après livraison
 
+  /// ── Preuve de remise (Master Audit v1, F-06) ─────────────────────────────
+  /// Le CODE vit dans `DeliveryHandover`, jamais ici : plusieurs routes
+  /// renvoient la ligne `Delivery` entière au livreur. Une colonne l'aurait
+  /// exposé à celui-là même qui doit le recevoir du client.
+  handover           DeliveryHandover?
+  /// Comment la remise a été attestée. `null` tant que non livrée.
+  handoverMethod     DeliveryHandoverMethod?
+  handoverVerifiedAt DateTime?
+
   /// Toutes les mains par lesquelles cette course est passée.
   assignments DeliveryAssignment[]
 
@@ -1356,6 +1365,27 @@ model DeliveryAssignment {
 /// `ORDER_CANCELLED` est distinct de `FAILED` : le livreur n'a rien manqué, la
 /// commande a disparu sous lui. Les confondre le pénaliserait dans toute
 /// statistique de fiabilité.
+/// Code de remise d'une course (F-06) — table à part pour qu'aucune lecture
+/// de `Delivery` ne l'embarque par défaut. Ne se lit que pour le CLIENT de la
+/// commande (et l'ADMIN), et ne se compare qu'au moment de conclure.
+model DeliveryHandover {
+  deliveryId String   @id
+  delivery   Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  /// 4 chiffres, généré au retrait du repas.
+  code       String
+  /// Tentatives consommées — y compris la bonne : chaque saisie coûte un essai,
+  /// ce qui borne une rafale de requêtes parallèles comme une saisie à la main.
+  attempts   Int      @default(0)
+  createdAt  DateTime @default(now())
+}
+
+/// Comment la remise d'une course a été attestée (F-06).
+enum DeliveryHandoverMethod {
+  CODE // le livreur a saisi le code montré au client
+  ADMIN_OVERRIDE // un administrateur a conclu la course (arbitrage, audité)
+  UNVERIFIED // course sans code (antérieure au dispositif, ou code non exigé)
+}
+
 enum DeliveryAssignmentOutcome {
   /// Ce livreur a livré la commande. Seul cas où une rémunération est due.
   COMPLETED

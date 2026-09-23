@@ -27,6 +27,7 @@ import { DeliveryDestinationService } from './delivery-destination.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
 import { ReferralService } from '../users/referral.service';
 import { RefundsService } from '../refunds/refunds.service';
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { OutboxService } from '../outbox/outbox.service';
 
 /**
@@ -38,6 +39,12 @@ import { OutboxService } from '../outbox/outbox.service';
 describe('OrdersService (caractérisation — cycle de vie)', () => {
   let service: OrdersService;
 
+  const audit = { record: jest.fn() };
+  const outbox = {
+    enqueueInTransaction: jest.fn().mockResolvedValue('outbox-1'),
+    markSent: jest.fn().mockResolvedValue(undefined),
+  };
+  const refunds = { openForCancelledOrder: jest.fn().mockResolvedValue(null) };
   const tx = {
     // `updateMany` + `findUniqueOrThrow` : depuis le fix H6, la transition de
     // statut passe par un verrou optimiste (updateMany conditionné sur l'état
@@ -51,6 +58,8 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
     loyaltyTransaction: { aggregate: jest.fn(), create: jest.fn() },
     promoUsage: { deleteMany: jest.fn() },
     payment: { updateMany: jest.fn() },
+    // Reversement vendeur relu sous le verrou de la commande (fix F-04).
+    restaurantPayout: { findUnique: jest.fn().mockResolvedValue(null) },
     // P0-4 : le verrou optimiste et l'écriture de l'historique sont désormais
     // un seul geste, dans la même transaction (`OrderTransitionService`).
     orderHistory: { create: jest.fn() },
@@ -95,10 +104,7 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
       providers: [
         {
           provide: OutboxService,
-          useValue: {
-            enqueueInTransaction: jest.fn().mockResolvedValue('outbox-1'),
-            markSent: jest.fn().mockResolvedValue(undefined),
-          },
+          useValue: outbox,
         },
         {
           provide: LoyaltyService,
@@ -114,12 +120,9 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
             rewardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
           },
         },
-        {
-          provide: RefundsService,
-          useValue: {
-            openForCancelledOrder: jest.fn().mockResolvedValue(null),
-          },
-        },
+        { provide: RefundsService, useValue: refunds },
+        // Journal d'audit des gestes ADMIN sur une commande (F-07).
+        { provide: AdminAuditService, useValue: audit },
         OrdersService,
         OrderQueryService,
         OrderCheckoutService,
@@ -291,6 +294,242 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
         'order.status.updated',
         expect.anything(),
       );
+    });
+
+    // ─── Lot 4 : obligations durables écrites AVEC la transition ────────────
+    it('lot 4 : une annulation vendeur écrit l’obligation de remboursement DANS la transaction', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'r1',
+        role: 'RESTAURATEUR',
+      });
+      prisma.order.findUnique.mockResolvedValue({
+        id: 'o1',
+        status: 'PAYER',
+        userId: 'c1',
+        restaurantId: 'rid',
+        restaurant: { ownerId: 'r1', nom: 'Resto' },
+      });
+      tx.order.findUniqueOrThrow.mockResolvedValue({
+        id: 'o1',
+        userId: 'c1',
+        restaurantId: 'rid',
+        total: 5000,
+        items: [],
+        restaurant: { nom: 'Resto' },
+      });
+      tx.loyaltyTransaction.aggregate.mockResolvedValue({
+        _sum: { points: 0 },
+      });
+      tx.promoUsage.deleteMany.mockResolvedValue({ count: 0 });
+      await service.updateOrderStatusByRestaurateur(
+        'o1',
+        'uid',
+        'ANNULER' as any,
+      );
+      expect(outbox.enqueueInTransaction).toHaveBeenCalledWith(tx, {
+        type: 'order.refund_due',
+        aggregateId: 'o1',
+        payload: { reason: 'Annulation par restaurateur', requestedBy: 'r1' },
+      });
+    });
+
+    it('lot 4 : un retrait au comptoir livré écrit l’obligation de récompense', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'r1',
+        role: 'RESTAURATEUR',
+      });
+      prisma.order.findUnique.mockResolvedValue({
+        id: 'o1',
+        status: 'PRET',
+        isDelivery: false,
+        userId: 'c1',
+        restaurantId: 'rid',
+        restaurant: { ownerId: 'r1', nom: 'Resto' },
+      });
+      tx.order.findUniqueOrThrow.mockResolvedValue({
+        id: 'o1',
+        userId: 'c1',
+        restaurantId: 'rid',
+        total: 5000,
+        items: [],
+        restaurant: { nom: 'Resto' },
+      });
+      await service.updateOrderStatusByRestaurateur(
+        'o1',
+        'uid',
+        'LIVRER' as any,
+      );
+      expect(outbox.enqueueInTransaction).toHaveBeenCalledWith(
+        tx,
+        expect.objectContaining({ type: 'order.delivered', aggregateId: 'o1' }),
+      );
+    });
+
+    it('lot 4 : une transition intermédiaire n’écrit aucune obligation', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'r1',
+        role: 'RESTAURATEUR',
+      });
+      prisma.order.findUnique.mockResolvedValue({
+        id: 'o1',
+        status: 'PAYER',
+        userId: 'c1',
+        restaurantId: 'rid',
+        restaurant: { ownerId: 'r1', nom: 'Resto' },
+      });
+      tx.order.findUniqueOrThrow.mockResolvedValue({
+        id: 'o1',
+        userId: 'c1',
+        restaurantId: 'rid',
+        total: 5000,
+        items: [],
+        restaurant: { nom: 'Resto' },
+      });
+      await service.updateOrderStatusByRestaurateur(
+        'o1',
+        'uid',
+        'EN_PREPARATION' as any,
+      );
+      expect(outbox.enqueueInTransaction).not.toHaveBeenCalled();
+    });
+
+    // ─── Fix F-07 : « payée » ne se déclare pas ────────────────────────────
+    it('F-07 : même un ADMIN ne peut pas passer une commande PAYER par la route de statut', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'adm', role: 'ADMIN' });
+      prisma.order.findUnique.mockResolvedValue({
+        id: 'o1',
+        status: 'EN_ATTENTE',
+        userId: 'c1',
+        restaurantId: 'rid',
+        restaurant: { ownerId: 'r1', nom: 'Resto' },
+      });
+      await expect(
+        service.updateOrderStatusByRestaurateur('o1', 'uid', 'PAYER' as any),
+      ).rejects.toThrow(/paiement confirmé/);
+      expect(tx.order.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('F-07 : un geste ADMIN sur le statut entre au journal d’audit', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'adm', role: 'ADMIN' });
+      prisma.order.findUnique.mockResolvedValue({
+        id: 'o1',
+        status: 'PAYER',
+        userId: 'c1',
+        restaurantId: 'rid',
+        isDelivery: true,
+        restaurant: { ownerId: 'r1', nom: 'Resto' },
+      });
+      tx.order.findUniqueOrThrow.mockResolvedValue({
+        id: 'o1',
+        userId: 'c1',
+        restaurantId: 'rid',
+        total: 5000,
+        items: [],
+        restaurant: { nom: 'Resto' },
+      });
+      await service.updateOrderStatusByRestaurateur(
+        'o1',
+        'uid',
+        'EN_PREPARATION' as any,
+      );
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorId: 'adm',
+          action: 'ORDER_STATUS_FORCED',
+          targetType: 'Order',
+          targetId: 'o1',
+          metadata: { from: 'PAYER', to: 'EN_PREPARATION' },
+        }),
+      );
+    });
+
+    it('F-07 : un geste du vendeur n’est pas un arbitrage — pas de ligne d’audit admin', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'r1',
+        role: 'RESTAURATEUR',
+      });
+      prisma.order.findUnique.mockResolvedValue({
+        id: 'o1',
+        status: 'PAYER',
+        userId: 'c1',
+        restaurantId: 'rid',
+        restaurant: { ownerId: 'r1', nom: 'Resto' },
+      });
+      tx.order.findUniqueOrThrow.mockResolvedValue({
+        id: 'o1',
+        userId: 'c1',
+        restaurantId: 'rid',
+        total: 5000,
+        items: [],
+        restaurant: { nom: 'Resto' },
+      });
+      await service.updateOrderStatusByRestaurateur(
+        'o1',
+        'uid',
+        'EN_PREPARATION' as any,
+      );
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+
+    // ─── Fix F-04 : payé, le vendeur n'annule plus ─────────────────────────
+    it.each(['PENDING', 'SUCCESS'])(
+      'F-04 : reversement %s → le vendeur ne peut plus annuler (409, rien n’est restitué)',
+      async (payoutStatus) => {
+        prisma.user.findUnique.mockResolvedValue({
+          id: 'r1',
+          role: 'RESTAURATEUR',
+        });
+        prisma.order.findUnique.mockResolvedValue({
+          id: 'o1',
+          status: 'PRET',
+          userId: 'c1',
+          restaurantId: 'rid',
+          restaurant: { ownerId: 'r1', nom: 'Resto' },
+        });
+        tx.restaurantPayout.findUnique.mockResolvedValueOnce({
+          status: payoutStatus,
+        });
+        await expect(
+          service.updateOrderStatusByRestaurateur(
+            'o1',
+            'uid',
+            'ANNULER' as any,
+          ),
+        ).rejects.toThrow(/déjà été reversée/);
+        expect(stockService.restoreInTransaction).not.toHaveBeenCalled();
+        expect(refunds.openForCancelledOrder).not.toHaveBeenCalled();
+      },
+    );
+
+    it('F-04 : l’ADMIN peut encore annuler (arbitrage) — le remboursement s’ouvre, son exécution attendra', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'adm', role: 'ADMIN' });
+      prisma.order.findUnique.mockResolvedValue({
+        id: 'o1',
+        status: 'PRET',
+        userId: 'c1',
+        restaurantId: 'rid',
+        restaurant: { ownerId: 'r1', nom: 'Resto' },
+      });
+      // L'ADMIN ne relit pas le reversement : sa décision est un arbitrage.
+
+      tx.order.findUniqueOrThrow.mockResolvedValue({
+        id: 'o1',
+        userId: 'c1',
+        restaurantId: 'rid',
+        total: 5000,
+        items: [],
+        restaurant: { nom: 'Resto' },
+      });
+      tx.loyaltyTransaction.aggregate.mockResolvedValue({
+        _sum: { points: 0 },
+      });
+      tx.promoUsage.deleteMany.mockResolvedValue({ count: 0 });
+      await service.updateOrderStatusByRestaurateur(
+        'o1',
+        'uid',
+        'ANNULER' as any,
+      );
+      expect(refunds.openForCancelledOrder).toHaveBeenCalled();
     });
 
     it('annulation restaurateur : restaure le stock, les points et le promo comme côté client', async () => {

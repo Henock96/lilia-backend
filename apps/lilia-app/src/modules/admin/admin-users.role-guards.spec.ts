@@ -1,5 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+} from '@nestjs/common';
 
 import { AdminUsersService } from './admin-users.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -52,6 +56,14 @@ describe('AdminUsersService — cohérence des changements de rôle', () => {
     restaurant: null,
     driverProfile: null,
     ...over,
+  });
+
+  it('F-08 : promouvoir quiconque ADMIN par l’API → refusé, rien n’est écrit', async () => {
+    prisma.user.findUnique.mockResolvedValue(user({ role: 'CLIENT' }));
+    await expect(
+      service.updateUserRole('u1', { role: 'ADMIN' } as never),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.user.update).not.toHaveBeenCalled();
   });
 
   it('rétrograder un ADMIN → refusé (règle historique)', async () => {

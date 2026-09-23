@@ -15,6 +15,7 @@ import {
 } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { lockOrderRow } from '../orders/order-row-lock';
 import { PaymentProviderRegistry } from '../payments/payment-provider.registry';
 import { PaymentEventService } from '../payments/services/payment-event.service';
 import { ProviderUnavailableError } from '../payments/providers/payment-provider.interface';
@@ -100,18 +101,32 @@ export class RefundExecutionService {
     const providerRefundId = randomUUID();
 
     // ── Réservation, AVANT tout appel réseau ────────────────────────────────
-    const claimed = await this.prisma.refund.updateMany({
-      where: { id: refund.id, status: RefundStatus.PENDING },
-      data: {
-        status: RefundStatus.PROCESSING,
-        provider: provider.name,
-        providerRefundId,
-        phoneNumber,
-        payoutProvider,
-        processedBy: adminUserId,
-        failureCode: null,
-        failureMessage: null,
-      },
+    // ⚠️ Fix F-04 — la revendication se fait SOUS le verrou de la commande,
+    // le même que prend `requestPayout`. `assertExecutable` a lu le reversement
+    // hors transaction ; un reversement demandé entre cette lecture et le
+    // virement client aurait fait partir les deux. Sous verrou, on relit : un
+    // reversement PENDING ou SUCCESS bloque le remboursement (voir
+    // `assertNoActivePayout`).
+    const claimed = await this.prisma.$transaction(async (tx) => {
+      await lockOrderRow(tx, refund.orderId);
+      const payout = await tx.restaurantPayout.findUnique({
+        where: { orderId: refund.orderId },
+        select: { status: true },
+      });
+      assertNoActivePayout(payout?.status ?? null);
+      return tx.refund.updateMany({
+        where: { id: refund.id, status: RefundStatus.PENDING },
+        data: {
+          status: RefundStatus.PROCESSING,
+          provider: provider.name,
+          providerRefundId,
+          phoneNumber,
+          payoutProvider,
+          processedBy: adminUserId,
+          failureCode: null,
+          failureMessage: null,
+        },
+      });
     });
     if (claimed.count === 0) {
       throw new ConflictException(
@@ -230,16 +245,37 @@ export class RefundExecutionService {
           'automatiquement sans risquer de virer au mauvais destinataire.',
       );
     }
-    if (refund.order?.payout?.status === 'SUCCESS') {
-      throw new ConflictException(
-        'Le vendeur a déjà été reversé pour cette commande. Rembourser le client ' +
-          'ferait porter les deux montants à la plateforme — arbitrage manuel requis.',
-      );
-    }
+    assertNoActivePayout(refund.order?.payout?.status ?? null);
   }
 
   /** Référence lisible par le client dans son SMS. */
   private orderRef(orderId: string): string {
     return orderId.slice(-8).toUpperCase();
+  }
+}
+
+/**
+ * Invariant F-04 : **jamais deux sorties d'argent pour une même commande.**
+ *
+ * - reversement `SUCCESS` : le vendeur a l'argent. Rembourser le client ferait
+ *   porter les deux montants à la plateforme — arbitrage humain (un incident
+ *   « vendeur payé sur une commande annulée » est ouvert à la confirmation).
+ * - reversement `PENDING` : l'argent est peut-être déjà parti, et un virement
+ *   émis ne se rappelle pas. On attend son issue : `FAILED` libère le
+ *   remboursement, `SUCCESS` renvoie au cas précédent.
+ * - `FAILED` / `CANCELLED` / aucun : le vendeur n'a rien reçu, on rembourse.
+ */
+export function assertNoActivePayout(payoutStatus: string | null): void {
+  if (payoutStatus === 'SUCCESS') {
+    throw new ConflictException(
+      'Le vendeur a déjà été reversé pour cette commande. Rembourser le client ' +
+        'ferait porter les deux montants à la plateforme — arbitrage manuel requis.',
+    );
+  }
+  if (payoutStatus === 'PENDING') {
+    throw new ConflictException(
+      'Un reversement au vendeur est en cours pour cette commande. Attendez son ' +
+        'issue : un échec libérera le remboursement, un succès demandera un arbitrage.',
+    );
   }
 }

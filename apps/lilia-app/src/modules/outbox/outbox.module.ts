@@ -35,6 +35,8 @@ import { CronLockService } from '../../common/locks/cron-lock.service';
     // chargement du `.env` (audit post-correction, B-2).
     OutboxDispatcherService,
   ],
-  exports: [OutboxService, CronLockService],
+  // Le dispatcher est exporté pour que d'autres modules y inscrivent leurs
+  // traitements (`registerHandler`) sans que l'outbox ne dépende d'eux.
+  exports: [OutboxService, CronLockService, OutboxDispatcherService],
 })
 export class OutboxModule {}

@@ -6,7 +6,11 @@ import {
   Optional,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { LocationPrecision, LoyaltyTransactionType } from '@prisma/client';
+import {
+  LocationPrecision,
+  LoyaltyTransactionType,
+  Prisma,
+} from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { InjectRedis } from '@nestjs-modules/ioredis';
 import * as Sentry from '@sentry/nestjs';
@@ -328,6 +332,23 @@ export class OrderCheckoutService {
     );
     // 5. Exécuter la création de la commande et la suppression du panier dans une transaction
     const { order } = await this.prisma.$transaction(async (tx) => {
+      // ⚠️ Fix F-11 — un panier ne se paie qu'une fois, et c'est la BASE qui
+      // l'arbitre, pas Redis.
+      //
+      // Le panier est lu plus haut, hors transaction. Deux checkouts portant
+      // deux clés d'idempotence différentes (app + web, deux onglets, ou Redis
+      // indisponible — l'idempotence se dégrade alors en best-effort) lisaient
+      // le même panier et créaient deux commandes : le stock limité en
+      // bloquait une, un stock illimité (`null`, le cas courant) aucune.
+      //
+      // Le verrou de ligne sur `Cart` sérialise les checkouts d'un même
+      // client ; le panier est ensuite relu SOUS verrou et comparé à
+      // l'instantané qui a servi aux calculs. Le second checkout, débloqué
+      // après le commit du premier, trouve un panier vide ou différent et
+      // échoue en 409 — sa transaction entière (commande, stock, points,
+      // promo) est annulée.
+      await this.lockCartAndAssertUnchanged(tx, user.cart!.id, cartItems);
+
       const newOrder = await tx.order.create({
         data: {
           userId: user.id,
@@ -460,9 +481,13 @@ export class OrderCheckoutService {
       await this.stockService.decrementInTransaction(tx, cartItems);
 
       // 7. Vider le panier
+      // On ne vide QUE les lignes commandées : une ligne ajoutée depuis un
+      // autre appareil pendant ce checkout n'a pas été facturée et ne doit pas
+      // disparaître avec les autres.
       await tx.cartItem.deleteMany({
         where: {
           cartId: user.cart!.id,
+          id: { in: cartItems.map((item) => item.id) },
         },
       });
 
@@ -514,6 +539,38 @@ export class OrderCheckoutService {
    * garde) plutôt que de refuser la commande : c'était déjà le comportement
    * historique, et une panne Redis ne doit pas fermer la caisse.
    */
+  /**
+   * Verrouille le panier (`SELECT … FOR UPDATE`) et vérifie que son contenu est
+   * exactement celui sur lequel la commande a été calculée — mêmes lignes,
+   * mêmes quantités. Sinon 409 : le client a commandé ailleurs entre-temps,
+   * ou modifié son panier pendant la validation.
+   */
+  private async lockCartAndAssertUnchanged(
+    tx: Prisma.TransactionClient,
+    cartId: string,
+    snapshot: { id: string; quantite: number }[],
+  ): Promise<void> {
+    await tx.$queryRaw`SELECT id FROM "Cart" WHERE id = ${cartId} FOR UPDATE`;
+    const current = await tx.cartItem.findMany({
+      where: { cartId },
+      select: { id: true, quantite: true },
+    });
+    const expected = new Map(snapshot.map((line) => [line.id, line.quantite]));
+    const unchanged =
+      current.length === expected.size &&
+      current.every((line) => expected.get(line.id) === line.quantite);
+    if (!unchanged) {
+      this.logger.warn(
+        `📦 [COMMANDE] Panier ${cartId} modifié ou déjà commandé pendant la validation — checkout refusé`,
+      );
+      throw new ConflictException(
+        current.length === 0
+          ? 'Ce panier vient déjà d’être commandé. Consultez « Mes commandes ».'
+          : 'Votre panier a changé pendant la validation. Vérifiez-le puis recommencez.',
+      );
+    }
+  }
+
   private async claimIdempotencyKey(
     cacheKey: string,
     idempotencyKey: string,

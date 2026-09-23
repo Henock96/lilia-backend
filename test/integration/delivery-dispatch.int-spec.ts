@@ -380,5 +380,136 @@ describeIfDb(
         },
       });
     });
+
+    // ═══ Fix F-03 (Master Audit v1) — acceptation ════════════════════════════
+
+    describe('F-03 — l’acceptation vérifie l’état COURANT, atomiquement', () => {
+      it('A accepte une mission qui vient d’être réassignée à B : 409, rien ne bouge', async () => {
+        await assignment.assignDeliverer(DELIVERY, DRIVER_A, OWNER_UID);
+        // Instantané périmé côté A : on simule la lecture faite AVANT la
+        // réassignation en la rejouant après — le serveur doit relire.
+        await assignment.assignDeliverer(DELIVERY, DRIVER_B, OWNER_UID);
+
+        await expect(
+          assignment.acceptDelivery(DELIVERY, 'fb-dd-a'),
+        ).rejects.toThrow();
+
+        const course = await prisma.delivery.findUniqueOrThrow({
+          where: { id: DELIVERY },
+        });
+        expect(course).toMatchObject({
+          delivererId: DRIVER_B,
+          status: DeliveryStatus.ASSIGNER,
+          driverPayXaf: null,
+        });
+        const a = await prisma.user.findUniqueOrThrow({
+          where: { id: DRIVER_A },
+        });
+        expect(a.driverStatus).toBe('AVAILABLE');
+      });
+
+      it('course acceptation (A) / réassignation (→ B) en parallèle : jamais de course acceptée au nom d’un autre', async () => {
+        for (let round = 0; round < 10; round++) {
+          await reset();
+          await assignment.assignDeliverer(DELIVERY, DRIVER_A, OWNER_UID);
+
+          await Promise.allSettled([
+            assignment.acceptDelivery(DELIVERY, 'fb-dd-a'),
+            assignment.assignDeliverer(DELIVERY, DRIVER_B, ADMIN_UID),
+          ]);
+
+          const course = await prisma.delivery.findUniqueOrThrow({
+            where: { id: DELIVERY },
+          });
+          const users = await prisma.user.findMany({
+            where: { id: { in: [DRIVER_A, DRIVER_B] } },
+          });
+          const onDelivery = users
+            .filter((u) => u.driverStatus === 'ON_DELIVERY')
+            .map((u) => u.id);
+
+          if (course.status === DeliveryStatus.ACCEPTER) {
+            // Accepté : c'est forcément A, et A seul est en course.
+            expect(course.delivererId).toBe(DRIVER_A);
+            expect(onDelivery).toEqual([DRIVER_A]);
+          } else {
+            // Réassigné : B attend sa réponse, personne n'est en course.
+            expect(course).toMatchObject({
+              status: DeliveryStatus.ASSIGNER,
+              delivererId: DRIVER_B,
+            });
+            expect(onDelivery).toEqual([]);
+          }
+        }
+      });
+
+      it('un livreur accepte deux missions en même temps : une seule passe', async () => {
+        const ORDER_2 = 'dd-order-2';
+        const DELIVERY_2 = 'dd-delivery-2';
+        await prisma.order.create({
+          data: {
+            id: ORDER_2,
+            restaurantId: VENDOR,
+            userId: CLIENT,
+            subTotal: 3000,
+            deliveryFee: 1000,
+            deliveryFeeGross: 1000,
+            total: 4000,
+            paymentMethod: 'MTN_MOMO',
+            status: OrderStatus.PRET,
+          },
+        });
+        await prisma.delivery.create({
+          data: {
+            id: DELIVERY_2,
+            orderId: ORDER_2,
+            status: DeliveryStatus.EN_ATTENTE,
+          },
+        });
+        try {
+          await assignment.assignDeliverer(DELIVERY, DRIVER_A, OWNER_UID);
+          await assignment.assignDeliverer(DELIVERY_2, DRIVER_A, OWNER_UID);
+
+          const results = await Promise.allSettled([
+            assignment.acceptDelivery(DELIVERY, 'fb-dd-a'),
+            assignment.acceptDelivery(DELIVERY_2, 'fb-dd-a'),
+          ]);
+          expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(
+            1,
+          );
+
+          const acceptees = await prisma.delivery.count({
+            where: {
+              id: { in: [DELIVERY, DELIVERY_2] },
+              status: DeliveryStatus.ACCEPTER,
+            },
+          });
+          expect(acceptees).toBe(1);
+        } finally {
+          await prisma.deliveryAssignment.deleteMany({
+            where: { deliveryId: DELIVERY_2 },
+          });
+          await prisma.delivery.delete({ where: { id: DELIVERY_2 } });
+          await prisma.orderHistory.deleteMany({ where: { orderId: ORDER_2 } });
+          await prisma.order.delete({ where: { id: ORDER_2 } });
+        }
+      });
+
+      it('commande annulée après l’assignation : l’acceptation est refusée', async () => {
+        await assignment.assignDeliverer(DELIVERY, DRIVER_A, OWNER_UID);
+        await prisma.order.update({
+          where: { id: ORDER },
+          data: { status: OrderStatus.ANNULER },
+        });
+
+        await expect(
+          assignment.acceptDelivery(DELIVERY, 'fb-dd-a'),
+        ).rejects.toThrow(/plus à livrer/);
+        const a = await prisma.user.findUniqueOrThrow({
+          where: { id: DRIVER_A },
+        });
+        expect(a.driverStatus).toBe('AVAILABLE');
+      });
+    });
   },
 );

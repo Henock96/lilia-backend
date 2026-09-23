@@ -46,6 +46,24 @@ export class OutboxDispatcherService {
     private readonly invitations: VendorInvitationService,
   ) {}
 
+  /**
+   * Traitements inscrits par d'autres modules (lot 4).
+   *
+   * Le dispatcher ne dépend pas de ceux qui produisent les effets : c'est
+   * l'inverse. `OrderOutboxEffectsModule` inscrit ses traitements au
+   * démarrage. Importer ici fidélité, parrainage et remboursements fermait un
+   * cycle `Outbox → RefundsCore → PaymentCore → Outbox`, et le module arrivait
+   * `undefined` au décorateur.
+   */
+  private readonly handlers = new Map<string, (event: OutboxEvent) => Promise<void>>();
+
+  registerHandler(type: string, handler: (event: OutboxEvent) => Promise<void>): void {
+    if (this.handlers.has(type)) {
+      throw new Error(`Traitement outbox déjà inscrit pour « ${type} »`);
+    }
+    this.handlers.set(type, handler);
+  }
+
   @Cron(CronExpression.EVERY_30_SECONDS)
   async dispatchPending(): Promise<void> {
     await this.lock.runExclusively('outbox-dispatcher', 60, async () => {
@@ -130,12 +148,18 @@ export class OutboxDispatcherService {
       case VENDOR_INVITATION_EVENT:
         await this.dispatchVendorInvitation(event);
         return;
-      default:
+      default: {
+        const handler = this.handlers.get(event.type);
+        if (handler) {
+          await handler(event);
+          return;
+        }
         // Type inconnu : on ne le rejoue pas indéfiniment.
         await this.outbox.markFailed(
           event.id,
           `Type d'événement non géré : ${event.type}`,
         );
+      }
     }
   }
 

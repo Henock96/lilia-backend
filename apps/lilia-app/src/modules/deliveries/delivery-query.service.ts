@@ -32,13 +32,13 @@ export class DeliveryQueryService {
     ownerFirebaseUid: string | null;
     delivererId: string | null;
     requesterFirebaseUid: string;
-  }): Promise<void> {
+  }): Promise<'VENDOR' | 'ADMIN' | 'CLIENT' | 'DRIVER'> {
     // Restaurateur propriétaire du restaurant
     if (
       ctx.ownerFirebaseUid &&
       ctx.ownerFirebaseUid === ctx.requesterFirebaseUid
     ) {
-      return;
+      return 'VENDOR';
     }
 
     const user = await this.prisma.user.findUnique({
@@ -47,9 +47,9 @@ export class DeliveryQueryService {
     });
     if (!user) throw new NotFoundException('Utilisateur non trouvé.');
 
-    if (user.role === 'ADMIN') return;
-    if (user.id === ctx.orderUserId) return; // client propriétaire de la commande
-    if (ctx.delivererId && user.id === ctx.delivererId) return; // livreur assigné
+    if (user.role === 'ADMIN') return 'ADMIN';
+    if (user.id === ctx.orderUserId) return 'CLIENT'; // client propriétaire de la commande
+    if (ctx.delivererId && user.id === ctx.delivererId) return 'DRIVER'; // livreur assigné
 
     throw new ForbiddenException(
       "Vous n'êtes pas autorisé à consulter cette livraison.",
@@ -494,12 +494,25 @@ export class DeliveryQueryService {
 
     // Anti-IDOR : la position GPS du livreur et les coordonnées du client ne
     // doivent être visibles que par les parties liées à la commande.
-    await this.assertCanViewDelivery({
+    const viewer = await this.assertCanViewDelivery({
       orderUserId: delivery.order.userId,
       ownerFirebaseUid: delivery.order.restaurant.owner?.firebaseUid ?? null,
       delivererId: delivery.delivererId,
       requesterFirebaseUid: firebaseUid,
     });
+
+    // Fix F-06 — le code de remise n'est lu que pour le CLIENT, et seulement
+    // tant que son repas roule vers lui. Ni le livreur (c'est à lui qu'on le
+    // dicte), ni le vendeur, ni un autre champ de cette réponse ne le portent.
+    const handoverCode =
+      viewer === 'CLIENT' && delivery.status === 'EN_TRANSIT'
+        ? ((
+            await this.prisma.deliveryHandover.findUnique({
+              where: { deliveryId: delivery.id },
+              select: { code: true },
+            })
+          )?.code ?? null)
+        : null;
 
     // Retire les champs internes (delivererId, userId, owner.firebaseUid)
     const { delivererId: _delivererId, order, ...rest } = delivery;
@@ -509,6 +522,7 @@ export class DeliveryQueryService {
     return {
       data: {
         ...rest,
+        handoverCode,
         order: { ...orderRest, restaurant: publicRestaurant },
       },
     };

@@ -91,6 +91,31 @@ export class FirebaseService implements OnModuleInit {
   }
 
   /**
+   * Preuve d'identité portée par le compte Firebase (Master Audit v1, F-09) :
+   * l'adresse e-mail a-t-elle été vérifiée, ou le compte passe-t-il par un
+   * fournisseur qui la garantit (Google, Apple) ? `null` si le compte est
+   * introuvable.
+   *
+   * Un compte e-mail/mot de passe NON vérifié peut porter l'adresse de
+   * n'importe qui : c'est ce qui permettait de « squatter » l'e-mail d'un
+   * futur vendeur, puis de se faire promouvoir par un administrateur de bonne
+   * foi.
+   */
+  async getIdentityEvidence(
+    uid: string,
+  ): Promise<{ emailVerified: boolean; providers: string[] } | null> {
+    try {
+      const record = await getAuth(this.app).getUser(uid);
+      return {
+        emailVerified: record.emailVerified,
+        providers: record.providerData.map((p) => p.providerId),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Active / désactive un compte Firebase Auth.
    *
    * `revokeRefreshTokens` seul ne suffit pas à bannir : l'utilisateur peut se

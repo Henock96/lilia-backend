@@ -142,6 +142,25 @@ export class RefundsService {
       );
     }
 
+    // Fix F-04 — clôturer « remboursé » à la main pendant qu'un reversement
+    // vendeur est en vol reproduirait la double sortie que l'exécution
+    // automatique refuse. Un reversement déjà `SUCCESS` reste clôturable à la
+    // main : c'est précisément l'issue d'un arbitrage (Lilia rembourse à sa
+    // charge), tracée dans le journal d'audit par le contrôleur.
+    if (
+      status === RefundStatus.COMPLETED ||
+      status === RefundStatus.PROCESSING
+    ) {
+      const payout = await this.prisma.restaurantPayout.findUnique({
+        where: { orderId: refund.orderId },
+        select: { status: true },
+      });
+      if (payout?.status === 'PENDING') {
+        throw new ConflictException(
+          'Un reversement au vendeur est en cours pour cette commande. Attendez son issue avant de clôturer le remboursement.',
+        );
+      }
+    }
     const isFinal =
       status === RefundStatus.COMPLETED || status === RefundStatus.REJECTED;
 

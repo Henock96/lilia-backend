@@ -139,4 +139,52 @@ export class VendorsListener {
   ): Promise<void> {
     await this.adminAlerts.notify({ title, body, data });
   }
+
+  /**
+   * Compte de reversement modifié (Master Audit v1, F-08) : le PROPRIÉTAIRE
+   * est prévenu, par push et par SMS — deux canaux, parce que celui qui
+   * détourne un compte peut aussi avoir la main sur un appareil. S'il n'est
+   * pas à l'origine du changement, il a le délai de carence pour le signaler.
+   */
+  @OnEvent('vendor.payout_account.changed', { async: true })
+  async handlePayoutAccountChanged(event: {
+    restaurantId: string;
+    restaurantName: string;
+    maskedPhone: string;
+    cooldownHours: number;
+  }) {
+    const owner = await this.prisma.restaurant.findUnique({
+      where: { id: event.restaurantId },
+      select: { ownerId: true, owner: { select: { phone: true } } },
+    });
+    if (!owner) return;
+    const body =
+      `Le compte de reversement de ${event.restaurantName} a été modifié ` +
+      `(nouveau numéro ${event.maskedPhone}). Si vous n'êtes pas à l'origine ` +
+      `de ce changement, contactez Lilia Food immédiatement.`;
+    await this.notifications
+      .sendPushNotification(
+        owner.ownerId,
+        '🔐 Compte de reversement modifié',
+        body,
+        {
+          restaurantId: event.restaurantId,
+          type: 'payout_account_changed',
+        },
+      )
+      .catch((err) =>
+        this.logger.error(
+          `Push « compte modifié » non envoyé : ${(err as Error).message}`,
+        ),
+      );
+    if (owner.owner.phone) {
+      await this.sms
+        .send(owner.owner.phone, `Lilia Food : ${body}`)
+        .catch((err) =>
+          this.logger.error(
+            `SMS « compte modifié » non envoyé : ${(err as Error).message}`,
+          ),
+        );
+    }
+  }
 }

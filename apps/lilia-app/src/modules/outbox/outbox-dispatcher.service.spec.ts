@@ -1,6 +1,7 @@
 import { OrderStatus } from '@prisma/client';
 
 import { OutboxDispatcherService } from './outbox-dispatcher.service';
+import { OrderOutboxEffectsService } from './order-outbox-effects.service';
 
 /**
  * Reprise des notifications vendeur en souffrance (fix H7).
@@ -34,6 +35,9 @@ describe('OutboxDispatcherService', () => {
   let notifications: { sendPushNotification: jest.Mock };
   let sms: { send: jest.Mock };
   let invitations: { sendForVendor: jest.Mock };
+  let loyalty: { awardForDeliveredOrder: jest.Mock };
+  let referral: { rewardForDeliveredOrder: jest.Mock };
+  let refunds: { openForCancelledOrder: jest.Mock };
   let service: OutboxDispatcherService;
 
   /** Verrou qui accorde toujours l'exécution. */
@@ -62,6 +66,14 @@ describe('OutboxDispatcherService', () => {
         .mockResolvedValue({ emailSent: true, smsSent: true, detail: 'ok' }),
     };
 
+    loyalty = {
+      awardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
+    };
+    referral = {
+      rewardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
+    };
+    refunds = { openForCancelledOrder: jest.fn().mockResolvedValue(null) };
+
     service = new OutboxDispatcherService(
       prisma as never,
       outbox as never,
@@ -70,6 +82,17 @@ describe('OutboxDispatcherService', () => {
       lock as never,
       invitations as never,
     );
+    // Les effets de commande (lot 4) s'inscrivent auprès du dispatcher, comme
+    // au démarrage réel de l'application.
+    new OrderOutboxEffectsService(
+      prisma as never,
+      outbox as never,
+      service,
+      notifications as never,
+      loyalty as never,
+      referral as never,
+      refunds as never,
+    ).onModuleInit();
     jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
     jest.spyOn(service['logger'], 'error').mockImplementation(() => undefined);
   });
@@ -321,5 +344,107 @@ describe('OutboxDispatcherService', () => {
 
       expect(outbox.markSent).toHaveBeenCalledWith('evt-sain');
     });
+  });
+
+  // ═══ Lot 4 — obligations durables ═══════════════════════════════════════
+  describe('obligations durables (lot 4)', () => {
+    const run = async (type: string, payload: unknown = {}) => {
+      outbox.claimDue.mockResolvedValue([
+        event({ type, aggregateId: 'o-1', payload }),
+      ]);
+      await service.dispatchPending();
+    };
+
+    it('commande livrée : fidélité ET parrainage, puis acquittement', async () => {
+      prisma.order.findUnique.mockResolvedValue({
+        id: 'o-1',
+        userId: 'c-1',
+        status: 'LIVRER',
+      });
+      await run('order.delivered');
+      expect(loyalty.awardForDeliveredOrder).toHaveBeenCalledWith('c-1', 'o-1');
+      expect(referral.rewardForDeliveredOrder).toHaveBeenCalledWith(
+        'c-1',
+        'o-1',
+      );
+      expect(outbox.markSent).toHaveBeenCalledWith('evt-1');
+    });
+
+    it('commande NON livrée : aucune récompense, obligation close en échec', async () => {
+      prisma.order.findUnique.mockResolvedValue({
+        id: 'o-1',
+        userId: 'c-1',
+        status: 'EN_ROUTE',
+      });
+      await run('order.delivered');
+      expect(loyalty.awardForDeliveredOrder).not.toHaveBeenCalled();
+      expect(referral.rewardForDeliveredOrder).not.toHaveBeenCalled();
+      expect(outbox.markFailed).toHaveBeenCalled();
+    });
+
+    it('échec de la fidélité : l’obligation reste ouverte (rejouée plus tard)', async () => {
+      prisma.order.findUnique.mockResolvedValue({
+        id: 'o-1',
+        userId: 'c-1',
+        status: 'LIVRER',
+      });
+      loyalty.awardForDeliveredOrder.mockRejectedValue(new Error('DB down'));
+      await run('order.delivered');
+      expect(outbox.markSent).not.toHaveBeenCalled();
+      expect(outbox.scheduleRetry).toHaveBeenCalled();
+    });
+
+    it('remboursement dû : ouvert avec le motif et l’auteur de l’annulation', async () => {
+      prisma.order.findUnique.mockResolvedValue({ status: 'ANNULER' });
+      await run('order.refund_due', {
+        reason: 'Annulation par restaurateur',
+        requestedBy: 'u-v',
+      });
+      expect(refunds.openForCancelledOrder).toHaveBeenCalledWith({
+        orderId: 'o-1',
+        reason: 'Annulation par restaurateur',
+        requestedBy: 'u-v',
+      });
+      expect(outbox.markSent).toHaveBeenCalledWith('evt-1');
+    });
+
+    it('remboursement dû sur une commande non annulée : rien n’est ouvert', async () => {
+      prisma.order.findUnique.mockResolvedValue({ status: 'LIVRER' });
+      await run('order.refund_due');
+      expect(refunds.openForCancelledOrder).not.toHaveBeenCalled();
+    });
+
+    it('commande expirée : le client est prévenu (le worker n’a aucun listener)', async () => {
+      prisma.order.findUnique.mockResolvedValue({
+        id: 'o-1',
+        userId: 'c-1',
+        status: 'ANNULER',
+      });
+      await run('order.expired');
+      expect(notifications.sendPushNotification).toHaveBeenCalledWith(
+        'c-1',
+        expect.stringContaining('expirée'),
+        expect.any(String),
+        expect.objectContaining({ orderId: 'o-1' }),
+      );
+      expect(outbox.markSent).toHaveBeenCalledWith('evt-1');
+    });
+  });
+});
+
+describe('OutboxDispatcherService.registerHandler', () => {
+  it('refuse une double inscription pour le même type (collision silencieuse sinon)', () => {
+    const d = new OutboxDispatcherService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    d.registerHandler('x', async () => undefined);
+    expect(() => d.registerHandler('x', async () => undefined)).toThrow(
+      /déjà inscrit/,
+    );
   });
 });
