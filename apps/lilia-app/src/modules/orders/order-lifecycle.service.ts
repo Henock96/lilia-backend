@@ -33,6 +33,7 @@ import {
   ORDER_DELIVERED_EVENT,
   ORDER_EXPIRED_EVENT,
   ORDER_REFUND_DUE_EVENT,
+  ORDER_ACCEPTANCE_EXPIRED_EVENT,
 } from '../outbox/outbox-events';
 
 /**
@@ -565,6 +566,68 @@ export class OrderLifecycleService {
    * qu'une commande payée entre-temps n'est jamais annulée, même si deux
    * instances Render exécutent le cron en parallèle.
    */
+  /**
+   * Annule une commande payée que le vendeur n'a pas acceptée avant son
+   * échéance (Phase 3, F3-01).
+   *
+   * Même geste que l'expiration d'une commande impayée — transition SYSTÈME,
+   * stock, points et promo restitués — à deux différences près : l'argent a
+   * été encaissé, donc la dette de remboursement est écrite dans la même
+   * transaction (`vendorFault` : elle peut partir sans humain, D2) ; et la
+   * prévenance passe par l'outbox, le cron tournant dans le worker.
+   *
+   * Idempotent : le verrou `WHERE status = PAYER` départage une acceptation
+   * arrivée à la dernière seconde — une seule des deux gagne.
+   */
+  async expireUnacceptedOrder(orderId: string): Promise<boolean> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { items: true },
+    });
+    if (
+      !order ||
+      order.status !== 'PAYER' ||
+      !order.acceptDeadlineAt ||
+      order.acceptDeadlineAt.getTime() > Date.now()
+    ) {
+      return false;
+    }
+
+    const reason = 'Commande non acceptée par le vendeur dans le délai';
+    const expired = await this.prisma.$transaction(async (tx) => {
+      const { moved } = await this.transitions.tryTransition(tx, {
+        orderId,
+        from: 'PAYER',
+        to: 'ANNULER',
+        actor: 'SYSTEM',
+        source: 'CRON',
+        reason,
+      });
+      if (!moved) return false;
+
+      await this.stockService.restoreInTransaction(tx, order.items);
+      await this.restoreCheckoutCompensations(tx, orderId, order.userId);
+      await this.outbox.enqueueInTransaction(tx, {
+        type: ORDER_REFUND_DUE_EVENT,
+        aggregateId: orderId,
+        payload: { reason, requestedBy: null, vendorFault: true },
+      });
+      await this.outbox.enqueueInTransaction(tx, {
+        type: ORDER_ACCEPTANCE_EXPIRED_EVENT,
+        aggregateId: orderId,
+        payload: {},
+      });
+      return true;
+    });
+
+    if (expired) {
+      this.logger.warn(
+        `⏱️ Commande ${orderId} non acceptée à temps — annulée, remboursement dû`,
+      );
+    }
+    return expired;
+  }
+
   async expireUnpaidOrder(orderId: string): Promise<boolean> {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },

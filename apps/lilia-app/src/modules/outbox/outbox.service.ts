@@ -87,14 +87,28 @@ export class OutboxService {
     });
   }
 
-  /** Reporte une tentative avec un backoff exponentiel plafonné. */
-  async scheduleRetry(id: string, attempts: number, error: string) {
+  /**
+   * Reporte une tentative avec un backoff exponentiel plafonné.
+   *
+   * `notAfter` (F3-01) : la relance ne tombe jamais après cet instant. Le
+   * backoff seul ne peut pas porter une échéance — il faisait partir le rappel
+   * SMS « 10 min » vers 15 min, après l'annulation à 8 min.
+   */
+  async scheduleRetry(
+    id: string,
+    attempts: number,
+    error: string,
+    notAfter?: Date,
+  ) {
+    const now = Date.now();
     const delaySeconds = Math.min(2 ** attempts * 30, 15 * 60); // 30 s → 15 min
+    let next = now + delaySeconds * 1000;
+    if (notAfter) next = Math.max(now, Math.min(next, notAfter.getTime()));
     await this.prisma.outboxEvent.update({
       where: { id },
       data: {
         attempts: attempts + 1,
-        nextAttemptAt: new Date(Date.now() + delaySeconds * 1000),
+        nextAttemptAt: new Date(next),
         lastError: error.slice(0, 2000),
       },
     });

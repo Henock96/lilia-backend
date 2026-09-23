@@ -1,16 +1,18 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { OrderStatus, OutboxEvent } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
 import { ReferralService } from '../users/referral.service';
 import { RefundsService } from '../refunds/refunds.service';
+import { RefundExecutionService } from '../refunds/refund-execution.service';
 import { OutboxService } from './outbox.service';
 import { OutboxDispatcherService } from './outbox-dispatcher.service';
 import {
   ORDER_DELIVERED_EVENT,
   ORDER_EXPIRED_EVENT,
   ORDER_REFUND_DUE_EVENT,
+  ORDER_ACCEPTANCE_EXPIRED_EVENT,
 } from './outbox-events';
 
 /**
@@ -24,6 +26,8 @@ import {
  */
 @Injectable()
 export class OrderOutboxEffectsService implements OnModuleInit {
+  private readonly logger = new Logger(OrderOutboxEffectsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxService,
@@ -32,6 +36,7 @@ export class OrderOutboxEffectsService implements OnModuleInit {
     private readonly loyalty: LoyaltyService,
     private readonly referral: ReferralService,
     private readonly refunds: RefundsService,
+    private readonly refundExecution: RefundExecutionService,
   ) {}
 
   onModuleInit(): void {
@@ -43,6 +48,9 @@ export class OrderOutboxEffectsService implements OnModuleInit {
     );
     this.dispatcher.registerHandler(ORDER_EXPIRED_EVENT, (e) =>
       this.dispatchOrderExpired(e),
+    );
+    this.dispatcher.registerHandler(ORDER_ACCEPTANCE_EXPIRED_EVENT, (e) =>
+      this.dispatchOrderAcceptanceExpired(e),
     );
   }
 
@@ -89,6 +97,8 @@ export class OrderOutboxEffectsService implements OnModuleInit {
     const payload = (event.payload ?? {}) as {
       reason?: string;
       requestedBy?: string | null;
+      /** Refus ou silence du vendeur (F3-01) : dette certaine. */
+      vendorFault?: boolean;
     };
     const order = await this.prisma.order.findUnique({
       where: { id: event.aggregateId },
@@ -101,11 +111,80 @@ export class OrderOutboxEffectsService implements OnModuleInit {
       );
       return;
     }
-    await this.refunds.openForCancelledOrder({
+    const opened = await this.refunds.openForCancelledOrder({
       orderId: event.aggregateId,
       reason: payload.reason ?? 'Annulation',
       requestedBy: payload.requestedBy ?? null,
     });
+    if (payload.vendorFault && opened) {
+      await this.refundAutomatically(opened.id, event.aggregateId);
+    }
+    await this.outbox.markSent(event.id);
+  }
+
+  /**
+   * Remboursement sans geste humain d'une faute vendeur (F3-01, décision D2).
+   *
+   * Aucun chemin d'argent nouveau : c'est l'exécution qu'un administrateur
+   * déclenche à la main (verrou de commande, blocage si un reversement existe,
+   * CAS PENDING → PROCESSING, numéro payeur figé sur le paiement). Un refus —
+   * mode MANUAL sans virement automatique, reversement en cours, remboursement
+   * déjà pris en charge — laisse la dette PENDING dans la file admin : c'est
+   * désormais une décision humaine, et la rejouer n'y changerait rien.
+   */
+  private async refundAutomatically(
+    refundId: string,
+    orderId: string,
+  ): Promise<void> {
+    const settings = await this.prisma.platformSettings.findUnique({
+      where: { id: 'singleton' },
+      select: { autoRefundVendorFault: true },
+    });
+    if (!settings?.autoRefundVendorFault) return;
+
+    try {
+      await this.refundExecution.execute(refundId, null);
+    } catch (error) {
+      this.logger.warn(
+        `💸 Remboursement automatique non exécuté (commande ${orderId}, refund ${refundId}) — ` +
+          `laissé à la file admin : ${(error as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Commande payée que le vendeur n'a pas acceptée à temps (F3-01).
+   *
+   * Le client apprend qu'il est remboursé ; le vendeur, qu'il a perdu une
+   * commande — c'est ce qui lui fait garder l'application ouverte la fois
+   * suivante.
+   */
+  async dispatchOrderAcceptanceExpired(event: OutboxEvent): Promise<void> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: event.aggregateId },
+      select: {
+        id: true,
+        userId: true,
+        status: true,
+        restaurant: { select: { nom: true, ownerId: true } },
+      },
+    });
+    if (!order || order.status !== OrderStatus.ANNULER) {
+      await this.outbox.markSent(event.id);
+      return;
+    }
+    await this.notifications.sendPushNotification(
+      order.userId,
+      '↩️ Commande non acceptée',
+      `${order.restaurant.nom} n’a pas pu prendre votre commande à temps. Votre remboursement est lancé.`,
+      { orderId: order.id, type: 'order_update', status: 'ANNULER' },
+    );
+    await this.notifications.sendPushNotification(
+      order.restaurant.ownerId,
+      '⏱️ Commande perdue',
+      `La commande #${order.id.slice(-6)} n’a pas été acceptée à temps : elle a été annulée et le client remboursé.`,
+      { orderId: order.id, type: 'order_acceptance_expired' },
+    );
     await this.outbox.markSent(event.id);
   }
 

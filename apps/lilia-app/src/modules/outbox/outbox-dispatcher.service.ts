@@ -252,6 +252,7 @@ export class OutboxDispatcherService {
         total: true,
         createdAt: true,
         paidAt: true,
+        acceptDeadlineAt: true,
         restaurant: {
           select: {
             nom: true,
@@ -286,9 +287,14 @@ export class OutboxDispatcherService {
     // pas déclencher une escalade immédiate.
     const reference = order.paidAt ?? order.createdAt;
     const ageMinutes = (Date.now() - reference.getTime()) / 60000;
-    const shouldEscalate =
-      !event.escalatedAt &&
-      ageMinutes >= OutboxDispatcherService.ESCALATION_MINUTES;
+    // F3-01 — une commande qui porte une échéance d'acceptation est rappelée
+    // AVANT elle (échéance − `vendorAcceptanceReminderLeadMinutes`), sans
+    // quoi elle serait annulée avant que le vendeur ne reçoive le SMS.
+    const reminderAt = await this.acceptanceReminderAt(order.acceptDeadlineAt);
+    const escalationDue = reminderAt
+      ? Date.now() >= reminderAt.getTime()
+      : ageMinutes >= OutboxDispatcherService.ESCALATION_MINUTES;
+    const shouldEscalate = !event.escalatedAt && escalationDue;
 
     if (shouldEscalate) {
       const phone = order.restaurant.owner?.phone;
@@ -311,7 +317,23 @@ export class OutboxDispatcherService {
       event.id,
       event.attempts,
       'Commande payée toujours non acceptée',
+      // Tant que le rappel n'est pas parti, la relance suivante ne tombe pas
+      // après lui.
+      !event.escalatedAt && reminderAt ? reminderAt : undefined,
     );
+  }
+
+  /** Instant du rappel SMS d'une commande à échéance, ou `null`. */
+  private async acceptanceReminderAt(
+    acceptDeadlineAt: Date | null,
+  ): Promise<Date | null> {
+    if (!acceptDeadlineAt) return null;
+    const settings = await this.prisma.platformSettings.findUnique({
+      where: { id: 'singleton' },
+      select: { vendorAcceptanceReminderLeadMinutes: true },
+    });
+    const leadMinutes = settings?.vendorAcceptanceReminderLeadMinutes ?? 3;
+    return new Date(acceptDeadlineAt.getTime() - leadMinutes * 60_000);
   }
 
   /**

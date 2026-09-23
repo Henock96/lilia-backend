@@ -24,6 +24,7 @@ describe('OutboxDispatcherService', () => {
   let prisma: {
     order: { findUnique: jest.Mock };
     restaurant: { findUnique: jest.Mock };
+    platformSettings: { findUnique: jest.Mock };
   };
   let outbox: {
     claimDue: jest.Mock;
@@ -49,6 +50,11 @@ describe('OutboxDispatcherService', () => {
     prisma = {
       order: { findUnique: jest.fn() },
       restaurant: { findUnique: jest.fn() },
+      platformSettings: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ vendorAcceptanceReminderLeadMinutes: 3 }),
+      },
     };
     outbox = {
       claimDue: jest.fn().mockResolvedValue([]),
@@ -92,6 +98,7 @@ describe('OutboxDispatcherService', () => {
       loyalty as never,
       referral as never,
       refunds as never,
+      { execute: jest.fn() } as never, // RefundExecutionService (F3-01)
     ).onModuleInit();
     jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
     jest.spyOn(service['logger'], 'error').mockImplementation(() => undefined);
@@ -297,6 +304,55 @@ describe('OutboxDispatcherService', () => {
 
       expect(sms.send).not.toHaveBeenCalled();
       expect(outbox.scheduleRetry).toHaveBeenCalled();
+    });
+  });
+
+  describe('rappel avant l’échéance d’acceptation (F3-01)', () => {
+    // Le SMS « 10 min » n'était évalué qu'aux relances, dont le délai double
+    // (0,5 → 1,5 → 3,5 → 7,5 → 15,5 min) : il partait vers 15 min. Avec une
+    // annulation à 8 min (D1), le vendeur n'aurait jamais été prévenu.
+    const inMinutes = (n: number) => new Date(Date.now() + n * 60_000);
+    const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000);
+
+    it('envoie le SMS à échéance − 3 min, bien avant les 10 minutes historiques', async () => {
+      outbox.claimDue.mockResolvedValue([
+        event({ type: 'order.paid', attempts: 3 }),
+      ]);
+      prisma.order.findUnique.mockResolvedValue(
+        order({ paidAt: minutesAgo(6), acceptDeadlineAt: inMinutes(2) }),
+      );
+
+      await service.dispatchPending();
+
+      expect(sms.send).toHaveBeenCalledTimes(1);
+      expect(outbox.markEscalated).toHaveBeenCalledWith('evt-1');
+    });
+
+    it('trop tôt : pas de SMS, mais la relance suivante est calée sur l’instant du rappel', async () => {
+      const deadline = inMinutes(7);
+      outbox.claimDue.mockResolvedValue([
+        event({ type: 'order.paid', attempts: 4 }),
+      ]);
+      prisma.order.findUnique.mockResolvedValue(
+        order({ paidAt: minutesAgo(1), acceptDeadlineAt: deadline }),
+      );
+
+      await service.dispatchPending();
+
+      expect(sms.send).not.toHaveBeenCalled();
+      const [, , , notAfter] = outbox.scheduleRetry.mock.calls[0];
+      expect(notAfter).toEqual(new Date(deadline.getTime() - 3 * 60_000));
+    });
+
+    it('sans échéance (acceptation non mise en service) : la règle des 10 minutes est inchangée', async () => {
+      outbox.claimDue.mockResolvedValue([event({ type: 'order.paid' })]);
+      prisma.order.findUnique.mockResolvedValue(
+        order({ paidAt: minutesAgo(6), acceptDeadlineAt: null }),
+      );
+
+      await service.dispatchPending();
+
+      expect(sms.send).not.toHaveBeenCalled();
     });
   });
 

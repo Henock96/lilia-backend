@@ -4,6 +4,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { RestaurantScheduleService } from './restaurant-schedule.service';
 import { PreorderReminderService } from './preorder-reminder.service';
 import { OrderExpiryService } from './order-expiry.service';
+import { OrderAcceptanceTimeoutService } from './order-acceptance-timeout.service';
 import { PaymentReconciliationService } from './payment-reconciliation.service';
 import { WebhookSilenceService } from './webhook-silence.service';
 import { TrackingRetentionService } from './tracking-retention.service';
@@ -34,6 +35,7 @@ import { RefundsCoreModule } from '../refunds/refunds-core.module';
         RestaurantScheduleService,
         PreorderReminderService,
         OrderExpiryService,
+        OrderAcceptanceTimeoutService,
         PaymentReconciliationService,
         WebhookSilenceService,
         TrackingRetentionService,

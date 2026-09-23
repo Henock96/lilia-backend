@@ -318,6 +318,7 @@ describeIfDb(
         { awardForDeliveredOrder: async () => undefined } as never,
         { rewardForDeliveredOrder: async () => undefined } as never,
         new RefundsService(prisma as never),
+        refundExec,
       );
       await effects.dispatchRefundDue(obligation);
       await effects.dispatchRefundDue(obligation); // rejeu : sans effet
