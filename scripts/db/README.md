@@ -101,3 +101,41 @@ npx prisma migrate deploy                 # 3. application (transactionnelle)
 ⚠️ L'étape 3 supprime les lignes orphelines listées ci-dessus. Elle est
 irréversible sans restauration de sauvegarde — Neon conserve un historique
 point-in-time, à vérifier avant de lancer.
+
+## `validate-check-constraints.js` — lecture seule par défaut (L0-6, Phase 3)
+
+Valide les contraintes `CHECK` posées en `NOT VALID` (12 depuis la migration
+`20260923130000_money_stock_check_constraints`, d'autres viendront avec la
+Phase 3). Diagnostic d'abord : pour chaque contrainte en attente, le nombre de
+lignes qui la violent (`(expression) IS FALSE`, un NULL ne viole pas un CHECK).
+
+```bash
+node scripts/db/validate-check-constraints.js            # diagnostic
+node scripts/db/validate-check-constraints.js --apply    # valide les contraintes à 0 violation
+```
+
+`--apply` ne touche **que** les contraintes propres, une par une, avec
+`lock_timeout = 5s` ; une contrainte violée est listée et laissée en l'état. Sur
+une base non locale, il exige `LILIA_ALLOW_PRODUCTION_WRITES`. Volontairement
+hors migration : une ligne historique en défaut ne doit pas bloquer un
+déploiement.
+
+Vérifié le 23/09/2026 sur `lilia_dev` : 12/12 validées, et une contrainte sonde
+violée (`-1`, `5`, `NULL`) comptée à 1 ligne et laissée non validée.
+
+## `phase3-baseline.js` — lecture seule (L0-5, Phase 3)
+
+Point zéro avant la Phase 3 : paramètres plateforme réellement appliqués,
+`PAYMENT_MODE` déduit des paiements récents, écriture des frais pawaPay,
+conclusion des courses par code, jetons FCM des ADMIN, commandes `PAYER` sans
+réponse, délai de réponse vendeur, frais de livraison fixés par les vendeurs,
+courses d'indépendants payées 0 XAF, CHECK encore `NOT VALID`.
+
+```bash
+node scripts/db/phase3-baseline.js          # rapport lisible
+node scripts/db/phase3-baseline.js --json   # à archiver
+```
+
+Session en `default_transaction_read_only = on`. La base visée est celle de la
+cascade d'environnement — `npm run db:target` d'abord ; pour la production,
+poser `DATABASE_URL` explicitement.
