@@ -70,7 +70,7 @@ export class RefundExecutionService {
     private readonly events: PaymentEventService,
   ) {}
 
-  async execute(refundId: string, adminUserId: string) {
+  async execute(refundId: string, adminUserId: string | null) {
     const refund = await this.prisma.refund.findUnique({
       where: { id: refundId },
       include: {
@@ -136,7 +136,7 @@ export class RefundExecutionService {
 
     this.logger.warn(
       `💸 Remboursement client demandé — ${refund.amount} XAF, commande ${refund.orderId}, ` +
-        `tel ${maskPhone(phoneNumber)}, ref ${maskRef(providerRefundId)}, par ${adminUserId}`,
+        `tel ${maskPhone(phoneNumber)}, ref ${maskRef(providerRefundId)}, par ${adminUserId ?? 'le système (faute vendeur, D2)'}`,
     );
 
     // ── Appel au prestataire ────────────────────────────────────────────────

@@ -201,6 +201,7 @@ export class AdminService {
         in: [
           OrderStatus.EN_ATTENTE,
           OrderStatus.PAYER,
+          OrderStatus.ACCEPTEE, // F3-01
           OrderStatus.EN_PREPARATION,
           OrderStatus.PRET,
         ],

@@ -3,7 +3,10 @@ import { OrderStatus } from '@prisma/client';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrderQueryService } from './order-query.service';
 import { OrderCheckoutService } from './order-checkout.service';
-import { OrderLifecycleService } from './order-lifecycle.service';
+import {
+  OrderLifecycleService,
+  VendorRejection,
+} from './order-lifecycle.service';
 import { OrderReorderService } from './order-reorder.service';
 
 /**
@@ -97,6 +100,20 @@ export class OrdersService {
       firebaseUid,
       newStatus,
     );
+  }
+
+  /** Le vendeur accepte une commande payée (F3-01). */
+  acceptOrder(orderId: string, firebaseUid: string, prepMinutes: number) {
+    return this.lifecycleService.acceptOrder(orderId, firebaseUid, prepMinutes);
+  }
+
+  /** Le vendeur refuse une commande payée ou acceptée (F3-01). */
+  rejectOrder(
+    orderId: string,
+    firebaseUid: string,
+    rejection: VendorRejection,
+  ) {
+    return this.lifecycleService.rejectOrder(orderId, firebaseUid, rejection);
   }
 
   /**

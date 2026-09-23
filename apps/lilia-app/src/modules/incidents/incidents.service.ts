@@ -235,10 +235,13 @@ export class IncidentsService {
 
 const REPORTABLE_STATUSES: OrderStatus[] = [
   OrderStatus.PAYER,
+  OrderStatus.ACCEPTEE, // F3-01
   OrderStatus.EN_PREPARATION,
   OrderStatus.PRET,
   OrderStatus.EN_ROUTE,
   OrderStatus.LIVRER,
+  // F3-05 : un client doit pouvoir contester l'issue d'un échec de livraison.
+  OrderStatus.ECHEC_LIVRAISON,
 ];
 
 /** Fenêtre de signalement après livraison. */

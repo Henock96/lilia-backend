@@ -116,16 +116,18 @@ describe('AdminOrdersService.list', () => {
 
     const res = await service.list({});
 
-    // Les sept clés sont présentes : un front ne doit pas avoir à deviner
+    // Les neuf clés sont présentes : un front ne doit pas avoir à deviner
     // qu'une absence vaut zéro.
     expect(res.meta.statusCounts).toEqual({
       EN_ATTENTE: 0,
       PAYER: 0,
+      ACCEPTEE: 0,
       EN_PREPARATION: 0,
       PRET: 4,
       EN_ROUTE: 0,
       LIVRER: 31,
       ANNULER: 0,
+      ECHEC_LIVRAISON: 0,
     });
   });
 

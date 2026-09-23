@@ -171,7 +171,14 @@ describe('UserDeletionService', () => {
         where: {
           userId: 'u1',
           status: {
-            in: ['EN_ATTENTE', 'PAYER', 'EN_PREPARATION', 'PRET', 'EN_ROUTE'],
+            in: [
+              'EN_ATTENTE',
+              'PAYER',
+              'ACCEPTEE',
+              'EN_PREPARATION',
+              'PRET',
+              'EN_ROUTE',
+            ],
           },
         },
       });

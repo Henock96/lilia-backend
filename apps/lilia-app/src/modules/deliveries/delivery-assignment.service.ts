@@ -47,25 +47,10 @@ import {
 } from '../events/delivery-events';
 import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
 import { TrackingService } from '../tracking/tracking.service';
+import { ASSIGNABLE_ORDER_STATUSES } from '../orders/order-status-groups';
 
-/**
- * Statuts de commande pour lesquels confier une course a un sens.
- *
- * Écrit **une fois** : la liste vivait dans `assignDelivererToOrder`, et
- * `assignDeliverer` (`PATCH /deliveries/:id/assign`) ne la consultait pas du
- * tout. On pouvait donc réassigner une course **déjà livrée** par l'autre
- * porte — ce qui effaçait l'économie du livreur qui l'avait terminée
- * (`CLEARED_DRIVER_ECONOMICS`) et rattachait sa course à quelqu'un d'autre.
- * Le commentaire du schéma affirmait pourtant l'invariant « une fois
- * `Order.status = LIVRER`, toute réassignation est refusée » : il n'était vrai
- * que sur un des deux chemins.
- */
-export const ASSIGNABLE_ORDER_STATUSES: OrderStatus[] = [
-  OrderStatus.PAYER,
-  OrderStatus.EN_PREPARATION,
-  OrderStatus.PRET,
-  OrderStatus.EN_ROUTE,
-];
+// Source unique : `orders/order-status-groups.ts` (classement exhaustif testé).
+export { ASSIGNABLE_ORDER_STATUSES };
 
 /**
  * Assignation et acceptation de livraisons (LIL-134).

@@ -75,6 +75,8 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
       create: jest.fn(),
     },
     loyaltyTransaction: { create: jest.fn() },
+    // Aucune ligne de réglages : acceptation vendeur non mise en service (F3-01).
+    platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
     $transaction: jest.fn(async (arg: any) =>
       typeof arg === 'function' ? arg(tx) : Promise.all(arg),
     ),

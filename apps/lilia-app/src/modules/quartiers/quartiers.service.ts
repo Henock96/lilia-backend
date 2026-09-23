@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { checkCongoCoordinates } from '../../common/geo/congo-geo';
+import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 
 // Liste des quartiers de Brazzaville
 export const QUARTIERS_BRAZZAVILLE = [
@@ -132,6 +133,24 @@ export class QuartiersService {
       data: { latitude, longitude },
     });
     return { data: updated, message: `Centroïde de ${updated.nom} enregistré` };
+  }
+
+  /**
+   * Devis de livraison servi par la route **publique**.
+   *
+   * Même frontière que la fiche, les zones et le catalogue d'un vendeur
+   * (`PUBLIC_VENDOR_WHERE`, importée — jamais recopiée) : les frais d'un
+   * vendeur en configuration ou suspendu n'ont pas à être lisibles sans
+   * authentification. Le calcul lui-même reste `calculateDeliveryFee`, que le
+   * checkout appelle directement derrière sa propre garde.
+   */
+  async quotePublicDeliveryFee(restaurantId: string, quartierId: string) {
+    const vendor = await this.prisma.restaurant.findFirst({
+      where: { id: restaurantId, ...PUBLIC_VENDOR_WHERE },
+      select: { id: true },
+    });
+    if (!vendor) throw new NotFoundException('Vendeur introuvable');
+    return this.calculateDeliveryFee(restaurantId, quartierId);
   }
 
   /**

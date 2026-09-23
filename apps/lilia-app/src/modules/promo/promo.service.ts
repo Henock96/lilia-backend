@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PAID_ORDER_STATUSES } from '../orders/order-status-groups';
 import { CreatePromoCodeDto } from './dto/create-promo-code.dto';
 
 export interface PromoValidationResult {
@@ -147,7 +148,9 @@ export class PromoService {
       const hasOrdered = await this.prisma.order.findFirst({
         where: {
           userId,
-          status: { in: ['PAYER', 'EN_PREPARATION', 'PRET', 'LIVRER'] },
+          // Liste partagée : la copie inline sautait `EN_ROUTE`, un client dont
+          // la première commande roulait pouvait réutiliser le code.
+          status: { in: [...PAID_ORDER_STATUSES] },
         },
       });
       if (hasOrdered) {

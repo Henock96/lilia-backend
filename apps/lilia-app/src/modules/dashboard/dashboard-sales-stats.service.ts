@@ -120,7 +120,7 @@ export class DashboardSalesStatsService {
       this.prisma.order.count({
         where: {
           ...restaurantFilter,
-          status: { in: ['EN_ATTENTE', 'PAYER', 'EN_PREPARATION'] },
+          status: { in: ['EN_ATTENTE', 'PAYER', 'ACCEPTEE', 'EN_PREPARATION'] },
         },
       }),
       this.prisma.review.aggregate({

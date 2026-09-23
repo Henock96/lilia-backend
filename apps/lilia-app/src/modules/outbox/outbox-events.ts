@@ -27,3 +27,12 @@ export const ORDER_REFUND_DUE_EVENT = 'order.refund_due';
  * (finding F-10). Sans cette obligation, le client ne l'apprenait jamais.
  */
 export const ORDER_EXPIRED_EVENT = 'order.expired';
+
+/**
+ * Commande payée que le vendeur n'a pas acceptée à temps (Phase 3, F3-01) →
+ * prévenir le client (remboursement lancé) et le vendeur (commande perdue).
+ *
+ * Écrite par le cron du worker, qui n'a aucun listener : sans l'outbox,
+ * personne ne l'apprendrait.
+ */
+export const ORDER_ACCEPTANCE_EXPIRED_EVENT = 'order.acceptance_expired';

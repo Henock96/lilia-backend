@@ -20,6 +20,7 @@ describe('OrderTransitionService', () => {
   let tx: {
     order: { updateMany: jest.Mock };
     orderHistory: { create: jest.Mock };
+    platformSettings: { findUnique: jest.Mock };
   };
 
   beforeEach(() => {
@@ -27,6 +28,8 @@ describe('OrderTransitionService', () => {
     tx = {
       order: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
       orderHistory: { create: jest.fn().mockResolvedValue({}) },
+      // Aucune ligne de réglages = acceptation vendeur non mise en service.
+      platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
     };
   });
 
@@ -267,6 +270,73 @@ describe('OrderTransitionService', () => {
         'POLLING',
         'CRON',
       ]);
+    });
+  });
+
+  describe('échéance d’acceptation (F3-01)', () => {
+    const paidAt = new Date('2026-09-24T12:00:00Z');
+    const toPaid = {
+      ...base,
+      from: 'EN_ATTENTE' as const,
+      to: 'PAYER' as const,
+      actor: 'SYSTEM' as const,
+      actorUserId: null,
+      source: 'WEBHOOK' as const,
+      data: { paidAt },
+    };
+
+    function withAcceptance(required: boolean) {
+      tx.platformSettings.findUnique.mockResolvedValue({
+        orderAcceptanceRequired: required,
+        vendorAcceptanceTimeoutMinutes: 8,
+        preorderAcceptanceHours: 2,
+      });
+      Object.assign(tx.order, {
+        findUnique: jest.fn().mockResolvedValue({
+          isPreorder: false,
+          scheduledFor: null,
+          restaurant: { preorderLeadHours: null },
+        }),
+      });
+    }
+
+    it('au passage à PAYER, pose l’échéance DANS le même updateMany que le statut', async () => {
+      withAcceptance(true);
+
+      await service.tryTransition(tx as never, toPaid);
+
+      expect(tx.order.updateMany).toHaveBeenCalledTimes(1);
+      expect(tx.order.updateMany).toHaveBeenCalledWith({
+        where: { id: 'o1', status: 'EN_ATTENTE' },
+        data: {
+          status: 'PAYER',
+          paidAt,
+          acceptDeadlineAt: new Date('2026-09-24T12:08:00Z'),
+        },
+      });
+    });
+
+    it('interrupteur éteint : aucune échéance — rien n’expirera au moment de l’allumer', async () => {
+      withAcceptance(false);
+
+      await service.tryTransition(tx as never, toPaid);
+
+      expect(tx.order.updateMany).toHaveBeenCalledWith({
+        where: { id: 'o1', status: 'EN_ATTENTE' },
+        data: { status: 'PAYER', paidAt },
+      });
+    });
+
+    it('une transition autre que PAYER ne lit ni réglages ni commande', async () => {
+      withAcceptance(true);
+
+      await service.transition(tx as never, {
+        ...base,
+        from: 'EN_PREPARATION',
+        to: 'PRET',
+      });
+
+      expect(tx.platformSettings.findUnique).not.toHaveBeenCalled();
     });
   });
 });

@@ -946,6 +946,19 @@ model Order {
   scheduledFor        DateTime? // date/heure de livraison souhaitée
   preorderConfirmedAt DateTime? // confirmé par le vendeur
 
+  // Acceptation vendeur (Phase 3, F3-01)
+  /// Échéance au-delà de laquelle une commande `PAYER` non acceptée est annulée
+  /// et remboursée. Figée au paiement (`acceptanceDeadline`) : changer le délai
+  /// plateforme ne réécrit pas les commandes en cours. `null` pour l'historique.
+  acceptDeadlineAt      DateTime?
+  /// Acceptation par le vendeur — explicite (`POST /orders/:id/accept`) ou
+  /// implicite (`PAYER → EN_PREPARATION` pendant la transition).
+  acceptedAt            DateTime?
+  /// Heure de fin de préparation annoncée au client à l'acceptation.
+  estimatedReadyAt      DateTime?
+  vendorRejectionReason VendorRejectionReason?
+  vendorRejectionNote   String?
+
   // Vérification d'âge (alcool — Sprint A — LIL-111)
   ageVerified   Boolean   @default(false)
   ageVerifiedAt DateTime?
@@ -967,6 +980,7 @@ model Order {
   @@index([createdAt]) // ← manquait
   @@index([userId, createdAt(sort: Desc)]) // GET /orders/my — pagination client (fix M19)
   @@index([status, createdAt]) // cron d'expiration des commandes impayées (fix M19)
+  @@index([status, acceptDeadlineAt]) // cron d'expiration des commandes non acceptées (F3-01)
 }
 
 model OrderItem {
@@ -1480,11 +1494,29 @@ enum PayoutProvider {
 enum OrderStatus {
   EN_ATTENTE
   PAYER
+  /// Le vendeur a vu et accepté la commande payée ; il n'a pas encore commencé
+  /// (Phase 3, F3-01). Sépare « j'ai accepté » de « je prépare » : c'est ce qui
+  /// rend mesurables le taux d'acceptation et le délai de réponse vendeur.
+  ACCEPTEE
   EN_PREPARATION
   PRET
   EN_ROUTE
   LIVRER
   ANNULER
+  /// Terminal : le repas est parti et n'est pas arrivé (Phase 3, F3-05). Posé
+  /// dès maintenant pour ne payer qu'une fois l'`ALTER TYPE` non
+  /// transactionnel ; aucune transition n'y mène encore.
+  ECHEC_LIVRAISON
+}
+
+/// Motif d'un refus de commande par le vendeur (liste fermée : un texte libre
+/// dans une pièce financière devient illisible en agrégat).
+enum VendorRejectionReason {
+  OUT_OF_STOCK
+  TOO_BUSY
+  CLOSING
+  OUT_OF_ZONE
+  OTHER
 }
 
 enum DeliveryStatus {
@@ -2367,6 +2399,27 @@ model PlatformSettings {
   /// à jour compte — « corrige un problème de paiement Airtel » convainc mieux
   /// qu'un libellé générique.
   updateMessage String?
+
+  // ── Acceptation vendeur (Phase 3, F3-01) ─────────────────────────────────
+
+  /// Interrupteur de mise en service. Tant qu'il est faux, `PAYER →
+  /// EN_PREPARATION` reste le geste nominal (acceptation implicite) et aucune
+  /// commande n'expire : les applications vendeur déjà installées ne
+  /// connaissent pas encore `ACCEPTEE`. À basculer après publication.
+  orderAcceptanceRequired Boolean @default(false)
+
+  /// Délai d'acceptation d'une commande payée (décision D1 du 23/09/2026).
+  vendorAcceptanceTimeoutMinutes Int @default(8)
+
+  /// Rappel SMS au vendeur, en minutes AVANT l'échéance.
+  vendorAcceptanceReminderLeadMinutes Int @default(3)
+
+  /// Délai d'acceptation d'une précommande, borné par son heure de livraison.
+  preorderAcceptanceHours Int @default(2)
+
+  /// Remboursement exécuté sans geste humain quand le vendeur refuse ou laisse
+  /// expirer (décision D2). Un paiement `MANUAL` reste dans la file admin.
+  autoRefundVendorFault Boolean @default(true)
 
   updatedAt DateTime @updatedAt
 }

@@ -10,6 +10,7 @@ import { DecodedIdToken } from 'firebase-admin/auth';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { Public } from '../auth/decorators/public.decorator';
+import { DeliveryFeeQueryDto } from './dto/delivery-fee-query.dto';
 import { AddQuartiersToZoneDto, CreateDeliveryZoneDto, UpdateDeliveryZoneDto } from './dto/delivery-zone.dto';
 import { SetQuartierCentroidDto } from './dto/quartier-centroid.dto';
 
@@ -77,11 +78,11 @@ export class QuartiersController {
   @Public()
   @Get('delivery-fee')
   @ApiOperation({ summary: 'Calcul frais de livraison par quartier' })
-  async calculateDeliveryFee(
-    @Query('restaurantId') restaurantId: string,
-    @Query('quartierId') quartierId: string,
-  ) {
-    return this.quartiersService.calculateDeliveryFee(restaurantId, quartierId);
+  async calculateDeliveryFee(@Query() query: DeliveryFeeQueryDto) {
+    return this.quartiersService.quotePublicDeliveryFee(
+      query.restaurantId,
+      query.quartierId,
+    );
   }
 
   /**
