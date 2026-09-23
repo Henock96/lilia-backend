@@ -1,3 +1,4 @@
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   Body,
   Controller,
@@ -19,7 +20,10 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { Roles } from '../../auth/decorators/roles.decorator';
 import { AdminAuditService } from '../../admin-audit/admin-audit.service';
-import { RestaurantPayoutService } from '../services/restaurant-payout.service';
+import {
+  RestaurantPayoutService,
+  payoutAccountCooldownHours,
+} from '../services/restaurant-payout.service';
 import { PaymentEventService } from '../services/payment-event.service';
 import { maskPhone } from '../services/payment.service';
 import {
@@ -58,6 +62,7 @@ export class AdminPayoutController {
     private readonly config: ConfigService,
     private readonly reception: WebhookReceptionMonitor,
     private readonly settingsService: PlatformSettingsService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -238,12 +243,26 @@ export class AdminPayoutController {
       },
     });
 
+    // Fix F-08 — le vendeur apprend TOUJOURS que son compte a changé. C'est
+    // ce qui rend le délai de carence utile : un numéro remplacé à son insu
+    // par un compte administrateur compromis est signalé par l'intéressé
+    // avant que le premier virement ne parte.
+    this.eventEmitter.emit('vendor.payout_account.changed', {
+      restaurantId,
+      restaurantName: updated.nom,
+      maskedPhone: maskPhone(normalized),
+      cooldownHours: payoutAccountCooldownHours(),
+    });
+
     return {
       data: {
         ...updated,
         payoutPhoneNumber: maskPhone(updated.payoutPhoneNumber ?? undefined),
       },
-      message: 'Compte de reversement enregistré.',
+      message:
+        payoutAccountCooldownHours() > 0
+          ? `Compte de reversement enregistré. Par sécurité, aucun virement n’y partira avant ${payoutAccountCooldownHours()} h ; le vendeur est prévenu.`
+          : 'Compte de reversement enregistré.',
     };
   }
 

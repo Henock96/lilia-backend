@@ -13,6 +13,7 @@ import {
   Role,
   StatusUser,
 } from '@prisma/client';
+import { generateHandoverCode } from './delivery-handover';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { PrismaService } from '../../prisma/prisma.service';
@@ -519,15 +520,42 @@ export class DeliveryAssignmentService {
     });
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      // Verrou optimiste : les gardes ci-dessus ont été évaluées hors
-      // transaction, donc un double-tap peut les franchir deux fois. Seule
-      // l'écriture conditionnée sur `ASSIGNER` départage.
+      // ⚠️ Fix F-03 (Master Audit v1) — les gardes ci-dessus sont une LECTURE,
+      // faite hors transaction. Tout ce qui décide réellement est revérifié
+      // ici, de façon atomique, parce que trois courses étaient ouvertes :
       //
+      //  1. la commande a pu être annulée entre-temps. Un verrou PARTAGÉ sur
+      //     sa ligne (`FOR SHARE`) fige son statut jusqu'au commit : une
+      //     annulation concurrente attend, puis ferme la course par le chemin
+      //     normal (`order.cancelled`) ;
+      //  2. la course a pu être réassignée à un autre livreur. Le titulaire
+      //     fait donc partie de l'état revendiqué — comme dans `confirmPickup`
+      //     et `declineDelivery`. Sans lui, A « acceptait » la course de B :
+      //     économie gelée au profil de A, A bloqué `ON_DELIVERY`, et
+      //     `delivererId` resté B ;
+      //  3. le livreur a pu accepter une AUTRE course dans le même instant
+      //     (deux onglets, double-tap sur deux missions). `driverStatus` était
+      //     lu hors transaction puis écrit sans condition : les deux passaient.
+      //     Il est maintenant revendiqué en `AVAILABLE → ON_DELIVERY`, et la
+      //     ligne `User` sérialise les deux tentatives.
+      const [order] = await tx.$queryRaw<{ status: OrderStatus }[]>`
+        SELECT status FROM "Order" WHERE id = ${delivery.orderId} FOR SHARE
+      `;
+      if (!order || !ASSIGNABLE_ORDER_STATUSES.includes(order.status)) {
+        throw new ConflictException(
+          'Cette commande n’est plus à livrer (annulée ou terminée).',
+        );
+      }
+
       // Le gel voyage dans CE `updateMany`, pas dans une écriture suivante :
       // deux écritures séparées laisseraient une fenêtre où la course est
       // acceptée sans économie, et un incident entre les deux la figerait ainsi.
       const claimed = await tx.delivery.updateMany({
-        where: { id: deliveryId, status: DeliveryStatus.ASSIGNER },
+        where: {
+          id: deliveryId,
+          status: DeliveryStatus.ASSIGNER,
+          delivererId: user.id,
+        },
         data: {
           status: DeliveryStatus.ACCEPTER,
           acceptedAt: now,
@@ -547,10 +575,15 @@ export class DeliveryAssignmentService {
         );
       }
 
-      await tx.user.update({
-        where: { id: user.id },
+      const driverClaimed = await tx.user.updateMany({
+        where: { id: user.id, driverStatus: DriverStatus.AVAILABLE },
         data: { driverStatus: DriverStatus.ON_DELIVERY },
       });
+      if (driverClaimed.count === 0) {
+        throw new ConflictException(
+          "Vous avez déjà une livraison en cours. Terminez-la avant d'en accepter une autre.",
+        );
+      }
 
       // Le délai de réponse du livreur ne se déduit d'aucune colonne de
       // `Delivery` après une réassignation : `acceptedAt` y est écrasé à chaque
@@ -746,6 +779,16 @@ export class DeliveryAssignmentService {
       }
 
       await this.assignmentLog.markPickedUp(tx, deliveryId, now);
+
+      // Fix F-06 — le code de remise naît au retrait : c'est le premier moment
+      // où il y a quelque chose à remettre. Une reprise après l'échec d'un
+      // premier livreur GARDE le code déjà montré au client (`update: {}`) —
+      // lui en donner un second sèmerait le doute à la porte.
+      await tx.deliveryHandover.upsert({
+        where: { deliveryId },
+        create: { deliveryId, code: generateHandoverCode() },
+        update: {},
+      });
 
       if (resumesAfterFailure) {
         // Rien à faire avancer, mais tout à vérifier : le vendeur a pu annuler

@@ -1,3 +1,5 @@
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
+import { OutboxService } from '../outbox/outbox.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
   BadRequestException,
@@ -41,7 +43,11 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
   const tx = {
     delivery: { updateMany: jest.fn(), findUniqueOrThrow: jest.fn() },
     order: { updateMany: jest.fn() },
-    user: { update: jest.fn() },
+    user: { update: jest.fn(), updateMany: jest.fn() },
+    // Verrou partagé sur la commande à l'acceptation (fix F-03).
+    $queryRaw: jest.fn(),
+    // Code de remise tiré au retrait (F-06).
+    deliveryHandover: { upsert: jest.fn() },
     // P0-4 : toute transition de statut écrit sa ligne d'historique dans la
     // MÊME transaction. Le client de transaction doit donc l'exposer.
     orderHistory: { create: jest.fn() },
@@ -74,12 +80,21 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
     tx.delivery.updateMany.mockResolvedValue({ count: 1 });
     tx.order.updateMany.mockResolvedValue({ count: 1 });
     tx.user.update.mockResolvedValue({});
+    tx.user.updateMany.mockResolvedValue({ count: 1 });
+    tx.$queryRaw.mockResolvedValue([{ status: 'PRET' }]);
     platformSettings.getSettings.mockResolvedValue({
       driverSharePercentLilia: 35,
       driverSharePercentIndependent: 65,
     });
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        // Journal d'audit : conclusion d'une course par un ADMIN (F-06).
+        { provide: AdminAuditService, useValue: { record: jest.fn() } },
+        // Obligations durables écrites dans la transaction `LIVRER` (lot 4).
+        {
+          provide: OutboxService,
+          useValue: { enqueueInTransaction: jest.fn() },
+        },
         // P0-4 : `Order.status` ne s'écrit plus qu'à travers ce service,
         // qui historise la transition dans la même transaction.
         OrderTransitionService,
@@ -535,7 +550,7 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
 
       // La livraison passe ACCEPTER, pas EN_TRANSIT.
       expect(tx.delivery.updateMany).toHaveBeenCalledWith({
-        where: { id: 'd1', status: 'ASSIGNER' },
+        where: { id: 'd1', status: 'ASSIGNER', delivererId: 'liv1' },
         data: expect.objectContaining({ status: 'ACCEPTER' }),
       });
       // `pickedUpAt` n'est PAS écrit : le livreur n'a rien récupéré.

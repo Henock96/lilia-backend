@@ -23,6 +23,7 @@ import { DeliveryDestinationService } from './delivery-destination.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
 import { ReferralService } from '../users/referral.service';
 import { RefundsService } from '../refunds/refunds.service';
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { OutboxService } from '../outbox/outbox.service';
 
 /**
@@ -97,6 +98,8 @@ describe('OrdersService (caractérisation — lectures)', () => {
             openForCancelledOrder: jest.fn().mockResolvedValue(null),
           },
         },
+        // Journal d'audit des gestes ADMIN sur une commande (F-07).
+        { provide: AdminAuditService, useValue: { record: jest.fn() } },
         OrdersService,
         OrderQueryService, // service réel : OrdersService y délègue les lectures
         OrderCheckoutService, // requis par OrdersService — non sollicité par les lectures

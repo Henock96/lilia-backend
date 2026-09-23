@@ -9,6 +9,7 @@ import { OnboardingStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { unavailabilityReason } from '../products/product-availability';
 import { PromoService } from '../promo/promo.service';
+import { countMenus } from './menu-quantities';
 
 @Injectable()
 export class OrderValidatorService {
@@ -86,7 +87,10 @@ export class OrderValidatorService {
     const [products, menus] = await Promise.all([
       this.prisma.product.findMany({ where: { id: { in: productIds } } }),
       menuIds.length
-        ? this.prisma.menuDuJour.findMany({ where: { id: { in: menuIds } } })
+        ? this.prisma.menuDuJour.findMany({
+            where: { id: { in: menuIds } },
+            include: { products: { select: { productId: true } } },
+          })
         : Promise.resolve([]),
     ]);
 
@@ -108,19 +112,15 @@ export class OrderValidatorService {
     // Le validateur doit compter comme la décrémentation compte, sinon les
     // deux ne parlent pas du même panier.
     const qtyByProduct = new Map<string, number>();
-    const qtyByMenu = new Map<string, number>();
     for (const item of cartItems) {
       qtyByProduct.set(
         item.productId,
         (qtyByProduct.get(item.productId) ?? 0) + item.quantite,
       );
-      if (item.menuId) {
-        qtyByMenu.set(
-          item.menuId,
-          (qtyByMenu.get(item.menuId) ?? 0) + item.quantite,
-        );
-      }
     }
+    // Un menu = q unités, pas N × q — même comptage que le prix et la
+    // décrémentation (fix F-01, `menu-quantities.ts`).
+    const qtyByMenu = countMenus(cartItems);
 
     for (const [productId, quantite] of qtyByProduct) {
       const product = productMap.get(productId);
@@ -140,9 +140,29 @@ export class OrderValidatorService {
       if (reason) errors.push(reason);
     }
 
+    const now = new Date();
     for (const [menuId, quantite] of qtyByMenu) {
       const menu = menuMap.get(menuId);
-      if (menu?.stockRestant !== null && menu?.stockRestant !== undefined) {
+      if (!menu) {
+        errors.push('Un menu de votre panier a été retiré de la carte.');
+        continue;
+      }
+      // ⚠️ Fix F-02 : l'ajout au panier ne réserve pas le menu. Entre l'ajout
+      // et le paiement, le vendeur peut le désactiver, sa fenêtre peut se
+      // fermer ou sa composition changer — et seul l'ajout le vérifiait. Un
+      // « menu du jour » mis au panier à midi se vendait encore à minuit, au
+      // prix du menu, alors que la cuisine ne le préparait plus.
+      const reason = menuUnavailabilityReason(
+        menu,
+        cartItems.filter((i) => i.menuId === menuId).map((i) => i.productId),
+        cartRestaurantId(cartItems),
+        now,
+      );
+      if (reason) {
+        errors.push(reason);
+        continue;
+      }
+      if (menu.stockRestant !== null && menu.stockRestant !== undefined) {
         if (menu.stockRestant < quantite) {
           errors.push(
             menu.stockRestant === 0
@@ -175,3 +195,49 @@ export class OrderValidatorService {
   }
 }
 //
+
+/** Vendeur du panier : `validateSameRestaurant` a déjà garanti qu'il est unique. */
+function cartRestaurantId(cartItems: any[]): string | undefined {
+  return cartItems[0]?.product?.restaurantId;
+}
+
+/**
+ * Pourquoi un menu du panier n'est-il plus achetable ? `null` s'il l'est.
+ *
+ * Revalide au checkout ce que `CartMenusService.addMenu` ne vérifiait qu'à
+ * l'ajout (F-02) : menu actif, dans sa fenêtre, du même vendeur que le panier,
+ * et **composé des mêmes produits** que lors de l'ajout — sinon le client
+ * paierait le prix du menu pour un contenu qui n'est plus celui annoncé.
+ *
+ * Le prix, lui, n'est pas une raison de refus : il est relu en base au
+ * checkout (`OrderCalculatorService`) et c'est ce prix-là qui est facturé.
+ */
+export function menuUnavailabilityReason(
+  menu: {
+    nom: string;
+    isActive: boolean;
+    dateDebut: Date;
+    dateFin: Date;
+    restaurantId: string;
+    products: { productId: string }[];
+  },
+  cartProductIds: string[],
+  restaurantId: string | undefined,
+  now: Date,
+): string | null {
+  if (!menu.isActive) return `Menu « ${menu.nom} » n'est plus proposé.`;
+  if (now < menu.dateDebut || now > menu.dateFin) {
+    return `Menu « ${menu.nom} » n'est plus disponible à cette heure.`;
+  }
+  if (restaurantId && menu.restaurantId !== restaurantId) {
+    return `Menu « ${menu.nom} » n'appartient pas à ce vendeur.`;
+  }
+  const expected = new Set(menu.products.map((p) => p.productId));
+  const actual = new Set(cartProductIds);
+  const sameComposition =
+    expected.size === actual.size && [...expected].every((id) => actual.has(id));
+  if (!sameComposition) {
+    return `La composition du menu « ${menu.nom} » a changé : retirez-le du panier puis ajoutez-le de nouveau.`;
+  }
+  return null;
+}

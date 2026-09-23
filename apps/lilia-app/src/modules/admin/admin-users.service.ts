@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -145,11 +146,24 @@ export class AdminUsersService {
     });
     if (!user) throw new NotFoundException('Utilisateur non trouvé');
 
+    // Fix F-08 (Master Audit v1) — un administrateur ne se crée plus par
+    // l'API. Un seul compte ADMIN compromis pouvait sinon en fabriquer
+    // d'autres, qui survivaient à la révocation du premier. La promotion à
+    // ADMIN est un geste d'exploitation, hors de l'application (procédure
+    // « break-glass » : docs/RUNBOOK_ADMIN.md).
+    if (dto.role === 'ADMIN') {
+      throw new ForbiddenException(
+        "La promotion au rôle ADMIN ne se fait pas depuis l'application. " +
+          'Suivez la procédure de création d’administrateur (runbook).',
+      );
+    }
+
     if (user.role === dto.role) {
       throw new BadRequestException(`Ce compte est déjà ${dto.role}.`);
     }
 
-    if (user.role === 'ADMIN' && dto.role !== 'ADMIN') {
+    // (`dto.role` ne peut plus valoir ADMIN ici : refusé plus haut.)
+    if (user.role === 'ADMIN') {
       throw new BadRequestException(
         "Impossible de rétrograder un compte ADMIN via l'API.",
       );

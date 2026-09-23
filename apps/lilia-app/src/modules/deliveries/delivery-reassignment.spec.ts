@@ -1,3 +1,5 @@
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
+import { OutboxService } from '../outbox/outbox.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
   BadRequestException,
@@ -55,6 +57,8 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
   let delivery: Row;
   let order: Row;
   let users: Record<string, Row>;
+  /** Codes de remise par course (F-06). */
+  let handovers: Record<string, Row> = {};
   let assignments: Row[];
   /** Positions GPS persistées — le fallback HTTP écrit en base. */
   let positions: Row[];
@@ -140,7 +144,22 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
         Object.assign(users[where.id], data);
         return Promise.resolve(users[where.id]);
       }),
+      updateMany: jest.fn(({ where, data }: Row) => {
+        const row = users[where.id];
+        if (!row || !matches(row, where)) return Promise.resolve({ count: 0 });
+        Object.assign(row, data);
+        return Promise.resolve({ count: 1 });
+      }),
     },
+    // Code de remise tiré au retrait (F-06).
+    deliveryHandover: {
+      upsert: jest.fn(({ where, create }: Row) => {
+        handovers[where.deliveryId] ??= { ...create, attempts: 0 };
+        return Promise.resolve(handovers[where.deliveryId]);
+      }),
+    },
+    // `SELECT status FROM "Order" … FOR SHARE` à l'acceptation (fix F-03).
+    $queryRaw: jest.fn(() => Promise.resolve([{ status: order.status }])),
     deliveryAssignment: {
       create: jest.fn(({ data }: Row) => {
         assignments.push({ ...data, releasedAt: null, outcome: null });
@@ -155,6 +174,13 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
   };
 
   const prisma = {
+    deliveryHandover: {
+      findUnique: jest.fn(({ where }: Row) =>
+        Promise.resolve(handovers[where.deliveryId] ?? null),
+      ),
+      updateMany: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
+    },
     delivery: {
       findUnique: jest.fn(() => Promise.resolve(deliveryWithRelations())),
       create: jest.fn(),
@@ -252,6 +278,7 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
       driverEconomicsFrozenAt: null,
     };
     assignments = [];
+    handovers = {};
     positions = [];
     txQueue = Promise.resolve();
     emitter = { emit: jest.fn() };
@@ -263,6 +290,13 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        // Journal d'audit : conclusion d'une course par un ADMIN (F-06).
+        { provide: AdminAuditService, useValue: { record: jest.fn() } },
+        // Obligations durables écrites dans la transaction `LIVRER` (lot 4).
+        {
+          provide: OutboxService,
+          useValue: { enqueueInTransaction: jest.fn() },
+        },
         DeliveriesService,
         DeliveryQueryService,
         DeliveryAssignmentService,

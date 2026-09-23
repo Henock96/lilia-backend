@@ -6,7 +6,16 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
+import { OutboxService } from '../outbox/outbox.service';
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
+import { ConfigService } from '@nestjs/config';
+import {
+  HANDOVER_MAX_ATTEMPTS,
+  handoverCodeMatches,
+} from './delivery-handover';
+import { ORDER_DELIVERED_EVENT } from '../outbox/outbox-events';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CLEARED_DRIVER_ECONOMICS } from './delivery-assignment.service';
 import { DeliveryStatus } from './dto/update-delivery.dto';
@@ -14,7 +23,9 @@ import { DeliveryQueryService } from './delivery-query.service';
 import { ACTIVE_DELIVERY_STATUSES } from './delivery-statuses';
 import { DeliveryAssignmentService } from './delivery-assignment.service';
 import {
+  AdminAuditAction,
   DeliveryAssignmentOutcome,
+  DeliveryHandoverMethod,
   DriverStatus,
   OrderStatus,
 } from '@prisma/client';
@@ -71,7 +82,89 @@ export class DeliveriesService {
     private readonly loyalty: LoyaltyService,
     private readonly referral: ReferralService,
     private readonly assignmentLog: DeliveryAssignmentLogService,
+    private readonly outbox: OutboxService,
+    private readonly audit: AdminAuditService,
+    // Optionnel : absent (tests, outils), le code n'est pas EXIGÉ — il reste
+    // vérifié dès qu'il est fourni.
+    @Optional() private readonly config?: ConfigService,
   ) {}
+
+  /**
+   * Atteste la remise d'une course au client (F-06). Rend la méthode retenue
+   * ou lève — sans rien écrire sur la course elle-même.
+   *
+   *  - ADMIN : arbitrage, sans code, tracé au journal d'audit par l'appelant.
+   *  - LIVREUR, course avec code : chaque saisie consomme un essai AVANT la
+   *    comparaison (`HANDOVER_MAX_ATTEMPTS`), la bonne comprise ; au-delà, seul
+   *    un ADMIN peut conclure.
+   *  - LIVREUR, course sans code (récupérée avant la mise en service) :
+   *    `UNVERIFIED`. Idem si le code n'est pas fourni alors que
+   *    `DELIVERY_HANDOVER_CODE_REQUIRED` est faux — période de transition, le
+   *    temps que les applications livreur installées soient mises à jour.
+   */
+  private async attestHandover(
+    deliveryId: string,
+    user: { id: string; role: string },
+    providedCode?: string,
+  ): Promise<{ method: DeliveryHandoverMethod }> {
+    if (user.role === 'ADMIN') {
+      return { method: DeliveryHandoverMethod.ADMIN_OVERRIDE };
+    }
+
+    const record = await this.prisma.deliveryHandover.findUnique({
+      where: { deliveryId },
+      select: { code: true },
+    });
+    if (!record) return { method: DeliveryHandoverMethod.UNVERIFIED };
+
+    const code = providedCode?.trim();
+    if (!code) {
+      if (this.handoverCodeRequired()) {
+        throw new BadRequestException({
+          message:
+            'Demandez au client son code de remise (4 chiffres, affiché dans son application) pour confirmer la livraison.',
+          code: 'HANDOVER_CODE_REQUIRED',
+        });
+      }
+      return { method: DeliveryHandoverMethod.UNVERIFIED };
+    }
+
+    // Un essai consommé, atomiquement, AVANT de comparer.
+    const consumed = await this.prisma.deliveryHandover.updateMany({
+      where: { deliveryId, attempts: { lt: HANDOVER_MAX_ATTEMPTS } },
+      data: { attempts: { increment: 1 } },
+    });
+    if (consumed.count === 0) {
+      throw new ForbiddenException({
+        message:
+          'Trop de codes erronés : la livraison doit être confirmée par le support Lilia Food.',
+        code: 'HANDOVER_CODE_LOCKED',
+      });
+    }
+
+    if (!handoverCodeMatches(record.code, code)) {
+      const { attempts } = await this.prisma.deliveryHandover.findUniqueOrThrow({
+        where: { deliveryId },
+        select: { attempts: true },
+      });
+      const left = Math.max(0, HANDOVER_MAX_ATTEMPTS - attempts);
+      throw new BadRequestException({
+        message:
+          left > 0
+            ? `Code de remise incorrect. ${left} essai${left > 1 ? 's' : ''} restant${left > 1 ? 's' : ''}.`
+            : 'Code de remise incorrect. Plus aucun essai : contactez le support Lilia Food.',
+        code: 'HANDOVER_CODE_INVALID',
+      });
+    }
+    return { method: DeliveryHandoverMethod.CODE };
+  }
+
+  private handoverCodeRequired(): boolean {
+    const raw = this.config?.get<string | boolean>(
+      'DELIVERY_HANDOVER_CODE_REQUIRED',
+    );
+    return raw === true || raw === 'true';
+  }
 
   private resolveActor(role: string): ActorRole | null {
     const map: Record<string, ActorRole> = {
@@ -139,6 +232,7 @@ export class DeliveriesService {
     status: DeliveryStatus,
     firebaseUid: string,
     reason?: string,
+    handoverCode?: string,
   ) {
     const delivery = await this.prisma.delivery.findUnique({
       where: { id },
@@ -195,6 +289,12 @@ export class DeliveriesService {
     const now = new Date();
     const previousOrderStatus = delivery.order.status;
 
+    // Fix F-06 — « Livré » exige la preuve que le client a reçu sa commande.
+    const handover =
+      status === DeliveryStatus.LIVRER
+        ? await this.attestHandover(id, user, handoverCode)
+        : null;
+
     // Update atomique : Delivery + Order + DriverStatus.
     //
     // Fix L13 : `ECHEC` faisait DEUX `delivery.update` sur la même ligne dans
@@ -229,10 +329,23 @@ export class DeliveriesService {
       // était un `update` inconditionnel. Un double-tap du livreur passait deux
       // fois. `confirmPickup` posait déjà cette garde, pas ce chemin.
       const claimedDelivery = await tx.delivery.updateMany({
-        where: { id, status: delivery.status },
+        where: {
+          id,
+          status: delivery.status,
+          // Comme `confirmPickup` : un livreur dessaisi entre sa lecture et son
+          // écriture ne conclut pas la course de son successeur (cf. F-03).
+          ...(user.role === 'LIVREUR' ? { delivererId: user.id } : {}),
+        },
         data: {
           status,
-          ...(status === DeliveryStatus.LIVRER ? { deliveredAt: now } : {}),
+          ...(status === DeliveryStatus.LIVRER
+            ? {
+                deliveredAt: now,
+                handoverMethod: handover!.method,
+                handoverVerifiedAt:
+                  handover!.method === DeliveryHandoverMethod.CODE ? now : null,
+              }
+            : {}),
           // Un échec détache le livreur ET efface l'économie de la course.
           // Les deux vont ensemble : garder le montant après avoir retiré son
           // titulaire laisserait une rémunération due à personne, que le
@@ -288,6 +401,17 @@ export class DeliveriesService {
         reason,
         now,
       );
+
+      // Lot 4 — fidélité et parrainage : obligation durable écrite avec la
+      // transition `LIVRER` (le déclenchement immédiat ci-dessous reste, pour
+      // la latence ; l'outbox rattrape un processus mort entre les deux).
+      if (status === DeliveryStatus.LIVRER) {
+        await this.outbox.enqueueInTransaction(tx, {
+          type: ORDER_DELIVERED_EVENT,
+          aggregateId: delivery.orderId,
+          payload: {},
+        });
+      }
     });
 
     const updated = await this.prisma.delivery.findUnique({
@@ -299,6 +423,22 @@ export class DeliveriesService {
     });
 
     // Émet l'event order.status.updated → OrdersListener notifie le client + WS
+    if (handover?.method === DeliveryHandoverMethod.ADMIN_OVERRIDE) {
+      await this.audit.record({
+        actorId: user.id,
+        action: AdminAuditAction.ORDER_STATUS_FORCED,
+        targetType: 'Order',
+        targetId: delivery.orderId,
+        reason: reason ?? null,
+        metadata: {
+          from: previousOrderStatus,
+          to: OrderStatus.LIVRER,
+          handover: 'ADMIN_OVERRIDE',
+          deliveryId: id,
+        },
+      });
+    }
+
     if (status === DeliveryStatus.LIVRER) {
       const statusEvent = new OrderStatusUpdatedEvent(
         delivery.orderId,

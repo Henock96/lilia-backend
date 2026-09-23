@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   HttpStatus,
+  ConflictException,
   HttpCode,
   Param,
   Patch,
@@ -339,6 +340,26 @@ export class AdminController {
     @Body() dto: UpdateUserRoleDto,
     @CurrentUser() admin: User,
   ) {
+    // Fix F-09 (Master Audit v1) — on ne confie une boutique ou des courses
+    // qu'à un compte qui a PROUVÉ son adresse e-mail. Sans cette garde, un
+    // inconnu créait un compte au nom de l'e-mail d'un futur vendeur, et
+    // l'administrateur — guidé par le message « changez son rôle en
+    // RESTAURATEUR » de la création de vendeur — le promouvait.
+    if (dto.role === 'RESTAURATEUR' || dto.role === 'LIVREUR') {
+      const target = await this.adminService.getUserById(id);
+      const firebaseUid = (target as { data?: { firebaseUid?: string } })?.data
+        ?.firebaseUid;
+      const evidence = firebaseUid
+        ? await this.firebaseService.getIdentityEvidence(firebaseUid)
+        : null;
+      if (!hasProvenIdentity(evidence)) {
+        throw new ConflictException(
+          "Ce compte n'a pas vérifié son adresse e-mail. Demandez à la personne " +
+            'de confirmer son e-mail (ou de se connecter avec Google), puis réessayez.',
+        );
+      }
+    }
+
     const result = await this.adminService.updateUserRole(id, dto);
     await this.audit.record({
       actorId: admin.id,
@@ -624,4 +645,18 @@ export class AdminController {
       targetId,
     });
   }
+}
+
+/**
+ * Le compte a-t-il prouvé son identité ? E-mail vérifié, ou fournisseur qui
+ * le garantit (Google, Apple). Exporté pour les tests.
+ */
+export function hasProvenIdentity(
+  evidence: { emailVerified: boolean; providers: string[] } | null,
+): boolean {
+  if (!evidence) return false;
+  return (
+    evidence.emailVerified ||
+    evidence.providers.some((p) => p === 'google.com' || p === 'apple.com')
+  );
 }

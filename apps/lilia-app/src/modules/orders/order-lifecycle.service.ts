@@ -1,11 +1,17 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
   ForbiddenException,
   Logger,
 } from '@nestjs/common';
-import { LoyaltyTransactionType, OrderStatus, Prisma } from '@prisma/client';
+import {
+  AdminAuditAction,
+  LoyaltyTransactionType,
+  OrderStatus,
+  Prisma,
+} from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { PrismaService } from '../../prisma/prisma.service';
@@ -20,6 +26,13 @@ import { StockService } from './stock.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
 import { ReferralService } from '../users/referral.service';
 import { RefundsService } from '../refunds/refunds.service';
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
+import { OutboxService } from '../outbox/outbox.service';
+import {
+  ORDER_DELIVERED_EVENT,
+  ORDER_EXPIRED_EVENT,
+  ORDER_REFUND_DUE_EVENT,
+} from '../outbox/outbox-events';
 
 /**
  * Cycle de vie d'une commande (LIL-134) : annulation, transitions de statut,
@@ -39,6 +52,8 @@ export class OrderLifecycleService {
     private readonly loyalty: LoyaltyService,
     private readonly referral: ReferralService,
     private readonly refunds: RefundsService,
+    private readonly audit: AdminAuditService,
+    private readonly outbox: OutboxService,
   ) {}
 
   async cancelOrder(orderId: string, firebaseUid: string) {
@@ -163,6 +178,21 @@ export class OrderLifecycleService {
       );
     }
 
+    // ⚠️ Fix F-07 (Master Audit v1) — « payée » n'est pas un statut qu'on
+    // déclare : c'est la conséquence d'un encaissement. Cette route laissait
+    // l'ADMIN passer une commande `PAYER` sans aucune ligne `Payment` — le
+    // vendeur préparait une commande que personne n'avait réglée, et le geste
+    // n'apparaissait dans aucun journal d'audit. Le seul chemin est désormais
+    // celui du paiement (webhook, réconciliation, ou `POST
+    // /payments/:id/confirm` pour un virement manuel), qui écrit la ligne
+    // `Payment` et la transition dans la même transaction.
+    if (newStatus === 'PAYER') {
+      throw new BadRequestException(
+        'Une commande ne devient « payée » que par un paiement confirmé. ' +
+          'Utilisez la confirmation du paiement, pas le changement de statut.',
+      );
+    }
+
     const actor = this.resolveActor(user.role);
     if (!actor)
       throw new ForbiddenException('Acteur invalide pour cette transition');
@@ -200,6 +230,29 @@ export class OrderLifecycleService {
               actorUserId: user.id,
               source: historySource,
             });
+            // ⚠️ Fix F-04 — l'`UPDATE` ci-dessus tient le verrou de la ligne
+            // `Order`, celui que prend aussi `requestPayout` : le reversement
+            // lu ici est à jour. Un vendeur déjà reversé (ou en cours de
+            // l'être) ne peut plus annuler sa commande — il garderait
+            // l'argent pendant que le client serait remboursé. L'ADMIN le peut
+            // encore : c'est une décision d'arbitrage, et le remboursement
+            // restera bloqué tant que le reversement n'est pas tranché
+            // (`RefundExecutionService`).
+            if (user.role !== 'ADMIN') {
+              const payout = await tx.restaurantPayout.findUnique({
+                where: { orderId },
+                select: { status: true },
+              });
+              if (
+                payout?.status === 'PENDING' ||
+                payout?.status === 'SUCCESS'
+              ) {
+                throw new ConflictException(
+                  'Cette commande vous a déjà été reversée (ou le reversement est en cours) : ' +
+                    'vous ne pouvez plus l’annuler. Contactez le support Lilia Food.',
+                );
+              }
+            }
             const updated = await tx.order.findUniqueOrThrow({
               where: { id: orderId },
               include: { restaurant: true, items: true },
@@ -210,6 +263,18 @@ export class OrderLifecycleService {
               orderId,
               updated.userId,
             );
+            // Lot 4 — la dette envers le client naît AVEC l'annulation. Le
+            // `.catch(log)` qui suit le commit ne suffisait pas : si le
+            // processus mourait entre les deux, le remboursement n'était
+            // jamais ouvert et rien ne le signalait.
+            await this.outbox.enqueueInTransaction(tx, {
+              type: ORDER_REFUND_DUE_EVENT,
+              aggregateId: orderId,
+              payload: {
+                reason: `Annulation par ${user.role.toLowerCase()}`,
+                requestedBy: user.id,
+              },
+            });
             return updated;
           })
         : await this.prisma.$transaction(async (tx) => {
@@ -221,6 +286,15 @@ export class OrderLifecycleService {
               actorUserId: user.id,
               source: historySource,
             });
+            // Lot 4 — retrait au comptoir livré : fidélité et parrainage
+            // deviennent une obligation durable, écrite avec la transition.
+            if (newStatus === 'LIVRER') {
+              await this.outbox.enqueueInTransaction(tx, {
+                type: ORDER_DELIVERED_EVENT,
+                aggregateId: orderId,
+                payload: {},
+              });
+            }
             return tx.order.findUniqueOrThrow({
               where: { id: orderId },
               include: {
@@ -245,6 +319,19 @@ export class OrderLifecycleService {
     );
 
     this.eventEmitter.emit('order.status.updated', statusUpdatedEvent);
+    // Fix F-07 — tout geste ADMIN sur le statut d'une commande est une
+    // décision d'arbitrage : il entre au journal d'audit, comme les gestes
+    // sur les paiements et les remboursements. `OrderHistory` dit ce qui a
+    // changé ; le journal dit qu'un administrateur l'a décidé.
+    if (user.role === 'ADMIN') {
+      await this.audit.record({
+        actorId: user.id,
+        action: AdminAuditAction.ORDER_STATUS_FORCED,
+        targetType: 'Order',
+        targetId: orderId,
+        metadata: { from: order.status, to: newStatus },
+      });
+    }
     this.logger.log(
       `🔄 [STATUT] Succès: commande ${orderId} - ${order.status} → ${newStatus} (par ${user.id}/${user.role})`,
     );
@@ -344,6 +431,14 @@ export class OrderLifecycleService {
           status: 'CANCELLED',
           updatedAt: new Date(),
         },
+      });
+      // F-10 — cette méthode tourne dans le worker, qui ne charge aucun
+      // listener : l'`order.cancelled` émis plus bas n'y est entendu par
+      // personne. Le client est prévenu par l'outbox.
+      await this.outbox.enqueueInTransaction(tx, {
+        type: ORDER_EXPIRED_EVENT,
+        aggregateId: orderId,
+        payload: {},
       });
       return true;
     });

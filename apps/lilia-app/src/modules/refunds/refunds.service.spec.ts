@@ -24,6 +24,7 @@ describe('RefundsService', () => {
       updateMany: jest.Mock;
       count: jest.Mock;
     };
+    restaurantPayout: { findUnique: jest.Mock };
   };
   let service: RefundsService;
 
@@ -37,6 +38,8 @@ describe('RefundsService', () => {
         updateMany: jest.fn(),
         count: jest.fn(),
       },
+      // Aucun reversement vendeur par défaut (fix F-04).
+      restaurantPayout: { findUnique: jest.fn().mockResolvedValue(null) },
     };
     service = new RefundsService(prisma as never);
     // Les avertissements de log polluent la sortie sans rien apprendre.
@@ -230,6 +233,44 @@ describe('RefundsService', () => {
       const query = prisma.refund.findMany.mock.calls[0][0];
       expect(query.skip).toBe(40);
       expect(query.take).toBe(20);
+    });
+  });
+
+  describe('clôture manuelle et reversement vendeur (F-04)', () => {
+    const open = {
+      id: 'r1',
+      orderId: 'o1',
+      status: RefundStatus.PENDING,
+      notes: null,
+      processedAt: null,
+    };
+
+    it('refuse de clôturer « remboursé » pendant un reversement PENDING', async () => {
+      prisma.refund.findUnique.mockResolvedValue(open);
+      prisma.restaurantPayout.findUnique.mockResolvedValue({
+        status: 'PENDING',
+      });
+      await expect(
+        service.updateStatus('r1', RefundStatus.COMPLETED, 'admin-1'),
+      ).rejects.toThrow(/reversement au vendeur est en cours/);
+      expect(prisma.refund.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('autorise la clôture manuelle après un reversement SUCCESS (issue d’arbitrage)', async () => {
+      prisma.refund.findUnique.mockResolvedValue(open);
+      prisma.restaurantPayout.findUnique.mockResolvedValue({
+        status: 'SUCCESS',
+      });
+      prisma.refund.updateMany.mockResolvedValue({ count: 1 });
+      await service.updateStatus('r1', RefundStatus.COMPLETED, 'admin-1');
+      expect(prisma.refund.updateMany).toHaveBeenCalled();
+    });
+
+    it('un refus (REJECTED) ne consulte pas le reversement', async () => {
+      prisma.refund.findUnique.mockResolvedValue(open);
+      prisma.refund.updateMany.mockResolvedValue({ count: 1 });
+      await service.updateStatus('r1', RefundStatus.REJECTED, 'admin-1');
+      expect(prisma.restaurantPayout.findUnique).not.toHaveBeenCalled();
     });
   });
 });

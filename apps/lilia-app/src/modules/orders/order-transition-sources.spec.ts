@@ -56,6 +56,7 @@ describe('Acteur et provenance des transitions', () => {
           create: jest.fn(),
         },
         promoUsage: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+        restaurantPayout: { findUnique: jest.fn().mockResolvedValue(null) },
         user: { update: jest.fn() },
       };
 
@@ -80,6 +81,8 @@ describe('Acteur et provenance des transitions', () => {
         { awardForDeliveredOrder: jest.fn() } as never,
         { rewardForDeliveredOrder: jest.fn() } as never,
         { openForCancelledOrder: jest.fn().mockResolvedValue(null) } as never,
+        { record: jest.fn() } as never, // AdminAuditService (F-07)
+        { enqueueInTransaction: jest.fn() } as never, // OutboxService (lot 4)
       );
 
       await service.updateOrderStatusByRestaurateur(
@@ -120,6 +123,7 @@ describe('Acteur et provenance des transitions', () => {
           create: jest.fn(),
         },
         promoUsage: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+        restaurantPayout: { findUnique: jest.fn().mockResolvedValue(null) },
         user: { update: jest.fn() },
       };
 
@@ -143,6 +147,8 @@ describe('Acteur et provenance des transitions', () => {
         { awardForDeliveredOrder: jest.fn() } as never,
         { rewardForDeliveredOrder: jest.fn() } as never,
         { openForCancelledOrder: jest.fn().mockResolvedValue(null) } as never,
+        { record: jest.fn() } as never, // AdminAuditService (F-07)
+        { enqueueInTransaction: jest.fn() } as never, // OutboxService (lot 4)
       );
 
       await service.updateOrderStatusByRestaurateur(
@@ -177,6 +183,7 @@ describe('Acteur et provenance des transitions', () => {
           create: jest.fn(),
         },
         promoUsage: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+        restaurantPayout: { findUnique: jest.fn().mockResolvedValue(null) },
         payment: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
         user: { update: jest.fn() },
       };
@@ -195,6 +202,8 @@ describe('Acteur et provenance des transitions', () => {
         { awardForDeliveredOrder: jest.fn() } as never,
         { rewardForDeliveredOrder: jest.fn() } as never,
         { openForCancelledOrder: jest.fn() } as never,
+        { record: jest.fn() } as never, // AdminAuditService (F-07)
+        { enqueueInTransaction: jest.fn() } as never, // OutboxService (lot 4)
       );
 
       await service.expireUnpaidOrder('o1');

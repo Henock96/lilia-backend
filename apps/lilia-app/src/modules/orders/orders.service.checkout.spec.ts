@@ -23,6 +23,7 @@ import { DeliveryDestinationService } from './delivery-destination.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
 import { ReferralService } from '../users/referral.service';
 import { RefundsService } from '../refunds/refunds.service';
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { OutboxService } from '../outbox/outbox.service';
 
 /**
@@ -47,7 +48,9 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
     order: { create: jest.fn() },
     user: { update: jest.fn() },
     loyaltyTransaction: { create: jest.fn() },
-    cartItem: { deleteMany: jest.fn() },
+    cartItem: { deleteMany: jest.fn(), findMany: jest.fn() },
+    // Verrou `SELECT … FOR UPDATE` sur le panier (fix F-11).
+    $queryRaw: jest.fn(),
     // Décrément conditionnel des points de fidélité (tagged template SQL).
     // Retourne le nombre de lignes affectées : 1 = solde suffisant, 0 = course perdue.
     $executeRaw: jest.fn(),
@@ -105,6 +108,20 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    // Sous verrou, le panier relu est par défaut celui qui a servi au calcul :
+    // aucun checkout concurrent. Les cas de course le surchargent.
+    tx.cartItem.findMany.mockImplementation(async () => {
+      const user =
+        await validator.validateAndGetUser.mock.results[
+          validator.validateAndGetUser.mock.results.length - 1
+        ]?.value;
+      return (user?.cart?.items ?? []).map(
+        ({ id, quantite }: { id: string; quantite: number }) => ({
+          id,
+          quantite,
+        }),
+      );
+    });
 
     // Défauts "happy path"
     validator.validateAndGetUser.mockResolvedValue({
@@ -183,6 +200,8 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
             openForCancelledOrder: jest.fn().mockResolvedValue(null),
           },
         },
+        // Journal d'audit des gestes ADMIN sur une commande (F-07).
+        { provide: AdminAuditService, useValue: { record: jest.fn() } },
         OrdersService,
         OrderCheckoutService, // service réel : OrdersService y délègue le checkout
         OrderQueryService, // requis par OrdersService (lectures) — non sollicité ici
@@ -237,9 +256,55 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
     expect(data.total).toBe(11800);
     expect(data.status).toBe('EN_ATTENTE');
     expect(tx.cartItem.deleteMany).toHaveBeenCalledWith({
-      where: { cartId: 'cart1' },
+      where: { cartId: 'cart1', id: { in: ['ci1'] } },
     });
     expect(stockService.decrementInTransaction).toHaveBeenCalled();
+  });
+
+  /**
+   * Fix F-11 — un panier ne se paie qu'une fois, arbitré par la base.
+   *
+   * Le verrou `FOR UPDATE` est posé AVANT toute écriture ; sous verrou, le
+   * panier relu doit être celui du calcul. Sinon 409 et rien n'est écrit : pas
+   * de commande, pas de stock, pas de points.
+   */
+  describe('double checkout (F-11)', () => {
+    it('verrouille le panier avant la moindre écriture', async () => {
+      await service.createOrderFromCart('uid', baseDto, 'key-f11-a');
+      expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+      const lockOrder = tx.$queryRaw.mock.invocationCallOrder[0];
+      expect(lockOrder).toBeLessThan(
+        tx.order.create.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('panier déjà commandé par un checkout concurrent → 409, aucune commande', async () => {
+      tx.cartItem.findMany.mockResolvedValueOnce([]);
+      await expect(
+        service.createOrderFromCart('uid', baseDto, 'key-f11-b'),
+      ).rejects.toThrow(/déjà d’être commandé/);
+      expect(tx.order.create).not.toHaveBeenCalled();
+      expect(stockService.decrementInTransaction).not.toHaveBeenCalled();
+      expect(tx.cartItem.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('panier modifié pendant la validation (quantité) → 409', async () => {
+      tx.cartItem.findMany.mockResolvedValueOnce([{ id: 'ci1', quantite: 3 }]);
+      await expect(
+        service.createOrderFromCart('uid', baseDto, 'key-f11-c'),
+      ).rejects.toThrow(/a changé pendant la validation/);
+      expect(tx.order.create).not.toHaveBeenCalled();
+    });
+
+    it('ligne ajoutée depuis un autre appareil → 409', async () => {
+      tx.cartItem.findMany.mockResolvedValueOnce([
+        { id: 'ci1', quantite: 1 },
+        { id: 'ci-autre', quantite: 1 },
+      ]);
+      await expect(
+        service.createOrderFromCart('uid', baseDto, 'key-f11-d'),
+      ).rejects.toThrow(/a changé pendant la validation/);
+    });
   });
 
   /**

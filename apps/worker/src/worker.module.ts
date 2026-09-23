@@ -1,3 +1,4 @@
+import { OrderOutboxEffectsModule } from '../../lilia-app/src/modules/outbox/order-outbox-effects.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { SentryModule } from '@sentry/nestjs/setup';
@@ -98,6 +99,7 @@ import { WorkerService } from './worker.service';
     SmsModule,
     LoyaltyModule,
     OutboxModule, // dépilage + escalade SMS
+    OrderOutboxEffectsModule, // lot 4 : effets de commande rejoués par l'outbox
     AppScheduleModule, // expiration, horaires, stock, rappels
   ],
   controllers: [WorkerController],

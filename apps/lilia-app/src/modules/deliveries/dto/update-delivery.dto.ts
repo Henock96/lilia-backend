@@ -1,4 +1,10 @@
-import { IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsEnum,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+} from 'class-validator';
 import { DriverStatus } from '@prisma/client';
 
 export class SetDriverStatusDto {
@@ -41,6 +47,14 @@ export class UpdateDeliveryStatusDto {
   @MaxLength(300, { message: 'Le motif est limité à 300 caractères' })
   @IsOptional()
   reason?: string;
+
+  /**
+   * Code de remise dicté par le client (F-06) — exigé pour `LIVRER` quand
+   * `DELIVERY_HANDOVER_CODE_REQUIRED` est vrai. 4 chiffres, rien d'autre.
+   */
+  @IsOptional()
+  @Matches(/^\d{4}$/, { message: 'Le code de remise compte 4 chiffres.' })
+  handoverCode?: string;
 }
 
 export class AssignDeliveryDto {

@@ -1,3 +1,5 @@
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
+import { OutboxService } from '../outbox/outbox.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -36,12 +38,20 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
     restaurant: { findFirst: jest.fn() },
     delivery: { findMany: jest.fn(), count: jest.fn(), findUnique: jest.fn() },
     user: { findUnique: jest.fn(), findMany: jest.fn() },
+    deliveryHandover: { findUnique: jest.fn() },
   };
 
   beforeEach(async () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        // Journal d'audit : conclusion d'une course par un ADMIN (F-06).
+        { provide: AdminAuditService, useValue: { record: jest.fn() } },
+        // Obligations durables écrites dans la transaction `LIVRER` (lot 4).
+        {
+          provide: OutboxService,
+          useValue: { enqueueInTransaction: jest.fn() },
+        },
         // P0-4 : `Order.status` ne s'écrit plus qu'à travers ce service,
         // qui historise la transition dans la même transaction.
         OrderTransitionService,
@@ -241,6 +251,54 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
       expect(res.data).not.toHaveProperty('delivererId');
       expect(res.data.order).not.toHaveProperty('userId');
       expect(res.data.order.restaurant).not.toHaveProperty('owner');
+    });
+
+    // ─── F-06 : le code de remise ne va qu'au client ───────────────────────
+    describe('code de remise (F-06)', () => {
+      beforeEach(() => {
+        prisma.deliveryHandover.findUnique.mockResolvedValue({ code: '4821' });
+      });
+
+      it('le client propriétaire le voit pendant que la course roule', async () => {
+        prisma.delivery.findUnique.mockResolvedValue(delivery);
+        prisma.user.findUnique.mockResolvedValue({
+          id: 'client1',
+          role: 'CLIENT',
+        });
+        const res = await service.findByOrderId('o1', 'clientUid');
+        expect(res.data.handoverCode).toBe('4821');
+      });
+
+      it('le livreur assigné ne le voit JAMAIS — c’est à lui qu’on le dicte', async () => {
+        prisma.delivery.findUnique.mockResolvedValue(delivery);
+        prisma.user.findUnique.mockResolvedValue({
+          id: 'liv1',
+          role: 'LIVREUR',
+        });
+        const res = await service.findByOrderId('o1', 'livUid');
+        expect(res.data.handoverCode).toBeNull();
+        expect(prisma.deliveryHandover.findUnique).not.toHaveBeenCalled();
+      });
+
+      it('l’admin ne le voit pas non plus (il conclut par arbitrage, pas par le code)', async () => {
+        prisma.delivery.findUnique.mockResolvedValue(delivery);
+        prisma.user.findUnique.mockResolvedValue({ id: 'adm', role: 'ADMIN' });
+        const res = await service.findByOrderId('o1', 'admUid');
+        expect(res.data.handoverCode).toBeNull();
+      });
+
+      it('course pas encore récupérée : pas de code à montrer', async () => {
+        prisma.delivery.findUnique.mockResolvedValue({
+          ...delivery,
+          status: 'ACCEPTER',
+        });
+        prisma.user.findUnique.mockResolvedValue({
+          id: 'client1',
+          role: 'CLIENT',
+        });
+        const res = await service.findByOrderId('o1', 'clientUid');
+        expect(res.data.handoverCode).toBeNull();
+      });
     });
   });
 });

@@ -1,4 +1,5 @@
 ﻿// app.module.ts
+import { OrderOutboxEffectsModule } from './modules/outbox/order-outbox-effects.module';
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
@@ -263,6 +264,7 @@ import { envValidationSchema } from './config/env.validation';
     AdminAuditModule,
     RefundsModule,
     OutboxModule,
+    OrderOutboxEffectsModule, // lot 4 : effets de commande rejoués par l'outbox
   ],
   providers: [
     // `ParallelThrottlerGuard` et non `ThrottlerGuard` : les deux limiteurs

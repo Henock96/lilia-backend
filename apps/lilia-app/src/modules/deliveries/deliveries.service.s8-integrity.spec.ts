@@ -1,3 +1,5 @@
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
+import { OutboxService } from '../outbox/outbox.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConflictException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -65,6 +67,8 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
   const prisma = {
     delivery: { findUnique: jest.fn(), update: jest.fn() },
     user: { findUnique: jest.fn(), update: jest.fn() },
+    // Course sans code (récupérée avant F-06) : conclusion `UNVERIFIED`.
+    deliveryHandover: { findUnique: jest.fn().mockResolvedValue(null) },
     order: { updateMany: jest.fn() },
     orderHistory: { create: jest.fn() },
     // Journal d'assignation : ouvert et clos dans la même transaction que le
@@ -195,6 +199,13 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        // Journal d'audit : conclusion d'une course par un ADMIN (F-06).
+        { provide: AdminAuditService, useValue: { record: jest.fn() } },
+        // Obligations durables écrites dans la transaction `LIVRER` (lot 4).
+        {
+          provide: OutboxService,
+          useValue: { enqueueInTransaction: jest.fn() },
+        },
         DeliveriesService,
         OrderStateMachine,
         OrderTransitionService,

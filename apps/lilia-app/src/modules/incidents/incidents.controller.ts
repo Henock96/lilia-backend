@@ -19,10 +19,41 @@ import { CreateIncidentDto } from './dto/create-incident.dto';
 import { UpdateIncidentDto } from './dto/update-incident.dto';
 import { IncidentListQueryDto } from './dto/incident-list-query.dto';
 import { IncidentsService } from './incidents.service';
+import { ReportOrderIssueDto } from './dto/report-order-issue.dto';
+import { Throttle } from '@nestjs/throttler';
 
 @Controller('incidents')
 export class IncidentsController {
   constructor(private readonly incidents: IncidentsService) {}
+
+  /**
+   * Le client signale un problème sur sa commande (F-06). Déclaré AVANT
+   * `@Post()` n'est pas nécessaire (chemins distincts), mais la route vit ici
+   * pour que tout incident naisse au même endroit.
+   */
+  @Roles('CLIENT')
+  @Throttle({ short: { limit: 1, ttl: 1000 }, long: { limit: 5, ttl: 60000 } })
+  @Post('orders/:orderId/report')
+  async reportOrderIssue(
+    @Param('orderId') orderId: string,
+    @Body() dto: ReportOrderIssueDto,
+    @CurrentUser() user: User,
+  ) {
+    const incident = await this.incidents.reportByCustomer(
+      orderId,
+      user.id,
+      dto,
+    );
+    // Le client n'a pas à voir les métadonnées d'instruction.
+    return {
+      data: {
+        id: incident.id,
+        status: incident.status,
+        createdAt: incident.createdAt,
+      },
+      message: 'Signalement transmis. Notre équipe vous recontacte rapidement.',
+    };
+  }
 
   @Roles('ADMIN')
   @Post()

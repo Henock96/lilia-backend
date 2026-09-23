@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { AdminAuditModule } from '../admin-audit/admin-audit.module';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { LoyaltyModule } from '../loyalty/loyalty.module';
 import { RefundsCoreModule } from '../refunds/refunds-core.module';
@@ -27,7 +28,15 @@ import { StockService } from './stock.service';
  * ni importer un module qui en déclare.**
  */
 @Module({
-  imports: [PrismaModule, LoyaltyModule, RefundsCoreModule, ReferralCoreModule],
+  // `AdminAuditModule` ne déclare aucun controller : l'importer ici ne monte
+  // rien sur le worker (cf. `worker.module.spec.ts`).
+  imports: [
+    PrismaModule,
+    LoyaltyModule,
+    RefundsCoreModule,
+    ReferralCoreModule,
+    AdminAuditModule,
+  ],
   providers: [
     OrderStateMachine,
     // Seul point d'écriture de `Order.status`. Fourni ici — donc par un module

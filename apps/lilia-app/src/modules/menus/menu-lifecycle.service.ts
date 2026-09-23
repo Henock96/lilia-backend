@@ -72,9 +72,17 @@ export class MenuLifecycleService {
         : null;
 
     // 4. Supprimer le menu (cascade sur MenuProduct)
-    await this.prisma.menuDuJour.delete({
-      where: { id },
-    });
+    //
+    // ⚠️ Les lignes de panier du menu partent AVEC lui, dans la même
+    // transaction. `CartItem.menuId` est en `ON DELETE SET NULL` : sans cette
+    // purge, chaque ligne du menu survivait en produit individuel, facturé au
+    // prix de sa variante — le client qui avait mis « Menu midi 3 500 F » au
+    // panier payait la somme des plats à la carte, sans que rien ne le lui
+    // signale (constat de la Phase 2, suite de F-02).
+    await this.prisma.$transaction([
+      this.prisma.cartItem.deleteMany({ where: { menuId: id } }),
+      this.prisma.menuDuJour.delete({ where: { id } }),
+    ]);
 
     // 5. Supprimer le produit phantom si PLAT_SPECIAL
     if (phantomProductId) {
