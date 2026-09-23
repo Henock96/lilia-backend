@@ -1,5 +1,6 @@
 import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { OrderStatus, Prisma } from '@prisma/client';
+import { acceptanceDeadline } from './order-acceptance-policy';
 
 import {
   OrderTransitionActor,
@@ -81,9 +82,18 @@ export class OrderTransitionService {
   ): Promise<{ moved: boolean }> {
     const { orderId, from, to, data } = params;
 
+    const deadline =
+      to === OrderStatus.PAYER
+        ? await this.acceptanceDeadlineFor(tx, orderId, data)
+        : null;
+
     const claimed = await tx.order.updateMany({
       where: { id: orderId, status: from },
-      data: { status: to, ...(data ?? {}) },
+      data: {
+        status: to,
+        ...(data ?? {}),
+        ...(deadline ? { acceptDeadlineAt: deadline } : {}),
+      },
     });
 
     if (claimed.count === 0) return { moved: false };
@@ -109,6 +119,55 @@ export class OrderTransitionService {
     params: Omit<OrderTransitionParams, 'from'>,
   ): Promise<void> {
     await this.writeHistory(tx, { ...params, from: null });
+  }
+
+  /**
+   * Échéance d'acceptation vendeur, posée au passage à `PAYER` (F3-01).
+   *
+   * Ici et pas aux sites de paiement : c'est le seul point par lequel TOUT
+   * chemin vers `PAYER` passe (encaissement, règlement en points, confirmation
+   * manuelle, et ceux qui viendront). Calculée AVANT le `updateMany` pour être
+   * écrite dans la même requête que le statut.
+   *
+   * Aucune échéance tant que `orderAcceptanceRequired` est faux : sinon, au
+   * moment de l'allumer, toutes les commandes restées `PAYER` depuis plus de
+   * huit minutes expireraient d'un coup.
+   */
+  private async acceptanceDeadlineFor(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    data: OrderTransitionParams['data'],
+  ): Promise<Date | null> {
+    const settings = await tx.platformSettings.findUnique({
+      where: { id: 'singleton' },
+      select: {
+        orderAcceptanceRequired: true,
+        vendorAcceptanceTimeoutMinutes: true,
+        preorderAcceptanceHours: true,
+      },
+    });
+    if (!settings?.orderAcceptanceRequired) return null;
+
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      select: {
+        isPreorder: true,
+        scheduledFor: true,
+        restaurant: { select: { preorderLeadHours: true } },
+      },
+    });
+    if (!order) return null;
+
+    const paidAt = data?.paidAt instanceof Date ? data.paidAt : new Date();
+    return acceptanceDeadline(
+      {
+        paidAt,
+        isPreorder: order.isPreorder,
+        scheduledFor: order.scheduledFor,
+        preorderLeadHours: order.restaurant.preorderLeadHours,
+      },
+      settings,
+    );
   }
 
   private async writeHistory(

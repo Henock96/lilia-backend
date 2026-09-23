@@ -11,6 +11,7 @@ import {
   LoyaltyTransactionType,
   OrderStatus,
   Prisma,
+  VendorRejectionReason,
 } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
@@ -39,6 +40,12 @@ import {
  * suppression, recommande. Extrait de `OrdersService` (devenu façade) pour
  * isoler les mutations post-création. API publique inchangée.
  */
+/** Refus d'une commande par le vendeur (Phase 3, F3-01). */
+export interface VendorRejection {
+  reason: VendorRejectionReason;
+  note?: string;
+}
+
 @Injectable()
 export class OrderLifecycleService {
   private readonly logger = new Logger(OrderLifecycleService.name);
@@ -139,17 +146,77 @@ export class OrderLifecycleService {
   }
 
   /**
-   * Met à jour le statut d'une commande par un restaurateur.
+   * Le vendeur accepte une commande payée (Phase 3, F3-01).
+   *
+   * Seul chemin vers `ACCEPTEE` : il exige un temps de préparation, annoncé au
+   * client (`estimatedReadyAt`). Pour une précommande, accepter vaut aussi
+   * confirmer (`preorderConfirmedAt`) — un geste, pas deux.
    */
-  async updateOrderStatusByRestaurateur(
+  async acceptOrder(orderId: string, firebaseUid: string, prepMinutes: number) {
+    const { user, order } = await this.loadStaffOrder(orderId, firebaseUid);
+    const actor = this.resolveActor(user.role);
+    if (!actor)
+      throw new ForbiddenException('Acteur invalide pour cette transition');
+    this.stateMachine.assertTransition(order.status, 'ACCEPTEE', actor);
+
+    const now = new Date();
+    const updatedOrder = await this.prisma.$transaction(async (tx) => {
+      await this.transitions.transition(tx, {
+        orderId,
+        from: order.status,
+        to: 'ACCEPTEE',
+        actor: actorFromRole(user.role) ?? 'SYSTEM',
+        actorUserId: user.id,
+        source: sourceFromRole(user.role),
+        data: {
+          acceptedAt: now,
+          estimatedReadyAt: new Date(now.getTime() + prepMinutes * 60_000),
+          ...(order.isPreorder ? { preorderConfirmedAt: now } : {}),
+        },
+      });
+      return tx.order.findUniqueOrThrow({
+        where: { id: orderId },
+        include: { restaurant: true, items: true },
+      });
+    });
+
+    await this.announceStatusChange(
+      updatedOrder,
+      order.status,
+      'ACCEPTEE',
+      user,
+    );
+    return updatedOrder;
+  }
+
+  /**
+   * Le vendeur refuse une commande payée ou acceptée (Phase 3, F3-01).
+   *
+   * Un refus EST une annulation : il passe par la même branche (stock, points,
+   * promo, blocage si un reversement existe, remboursement dû écrit dans la
+   * transaction). Il n'y ajoute que son motif, et marque la dette comme faute
+   * vendeur — ce qui permet au remboursement de partir sans geste humain (D2).
+   */
+  rejectOrder(
     orderId: string,
     firebaseUid: string,
-    newStatus: OrderStatus,
+    rejection: VendorRejection,
   ) {
-    this.logger.log(
-      `🔄 [STATUT] Début mise à jour - commande: ${orderId}, nouveau statut: ${newStatus}, par: ${firebaseUid}`,
+    return this.updateOrderStatusByRestaurateur(
+      orderId,
+      firebaseUid,
+      'ANNULER',
+      {
+        rejection,
+      },
     );
+  }
 
+  /**
+   * Charge une commande pour un geste du personnel (vendeur ou admin).
+   * Rôle, existence et propriété : partagé par toutes les routes de statut.
+   */
+  private async loadStaffOrder(orderId: string, firebaseUid: string) {
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
     if (!user || (user.role !== 'RESTAURATEUR' && user.role !== 'ADMIN')) {
       this.logger.warn(
@@ -178,6 +245,105 @@ export class OrderLifecycleService {
       );
     }
 
+    return { user, order };
+  }
+
+  /**
+   * Champs écrits AVEC le statut, dans le même `updateMany`.
+   *
+   * - refus vendeur : motif et précision ;
+   * - `PAYER → EN_PREPARATION` : refusé une fois l'acceptation mise en
+   *   service (il faut accepter d'abord) ; avant, acceptation implicite — les
+   *   applications vendeur installées ne connaissent pas `ACCEPTEE`, et le
+   *   délai de réponse reste mesurable.
+   */
+  private async transitionDataFor(
+    from: OrderStatus,
+    to: OrderStatus,
+    options: { rejection?: VendorRejection },
+  ): Promise<Prisma.OrderUpdateManyMutationInput | undefined> {
+    if (to === 'ANNULER' && options.rejection) {
+      return {
+        vendorRejectionReason: options.rejection.reason,
+        ...(options.rejection.note
+          ? { vendorRejectionNote: options.rejection.note }
+          : {}),
+      };
+    }
+    if (from === 'PAYER' && to === 'EN_PREPARATION') {
+      const settings = await this.prisma.platformSettings.findUnique({
+        where: { id: 'singleton' },
+        select: { orderAcceptanceRequired: true },
+      });
+      if (settings?.orderAcceptanceRequired) {
+        throw new BadRequestException(
+          'Acceptez d’abord la commande (avec un temps de préparation) avant de la préparer.',
+        );
+      }
+      return { acceptedAt: new Date() };
+    }
+    return undefined;
+  }
+
+  /** Événement de changement de statut + audit d'un geste ADMIN. */
+  private async announceStatusChange(
+    updatedOrder: {
+      id: string;
+      userId: string;
+      restaurantId: string;
+      total: number;
+      restaurant: { nom: string };
+    },
+    fromStatus: OrderStatus,
+    newStatus: OrderStatus,
+    user: { id: string; role: string },
+  ): Promise<void> {
+    const orderId = updatedOrder.id;
+    // 🔥 ÉMETTRE L'ÉVÉNEMENT au lieu d'appeler directement les notifications
+    const statusUpdatedEvent = new OrderStatusUpdatedEvent(
+      updatedOrder.id,
+      updatedOrder.userId,
+      updatedOrder.restaurantId,
+      fromStatus, // L'ancien statut (avant la mise à jour)
+      newStatus, // Le nouveau statut
+      user.id, // updatedBy
+      {
+        restaurantName: updatedOrder.restaurant.nom,
+        totalAmount: updatedOrder.total,
+      },
+    );
+
+    this.eventEmitter.emit('order.status.updated', statusUpdatedEvent);
+    // Fix F-07 — tout geste ADMIN sur le statut d'une commande est une
+    // décision d'arbitrage : il entre au journal d'audit, comme les gestes
+    // sur les paiements et les remboursements. `OrderHistory` dit ce qui a
+    // changé ; le journal dit qu'un administrateur l'a décidé.
+    if (user.role === 'ADMIN') {
+      await this.audit.record({
+        actorId: user.id,
+        action: AdminAuditAction.ORDER_STATUS_FORCED,
+        targetType: 'Order',
+        targetId: orderId,
+        metadata: { from: fromStatus, to: newStatus },
+      });
+    }
+  }
+
+  /**
+   * Met à jour le statut d'une commande par un restaurateur.
+   */
+  async updateOrderStatusByRestaurateur(
+    orderId: string,
+    firebaseUid: string,
+    newStatus: OrderStatus,
+    options: { rejection?: VendorRejection } = {},
+  ) {
+    this.logger.log(
+      `🔄 [STATUT] Début mise à jour - commande: ${orderId}, nouveau statut: ${newStatus}, par: ${firebaseUid}`,
+    );
+
+    const { user, order } = await this.loadStaffOrder(orderId, firebaseUid);
+
     // ⚠️ Fix F-07 (Master Audit v1) — « payée » n'est pas un statut qu'on
     // déclare : c'est la conséquence d'un encaissement. Cette route laissait
     // l'ADMIN passer une commande `PAYER` sans aucune ligne `Payment` — le
@@ -192,6 +358,24 @@ export class OrderLifecycleService {
           'Utilisez la confirmation du paiement, pas le changement de statut.',
       );
     }
+
+    // F3-01 — même raisonnement : « acceptée » exige un temps de préparation,
+    // que seul `POST /orders/:id/accept` porte.
+    if (newStatus === 'ACCEPTEE') {
+      throw new BadRequestException(
+        'Pour accepter une commande, utilisez « Accepter » avec un temps de préparation.',
+      );
+    }
+
+    const transitionData = await this.transitionDataFor(
+      order.status,
+      newStatus,
+      options,
+    );
+    const historyReason = options.rejection
+      ? `Refus vendeur : ${options.rejection.reason}` +
+        (options.rejection.note ? ` — ${options.rejection.note}` : '')
+      : undefined;
 
     const actor = this.resolveActor(user.role);
     if (!actor)
@@ -229,6 +413,8 @@ export class OrderLifecycleService {
               actor: historyActor,
               actorUserId: user.id,
               source: historySource,
+              reason: historyReason,
+              data: transitionData,
             });
             // ⚠️ Fix F-04 — l'`UPDATE` ci-dessus tient le verrou de la ligne
             // `Order`, celui que prend aussi `requestPayout` : le reversement
@@ -271,8 +457,12 @@ export class OrderLifecycleService {
               type: ORDER_REFUND_DUE_EVENT,
               aggregateId: orderId,
               payload: {
-                reason: `Annulation par ${user.role.toLowerCase()}`,
+                reason:
+                  historyReason ?? `Annulation par ${user.role.toLowerCase()}`,
                 requestedBy: user.id,
+                // F3-01 / D2 — un refus vendeur ne laisse aucun doute sur la
+                // dette : le remboursement peut partir sans geste humain.
+                ...(options.rejection ? { vendorFault: true } : {}),
               },
             });
             return updated;
@@ -285,6 +475,8 @@ export class OrderLifecycleService {
               actor: historyActor,
               actorUserId: user.id,
               source: historySource,
+              reason: historyReason,
+              data: transitionData,
             });
             // Lot 4 — retrait au comptoir livré : fidélité et parrainage
             // deviennent une obligation durable, écrite avec la transition.
@@ -304,34 +496,12 @@ export class OrderLifecycleService {
             });
           });
 
-    // 🔥 ÉMETTRE L'ÉVÉNEMENT au lieu d'appeler directement les notifications
-    const statusUpdatedEvent = new OrderStatusUpdatedEvent(
-      updatedOrder.id,
-      updatedOrder.userId,
-      updatedOrder.restaurantId,
-      order.status, // L'ancien statut (avant la mise à jour)
-      newStatus, // Le nouveau statut
-      user.id, // updatedBy
-      {
-        restaurantName: updatedOrder.restaurant.nom,
-        totalAmount: updatedOrder.total,
-      },
+    await this.announceStatusChange(
+      updatedOrder,
+      order.status,
+      newStatus,
+      user,
     );
-
-    this.eventEmitter.emit('order.status.updated', statusUpdatedEvent);
-    // Fix F-07 — tout geste ADMIN sur le statut d'une commande est une
-    // décision d'arbitrage : il entre au journal d'audit, comme les gestes
-    // sur les paiements et les remboursements. `OrderHistory` dit ce qui a
-    // changé ; le journal dit qu'un administrateur l'a décidé.
-    if (user.role === 'ADMIN') {
-      await this.audit.record({
-        actorId: user.id,
-        action: AdminAuditAction.ORDER_STATUS_FORCED,
-        targetType: 'Order',
-        targetId: orderId,
-        metadata: { from: order.status, to: newStatus },
-      });
-    }
     this.logger.log(
       `🔄 [STATUT] Succès: commande ${orderId} - ${order.status} → ${newStatus} (par ${user.id}/${user.role})`,
     );

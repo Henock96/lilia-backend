@@ -26,6 +26,7 @@ import { OrdersService } from './orders.service';
 import { OrderReceiptService } from './order-receipt.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
+import { AcceptOrderDto, RejectOrderDto } from './dto/order-acceptance.dto';
 import { StuckOrdersQueryDto } from './dto/stuck-orders-query.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -293,6 +294,63 @@ export class OrdersController {
       fbUser.uid,
       updateOrderStatusDto.status,
     );
+  }
+
+  /**
+   * Accepter une commande payée (Phase 3, F3-01).
+   *
+   * Seul chemin vers `ACCEPTEE` : le temps de préparation annoncé au client
+   * est obligatoire. La propriété (vendeur de CETTE commande) est vérifiée par
+   * le service.
+   */
+  @Post(':id/accept')
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Accepter une commande payée (vendeur / admin)' })
+  @ApiParam({ name: 'id', description: 'ID de la commande' })
+  @ApiResponse({ status: 200, description: 'Commande acceptée' })
+  @ApiResponse({
+    status: 400,
+    description: 'Commande non acceptable dans son état',
+  })
+  @ApiResponse({ status: 403, description: 'Commande hors restaurant' })
+  @ApiResponse({ status: 409, description: 'Statut changé entre-temps' })
+  acceptOrder(
+    @Param('id') id: string,
+    @FirebaseUser() fbUser: DecodedIdToken,
+    @Body() dto: AcceptOrderDto,
+  ) {
+    return this.ordersService.acceptOrder(id, fbUser.uid, dto.prepMinutes);
+  }
+
+  /**
+   * Refuser une commande payée ou acceptée (Phase 3, F3-01).
+   *
+   * Motif obligatoire en liste fermée. Le client est remboursé : la dette est
+   * écrite dans la même transaction que l'annulation.
+   */
+  @Post(':id/reject')
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Refuser une commande (vendeur / admin)' })
+  @ApiParam({ name: 'id', description: 'ID de la commande' })
+  @ApiResponse({
+    status: 200,
+    description: 'Commande refusée, remboursement ouvert',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Commande hors restaurant, ou déjà reversée',
+  })
+  rejectOrder(
+    @Param('id') id: string,
+    @FirebaseUser() fbUser: DecodedIdToken,
+    @Body() dto: RejectOrderDto,
+  ) {
+    return this.ordersService.rejectOrder(id, fbUser.uid, {
+      reason: dto.reason,
+      note: dto.note,
+    });
   }
 
   /**

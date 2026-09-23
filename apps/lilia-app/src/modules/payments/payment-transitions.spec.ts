@@ -118,6 +118,8 @@ describe('PaymentService — transitions et concurrence', () => {
     // P0-4 : toute transition de statut écrit sa ligne d'historique dans la
     // MÊME transaction. Le client de transaction doit donc l'exposer.
     orderHistory: { create: jest.fn() },
+    // Aucune ligne de réglages : acceptation vendeur non mise en service.
+    platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
     order: {
       findUnique: jest.fn(async () => ({ ...orderRow })),
       updateMany: jest.fn(

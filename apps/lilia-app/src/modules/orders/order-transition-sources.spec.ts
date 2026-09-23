@@ -51,6 +51,8 @@ describe('Acteur et provenance des transitions', () => {
           findUniqueOrThrow: jest.fn().mockResolvedValue(order),
         },
         orderHistory: captureHistory(),
+        // Aucune ligne de réglages : acceptation vendeur non mise en service.
+        platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
         loyaltyTransaction: {
           aggregate: jest.fn().mockResolvedValue({ _sum: { points: 0 } }),
           create: jest.fn(),
@@ -118,6 +120,8 @@ describe('Acteur et provenance des transitions', () => {
           findUniqueOrThrow: jest.fn().mockResolvedValue(order),
         },
         orderHistory: captureHistory(),
+        // Aucune ligne de réglages : acceptation vendeur non mise en service.
+        platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
         loyaltyTransaction: {
           aggregate: jest.fn().mockResolvedValue({ _sum: { points: 0 } }),
           create: jest.fn(),
@@ -178,6 +182,8 @@ describe('Acteur et provenance des transitions', () => {
       tx = {
         order: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
         orderHistory: captureHistory(),
+        // Aucune ligne de réglages : acceptation vendeur non mise en service.
+        platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
         loyaltyTransaction: {
           aggregate: jest.fn().mockResolvedValue({ _sum: { points: 0 } }),
           create: jest.fn(),
@@ -255,6 +261,8 @@ describe('Acteur et provenance des transitions', () => {
         payment: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
         order: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
         orderHistory: captureHistory(),
+        // Aucune ligne de réglages : acceptation vendeur non mise en service.
+        platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
       };
 
       const prisma = {
