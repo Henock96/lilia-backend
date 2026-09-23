@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PAID_ORDER_STATUSES } from '../orders/order-status-groups';
 import { MenuCreatedEvent } from '../events/menu-events';
 
 @Injectable()
@@ -116,9 +117,7 @@ export class MenusListener {
         restaurantId: restaurantId,
         // Seules les commandes réellement honorées : une commande abandonnée
         // ne fait pas de quelqu'un un client.
-        status: {
-          in: ['PAYER', 'EN_PREPARATION', 'PRET', 'LIVRER'],
-        },
+        status: { in: [...PAID_ORDER_STATUSES] },
         createdAt: { gte: since },
       },
       select: {

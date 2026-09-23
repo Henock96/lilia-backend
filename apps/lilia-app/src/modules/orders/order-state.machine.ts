@@ -32,9 +32,23 @@ export const ORDER_TRANSITION_MATRIX: Record<
     ANNULER: ['CLIENT', 'RESTAURATEUR', 'ADMIN'],
   },
   PAYER: {
+    // Phase 3, F3-01 — accepter n'est pas commencer : `ACCEPTEE` rend
+    // mesurables le taux d'acceptation et le délai de réponse vendeur. Le seul
+    // chemin vers cet état est `POST /orders/:id/accept`, qui exige un temps
+    // de préparation ; la route de statut le refuse (comme `PAYER`).
+    ACCEPTEE: ['RESTAURATEUR', 'ADMIN'],
+    // Conservé pendant la transition : les applications vendeur installées ne
+    // connaissent pas `ACCEPTEE`. Tant que `orderAcceptanceRequired` est faux,
+    // ce geste vaut acceptation implicite ; ensuite la route le refuse.
     EN_PREPARATION: ['RESTAURATEUR', 'ADMIN'],
     // Fix H5 : plus de CLIENT ici — l'argent est encaissé, ça passe par le
     // support puis par un remboursement tracé.
+    ANNULER: ['RESTAURATEUR', 'ADMIN'],
+  },
+  ACCEPTEE: {
+    EN_PREPARATION: ['RESTAURATEUR', 'ADMIN'],
+    // Refus après acceptation (rupture découverte en cuisine) : mêmes
+    // conditions que depuis `PAYER`, dont le blocage si un reversement existe.
     ANNULER: ['RESTAURATEUR', 'ADMIN'],
   },
   EN_PREPARATION: {
@@ -68,6 +82,9 @@ export const ORDER_TRANSITION_MATRIX: Record<
   },
   LIVRER: {}, // terminal
   ANNULER: {}, // terminal
+  // Terminal (F3-05). Aucune entrée tant que l'arbitrage d'échec n'existe pas :
+  // l'état est posé en base maintenant pour ne payer qu'un `ALTER TYPE`.
+  ECHEC_LIVRAISON: {},
 };
 
 /** Vue « états atteignables », dérivée de la matrice (rétro-compatibilité). */

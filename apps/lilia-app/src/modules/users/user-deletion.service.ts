@@ -4,13 +4,9 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import {
-  LoyaltyTransactionType,
-  OrderStatus,
-  Prisma,
-  User,
-} from '@prisma/client';
+import { LoyaltyTransactionType, Prisma, User } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { IN_FLIGHT_ORDER_STATUSES } from '../orders/order-status-groups';
 import { FirebaseService } from '../firebase/firebase.service';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import { ACTIVE_DELIVERY_STATUSES } from '../deliveries/delivery-statuses';
@@ -38,13 +34,7 @@ export class UserDeletionService {
   private readonly logger = new Logger(UserDeletionService.name);
 
   /** Statuts non terminaux : une commande en vol interdit la suppression. */
-  private static readonly ACTIVE_ORDER_STATUSES: OrderStatus[] = [
-    'EN_ATTENTE',
-    'PAYER',
-    'EN_PREPARATION',
-    'PRET',
-    'EN_ROUTE',
-  ];
+  private static readonly ACTIVE_ORDER_STATUSES = IN_FLIGHT_ORDER_STATUSES;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -163,7 +153,7 @@ export class UserDeletionService {
       this.prisma.order.count({
         where: {
           userId: user.id,
-          status: { in: UserDeletionService.ACTIVE_ORDER_STATUSES },
+          status: { in: [...UserDeletionService.ACTIVE_ORDER_STATUSES] },
         },
       }),
       this.prisma.restaurant.findFirst({

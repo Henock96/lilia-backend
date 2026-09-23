@@ -13,15 +13,8 @@ import {
 } from './order-status-filter';
 import { buildOrderSearchWhere } from './order-search';
 
-/**
- * Les trois états où l'argent du client est encaissé et où personne n'a livré.
- * C'est la définition d'une commande « bloquée » — cf. `countStuckOrders`.
- */
-const STUCK_ORDER_STATUSES = [
-  OrderStatus.PAYER,
-  OrderStatus.EN_PREPARATION,
-  OrderStatus.PRET,
-] as const;
+// Définition d'une commande « bloquée » — source unique, classement testé.
+import { STUCK_ORDER_STATUSES } from './order-status-groups';
 
 /**
  * Lectures de commandes (queries) extraites de `OrdersService` (LIL-134).

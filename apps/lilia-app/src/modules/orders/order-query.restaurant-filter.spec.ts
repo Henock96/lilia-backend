@@ -83,7 +83,7 @@ describe('OrderQueryService.findRestaurantOrders — filtre et compteurs', () =>
     });
   });
 
-  it('rend les sept compteurs, zéro compris', async () => {
+  it('rend les neuf compteurs, zéro compris', async () => {
     asVendor();
     prisma.order.groupBy.mockResolvedValue([
       { status: OrderStatus.EN_ATTENTE, _count: { status: 2 } },
@@ -94,11 +94,13 @@ describe('OrderQueryService.findRestaurantOrders — filtre et compteurs', () =>
     expect(res.meta.statusCounts).toEqual({
       EN_ATTENTE: 2,
       PAYER: 0,
+      ACCEPTEE: 0,
       EN_PREPARATION: 0,
       PRET: 0,
       EN_ROUTE: 0,
       LIVRER: 0,
       ANNULER: 0,
+      ECHEC_LIVRAISON: 0,
     });
   });
 

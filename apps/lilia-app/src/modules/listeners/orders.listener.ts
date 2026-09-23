@@ -217,11 +217,13 @@ export class OrdersListener {
     const map: Record<OrderStatus, { title: string; body: string }> = {
       EN_ATTENTE:     { title: '⏳ Commande en attente', body: 'Votre commande est en attente de paiement' },
       PAYER:          { title: '💸 Paiement confirmé', body: 'Votre paiement a été accepté' },
+      ACCEPTEE:       { title: '👍 Commande acceptée', body: 'Le vendeur a accepté votre commande' },
       EN_PREPARATION: { title: '👨‍🍳 En préparation', body: 'Le restaurant prépare votre commande' },
       PRET:           { title: '✅ Commande prête', body: 'Votre commande est prête !' },
       EN_ROUTE:       { title: '🛵 En route', body: 'Votre livreur est en chemin !' },
       LIVRER:         { title: '🎉 Commande livrée', body: 'Votre commande a été livrée. Bon appétit !' },
       ANNULER:        { title: '❌ Commande annulée', body: 'Votre commande a été annulée' },
+      ECHEC_LIVRAISON: { title: '⚠️ Livraison non aboutie', body: 'Votre commande n’a pas pu être livrée — le support revient vers vous' },
     };
     return map[status] ?? { title: 'Mise à jour', body: `Statut : ${status}` };
   }

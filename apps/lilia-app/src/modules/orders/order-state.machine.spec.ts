@@ -122,10 +122,63 @@ describe('OrderStateMachine — matrice complète', () => {
       ).toThrow(ForbiddenException);
     });
 
+    it('F3-01 — le vendeur (et l’ADMIN) accepte une commande payée', () => {
+      expect(() =>
+        machine.assertTransition('PAYER', 'ACCEPTEE', 'RESTAURATEUR'),
+      ).not.toThrow();
+      expect(() =>
+        machine.assertTransition('PAYER', 'ACCEPTEE', 'ADMIN'),
+      ).not.toThrow();
+    });
+
+    it.each<[OrderActor]>([['CLIENT'], ['LIVREUR']])(
+      'F3-01 — %s ne peut pas accepter une commande à la place du vendeur',
+      (actor) => {
+        expect(() =>
+          machine.assertTransition('PAYER', 'ACCEPTEE', actor),
+        ).toThrow(ForbiddenException);
+      },
+    );
+
+    it('F3-01 — une commande acceptée passe en préparation par le vendeur', () => {
+      expect(() =>
+        machine.assertTransition('ACCEPTEE', 'EN_PREPARATION', 'RESTAURATEUR'),
+      ).not.toThrow();
+    });
+
+    it('F3-01 — le vendeur peut encore refuser une commande acceptée, pas le client', () => {
+      expect(() =>
+        machine.assertTransition('ACCEPTEE', 'ANNULER', 'RESTAURATEUR'),
+      ).not.toThrow();
+      expect(() =>
+        machine.assertTransition('ACCEPTEE', 'ANNULER', 'CLIENT'),
+      ).toThrow(ForbiddenException);
+    });
+
+    it('F3-01 — transition douce : PAYER → EN_PREPARATION reste permis (anciens binaires vendeur)', () => {
+      expect(() =>
+        machine.assertTransition('PAYER', 'EN_PREPARATION', 'RESTAURATEUR'),
+      ).not.toThrow();
+    });
+
+    it.each<[OrderStatus]>([['PRET'], ['EN_ROUTE'], ['LIVRER']])(
+      'F3-01 — ACCEPTEE ne saute pas la préparation (→ %s impossible)',
+      (to) => {
+        expect(machine.canTransition('ACCEPTEE', to)).toBe(false);
+      },
+    );
+
+    it('ECHEC_LIVRAISON existe mais reste inatteignable tant que F3-05 n’a pas posé ses entrées', () => {
+      for (const from of ALL_STATUSES) {
+        expect(machine.canTransition(from, 'ECHEC_LIVRAISON')).toBe(false);
+      }
+    });
+
     it('les états terminaux le restent', () => {
       for (const to of ALL_STATUSES) {
         expect(machine.canTransition('LIVRER', to)).toBe(false);
         expect(machine.canTransition('ANNULER', to)).toBe(false);
+        expect(machine.canTransition('ECHEC_LIVRAISON', to)).toBe(false);
       }
     });
 

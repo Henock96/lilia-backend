@@ -72,7 +72,12 @@ describe('OrderQueryService.countStuckOrders', () => {
     await service.countStuckOrders('fb-9', 30);
 
     expect(groupByWhere().status).toEqual({
-      in: [OrderStatus.PAYER, OrderStatus.EN_PREPARATION, OrderStatus.PRET],
+      in: [
+        OrderStatus.PAYER,
+        OrderStatus.ACCEPTEE,
+        OrderStatus.EN_PREPARATION,
+        OrderStatus.PRET,
+      ],
     });
   });
 
@@ -132,6 +137,7 @@ describe('OrderQueryService.countStuckOrders', () => {
     expect(res.data.total).toBe(4);
     expect(res.data.byStatus).toEqual({
       PAYER: 3,
+      ACCEPTEE: 0,
       EN_PREPARATION: 0,
       PRET: 1,
     });
