@@ -39,6 +39,7 @@ import {
   UpdateDisplayOrderDto,
   UpdateFeaturedDto,
 } from './dto/vendor-showcase.dto';
+import { UpdateDeliverySubsidyDto } from '../delivery-pricing/dto/update-delivery-subsidy.dto';
 
 /**
  * Onboarding vendeur — configuration partagée entre l'administrateur et le
@@ -143,6 +144,24 @@ export class VendorOnboardingController {
   ) {
     await this.access.verifyOwnership(id, caller.firebaseUid);
     return this.onboarding.updateDelivery(id, dto);
+  }
+
+  /**
+   * PATCH /vendors/:id/delivery-subsidy — part de la livraison offerte par le
+   * vendeur (F3-02). Le prix de la course appartient à la plateforme ; le
+   * vendeur choisit seulement d'en offrir une part, sur son reversement.
+   */
+  @Patch(':id/delivery-subsidy')
+  @Roles('ADMIN', 'RESTAURATEUR')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Part de la livraison offerte par le vendeur' })
+  async updateDeliverySubsidy(
+    @Param('id') id: string,
+    @Body() dto: UpdateDeliverySubsidyDto,
+    @CurrentUser() caller: User,
+  ) {
+    await this.access.verifyOwnership(id, caller.firebaseUid);
+    return this.onboarding.updateDeliverySubsidy(id, dto);
   }
 
   /**

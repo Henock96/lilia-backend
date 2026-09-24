@@ -95,7 +95,7 @@ describeIfDb('Zones de livraison — tarification réelle (PostgreSQL)', () => {
     await prisma.$connect();
 
     zones = new DeliveryZonesService(prisma as never);
-    quartiers = new QuartiersService(prisma as never);
+    quartiers = new QuartiersService(prisma as never, {} as never);
     restaurants = new RestaurantsService(
       prisma as never,
       new RestaurantAccessService(prisma as never) as never,

@@ -12,6 +12,7 @@ import {
   Min,
   ValidateBy,
   ValidationOptions,
+  IsEnum,
 } from 'class-validator';
 
 import { MAX_COMMISSION_PERCENT } from '../../payments/money.util';
@@ -21,6 +22,7 @@ import {
   isAllowedAndroidStoreUrl,
   isAllowedIosStoreUrl,
 } from '../app-update-policy';
+import { DeliveryPricingMode } from '@prisma/client';
 
 export { APP_VERSION_PATTERN };
 
@@ -228,6 +230,16 @@ export class UpdatePlatformSettingsDto {
   @IsString()
   @MaxLength(300)
   updateMessage?: string | null;
+
+  /**
+   * Tarification de la livraison (F3-02) : `VENDOR_LEGACY` (le vendeur fixe
+   * son prix, comportement historique) ou `PLATFORM` (la grille publiée fait
+   * foi). Revenir à `VENDOR_LEGACY` est toujours permis : c'est la sortie de
+   * secours.
+   */
+  @IsOptional()
+  @IsEnum(DeliveryPricingMode)
+  deliveryPricingMode?: DeliveryPricingMode;
 
   /**
    * Verrou optimiste (SET-001) : l'`updatedAt` de la configuration **telle que

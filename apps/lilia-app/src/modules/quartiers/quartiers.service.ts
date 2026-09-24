@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { checkCongoCoordinates } from '../../common/geo/congo-geo';
 import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
+import { DeliveryPricingService } from '../delivery-pricing/delivery-pricing.service';
 
 // Liste des quartiers de Brazzaville
 export const QUARTIERS_BRAZZAVILLE = [
@@ -74,7 +75,12 @@ export const QUARTIERS_BRAZZAVILLE = [
 
 @Injectable()
 export class QuartiersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    // F3-02 : même moteur que le checkout, pour que le prix affiché soit le
+    // prix facturé.
+    private readonly deliveryPricing: DeliveryPricingService,
+  ) {}
 
   /**
    * Récupère tous les quartiers de la base de données
@@ -144,13 +150,49 @@ export class QuartiersService {
    * authentification. Le calcul lui-même reste `calculateDeliveryFee`, que le
    * checkout appelle directement derrière sa propre garde.
    */
-  async quotePublicDeliveryFee(restaurantId: string, quartierId: string) {
+  async quotePublicDeliveryFee(
+    restaurantId: string,
+    quartierId: string,
+    subTotal?: number,
+  ) {
     const vendor = await this.prisma.restaurant.findFirst({
       where: { id: restaurantId, ...PUBLIC_VENDOR_WHERE },
-      select: { id: true },
+      // Ce qu'il faut au moteur, rien de plus : la réponse n'expose que des
+      // montants calculés et le seuil de livraison offerte (R10).
+      select: {
+        id: true,
+        latitude: true,
+        longitude: true,
+        quartierId: true,
+        deliverySubsidyMode: true,
+        deliverySubsidyXaf: true,
+        freeDeliveryThresholdXaf: true,
+      },
     });
     if (!vendor) throw new NotFoundException('Vendeur introuvable');
-    return this.calculateDeliveryFee(restaurantId, quartierId);
+
+    // F3-02 — même moteur que le checkout. `null` = mode VENDOR_LEGACY.
+    const quote = await this.deliveryPricing.quoteForVendor({
+      vendor,
+      destination: { quartierId, latitude: null, longitude: null },
+      subTotalXaf: subTotal ?? 0,
+    });
+    if (!quote) return this.calculateDeliveryFee(restaurantId, quartierId);
+
+    return {
+      mode: 'PLATFORM' as const,
+      // Prix client : la seule clé que lisent les apps déjà publiées.
+      fee: quote.customerFeeXaf,
+      baseFee: quote.baseFeeXaf,
+      vendorSubsidy: quote.subsidyXaf,
+      distanceKm: quote.distanceKm,
+      tariffVersion: quote.tariffVersion,
+      // Permet « Livraison offerte dès 10 000 FCFA (encore 2 300) ».
+      freeDeliveryThreshold:
+        vendor.deliverySubsidyMode === 'FREE_ABOVE'
+          ? vendor.freeDeliveryThresholdXaf
+          : null,
+    };
   }
 
   /**

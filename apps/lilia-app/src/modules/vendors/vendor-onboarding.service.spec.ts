@@ -455,6 +455,45 @@ describe('VendorOnboardingService', () => {
     });
   });
 
+  // ─── Subvention de livraison (F3-02) ─────────────────────────────────────
+  describe('updateDeliverySubsidy', () => {
+    beforeEach(() => {
+      prisma.restaurant.findUnique.mockResolvedValue({ id: 'r1' });
+      prisma.restaurant.update.mockResolvedValue({
+        id: 'r1',
+        deliverySubsidyMode: 'FREE_ABOVE',
+        deliverySubsidyXaf: null,
+        freeDeliveryThresholdXaf: 10000,
+      });
+    });
+
+    it('écrit le réglage normalisé, et rien d’autre', async () => {
+      await service.updateDeliverySubsidy('r1', {
+        mode: 'FREE_ABOVE',
+        amountXaf: 300,
+        thresholdXaf: 10000,
+      });
+      expect(prisma.restaurant.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'r1' },
+          data: {
+            deliverySubsidyMode: 'FREE_ABOVE',
+            deliverySubsidyXaf: null,
+            freeDeliveryThresholdXaf: 10000,
+          },
+        }),
+      );
+    });
+
+    it('vendeur introuvable → 404, aucune écriture', async () => {
+      prisma.restaurant.findUnique.mockResolvedValue(null);
+      await expect(
+        service.updateDeliverySubsidy('nope', { mode: 'NONE' }),
+      ).rejects.toThrow(/introuvable|trouvé/i);
+      expect(prisma.restaurant.update).not.toHaveBeenCalled();
+    });
+  });
+
   // ─── Identité ──────────────────────────────────────────────────────────────
 
   describe('updateIdentity', () => {

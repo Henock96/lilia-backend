@@ -152,6 +152,7 @@ export class RestaurantPayoutService {
     const breakdown = this.buildBreakdown(
       order.subTotal,
       order.commissionPercent,
+      order.vendorDeliverySubsidyXaf,
     );
     const withBreakdown = (result: PayoutEligibility): PayoutEligibility => ({
       ...result,
@@ -276,10 +277,17 @@ export class RestaurantPayoutService {
    * ⚠️ Ne jamais réintroduire de lecture de `Restaurant.commissionPercent` dans
    * ce service : le taux d'un vendeur décrit ses commandes **futures**.
    */
-  private buildBreakdown(subTotal: number, orderCommissionPercent: number) {
+  private buildBreakdown(
+    subTotal: number,
+    orderCommissionPercent: number,
+    // F3-02 : part de la course offerte par le vendeur, figée à la commande.
+    // Absente des lignes antérieures (défaut 0 en base).
+    vendorDeliverySubsidyXaf: number | null | undefined,
+  ) {
     return computePayoutBreakdown({
       subTotalXaf: toXaf(subTotal, 'sous-total'),
       commissionPercent: orderCommissionPercent,
+      deliverySubsidyXaf: vendorDeliverySubsidyXaf ?? 0,
     });
   }
 
@@ -327,11 +335,12 @@ export class RestaurantPayoutService {
     const breakdown = this.buildBreakdown(
       order.subTotal,
       order.commissionPercent,
+      order.vendorDeliverySubsidyXaf,
     );
 
     if (breakdown.payoutAmount <= 0) {
       throw new BadRequestException(
-        'Le montant à reverser est nul. Vérifiez le sous-total de la commande et le taux de commission.',
+        'Le montant à reverser est nul. Vérifiez le sous-total de la commande, le taux de commission et la part de livraison offerte par le vendeur.',
       );
     }
 
@@ -426,6 +435,7 @@ export class RestaurantPayoutService {
             grossAmount: breakdown.grossAmount,
             commissionPercent: breakdown.commissionPercent,
             commissionAmount: breakdown.commissionAmount,
+            deliverySubsidyAmount: breakdown.deliverySubsidyAmount,
             amount: breakdown.payoutAmount,
             currency: 'XAF',
             phoneNumber: account.payoutPhoneNumber,
@@ -460,7 +470,8 @@ export class RestaurantPayoutService {
     this.logger.log(
       `💸 Reversement demandé — commande ${order.id}, vendeur ${order.restaurant.nom}, ` +
         `brut ${breakdown.grossAmount}, commission ${breakdown.commissionPercent}% ` +
-        `(${breakdown.commissionAmount}), net ${breakdown.payoutAmount} XAF, ` +
+        `(${breakdown.commissionAmount}), livraison offerte ${breakdown.deliverySubsidyAmount}, ` +
+        `net ${breakdown.payoutAmount} XAF, ` +
         `tel ${maskPhone(payout.phoneNumber)}, ` +
         `ref ${maskRef(providerPayoutId)}, par ${params.adminUserId}`,
     );
@@ -949,9 +960,14 @@ export class RestaurantPayoutService {
           grossAmount: order.payout.grossAmount,
           commissionPercent: order.payout.commissionPercent,
           commissionAmount: order.payout.commissionAmount,
+          deliverySubsidyAmount: order.payout.deliverySubsidyAmount,
           payoutAmount: order.payout.amount,
         }
-      : this.buildBreakdown(order.subTotal, order.commissionPercent);
+      : this.buildBreakdown(
+          order.subTotal,
+          order.commissionPercent,
+          order.vendorDeliverySubsidyXaf,
+        );
 
     const collectionFee = collection?.collectionFeeXaf ?? null;
     const payoutFee = order.payout?.payoutFeeXaf ?? null;
@@ -988,6 +1004,7 @@ export class RestaurantPayoutService {
         grossAmount: breakdown.grossAmount,
         commissionPercent: breakdown.commissionPercent,
         commissionAmount: breakdown.commissionAmount,
+        deliverySubsidyAmount: breakdown.deliverySubsidyAmount,
         payoutAmount: breakdown.payoutAmount,
         payoutAccount: {
           phoneNumber: order.restaurant.payoutPhoneNumber
@@ -1103,7 +1120,7 @@ export class RestaurantPayoutService {
         driverEconomicsFrozenAt: Date | null;
       } | null;
     },
-    breakdown: { commissionAmount: number },
+    breakdown: { commissionAmount: number; deliverySubsidyAmount?: number },
     fees: { collectionFee: number | null; payoutFee: number | null },
   ) {
     const { collectionFee, payoutFee } = fees;
@@ -1112,8 +1129,17 @@ export class RestaurantPayoutService {
     // Les frais de livraison encaissés sont un revenu de Lilia : le client les
     // paie, le vendeur ne les reçoit pas (`grossAmount = subTotal`). Ce qu'ils
     // coûtent réellement — la course — est le poste manquant ci-dessous.
+    //
+    // F3-02 : la part de la course offerte par le vendeur est retenue sur son
+    // reversement — Lilia l'encaisse au même titre que la part du client. La
+    // course est donc payée `deliveryFee + vendorDeliverySubsidy`, soit le
+    // prix de base, et c'est lui qu'il faut compter.
+    const vendorDeliverySubsidy = breakdown.deliverySubsidyAmount ?? 0;
     const revenue =
-      order.serviceFee + breakdown.commissionAmount + order.deliveryFee;
+      order.serviceFee +
+      breakdown.commissionAmount +
+      order.deliveryFee +
+      vendorDeliverySubsidy;
 
     // ── Coûts variables connus ────────────────────────────────────────────
     // ⚠️ `discountAmount` est la remise TOTALE : promo + fidélité.
@@ -1195,6 +1221,8 @@ export class RestaurantPayoutService {
       restaurantCommission: breakdown.commissionAmount,
       // Encaissés auprès du client, jamais reversés au vendeur.
       deliveryFeeCollected: order.deliveryFee,
+      /** Part de la course offerte par le vendeur, retenue sur son reversement (F3-02). */
+      vendorDeliverySubsidy,
       collectionFee,
       payoutFee,
       // Remises offertes par Lilia. `discountAmount` inclut `loyaltyDiscount` :

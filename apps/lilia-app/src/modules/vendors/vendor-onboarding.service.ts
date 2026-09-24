@@ -42,6 +42,8 @@ import {
   UpdateVendorIdentityDto,
   UpdateVendorLocationDto,
 } from './dto/onboarding.dto';
+import { UpdateDeliverySubsidyDto } from '../delivery-pricing/dto/update-delivery-subsidy.dto';
+import { deliverySubsidyData } from '../delivery-pricing/delivery-subsidy';
 
 @Injectable()
 export class VendorOnboardingService {
@@ -600,6 +602,28 @@ export class VendorOnboardingService {
    * pas vérifier, et l'économie d'une poignée de colonnes sur une écriture ne
    * la justifiait pas.
    */
+  /**
+   * « Offrir une partie de la livraison » (F3-02, R-02.4). La part offerte
+   * est figée sur chaque commande et retenue sur le reversement du vendeur ;
+   * modifier ce réglage ne touche que les commandes suivantes.
+   */
+  async updateDeliverySubsidy(
+    restaurantId: string,
+    dto: UpdateDeliverySubsidyDto,
+  ) {
+    await this.getOrThrow(restaurantId);
+    return this.prisma.restaurant.update({
+      where: { id: restaurantId },
+      data: deliverySubsidyData(dto),
+      select: {
+        id: true,
+        deliverySubsidyMode: true,
+        deliverySubsidyXaf: true,
+        freeDeliveryThresholdXaf: true,
+      },
+    });
+  }
+
   private async getOrThrow(restaurantId: string) {
     const vendor = await this.prisma.restaurant.findUnique({
       where: { id: restaurantId },

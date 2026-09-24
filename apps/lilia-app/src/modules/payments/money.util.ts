@@ -106,6 +106,11 @@ export interface PayoutBreakdown {
   commissionPercent: number;
   /** Commission retenue par Lilia Food. */
   commissionAmount: number;
+  /**
+   * Part de la livraison offerte par le vendeur (F3-02), retenue sur son
+   * reversement. `0` pour toute commande antérieure au mode PLATFORM.
+   */
+  deliverySubsidyAmount: number;
   /** Montant NET effectivement envoyé au vendeur. */
   payoutAmount: number;
 }
@@ -116,8 +121,14 @@ export interface PayoutBreakdown {
  * ```
  * grossAmount    = montant des produits (Order.subTotal)
  * commission     = grossAmount × commissionPercent
- * payoutAmount   = grossAmount − commission
+ * payoutAmount   = grossAmount − commission − deliverySubsidy   (≥ 0)
  * ```
+ *
+ * `deliverySubsidy` (F3-02) est la part de la course que le vendeur a choisi
+ * d'offrir à son client (`Order.vendorDeliverySubsidyXaf`). C'est la seule
+ * déduction qui ne soit pas une commission : le vendeur l'a décidée, il la
+ * finance. Le reversement ne descend jamais sous 0 — le cas ne peut survenir
+ * que sur un panier minuscule, et la plateforme en absorbe alors le reste.
  *
  * **Ce qui n'entre PAS dans le calcul**, et c'est délibéré :
  *  · `serviceFee` — frais payés en plus par le client, ils appartiennent à
@@ -135,11 +146,22 @@ export interface PayoutBreakdown {
 export function computePayoutBreakdown(params: {
   subTotalXaf: number;
   commissionPercent: number;
+  deliverySubsidyXaf?: number;
 }): PayoutBreakdown {
   const grossAmount = toXaf(params.subTotalXaf, 'sous-total de la commande');
   const bps = percentToBasisPoints(params.commissionPercent);
   const commissionAmount = applyBasisPoints(grossAmount, bps);
-  const payoutAmount = grossAmount - commissionAmount;
+  // Colonne `Int` figée à la commande : une valeur décimale ici trahit une
+  // donnée corrompue, on refuse plutôt que d'arrondir en silence.
+  const subsidy = params.deliverySubsidyXaf ?? 0;
+  if (!Number.isInteger(subsidy)) {
+    throw new Error(`subvention de livraison invalide : ${subsidy}`);
+  }
+  const deliverySubsidyAmount = Math.min(
+    toXaf(subsidy, 'subvention de livraison'),
+    grossAmount - commissionAmount,
+  );
+  const payoutAmount = grossAmount - commissionAmount - deliverySubsidyAmount;
 
   return {
     grossAmount,
@@ -147,6 +169,7 @@ export function computePayoutBreakdown(params: {
     // c'est lui qu'on fige sur le reversement, il doit être vrai.
     commissionPercent: bps / 100,
     commissionAmount,
+    deliverySubsidyAmount,
     payoutAmount,
   };
 }

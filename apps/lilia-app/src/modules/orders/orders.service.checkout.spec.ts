@@ -25,6 +25,7 @@ import { ReferralService } from '../users/referral.service';
 import { RefundsService } from '../refunds/refunds.service';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { OutboxService } from '../outbox/outbox.service';
+import { DeliveryPricingService } from '../delivery-pricing/delivery-pricing.service';
 
 /**
  * Tests de CARACTÉRISATION de createOrderFromCart (le checkout) — LIL-134.
@@ -95,6 +96,8 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
   const destinationService = {
     resolveForAddress: jest.fn(),
   };
+  // Tarification plateforme (F3-02). `null` = mode historique VENDOR_LEGACY.
+  const deliveryPricing = { quoteForVendor: jest.fn() };
 
   const SETTINGS = {
     serviceFeePercent: 8,
@@ -170,6 +173,7 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
     });
     tx.order.create.mockResolvedValue(createdOrder);
     tx.$executeRaw.mockResolvedValue(1); // solde suffisant par défaut
+    deliveryPricing.quoteForVendor.mockResolvedValue(null);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -224,6 +228,7 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
           provide: DeliveryDestinationService,
           useValue: destinationService,
         },
+        { provide: DeliveryPricingService, useValue: deliveryPricing },
       ],
     }).compile();
 
@@ -547,5 +552,128 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
       'order.created',
       expect.anything(),
     );
+  });
+
+  /**
+   * F3-02 — la plateforme fixe le prix de base de la course.
+   *
+   * `deliveryFeeGross` est l'assiette de la paie livreur (35 % / 65 % selon
+   * son statut, décision D3) : il doit valoir le prix de BASE, jamais ce que
+   * paie le client après la part offerte par le vendeur.
+   */
+  describe('tarification plateforme (F3-02)', () => {
+    const QUOTE = {
+      tariffVersion: 4,
+      baseFeeXaf: 1500,
+      subsidyXaf: 300,
+      customerFeeXaf: 1200,
+      distanceKm: 4.2,
+      basis: 'BAND' as const,
+    };
+
+    beforeEach(() => {
+      platformSettings.getSettings.mockResolvedValue({
+        ...SETTINGS,
+        deliveryPricingMode: 'PLATFORM',
+      });
+      deliveryPricing.quoteForVendor.mockResolvedValue(QUOTE);
+      calculator.calculate.mockImplementation(
+        (_items: unknown, fee: number) => ({
+          subTotal: 10000,
+          deliveryFee: fee,
+          serviceFee: 800,
+        }),
+      );
+    });
+
+    it('le client paie le prix de base moins la part offerte par le vendeur', async () => {
+      await service.createOrderFromCart('uid', baseDto, 'key-f302-a');
+      const data = tx.order.create.mock.calls[0][0].data;
+      expect(data.deliveryFee).toBe(1200);
+      expect(data.total).toBe(10000 + 1200 + 800);
+    });
+
+    it('la paie livreur repose sur le prix de BASE, pas sur le prix client', async () => {
+      await service.createOrderFromCart('uid', baseDto, 'key-f302-b');
+      expect(tx.order.create.mock.calls[0][0].data.deliveryFeeGross).toBe(1500);
+    });
+
+    it('fige la version de grille, la distance, la base et la subvention', async () => {
+      await service.createOrderFromCart('uid', baseDto, 'key-f302-c');
+      expect(tx.order.create.mock.calls[0][0].data).toMatchObject({
+        deliveryTariffVersion: 4,
+        deliveryDistanceKm: 4.2,
+        deliveryFeeBaseXaf: 1500,
+        vendorDeliverySubsidyXaf: 300,
+      });
+    });
+
+    it('le devis reçoit le sous-total du panier et la destination résolue', async () => {
+      destinationService.resolveForAddress.mockResolvedValueOnce({
+        address: 'x',
+        latitude: -4.2454,
+        longitude: 15.2629,
+        precision: 'EXACT',
+        quartierId: 'q-moungali',
+        quartierNom: 'Moungali',
+        landmark: null,
+      });
+      await service.createOrderFromCart('uid', baseDto, 'key-f302-d');
+      expect(deliveryPricing.quoteForVendor).toHaveBeenCalledWith(
+        expect.objectContaining({
+          subTotalXaf: 10000,
+          destination: {
+            quartierId: 'q-moungali',
+            latitude: -4.2454,
+            longitude: 15.2629,
+          },
+        }),
+      );
+    });
+
+    it('le prix du vendeur (fixe ou zone) n’est plus lu', async () => {
+      validator.validateRestaurantOpen.mockResolvedValue({
+        id: 'resto1',
+        nom: 'Resto',
+        fixedDeliveryFee: 0,
+        deliveryPriceMode: 'ZONE_BASED',
+        minimumOrderAmount: 0,
+      });
+      destinationService.resolveForAddress.mockResolvedValueOnce({
+        address: 'x',
+        latitude: null,
+        longitude: null,
+        precision: 'UNKNOWN',
+        quartierId: 'q-1',
+        quartierNom: 'Q',
+        landmark: null,
+      });
+      await service.createOrderFromCart('uid', baseDto, 'key-f302-e');
+      // `quartiersService` est un objet vide : l'appeler lèverait.
+      expect(tx.order.create.mock.calls[0][0].data.deliveryFee).toBe(1200);
+    });
+
+    it('retrait au comptoir : aucun devis, aucune livraison facturée', async () => {
+      await service.createOrderFromCart(
+        'uid',
+        { ...baseDto, isDelivery: false },
+        'key-f302-f',
+      );
+      expect(deliveryPricing.quoteForVendor).not.toHaveBeenCalled();
+      expect(tx.order.create.mock.calls[0][0].data).toMatchObject({
+        deliveryTariffVersion: null,
+        vendorDeliverySubsidyXaf: 0,
+      });
+    });
+  });
+
+  it('mode historique : la base payée au livreur reste le prix calculé, rien de figé', async () => {
+    await service.createOrderFromCart('uid', baseDto, 'key-legacy');
+    expect(tx.order.create.mock.calls[0][0].data).toMatchObject({
+      deliveryFeeGross: 1000,
+      deliveryTariffVersion: null,
+      deliveryFeeBaseXaf: null,
+      vendorDeliverySubsidyXaf: 0,
+    });
   });
 });

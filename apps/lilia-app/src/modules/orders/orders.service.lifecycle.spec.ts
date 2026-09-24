@@ -24,6 +24,7 @@ import { PlatformSettingsService } from '../platform-settings/platform-settings.
 import { PreorderValidatorService } from '../vendors/preorder-validator.service';
 import { QuartiersService } from '../quartiers/quartiers.service';
 import { DeliveryDestinationService } from './delivery-destination.service';
+import { DeliveryPricingService } from '../delivery-pricing/delivery-pricing.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
 import { ReferralService } from '../users/referral.service';
 import { RefundsService } from '../refunds/refunds.service';
@@ -148,6 +149,10 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
         {
           provide: DeliveryDestinationService,
           useValue: {},
+        },
+        {
+          provide: DeliveryPricingService,
+          useValue: { quoteForVendor: jest.fn().mockResolvedValue(null) },
         },
       ],
     }).compile();

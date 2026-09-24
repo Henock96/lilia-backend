@@ -78,6 +78,30 @@ describe('getOrderFinancials — contribution', () => {
     });
   });
 
+  /**
+   * F3-02 — le vendeur finance la part de la course qu'il offre : elle est
+   * retenue sur son reversement, donc encaissée par Lilia au même titre que la
+   * part payée par le client. Sans elle, le revenu livraison serait sous-évalué
+   * exactement de ce que le vendeur offre.
+   */
+  describe('subvention de livraison du vendeur (F3-02)', () => {
+    it('la part retenue au vendeur entre dans le revenu', () => {
+      const result = contribution(
+        { ...TYPICAL, deliveryFee: 700 },
+        { commissionAmount: 400, deliverySubsidyAmount: 300 } as never,
+        FEES,
+      );
+      // 320 + 400 + 700 (client) + 300 (vendeur) = la même course à 1 000
+      expect(result.revenue).toBe(1720);
+      expect(result.vendorDeliverySubsidy).toBe(300);
+    });
+
+    it('commande antérieure (aucune subvention) : revenu inchangé', () => {
+      const result = contribution(TYPICAL, COMMISSION, FEES);
+      expect(result.vendorDeliverySubsidy).toBe(0);
+    });
+  });
+
   describe('remises — coût omis, jamais compté deux fois', () => {
     it('déduit `discountAmount` du revenu', () => {
       const result = contribution(

@@ -35,6 +35,7 @@ describe('PlatformSettingsService', () => {
       updateMany: jest.Mock;
       findUniqueOrThrow: jest.Mock;
     };
+    deliveryTariff: { count: jest.Mock };
   };
 
   beforeEach(async () => {
@@ -49,6 +50,7 @@ describe('PlatformSettingsService', () => {
             Promise.resolve(row({ updatedAt: WRITTEN_AT })),
           ),
       },
+      deliveryTariff: { count: jest.fn().mockResolvedValue(1) },
     };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -245,6 +247,42 @@ describe('PlatformSettingsService', () => {
       await expect(
         service.updateSettings({ serviceFeePercent: 12 }),
       ).resolves.toBeDefined();
+    });
+  });
+
+  /**
+   * F3-02 — bascule de la tarification de livraison.
+   *
+   * En mode PLATFORM, un checkout sans grille publiée est refusé (jamais de
+   * repli sur le prix vendeur). Basculer sans grille fermerait donc la caisse
+   * de toute la plateforme : on refuse la bascule elle-même.
+   */
+  describe('deliveryPricingMode (F3-02)', () => {
+    it('refuse de passer en PLATFORM sans grille publiée (409)', async () => {
+      prisma.deliveryTariff.count.mockResolvedValue(0);
+      await expect(
+        service.updateSettings({ deliveryPricingMode: 'PLATFORM' }),
+      ).rejects.toThrow(ConflictException);
+      expect(prisma.deliveryTariff.count).toHaveBeenCalledWith({
+        where: { status: 'PUBLISHED' },
+      });
+      expect(prisma.platformSettings.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('passe en PLATFORM quand une grille est publiée', async () => {
+      await service.updateSettings({ deliveryPricingMode: 'PLATFORM' });
+      expect(prisma.platformSettings.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { deliveryPricingMode: 'PLATFORM' },
+        }),
+      );
+    });
+
+    it('le retour à VENDOR_LEGACY n’exige rien : c’est la sortie de secours', async () => {
+      prisma.deliveryTariff.count.mockResolvedValue(0);
+      await service.updateSettings({ deliveryPricingMode: 'VENDOR_LEGACY' });
+      expect(prisma.platformSettings.updateMany).toHaveBeenCalled();
+      expect(prisma.deliveryTariff.count).not.toHaveBeenCalled();
     });
   });
 });
