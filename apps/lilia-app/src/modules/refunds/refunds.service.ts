@@ -4,8 +4,13 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, RefundStatus } from '@prisma/client';
+import { Prisma, RefundReasonCode, RefundStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  AUTO_REFUND_REASON_CODES,
+  COUNTED_REFUND_STATUSES,
+  refundConflictsWithPayout,
+} from './refund-lines.policy';
 
 /**
  * Remboursements (fix H5 — audit du 28/08/2026).
@@ -30,13 +35,24 @@ export class RefundsService {
   /**
    * Ouvre un remboursement pour une commande annulée après paiement.
    * Sans paiement encaissé, il n'y a rien à rembourser : on ne crée rien.
-   * Idempotent (`Refund.orderId` est `@unique`).
+   *
+   * Idempotent : un seul remboursement « total automatique » par commande
+   * (index partiel `Refund_orderId_auto_uq`, F3-06). Rejouer l'annulation —
+   * l'outbox le fait par construction — rend la ligne existante, même
+   * `COMPLETED`, au lieu d'en ouvrir une seconde.
+   *
+   * Le montant est ce qui reste dû : l'encaissement, moins d'éventuels
+   * remboursements partiels déjà comptés.
    */
   async openForCancelledOrder(params: {
     orderId: string;
     reason: string;
     requestedBy?: string | null;
+    reasonCode?: RefundReasonCode;
   }): Promise<{ id: string; amount: number } | null> {
+    const existing = await this.findAutomaticRefund(params.orderId);
+    if (existing) return existing;
+
     const payment = await this.prisma.payment.findFirst({
       where: { orderId: params.orderId, status: 'SUCCESS' },
       orderBy: { createdAt: 'desc' },
@@ -45,13 +61,24 @@ export class RefundsService {
     // Aucun encaissement : commande expirée ou annulée avant paiement.
     if (!payment || payment.amount <= 0) return null;
 
+    const refunded = await this.prisma.refund.aggregate({
+      where: {
+        orderId: params.orderId,
+        status: { in: COUNTED_REFUND_STATUSES },
+      },
+      _sum: { amount: true },
+    });
+    const amount = payment.amount - (refunded._sum.amount ?? 0);
+    if (amount <= 0) return null;
+
     try {
       const refund = await this.prisma.refund.create({
         data: {
           orderId: params.orderId,
           paymentId: payment.id,
-          amount: payment.amount,
+          amount,
           reason: params.reason,
+          reasonCode: params.reasonCode ?? RefundReasonCode.ORDER_CANCELLED,
           requestedBy: params.requestedBy ?? null,
           status: RefundStatus.PENDING,
         },
@@ -66,14 +93,24 @@ export class RefundsService {
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
       ) {
-        // Déjà ouvert : annulation rejouée.
-        const existing = await this.prisma.refund.findUnique({
-          where: { orderId: params.orderId },
-        });
-        return existing ? { id: existing.id, amount: existing.amount } : null;
+        // Déjà ouvert : annulation rejouée en concurrence. (Un P2002 sur
+        // l'index « en vol » — un remboursement partiel non soldé — remonte :
+        // l'outbox rejouera une fois ce dernier traité.)
+        const replayed = await this.findAutomaticRefund(params.orderId);
+        if (replayed) return replayed;
       }
       throw error;
     }
+  }
+
+  private async findAutomaticRefund(
+    orderId: string,
+  ): Promise<{ id: string; amount: number } | null> {
+    const found = await this.prisma.refund.findFirst({
+      where: { orderId, reasonCode: { in: AUTO_REFUND_REASON_CODES } },
+      select: { id: true, amount: true },
+    });
+    return found ?? null;
   }
 
   /** File de traitement admin, la plus ancienne d'abord. */
@@ -91,6 +128,13 @@ export class RefundsService {
         skip: (page - 1) * limit,
         take: limit,
         include: {
+          lines: {
+            include: {
+              orderItem: {
+                select: { variant: true, product: { select: { nom: true } } },
+              },
+            },
+          },
           order: {
             select: {
               id: true,
@@ -113,7 +157,7 @@ export class RefundsService {
   async findOne(id: string) {
     const refund = await this.prisma.refund.findUnique({
       where: { id },
-      include: { order: true, payment: true },
+      include: { order: true, payment: true, lines: true },
     });
     if (!refund) throw new NotFoundException('Remboursement introuvable.');
     return { data: refund };
@@ -148,8 +192,9 @@ export class RefundsService {
     // main : c'est précisément l'issue d'un arbitrage (Lilia rembourse à sa
     // charge), tracée dans le journal d'audit par le contrôleur.
     if (
-      status === RefundStatus.COMPLETED ||
-      status === RefundStatus.PROCESSING
+      (status === RefundStatus.COMPLETED ||
+        status === RefundStatus.PROCESSING) &&
+      refundConflictsWithPayout(refund)
     ) {
       const payout = await this.prisma.restaurantPayout.findUnique({
         where: { orderId: refund.orderId },

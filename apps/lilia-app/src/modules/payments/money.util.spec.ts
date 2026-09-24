@@ -26,8 +26,26 @@ describe('money.util — arithmétique du reversement', () => {
         commissionPercent: 10,
         commissionAmount: 500,
         deliverySubsidyAmount: 0,
+        refundDeductionAmount: 0,
         payoutAmount: 4500,
       });
+    });
+
+    it('F3-06 — retenue des remboursements vendeur, plancher à 0', () => {
+      expect(
+        computePayoutBreakdown({
+          subTotalXaf: 5000,
+          commissionPercent: 10,
+          refundDeductionXaf: 1500,
+        }),
+      ).toMatchObject({ refundDeductionAmount: 1500, payoutAmount: 3000 });
+      expect(
+        computePayoutBreakdown({
+          subTotalXaf: 5000,
+          commissionPercent: 10,
+          refundDeductionXaf: 9000,
+        }),
+      ).toMatchObject({ refundDeductionAmount: 4500, payoutAmount: 0 });
     });
 
     it.each([

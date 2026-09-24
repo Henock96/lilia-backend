@@ -15,6 +15,8 @@ import {
   PaymentEventSource,
   PayoutStatus,
   Prisma,
+  RefundBearer,
+  RefundReasonCode,
   RefundStatus,
 } from '@prisma/client';
 import * as Sentry from '@sentry/nestjs';
@@ -33,6 +35,57 @@ import {
 import { PaymentEventService } from './payment-event.service';
 import { lockOrderRow } from '../../orders/order-row-lock';
 import { maskPhone, maskRef, PaymentStatus } from './payment.service';
+import {
+  IN_FLIGHT_REFUND_STATUSES,
+  refundConflictsWithPayout,
+} from '../../refunds/refund-lines.policy';
+
+/** Ce qu'un reversement doit savoir des remboursements de sa commande. */
+export interface PayoutRefundView {
+  status: RefundStatus;
+  bearer: RefundBearer;
+  reasonCode: RefundReasonCode;
+  amount: number;
+}
+
+/**
+ * Remboursements × reversement vendeur (F3-06).
+ *
+ *  - un remboursement **en vol** qui touche au vendeur (à sa charge, ou sur une
+ *    commande qu'il ne devait pas être payé) bloque le reversement : son montant
+ *    n'est pas encore fixé ;
+ *  - les remboursements **versés** à sa charge sont retenus sur le virement.
+ *
+ * Un geste de la plateforme ne touche pas au vendeur : ni blocage, ni retenue.
+ * C'est aussi ce qui laisse payer le vendeur d'une livraison échouée dont il
+ * ne répond pas (F3-05) pendant que le client est remboursé.
+ */
+export function refundGateForPayout(refunds: PayoutRefundView[]): {
+  blocked: boolean;
+  deductionXaf: number;
+} {
+  return {
+    blocked: refunds.some(
+      (r) =>
+        IN_FLIGHT_REFUND_STATUSES.includes(r.status) &&
+        refundConflictsWithPayout(r),
+    ),
+    deductionXaf: refunds
+      .filter(
+        (r) =>
+          r.status === RefundStatus.COMPLETED &&
+          r.bearer === RefundBearer.VENDOR,
+      )
+      .reduce((sum, r) => sum + r.amount, 0),
+  };
+}
+
+const PAYOUT_REFUND_SELECT = {
+  status: true,
+  bearer: true,
+  reasonCode: true,
+  amount: true,
+} as const;
 
 /**
  * Statuts de commande à partir desquels un vendeur peut être reversé.
@@ -75,6 +128,7 @@ export interface PayoutEligibility {
     grossAmount: number;
     commissionPercent: number;
     commissionAmount: number;
+    refundDeductionAmount?: number;
     payoutAmount: number;
     currency: string;
   };
@@ -137,7 +191,7 @@ export class RestaurantPayoutService {
           },
         },
         Payment: { select: { status: true, amount: true } },
-        refund: { select: { status: true } },
+        refunds: { select: PAYOUT_REFUND_SELECT },
         payout: { select: { id: true, status: true } },
       },
     });
@@ -150,10 +204,12 @@ export class RestaurantPayoutService {
       };
     }
 
+    const refundGate = refundGateForPayout(order.refunds);
     const breakdown = this.buildBreakdown(
       order.subTotal,
       order.commissionPercent,
       order.vendorDeliverySubsidyXaf,
+      refundGate.deductionXaf,
     );
     const withBreakdown = (result: PayoutEligibility): PayoutEligibility => ({
       ...result,
@@ -213,16 +269,12 @@ export class RestaurantPayoutService {
       });
     }
 
-    // Un remboursement ouvert signifie que l'argent est dû au client. Reverser
-    // le vendeur dans cet intervalle, c'est payer deux fois la même commande.
-    // Exception F3-05 : après un échec dont le vendeur ne répond pas, le
-    // remboursement du client est une perte de la plateforme (ou du livreur),
-    // pas une raison de retenir ce qui est dû au vendeur.
-    if (
-      !failed &&
-      order.refund &&
-      order.refund.status !== RefundStatus.REJECTED
-    ) {
+    // Un remboursement en vol qui touche au vendeur : son montant n'est pas
+    // encore fixé, et reverser maintenant, c'est payer ce qui sera peut-être
+    // retenu. Un geste de la plateforme — ou le remboursement d'un échec dont
+    // le vendeur ne répond pas (F3-05) — ne retient rien : pas de blocage
+    // (`refundGateForPayout`).
+    if (refundGate.blocked) {
       return withBreakdown({
         eligible: false,
         code: 'ORDER_REFUNDED',
@@ -302,11 +354,14 @@ export class RestaurantPayoutService {
     // F3-02 : part de la course offerte par le vendeur, figée à la commande.
     // Absente des lignes antérieures (défaut 0 en base).
     vendorDeliverySubsidyXaf: number | null | undefined,
+    // F3-06 : remboursements versés à la charge du vendeur.
+    refundDeductionXaf = 0,
   ) {
     return computePayoutBreakdown({
       subTotalXaf: toXaf(subTotal, 'sous-total'),
       commissionPercent: orderCommissionPercent,
       deliverySubsidyXaf: vendorDeliverySubsidyXaf ?? 0,
+      refundDeductionXaf,
     });
   }
 
@@ -345,6 +400,7 @@ export class RestaurantPayoutService {
             payoutProvider: true,
           },
         },
+        refunds: { select: PAYOUT_REFUND_SELECT },
       },
     });
 
@@ -355,6 +411,7 @@ export class RestaurantPayoutService {
       order.subTotal,
       order.commissionPercent,
       order.vendorDeliverySubsidyXaf,
+      refundGateForPayout(order.refunds).deductionXaf,
     );
 
     if (breakdown.payoutAmount <= 0) {
@@ -390,9 +447,21 @@ export class RestaurantPayoutService {
     try {
       payout = await this.prisma.$transaction(async (tx) => {
         const locked = await lockOrderRow(tx, order.id);
+        // F3-05 — un échec conclu reste payable au vendeur s'il n'en répond
+        // pas. Cette relecture sous verrou l'oubliait : `checkEligibility`
+        // disait « éligible », le virement répondait « pas prête ».
+        const failedPayable =
+          locked?.status === OrderStatus.ECHEC_LIVRAISON &&
+          (
+            await tx.order.findUniqueOrThrow({
+              where: { id: order.id },
+              select: { failureLiability: true },
+            })
+          ).failureLiability !== 'VENDOR';
         if (
           !locked ||
-          !PAYOUT_ELIGIBLE_ORDER_STATUSES.includes(locked.status)
+          (!failedPayable &&
+            !PAYOUT_ELIGIBLE_ORDER_STATUSES.includes(locked.status))
         ) {
           throw new ConflictException({
             message:
@@ -405,14 +474,26 @@ export class RestaurantPayoutService {
                 : 'ORDER_NOT_READY',
           });
         }
-        const refund = await tx.refund.findUnique({
-          where: { orderId: order.id },
-          select: { status: true },
-        });
-        if (refund && refund.status !== RefundStatus.REJECTED) {
+        // F3-06 — les remboursements relus sous verrou : un remboursement à la
+        // charge du vendeur ouvert (ou versé) depuis la lecture ci-dessus
+        // changerait ce qui lui revient.
+        const lockedGate = refundGateForPayout(
+          await tx.refund.findMany({
+            where: { orderId: order.id },
+            select: PAYOUT_REFUND_SELECT,
+          }),
+        );
+        if (lockedGate.blocked) {
           throw new ConflictException({
             message:
               'Un remboursement est ouvert sur cette commande. Traitez-le avant de payer le vendeur.',
+            code: 'ORDER_REFUNDED',
+          });
+        }
+        if (lockedGate.deductionXaf !== breakdown.refundDeductionAmount) {
+          throw new ConflictException({
+            message:
+              'Un remboursement vient de modifier ce qui revient au vendeur. Rechargez la fiche.',
             code: 'ORDER_REFUNDED',
           });
         }
@@ -455,6 +536,7 @@ export class RestaurantPayoutService {
             commissionPercent: breakdown.commissionPercent,
             commissionAmount: breakdown.commissionAmount,
             deliverySubsidyAmount: breakdown.deliverySubsidyAmount,
+            refundDeductionAmount: breakdown.refundDeductionAmount,
             amount: breakdown.payoutAmount,
             currency: 'XAF',
             phoneNumber: account.payoutPhoneNumber,
@@ -490,6 +572,7 @@ export class RestaurantPayoutService {
       `💸 Reversement demandé — commande ${order.id}, vendeur ${order.restaurant.nom}, ` +
         `brut ${breakdown.grossAmount}, commission ${breakdown.commissionPercent}% ` +
         `(${breakdown.commissionAmount}), livraison offerte ${breakdown.deliverySubsidyAmount}, ` +
+        `retenue remboursements ${breakdown.refundDeductionAmount}, ` +
         `net ${breakdown.payoutAmount} XAF, ` +
         `tel ${maskPhone(payout.phoneNumber)}, ` +
         `ref ${maskRef(providerPayoutId)}, par ${params.adminUserId}`,
@@ -947,7 +1030,19 @@ export class RestaurantPayoutService {
           },
         },
         payout: true,
-        refund: { select: { id: true, status: true, amount: true } },
+        refunds: {
+          orderBy: { createdAt: 'asc' },
+          select: {
+            id: true,
+            status: true,
+            amount: true,
+            bearer: true,
+            reasonCode: true,
+            incidentId: true,
+            createdAt: true,
+            processedAt: true,
+          },
+        },
         // Snapshot économique de la course. On ne sélectionne QUE l'économie :
         // la position GPS et les horodatages n'ont rien à faire dans un
         // récapitulatif financier, et les charger inviterait à les y afficher.
@@ -980,12 +1075,14 @@ export class RestaurantPayoutService {
           commissionPercent: order.payout.commissionPercent,
           commissionAmount: order.payout.commissionAmount,
           deliverySubsidyAmount: order.payout.deliverySubsidyAmount,
+          refundDeductionAmount: order.payout.refundDeductionAmount,
           payoutAmount: order.payout.amount,
         }
       : this.buildBreakdown(
           order.subTotal,
           order.commissionPercent,
           order.vendorDeliverySubsidyXaf,
+          refundGateForPayout(order.refunds).deductionXaf,
         );
 
     const collectionFee = collection?.collectionFeeXaf ?? null;
@@ -1024,6 +1121,7 @@ export class RestaurantPayoutService {
         commissionPercent: breakdown.commissionPercent,
         commissionAmount: breakdown.commissionAmount,
         deliverySubsidyAmount: breakdown.deliverySubsidyAmount,
+        refundDeductionAmount: breakdown.refundDeductionAmount,
         payoutAmount: breakdown.payoutAmount,
         payoutAccount: {
           phoneNumber: order.restaurant.payoutPhoneNumber
@@ -1059,7 +1157,13 @@ export class RestaurantPayoutService {
         payoutFee,
       }),
 
-      refund: order.refund,
+      // F3-06 — N remboursements par commande. `refund` (le plus récent) reste
+      // pour les écrans antérieurs, qui n'en connaissaient qu'un.
+      refunds: order.refunds,
+      refund: order.refunds[order.refunds.length - 1] ?? null,
+      refundedXaf: order.refunds
+        .filter((r) => r.status !== RefundStatus.REJECTED)
+        .reduce((sum, r) => sum + r.amount, 0),
       eligibility,
     };
   }
@@ -1124,7 +1228,7 @@ export class RestaurantPayoutService {
       discountAmount: number;
       loyaltyDiscount: number;
       isDelivery: boolean;
-      refund: { status: RefundStatus; amount: number } | null;
+      refunds: { status: RefundStatus; amount: number }[];
       /**
        * Snapshot économique de la course. `null` quand aucune course n'existe
        * (retrait au comptoir, ou livraison faite hors système — 7 commandes en
@@ -1139,7 +1243,11 @@ export class RestaurantPayoutService {
         driverEconomicsFrozenAt: Date | null;
       } | null;
     },
-    breakdown: { commissionAmount: number; deliverySubsidyAmount?: number },
+    breakdown: {
+      commissionAmount: number;
+      deliverySubsidyAmount?: number;
+      refundDeductionAmount?: number;
+    },
     fees: { collectionFee: number | null; payoutFee: number | null },
   ) {
     const { collectionFee, payoutFee } = fees;
@@ -1171,8 +1279,14 @@ export class RestaurantPayoutService {
     // `PENDING` ou `PROCESSING` = une dette, pas encore une sortie d'argent :
     // la déduire annoncerait une perte qui pourrait ne jamais survenir (un
     // remboursement peut être `REJECTED`).
+    //
+    // F3-06 — la part retenue sur le reversement du vendeur n'est pas une
+    // perte de Lilia : elle ressort de l'argent qu'elle aurait versé.
     const refundPaid =
-      order.refund?.status === RefundStatus.COMPLETED ? order.refund.amount : 0;
+      order.refunds
+        .filter((r) => r.status === RefundStatus.COMPLETED)
+        .reduce((sum, r) => sum + r.amount, 0) -
+      (breakdown.refundDeductionAmount ?? 0);
 
     // ── Coût du livreur — LU, jamais recalculé ────────────────────────────
     //

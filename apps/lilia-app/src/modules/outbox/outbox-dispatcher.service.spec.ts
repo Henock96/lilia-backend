@@ -460,6 +460,7 @@ describe('OutboxDispatcherService', () => {
         orderId: 'o-1',
         reason: 'Annulation par restaurateur',
         requestedBy: 'u-v',
+        reasonCode: 'ORDER_CANCELLED',
       });
       expect(outbox.markSent).toHaveBeenCalledWith('evt-1');
     });

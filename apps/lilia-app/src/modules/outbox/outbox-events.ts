@@ -9,8 +9,8 @@
  * la latence) : l'outbox est le filet, pas le chemin principal. C'est sûr
  * parce que chaque effet est **idempotent** par contrainte d'unicité en base
  * (`LoyaltyTransaction @@unique([orderId, type])`, `ReferralReward.orderId`,
- * `Refund @@unique([orderId])`) : le rejouer ne crédite ni ne rembourse deux
- * fois.
+ * index partiel `Refund_orderId_auto_uq`) : le rejouer ne crédite ni ne
+ * rembourse deux fois.
  */
 
 /** Commande livrée → points de fidélité + récompense de parrainage. */

@@ -5,7 +5,13 @@ import { PrismaService } from '../../prisma/prisma.service';
 export interface AdminAuditEntry {
   actorId: string;
   action: AdminAuditAction;
-  targetType: 'User' | 'Restaurant' | 'Payment' | 'Order' | 'PublicHoliday';
+  targetType:
+    | 'User'
+    | 'Restaurant'
+    | 'Payment'
+    | 'Order'
+    | 'PublicHoliday'
+    | 'Incident';
   targetId: string;
   reason?: string | null;
   metadata?: Prisma.InputJsonValue;

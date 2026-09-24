@@ -33,7 +33,7 @@ describe('getOrderFinancials — contribution', () => {
    */
   const contribution = (
     order: Record<string, unknown>,
-    breakdown: { commissionAmount: number },
+    breakdown: { commissionAmount: number; refundDeductionAmount?: number },
     fees: { collectionFee: number | null; payoutFee: number | null },
   ) =>
     (
@@ -53,7 +53,7 @@ describe('getOrderFinancials — contribution', () => {
     discountAmount: 0,
     loyaltyDiscount: 0,
     isDelivery: true,
-    refund: null,
+    refunds: [],
   };
   const COMMISSION = { commissionAmount: 400 };
   const FEES = { collectionFee: 120, payoutFee: 75 };
@@ -144,7 +144,7 @@ describe('getOrderFinancials — contribution', () => {
           ...TYPICAL,
           isDelivery: false,
           deliveryFee: 0,
-          refund: { status: 'COMPLETED', amount: 5320 },
+          refunds: [{ status: 'COMPLETED', amount: 5320 }],
         },
         COMMISSION,
         FEES,
@@ -164,7 +164,7 @@ describe('getOrderFinancials — contribution', () => {
           ...TYPICAL,
           isDelivery: false,
           deliveryFee: 0,
-          refund: { status: 'PENDING', amount: 5320 },
+          refunds: [{ status: 'PENDING', amount: 5320 }],
         },
         COMMISSION,
         FEES,
@@ -180,13 +180,46 @@ describe('getOrderFinancials — contribution', () => {
           ...TYPICAL,
           isDelivery: false,
           deliveryFee: 0,
-          refund: { status: 'PROCESSING', amount: 1000 },
+          refunds: [{ status: 'PROCESSING', amount: 1000 }],
         },
         COMMISSION,
         FEES,
       );
 
       expect(result.refundPaid).toBe(0);
+    });
+
+    it('F3-06 — plusieurs remboursements versés s’additionnent', () => {
+      const result = contribution(
+        {
+          ...TYPICAL,
+          refunds: [
+            { status: 'COMPLETED', amount: 1500 },
+            { status: 'COMPLETED', amount: 500 },
+            { status: 'REJECTED', amount: 900 },
+          ],
+        },
+        COMMISSION,
+        FEES,
+      );
+      expect(result.refundPaid).toBe(2000);
+    });
+
+    it('F3-06 — la part retenue au vendeur n’est pas une perte de Lilia', () => {
+      // 1 500 remboursés à la charge du vendeur, retenus sur son reversement :
+      // l'argent rendu au client ressort de ce que Lilia lui aurait versé.
+      const result = contribution(
+        {
+          ...TYPICAL,
+          refunds: [
+            { status: 'COMPLETED', amount: 1500 },
+            { status: 'COMPLETED', amount: 500 },
+          ],
+        },
+        { ...COMMISSION, refundDeductionAmount: 1500 },
+        FEES,
+      );
+      expect(result.refundPaid).toBe(500);
     });
   });
 

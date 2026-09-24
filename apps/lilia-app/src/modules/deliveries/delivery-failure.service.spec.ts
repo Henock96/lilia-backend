@@ -93,7 +93,7 @@ function makeOrder(overrides: Record<string, unknown> = {}) {
     restaurant: { nom: 'Chez Lili' },
     Payment: [{ id: 'pay1', amount: 6000 }],
     payout: null,
-    refund: null,
+    refunds: [],
     delivery: {
       id: 'd1',
       status: 'ECHEC',
@@ -187,6 +187,8 @@ describe('DeliveryFailureService.conclude', () => {
       orderId: 'o1',
       amount: 6000,
       status: 'PENDING',
+      reasonCode: 'DELIVERY_FAILED',
+      bearer: 'DRIVER',
     });
     expect(events.emit).toHaveBeenCalledWith(
       'order.status.updated',
@@ -225,6 +227,19 @@ describe('DeliveryFailureService.conclude', () => {
     expect(r.refundXaf).toBe(0);
     expect(tx.refund.create).not.toHaveBeenCalled();
     expect(tx.delivery.update).not.toHaveBeenCalled();
+  });
+
+  it('F3-06 — échec déjà remboursé : conclure ne rembourse pas une seconde fois', async () => {
+    const { service, tx } = build(
+      makeOrder({
+        refunds: [
+          { status: 'COMPLETED', amount: 6000, reasonCode: 'DELIVERY_FAILED' },
+        ],
+      }),
+    );
+    const r = await service.conclude('o1', ADMIN, 'PLATFORM', false);
+    expect(r.refundXaf).toBe(0);
+    expect(tx.refund.create).not.toHaveBeenCalled();
   });
 
   it('VENDOR déjà payé : refus (pas de clawback avant F3-07)', async () => {

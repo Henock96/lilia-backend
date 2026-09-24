@@ -31,10 +31,11 @@ describe('OpsQueueService', () => {
       noDriverMinutes: 10,
       enRouteMinutes: 60,
       refundPendingMinutes: 120,
+      claimUnansweredMinutes: 120,
     });
   });
 
-  it('huit files, dans l’ordre de l’écran', async () => {
+  it('neuf files, dans l’ordre de l’écran', async () => {
     const { service } = build();
     const buckets = await service.queue(NOW);
     expect(buckets.map((b) => b.key)).toEqual([
@@ -43,6 +44,7 @@ describe('OpsQueueService', () => {
       'en_route_long',
       'delivery_failed',
       'refunds_pending',
+      'claims_unanswered',
       'payouts_failed',
       'incidents_open',
       'outbox_failed',
@@ -75,8 +77,14 @@ describe('OpsQueueService', () => {
       status: 'PENDING',
       createdAt: { lte: ago(120) },
     });
+    // F3-06 — réclamation sans première réponse depuis 2 h.
+    expect(prisma.incident.count.mock.calls[0][0].where).toEqual({
+      type: 'CUSTOMER_CLAIM',
+      status: 'OPEN',
+      createdAt: { lte: ago(120) },
+    });
     // Les incidents ouverts par le scan décrivent déjà les cartes : exclus.
-    expect(prisma.incident.count.mock.calls[0][0].where.type).toEqual({
+    expect(prisma.incident.count.mock.calls[1][0].where.type).toEqual({
       notIn: ['OPS_SLA_BREACH'],
     });
   });

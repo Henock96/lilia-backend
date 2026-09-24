@@ -223,10 +223,13 @@ describeIfDb('Acceptation vendeur (PostgreSQL réel)', () => {
     await effects.dispatchRefundDue(obligation);
     await effects.dispatchRefundDue(obligation); // rejeu (worker redémarré)
 
-    const refund = await prisma.refund.findUniqueOrThrow({
+    const refund = await prisma.refund.findFirstOrThrow({
       where: { orderId: ORDER },
     });
     expect(refund.amount).toBe(6750);
+    expect(refund.reasonCode).toBe('VENDOR_TIMEOUT');
+    // F3-06 — le rejeu n'ouvre pas de second remboursement (index « auto »).
+    expect(await prisma.refund.count({ where: { orderId: ORDER } })).toBe(1);
     expect(refund.status).toBe('PROCESSING');
     expect(refund.processedBy).toBeNull(); // le système, pas un administrateur
     expect(providerCalls).toHaveLength(1);
@@ -245,7 +248,7 @@ describeIfDb('Acceptation vendeur (PostgreSQL réel)', () => {
     });
     await effects.dispatchRefundDue(obligation);
 
-    const refund = await prisma.refund.findUniqueOrThrow({
+    const refund = await prisma.refund.findFirstOrThrow({
       where: { orderId: ORDER },
     });
     expect(refund.status).toBe('PENDING');

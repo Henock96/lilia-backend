@@ -20,6 +20,8 @@ export const CLOUDINARY_FOLDERS = [
   'menus',
   'users',
   'banners',
+  // F3-06 — photos jointes à une réclamation (article abîmé, erroné…).
+  'claims',
 ] as const;
 
 export type CloudinaryFolder = (typeof CLOUDINARY_FOLDERS)[number];

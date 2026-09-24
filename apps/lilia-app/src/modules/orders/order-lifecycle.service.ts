@@ -463,7 +463,9 @@ export class OrderLifecycleService {
                 requestedBy: user.id,
                 // F3-01 / D2 — un refus vendeur ne laisse aucun doute sur la
                 // dette : le remboursement peut partir sans geste humain.
-                ...(options.rejection ? { vendorFault: true } : {}),
+                ...(options.rejection
+                  ? { vendorFault: true, reasonCode: 'VENDOR_REJECTED' }
+                  : {}),
               },
             });
             return updated;
@@ -610,7 +612,12 @@ export class OrderLifecycleService {
       await this.outbox.enqueueInTransaction(tx, {
         type: ORDER_REFUND_DUE_EVENT,
         aggregateId: orderId,
-        payload: { reason, requestedBy: null, vendorFault: true },
+        payload: {
+          reason,
+          requestedBy: null,
+          vendorFault: true,
+          reasonCode: 'VENDOR_TIMEOUT',
+        },
       });
       await this.outbox.enqueueInTransaction(tx, {
         type: ORDER_ACCEPTANCE_EXPIRED_EVENT,

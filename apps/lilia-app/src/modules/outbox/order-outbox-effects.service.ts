@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { OrderStatus, OutboxEvent } from '@prisma/client';
+import { OrderStatus, OutboxEvent, RefundReasonCode } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
@@ -90,8 +90,8 @@ export class OrderOutboxEffectsService implements OnModuleInit {
    *
    * C'était un `.catch(log)` après le commit : si l'ouverture échouait, la
    * dette envers le client n'existait nulle part. `openForCancelledOrder` est
-   * idempotent (`Refund @@unique([orderId])`) et ne crée rien si aucun
-   * encaissement n'a abouti.
+   * idempotent (un seul remboursement total automatique par commande, index
+   * `Refund_orderId_auto_uq`) et ne crée rien si aucun encaissement n'a abouti.
    */
   async dispatchRefundDue(event: OutboxEvent): Promise<void> {
     const payload = (event.payload ?? {}) as {
@@ -99,6 +99,8 @@ export class OrderOutboxEffectsService implements OnModuleInit {
       requestedBy?: string | null;
       /** Refus ou silence du vendeur (F3-01) : dette certaine. */
       vendorFault?: boolean;
+      /** F3-06 — motif précis ; absent des obligations écrites avant. */
+      reasonCode?: RefundReasonCode;
     };
     const order = await this.prisma.order.findUnique({
       where: { id: event.aggregateId },
@@ -115,6 +117,11 @@ export class OrderOutboxEffectsService implements OnModuleInit {
       orderId: event.aggregateId,
       reason: payload.reason ?? 'Annulation',
       requestedBy: payload.requestedBy ?? null,
+      reasonCode:
+        payload.reasonCode ??
+        (payload.vendorFault
+          ? RefundReasonCode.VENDOR_REJECTED
+          : RefundReasonCode.ORDER_CANCELLED),
     });
     if (payload.vendorFault && opened) {
       await this.refundAutomatically(opened.id, event.aggregateId);
