@@ -52,7 +52,8 @@ export class RolesGuard implements CanActivate{
       this.logger.warn(
         `Accès refusé (${request.user?.statusUser}) : ${request.firebaseUser.uid}`,
       );
-      throw new ForbiddenException(revoked);
+      // Code machine : les apps se déconnectent sur lui, sans lire le texte.
+      throw new ForbiddenException({ message: revoked, code: 'ACCOUNT_REVOKED' });
     }
 
     // Fix M6 : sans @Roles(), le guard faisait `return true` même quand le
@@ -68,9 +69,15 @@ export class RolesGuard implements CanActivate{
       if (allowUnsynced) return true;
 
       this.logger.warn(`User Firebase introuvable en DB : ${request.firebaseUser.uid}`);
-      throw new ForbiddenException(
-        'Compte non synchronisé. Appelez POST /users/sync avant cette action.',
-      );
+      // Jeton Firebase valide, aucun compte en base : compte supprimé (ou
+      // anonymisé) pendant que le téléphone gardait sa session. Le code permet
+      // aux apps de revenir à l'écran de connexion au lieu d'afficher ce texte
+      // en boucle (24/09/2026).
+      throw new ForbiddenException({
+        message:
+          'Compte non synchronisé. Appelez POST /users/sync avant cette action.',
+        code: 'ACCOUNT_NOT_SYNCED',
+      });
     }
 
     // Pas de @Roles() sur cette route → authentifié suffit, pas de check rôle
