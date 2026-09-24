@@ -109,6 +109,11 @@ export class DeliveryZonesService {
         estimatedDeliveryTimeMax: restaurant.estimatedDeliveryTimeMax,
         supportsDelivery: restaurant.supportsDelivery,
         supportsPickup: restaurant.supportsPickup,
+        // F3-02 — part de la livraison offerte par le vendeur. Vue
+        // gestionnaire seulement : les lectures publiques la retiennent.
+        deliverySubsidyMode: restaurant.deliverySubsidyMode,
+        deliverySubsidyXaf: restaurant.deliverySubsidyXaf,
+        freeDeliveryThresholdXaf: restaurant.freeDeliveryThresholdXaf,
         zones,
         /**
          * `uncovered` n'est pertinent qu'en `ZONE_BASED`, mais il est calculé

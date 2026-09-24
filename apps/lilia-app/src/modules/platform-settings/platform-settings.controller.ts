@@ -6,6 +6,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Public } from '../auth/decorators/public.decorator';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { PlatformSettingsService } from './platform-settings.service';
+import { DeliveryPricingService } from '../delivery-pricing/delivery-pricing.service';
 import { UpdatePlatformSettingsDto } from './dto/update-platform-settings.dto';
 
 function blankToNull(value: string | null): string | null {
@@ -24,16 +25,26 @@ function blankToNull(value: string | null): string | null {
 @ApiTags('Platform Settings')
 @Controller('platform-settings')
 export class PublicPlatformSettingsController {
-  constructor(private readonly service: PlatformSettingsService) {}
+  constructor(
+    private readonly service: PlatformSettingsService,
+    private readonly deliveryPricing: DeliveryPricingService,
+  ) {}
 
   @Public()
   @Get()
   @ApiOperation({ summary: 'Paramètres publics (estimation côté client)' })
   async get() {
     const settings = await this.service.getSettings();
+    const deliveryFeeFromXaf = await this.deliveryPricing.publicFloorFeeXaf();
     return {
       data: {
         serviceFeePercent: settings.serviceFeePercent,
+        // F3-02 — qui fixe le prix de la course. En `PLATFORM`, le
+        // `fixedDeliveryFee` d'un vendeur ne veut plus rien dire : les apps
+        // affichent « dès `deliveryFeeFromXaf` » et chiffrent la course par
+        // `GET /quartiers/delivery-fee`, jamais localement.
+        deliveryPricingMode: settings.deliveryPricingMode,
+        deliveryFeeFromXaf,
         loyaltyPointsPerOrder: settings.loyaltyPointsPerOrder,
         loyaltyPointValueXaf: settings.loyaltyPointValueXaf,
         loyaltyMinRedemption: settings.loyaltyMinRedemption,

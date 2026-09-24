@@ -8,6 +8,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -40,6 +41,7 @@ import {
   UpdateFeaturedDto,
 } from './dto/vendor-showcase.dto';
 import { UpdateDeliverySubsidyDto } from '../delivery-pricing/dto/update-delivery-subsidy.dto';
+import { DeliverySimulationService } from '../delivery-pricing/delivery-simulation.service';
 
 /**
  * Onboarding vendeur — configuration partagée entre l'administrateur et le
@@ -63,6 +65,7 @@ export class VendorOnboardingController {
     private readonly hours: RestaurantHoursService,
     private readonly access: RestaurantAccessService,
     private readonly zones: DeliveryZonesService,
+    private readonly simulation: DeliverySimulationService,
   ) {}
 
   // ─── Lecture (admin ou propriétaire) ───────────────────────────────────────
@@ -162,6 +165,29 @@ export class VendorOnboardingController {
   ) {
     await this.access.verifyOwnership(id, caller.firebaseUid);
     return this.onboarding.updateDeliverySubsidy(id, dto);
+  }
+
+  /**
+   * GET /vendors/:id/delivery-subsidy/simulate?mode=FIXED&amountXaf=500 —
+   * « sur vos 30 dernières commandes livrées, ce réglage vous aurait coûté X »
+   * (F3-02). Lecture seule : ne change pas le réglage.
+   */
+  @Get(':id/delivery-subsidy/simulate')
+  @Roles('ADMIN', 'RESTAURATEUR')
+  @ApiOperation({ summary: 'Coût simulé d’une subvention de livraison' })
+  async simulateDeliverySubsidy(
+    @Param('id') id: string,
+    @Query() dto: UpdateDeliverySubsidyDto,
+    @CurrentUser() caller: User,
+  ) {
+    await this.access.verifyOwnership(id, caller.firebaseUid);
+    return {
+      data: await this.simulation.simulateVendorSubsidy(id, {
+        mode: dto.mode,
+        amountXaf: dto.amountXaf ?? null,
+        thresholdXaf: dto.thresholdXaf ?? null,
+      }),
+    };
   }
 
   /**

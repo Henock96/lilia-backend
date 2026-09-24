@@ -14,6 +14,7 @@ import { User } from '@prisma/client';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { DeliveryTariffsService } from './delivery-tariffs.service';
+import { DeliverySimulationService } from './delivery-simulation.service';
 import { DeliveryTariffDraftDto } from './dto/delivery-tariff-draft.dto';
 
 /**
@@ -27,7 +28,10 @@ import { DeliveryTariffDraftDto } from './dto/delivery-tariff-draft.dto';
 @Controller('admin/delivery-tariffs')
 @Roles('ADMIN')
 export class AdminDeliveryTariffsController {
-  constructor(private readonly tariffs: DeliveryTariffsService) {}
+  constructor(
+    private readonly tariffs: DeliveryTariffsService,
+    private readonly simulation: DeliverySimulationService,
+  ) {}
 
   @Get()
   @ApiOperation({
@@ -73,5 +77,18 @@ export class AdminDeliveryTariffsController {
       data: await this.tariffs.publish(id, admin.id),
       message: 'Grille publiée : elle s’applique aux prochaines commandes.',
     };
+  }
+
+  /**
+   * Ce que la grille aurait facturé : rejeu des commandes livrées des 30
+   * derniers jours et matrice vendeur → quartier. Lecture seule, n'importe
+   * quelle version (un brouillon avant publication, la grille en vigueur pour
+   * comparaison).
+   */
+  @Post(':id/simulate')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Simuler une grille (rejeu 30 j + matrice)' })
+  async simulate(@Param('id') id: string) {
+    return { data: await this.simulation.simulateTariff(id) };
   }
 }

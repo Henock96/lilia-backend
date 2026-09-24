@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { DeliveryPricingService } from '../delivery-pricing/delivery-pricing.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PAID_ORDER_STATUSES } from '../orders/order-status-groups';
 import { CreatePromoCodeDto } from './dto/create-promo-code.dto';
@@ -24,7 +25,10 @@ export interface PromoValidationResult {
 export class PromoService {
   private readonly logger = new Logger(PromoService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly deliveryPricing: DeliveryPricingService,
+  ) {}
 
   // ─── Validation ─────────────────────────────────────────────────────────────
 
@@ -45,6 +49,7 @@ export class PromoService {
   async validateCodeForCart(
     code: string,
     userId: string,
+    quartierId?: string | null,
   ): Promise<PromoValidationResult> {
     const cart = await this.prisma.cart.findUnique({
       where: { userId },
@@ -80,8 +85,35 @@ export class PromoService {
 
     const restaurant = await this.prisma.restaurant.findUnique({
       where: { id: restaurantId },
-      select: { fixedDeliveryFee: true },
+      select: {
+        id: true,
+        fixedDeliveryFee: true,
+        latitude: true,
+        longitude: true,
+        quartierId: true,
+        deliverySubsidyMode: true,
+        deliverySubsidyXaf: true,
+        freeDeliveryThresholdXaf: true,
+      },
     });
+
+    // F3-02 — en mode PLATFORM, le prix de la course vient de la grille, pas
+    // de `fixedDeliveryFee` : sans cela un code `FREE_DELIVERY` annonçait
+    // l'offre du prix du vendeur, pas de celui qui sera facturé. Le quartier
+    // de l'adresse choisie affine le devis ; absent, le moteur prend la
+    // tranche la plus haute, comme le checkout sans position. `null` en mode
+    // VENDOR_LEGACY : l'ancien aperçu s'applique, inchangé.
+    const quote = restaurant
+      ? await this.deliveryPricing.quoteForVendor({
+          vendor: restaurant,
+          destination: {
+            quartierId: quartierId ?? null,
+            latitude: null,
+            longitude: null,
+          },
+          subTotalXaf: Math.round(subTotal),
+        })
+      : null;
 
     return this.validateCode(
       code,
@@ -90,7 +122,7 @@ export class PromoService {
       Math.round(subTotal),
       // Aperçu : en mode ZONE_BASED, l'adresse n'est pas encore choisie. Le
       // checkout recalculera le vrai montant.
-      restaurant?.fixedDeliveryFee ?? 0,
+      quote?.customerFeeXaf ?? restaurant?.fixedDeliveryFee ?? 0,
     );
   }
 

@@ -129,7 +129,7 @@ export function quoteDelivery(input: {
   };
 }
 
-function subsidyFor(
+export function subsidyFor(
   policy: DeliverySubsidyPolicy,
   baseFeeXaf: number,
   subTotalXaf: number,

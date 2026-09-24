@@ -74,6 +74,39 @@ export class DeliveryPricingService {
     });
   }
 
+  private floorCache: { value: number | null; expiresAt: number } | null = null;
+
+  /**
+   * Prix le plus bas de la grille publiée — « Livraison dès X » sur les
+   * cartes vendeur. `null` en mode VENDOR_LEGACY ou sans grille.
+   *
+   * Affichage seulement, donc mis en cache 60 s (comme les réglages eux-mêmes)
+   * : `GET /platform-settings` est lu à chaque ouverture d'app et ne doit pas
+   * coûter une requête de plus. Rien n'est facturé sur cette valeur.
+   */
+  async publicFloorFeeXaf(): Promise<number | null> {
+    const { deliveryPricingMode } = await this.settings.getSettings();
+    if (deliveryPricingMode !== 'PLATFORM') return null;
+    const now = Date.now();
+    if (this.floorCache && this.floorCache.expiresAt > now) {
+      return this.floorCache.value;
+    }
+    const { _min } = await this.prisma.deliveryTariffBand.aggregate({
+      where: { tariff: { status: 'PUBLISHED' } },
+      _min: { feeXaf: true },
+    });
+    const overrideMin = await this.prisma.deliveryTariffOverride.aggregate({
+      where: { tariff: { status: 'PUBLISHED' } },
+      _min: { feeXaf: true },
+    });
+    const candidates = [_min.feeXaf, overrideMin._min.feeXaf].filter(
+      (v): v is number => v != null,
+    );
+    const value = candidates.length ? Math.min(...candidates) : null;
+    this.floorCache = { value, expiresAt: now + 60_000 };
+    return value;
+  }
+
   async publishedTariff(): Promise<DeliveryTariffSnapshot | null> {
     const row = await this.prisma.deliveryTariff.findFirst({
       where: { status: 'PUBLISHED' },

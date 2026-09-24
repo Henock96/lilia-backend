@@ -40,7 +40,11 @@ export class PromoController {
     // Fix L6 : `subTotal`, `deliveryFee` et `restaurantId` du corps ne sont
     // plus lus — le montant vient du panier serveur. Les champs restent
     // acceptés (et ignorés) pour ne pas casser les clients déployés.
-    return this.promoService.validateCodeForCart(body.code, user.id);
+    return this.promoService.validateCodeForCart(
+      body.code,
+      user.id,
+      body.quartierId,
+    );
   }
 
   // ─── Admin ────────────────────────────────────────────────────────────────

@@ -77,6 +77,30 @@ export class DeliveryTariffsService {
     });
   }
 
+  /**
+   * Grille en vigueur, vue vendeur : les tranches (ce que paie son client
+   * selon la distance) et le nombre de prix de quartier à quartier. Les paires
+   * elles-mêmes ne sont pas utiles au vendeur ; le devis les applique.
+   */
+  async current() {
+    const tariff = await this.prisma.deliveryTariff.findFirst({
+      where: { status: 'PUBLISHED' },
+      select: {
+        version: true,
+        roadFactor: true,
+        publishedAt: true,
+        bands: {
+          select: { maxKm: true, feeXaf: true },
+          orderBy: { maxKm: 'asc' },
+        },
+        _count: { select: { overrides: true } },
+      },
+    });
+    if (!tariff) return null;
+    const { _count, ...rest } = tariff;
+    return { ...rest, overridesCount: _count.overrides };
+  }
+
   async findOne(id: string) {
     const tariff = await this.prisma.deliveryTariff.findUnique({
       where: { id },
