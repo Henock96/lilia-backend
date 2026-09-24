@@ -100,6 +100,39 @@ export class VendorClosuresService {
     };
   }
 
+  /**
+   * État d'ouverture vu par le gestionnaire : la décision de la règle
+   * (ouvert ? pourquoi ? jusqu'à quand ?), la pause, les congés à venir et le
+   * réglage des jours fériés — ce qu'il faut à un écran « Fermetures ».
+   */
+  async openingState(restaurantId: string) {
+    const [decision, vendor, closures] = await Promise.all([
+      this.opening.decide(restaurantId),
+      this.prisma.restaurant.findUniqueOrThrow({
+        where: { id: restaurantId },
+        select: {
+          pausedUntil: true,
+          pauseReason: true,
+          closedOnHolidays: true,
+        },
+      }),
+      this.listClosures(restaurantId),
+    ]);
+    const now = new Date();
+    return {
+      isOpen: decision.open,
+      reason: decision.reason,
+      until: decision.until,
+      pausedUntil:
+        vendor.pausedUntil && vendor.pausedUntil > now
+          ? vendor.pausedUntil
+          : null,
+      pauseReason: vendor.pauseReason,
+      closedOnHolidays: vendor.closedOnHolidays,
+      closures,
+    };
+  }
+
   /** Congés en cours et à venir, le plus proche d'abord. */
   listClosures(restaurantId: string) {
     return this.prisma.vendorClosure.findMany({

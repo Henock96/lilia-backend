@@ -39,6 +39,13 @@ export class VendorClosuresController {
     private readonly closures: VendorClosuresService,
   ) {}
 
+  @Get(':id/opening')
+  @ApiOperation({ summary: 'État d’ouverture, pause et congés (gestionnaire)' })
+  async opening(@Param('id') id: string, @CurrentUser() caller: User) {
+    await this.access.verifyOwnership(id, caller.firebaseUid);
+    return { data: await this.closures.openingState(id) };
+  }
+
   @Post(':id/pause')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Mettre la boutique en pause (7 jours au plus)' })
