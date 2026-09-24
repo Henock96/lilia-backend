@@ -75,6 +75,7 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
     validateCartNotEmpty: jest.fn(),
     validateSameRestaurant: jest.fn(),
     validateRestaurantOpen: jest.fn(),
+    validateScheduledNotClosed: jest.fn(),
     validateStock: jest.fn(),
     validateMinimumOrderAmount: jest.fn(),
   };

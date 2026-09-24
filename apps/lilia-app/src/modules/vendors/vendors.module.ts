@@ -15,6 +15,13 @@ import {
   VendorOnboardingController,
 } from './vendor-onboarding.controller';
 import { VendorsService } from './vendors.service';
+import {
+  AdminPublicHolidaysController,
+  VendorClosuresController,
+} from './vendor-closures.controller';
+import { VendorClosuresService } from './vendor-closures.service';
+import { VendorOpeningService } from './vendor-opening.service';
+import { PublicHolidaysService } from './public-holidays.service';
 import { VendorOnboardingService } from './vendor-onboarding.service';
 import { PreorderValidatorService } from './preorder-validator.service';
 
@@ -38,9 +45,15 @@ import { PreorderValidatorService } from './preorder-validator.service';
     VendorsController,
     VendorOnboardingController,
     AdminVendorOnboardingController,
+    // F3-03 — pause, congés, jours fériés.
+    VendorClosuresController,
+    AdminPublicHolidaysController,
   ],
   providers: [
     VendorsService,
+    VendorOpeningService,
+    VendorClosuresService,
+    PublicHolidaysService,
     VendorOnboardingService,
     PreorderValidatorService,
     PaginationService,

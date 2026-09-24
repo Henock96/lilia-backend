@@ -4,17 +4,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { OnboardingStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CronLockService } from '../../common/locks/cron-lock.service';
-
-// Mapping des jours JS (0=Dimanche) vers l'enum DayOfWeek
-const JS_DAY_TO_ENUM = [
-    'DIMANCHE', // 0
-    'LUNDI',    // 1
-    'MARDI',    // 2
-    'MERCREDI', // 3
-    'JEUDI',    // 4
-    'VENDREDI', // 5
-    'SAMEDI',   // 6
-] as const;
+import { VendorOpeningService } from '../vendors/vendor-opening.service';
 
 @Injectable()
 export class RestaurantScheduleService {
@@ -23,6 +13,7 @@ export class RestaurantScheduleService {
     constructor(
         private prisma: PrismaService,
         private readonly cronLock: CronLockService,
+        private readonly opening: VendorOpeningService,
     ) {}
 
     /**
@@ -43,71 +34,46 @@ export class RestaurantScheduleService {
         );
     }
 
+    /**
+     * F3-03 — la décision vient de `decideOpening` (horaires, pause datée,
+     * congés, jours fériés, interrupteur manuel), la même règle que le
+     * checkout. Les vendeurs en `manualOverride` sont chargés aussi : une
+     * pause ou un congé les ferme malgré l'interrupteur, qui garde la main
+     * sinon (la règle rend alors l'état posé à la main, inchangé).
+     *
+     * Sans horaires, un vendeur est fermé : il n'est plus exclu de
+     * l'évaluation comme il l'était autrefois, où il gardait `isOpen = true`
+     * en permanence.
+     */
     private async handleScheduleCheckUnlocked() {
-        // Heure courante en UTC+1 (Afrique Centrale/Ouest, pas de DST)
-        const now = new Date();
-        const utcPlusOneMs = now.getTime() + 1 * 60 * 60 * 1000;
-        const localDate = new Date(utcPlusOneMs);
-
-        const currentDayIndex = localDate.getUTCDay();
-        const currentDay = JS_DAY_TO_ENUM[currentDayIndex];
-        // Veille : nécessaire pour les horaires qui traversent minuit (20h → 02h).
-        // À 01h00 on est déjà "demain", mais le vendeur doit rester ouvert.
-        const previousDay = JS_DAY_TO_ENUM[(currentDayIndex + 6) % 7];
-        const currentMinutes = localDate.getUTCHours() * 60 + localDate.getUTCMinutes();
-
-        // `operatingHours: { some: {} }` filtrait ici les vendeurs sans
-        // horaires — ils n'étaient donc jamais évalués et gardaient leur
-        // `isOpen` initial, historiquement `true`. Un vendeur créé et jamais
-        // configuré apparaissait « ouvert » en permanence et acceptait des
-        // commandes à 3 h du matin. Ils sont désormais évalués comme les
-        // autres : sans horaire correspondant, `shouldBeOpen` vaut `false` et
-        // ils sont fermés.
-        //
-        // La migration `20260830120000_vendor_onboarding` pose une plage
-        // 07:00–22:00 sur les vendeurs actifs qui n'en avaient aucun, pour
-        // qu'aucune boutique en activité ne ferme du fait de ce changement.
-        const restaurants = await this.prisma.restaurant.findMany({
-            where: {
-                manualOverride: false,
-                // Un vendeur encore en configuration n'a pas à être ouvert par
-                // un automate : son ouverture est décidée à l'activation.
-                onboardingStatus: OnboardingStatus.ACTIVATED,
-            },
-            select: {
-                id: true,
-                nom: true,
-                isOpen: true,
-                operatingHours: {
-                    where: { dayOfWeek: { in: [currentDay, previousDay] as any } },
-                    select: { dayOfWeek: true, openTime: true, closeTime: true, isClosed: true },
-                },
-            },
+        // Un vendeur encore en configuration n'a pas à être ouvert par un
+        // automate : son ouverture est décidée à l'activation.
+        const decisions = await this.opening.decideMany({
+            onboardingStatus: OnboardingStatus.ACTIVATED,
         });
 
         const toOpen: string[] = [];
         const toClose: string[] = [];
+        const releaseManual: string[] = [];
 
-        for (const restaurant of restaurants) {
-            const todayHours = restaurant.operatingHours.find(
-                (h) => h.dayOfWeek === currentDay,
+        for (const { vendor, decision } of decisions) {
+            // Une fermeture datée relâche l'interrupteur manuel : sinon, à sa
+            // fin, l'état « fermé » qu'elle a posé passerait pour un choix du
+            // vendeur et la boutique ne rouvrirait jamais.
+            if (
+                vendor.manualOverride &&
+                ['PAUSED', 'CLOSURE', 'HOLIDAY'].includes(decision.reason)
+            ) {
+                releaseManual.push(vendor.id);
+            }
+            if (decision.open === vendor.isOpen) continue;
+            (decision.open ? toOpen : toClose).push(vendor.id);
+            this.logger.log(
+                `${decision.open ? 'Ouvert' : 'Fermé'}: ${vendor.nom} (${decision.reason})`,
             );
-            const yesterdayHours = restaurant.operatingHours.find(
-                (h) => h.dayOfWeek === previousDay,
-            );
-
-            const shouldBeOpen =
-                this.matchesTodayHours(currentMinutes, todayHours) ||
-                this.matchesOvernightFromYesterday(currentMinutes, yesterdayHours);
-
-            if (shouldBeOpen === restaurant.isOpen) continue;
-
-            (shouldBeOpen ? toOpen : toClose).push(restaurant.id);
-            this.logger.log(`${shouldBeOpen ? 'Ouvert' : 'Fermé'}: ${restaurant.nom}`);
         }
 
-        // Deux requêtes groupées au lieu d'une par vendeur — la cadence à la
-        // minute rend le N+1 précédent intenable à l'échelle.
+        // Requêtes groupées, jamais une par vendeur : le job tourne à la minute.
         if (toOpen.length) {
             await this.prisma.restaurant.updateMany({
                 where: { id: { in: toOpen } },
@@ -120,30 +86,12 @@ export class RestaurantScheduleService {
                 data: { isOpen: false },
             });
         }
-    }
-
-    /** Le vendeur est-il dans sa plage d'ouverture du jour ? */
-    private matchesTodayHours(
-        currentMinutes: number,
-        hours?: { openTime: string; closeTime: string; isClosed: boolean },
-    ): boolean {
-        if (!hours || hours.isClosed) return false;
-        return this.isWithinOperatingHours(currentMinutes, hours.openTime, hours.closeTime);
-    }
-
-    /**
-     * Cas minuit-traversal : l'horaire de la veille (20h → 02h) déborde sur le
-     * jour courant. On n'est concerné que si l'on est avant l'heure de fermeture.
-     */
-    private matchesOvernightFromYesterday(
-        currentMinutes: number,
-        hours?: { openTime: string; closeTime: string; isClosed: boolean },
-    ): boolean {
-        if (!hours || hours.isClosed) return false;
-        const openMinutes = this.timeToMinutes(hours.openTime);
-        const closeMinutes = this.timeToMinutes(hours.closeTime);
-        if (closeMinutes >= openMinutes) return false; // pas de traversée de minuit
-        return currentMinutes < closeMinutes;
+        if (releaseManual.length) {
+            await this.prisma.restaurant.updateMany({
+                where: { id: { in: releaseManual } },
+                data: { manualOverride: false },
+            });
+        }
     }
 
     /**
@@ -175,27 +123,5 @@ export class RestaurantScheduleService {
             WHERE "stockQuotidien" IS NOT NULL AND "isActive" = true
         `;
         this.logger.log(`Stock reset for ${menuResult} menus`);
-    }
-
-    /**
-     * Vérifie si l'heure courante est dans la plage horaire.
-     * Gère les horaires qui passent minuit (ex: 20:00 → 02:00).
-     */
-    private isWithinOperatingHours(currentMinutes: number, openTime: string, closeTime: string): boolean {
-        const openMinutes = this.timeToMinutes(openTime);
-        const closeMinutes = this.timeToMinutes(closeTime);
-
-        if (closeMinutes > openMinutes) {
-            // Cas normal: 08:00 → 22:00
-            return currentMinutes >= openMinutes && currentMinutes < closeMinutes;
-        } else {
-            // Cas minuit: 20:00 → 02:00 (closeMinutes < openMinutes)
-            return currentMinutes >= openMinutes || currentMinutes < closeMinutes;
-        }
-    }
-
-    private timeToMinutes(time: string): number {
-        const [hours, minutes] = time.split(':').map(Number);
-        return hours * 60 + minutes;
     }
 }

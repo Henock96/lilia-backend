@@ -170,7 +170,7 @@ describe('OrderValidatorService.validateStock — menus (F-01, F-02)', () => {
       product: { findMany: jest.fn(async () => ['a', 'b', 'c'].map(product)) },
       menuDuJour: { findMany: jest.fn(async () => (menuRow ? [menuRow] : [])) },
     };
-    return new OrderValidatorService(prisma as never, {} as never);
+    return new OrderValidatorService(prisma as never, {} as never, {} as never);
   };
 
   it('stock menu 2, 1 menu de 3 plats : accepté', async () => {
