@@ -30,6 +30,7 @@ describe('AdminOrdersService.list', () => {
       count: jest.Mock;
       groupBy: jest.Mock;
     };
+    platformSettings: { findUnique: jest.Mock };
   };
 
   beforeEach(async () => {
@@ -38,6 +39,11 @@ describe('AdminOrdersService.list', () => {
         findMany: jest.fn().mockResolvedValue([]),
         count: jest.fn().mockResolvedValue(0),
         groupBy: jest.fn().mockResolvedValue([]),
+      },
+      platformSettings: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ orderAcceptanceRequired: true }),
       },
     };
 
@@ -57,7 +63,7 @@ describe('AdminOrdersService.list', () => {
 
     const res = await service.list({ page: 2, limit: 20 });
 
-    expect(res.data).toEqual([{ id: 'o1' }]);
+    expect(res.data).toEqual([{ id: 'o1', allowedActions: expect.any(Array) }]);
     expect(res.meta).toMatchObject({
       total: 148,
       page: 2,
@@ -106,6 +112,16 @@ describe('AdminOrdersService.list', () => {
       where: { deleteCommande: false },
       _count: { status: true },
     });
+  });
+
+  it('chaque commande porte les gestes permis à l’ADMIN (R1)', async () => {
+    prisma.order.findMany.mockResolvedValue([
+      { id: 'o1', status: OrderStatus.PAYER, isDelivery: true },
+    ]);
+
+    const res = await service.list({});
+
+    expect(res.data[0].allowedActions).toEqual(['ACCEPT', 'REJECT']);
   });
 
   it('rend un compteur par statut, zéro compris', async () => {

@@ -53,6 +53,8 @@ describe('OrdersService (caractérisation — lectures)', () => {
       groupBy: jest.fn(),
     },
     restaurant: { findFirst: jest.fn() },
+    // Aucune ligne de réglages : acceptation vendeur hors service (F3-01).
+    platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
   };
   const pagination = {
     getPaginationMeta: jest.fn(
@@ -157,14 +159,22 @@ describe('OrdersService (caractérisation — lectures)', () => {
       const order = { id: 'o1', userId: 'u1' };
       prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'CLIENT' });
       prisma.order.findUnique.mockResolvedValue(order);
-      await expect(service.findOrderById('o1', 'uid')).resolves.toBe(order);
+      // La commande, plus les gestes permis à CE rôle (R1).
+      await expect(service.findOrderById('o1', 'uid')).resolves.toEqual({
+        ...order,
+        allowedActions: expect.any(Array),
+      });
     });
 
     it('retourne la commande d’autrui à un ADMIN', async () => {
       const order = { id: 'o1', userId: 'autre' };
       prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'ADMIN' });
       prisma.order.findUnique.mockResolvedValue(order);
-      await expect(service.findOrderById('o1', 'uid')).resolves.toBe(order);
+      // La commande, plus les gestes permis à CE rôle (R1).
+      await expect(service.findOrderById('o1', 'uid')).resolves.toEqual({
+        ...order,
+        allowedActions: expect.any(Array),
+      });
     });
   });
 
@@ -184,7 +194,9 @@ describe('OrdersService (caractérisation — lectures)', () => {
 
       const res = await service.findOrdersClient(2, 5, 'uid');
 
-      expect(res.data).toBe(orders);
+      expect(res.data).toEqual([
+        { ...orders[0], allowedActions: expect.any(Array) },
+      ]);
       expect(pagination.getPaginationMeta).toHaveBeenCalledWith(2, 5, 1);
       const findArgs = prisma.order.findMany.mock.calls[0][0];
       expect(findArgs.skip).toBe(5); // (page-1)*limit
@@ -208,7 +220,9 @@ describe('OrdersService (caractérisation — lectures)', () => {
 
       const res = await service.findRestaurantOrders('uid', 1, 20);
 
-      expect(res.data).toEqual([{ id: 'o1' }]);
+      expect(res.data).toEqual([
+        { id: 'o1', allowedActions: expect.any(Array) },
+      ]);
       expect(prisma.restaurant.findFirst).not.toHaveBeenCalled();
       // Depuis le fix P1, le `count()` admin n'est plus sans filtre (scan
       // séquentiel complet à chaque page) : il exclut les soft-deletes, et le
@@ -243,7 +257,9 @@ describe('OrdersService (caractérisation — lectures)', () => {
 
       const res = await service.findRestaurantOrders('uid', 1, 20);
 
-      expect(res.data).toEqual([{ id: 'o1' }]);
+      expect(res.data).toEqual([
+        { id: 'o1', allowedActions: expect.any(Array) },
+      ]);
       expect(prisma.order.findMany.mock.calls[0][0].where).toEqual({
         restaurantId: 'resto1',
       });

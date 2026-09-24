@@ -15,6 +15,11 @@ import { buildOrderSearchWhere } from './order-search';
 
 // Définition d'une commande « bloquée » — source unique, classement testé.
 import { STUCK_ORDER_STATUSES } from './order-status-groups';
+import {
+  OrderAction,
+  readActionContext,
+  withAllowedActions,
+} from './order-allowed-actions';
 
 /**
  * Lectures de commandes (queries) extraites de `OrdersService` (LIL-134).
@@ -52,7 +57,8 @@ export class OrderQueryService {
       throw new ForbiddenException('Accès refusé.');
     }
 
-    return order;
+    const [withActions] = await this.withAllowedActions([order], user.role);
+    return withActions;
   }
 
   /**
@@ -88,7 +94,7 @@ export class OrderQueryService {
       }),
     ]);
     return {
-      data: orders,
+      data: await this.withAllowedActions(orders, user.role),
       meta: this.pagination.getPaginationMeta(page, limit, total),
     };
   }
@@ -105,9 +111,28 @@ export class OrderQueryService {
    * pour préparer et livrer — nom, téléphone, photo. Pas l'e-mail, qui n'a
    * aucun usage opérationnel et alimente les exports sauvages.
    */
-  private async resolveOrderScope(
-    firebaseUid: string,
-  ): Promise<{ scope: Prisma.OrderWhereInput; include: object }> {
+  /**
+   * Ajoute à chaque commande les gestes que CE rôle peut y faire (règle R1).
+   * L'interrupteur d'acceptation est lu une fois pour la page, pas par ligne.
+   */
+  private async withAllowedActions<
+    T extends { status: OrderStatus; isDelivery: boolean },
+  >(
+    orders: T[],
+    role: string,
+  ): Promise<Array<T & { allowedActions: OrderAction[] }>> {
+    return withAllowedActions(
+      orders,
+      role,
+      await readActionContext(this.prisma),
+    );
+  }
+
+  private async resolveOrderScope(firebaseUid: string): Promise<{
+    scope: Prisma.OrderWhereInput;
+    include: object;
+    role: string;
+  }> {
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
     if (!user) throw new NotFoundException('Utilisateur non trouvé.');
 
@@ -120,6 +145,7 @@ export class OrderQueryService {
 
     if (user.role === 'ADMIN') {
       return {
+        role: user.role,
         // PERFORMANCE (fix P1) : `order.count()` sans `where` force un scan
         // séquentiel complet de la table à CHAQUE page. On borne sur les
         // commandes non supprimées, ce qui laisse PostgreSQL utiliser un index
@@ -151,6 +177,7 @@ export class OrderQueryService {
     }
 
     return {
+      role: user.role,
       scope: { restaurantId: restaurant.id },
       include: {
         ...baseInclude,
@@ -267,8 +294,11 @@ export class OrderQueryService {
     const statusFilter = parseOrderStatusFilter(status);
     const searchFilter = buildOrderSearchWhere(search);
 
-    const { scope: baseScope, include } =
-      await this.resolveOrderScope(firebaseUid);
+    const {
+      scope: baseScope,
+      include,
+      role,
+    } = await this.resolveOrderScope(firebaseUid);
 
     // ⚠️ La recherche s'ajoute au cloisonnement, elle ne s'y substitue jamais :
     // elle ne doit pas devenir une porte vers les commandes d'un concurrent.
@@ -298,7 +328,7 @@ export class OrderQueryService {
     ]);
 
     return {
-      data: orders,
+      data: await this.withAllowedActions(orders, role),
       meta: {
         ...this.pagination.getPaginationMeta(page, limit, total),
         statusCounts: toOrderStatusCounts(grouped),

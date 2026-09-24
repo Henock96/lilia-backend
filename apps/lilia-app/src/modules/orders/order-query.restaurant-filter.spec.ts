@@ -26,6 +26,8 @@ describe('OrderQueryService.findRestaurantOrders — filtre et compteurs', () =>
     user: { findUnique: jest.fn() },
     order: { findMany: jest.fn(), count: jest.fn(), groupBy: jest.fn() },
     restaurant: { findFirst: jest.fn() },
+    // Aucune ligne de réglages : acceptation vendeur hors service (F3-01).
+    platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
   };
 
   beforeEach(async () => {

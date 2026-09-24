@@ -3,6 +3,10 @@ import { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import {
+  readActionContext,
+  withAllowedActions,
+} from '../orders/order-allowed-actions';
+import {
   parseOrderStatusFilter,
   toOrderStatusCounts,
 } from '../orders/order-status-filter';
@@ -109,7 +113,13 @@ export class AdminOrdersService {
     ]);
 
     return {
-      data: orders,
+      // Gestes permis à l'ADMIN sur chaque commande (R1) : l'admin web ne
+      // recopie plus la matrice de transitions.
+      data: withAllowedActions(
+        orders,
+        'ADMIN',
+        await readActionContext(this.prisma),
+      ),
       meta: {
         total,
         page,
