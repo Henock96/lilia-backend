@@ -174,6 +174,8 @@ const TYPE_LABELS: Record<IncidentType, string> = {
   WRONG_DELIVERY: 'Mauvaise livraison',
   REFUND_REQUEST: 'Demande de remboursement',
   OTHER: 'Incident',
+  OPS_SLA_BREACH: 'File « À traiter » en retard',
+  METRIC_ANOMALY: 'Indicateur anormal',
 };
 
 function formatIncidentTitle(

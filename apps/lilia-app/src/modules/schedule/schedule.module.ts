@@ -10,6 +10,8 @@ import { WebhookSilenceService } from './webhook-silence.service';
 import { TrackingRetentionService } from './tracking-retention.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { VendorOpeningService } from '../vendors/vendor-opening.service';
+import { OpsQueueService } from '../ops/ops-queue.service';
+import { OpsSlaScanService } from '../ops/ops-sla-scan.service';
 import { NotificationsCoreModule } from '../notifications/notifications-core.module';
 import { OrdersCoreModule } from '../orders/orders-core.module';
 import { PaymentCoreModule } from '../payments/payment-core.module';
@@ -42,6 +44,9 @@ import { RefundsCoreModule } from '../refunds/refunds-core.module';
         TrackingRetentionService,
         // F3-03 : la règle d'ouverture partagée avec le checkout.
         VendorOpeningService,
+        // F3-04 : alerting métier du cockpit ops.
+        OpsQueueService,
+        OpsSlaScanService,
         PrismaService,
     ],
 })

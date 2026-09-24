@@ -89,6 +89,10 @@ export const envValidationSchema = Joi.object({
   WEB_REVALIDATE_URL: Joi.string().uri().optional(),
   WEB_REVALIDATE_SECRET: Joi.string().min(16).empty('').optional(),
 
+  // F3-04 — racine de l'administration web, pour le lien « Ouvrir » des
+  // alertes du cockpit ops (e-mail). Absente : l'alerte part sans lien.
+  ADMIN_WEB_URL: Joi.string().uri().empty('').optional(),
+
   ALLOWED_ORIGINS: Joi.string().when('NODE_ENV', {
     is: 'production',
     then: Joi.required(),

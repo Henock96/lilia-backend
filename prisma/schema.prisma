@@ -2200,6 +2200,10 @@ enum IncidentType {
   WRONG_DELIVERY // mauvaise livraison
   REFUND_REQUEST // demande remboursement
   OTHER
+  /// F3-04 — une file « À traiter » a franchi son seuil (ouvert et résolu par le système).
+  OPS_SLA_BREACH
+  /// F3-04 — un taux sur fenêtre glissante a franchi son seuil (ex. échec de paiement).
+  METRIC_ANOMALY
 }
 
 enum IncidentSeverity {
@@ -2422,6 +2426,12 @@ model Incident {
   reportedBy   String? // User.id de qui a remonté (admin/system)
   resolvedBy   String? // User.id qui a résolu
   metadata     Json? // contexte additionnel (montants, refs paiement, etc.)
+  /// F3-04 — une cause = un incident ouvert au plus (« ops:acceptance_late:<orderId> »).
+  /// Garanti par l'index unique **partiel** `Incident_dedupKey_open_uq`
+  /// (status OPEN/IN_PROGRESS), posé en SQL : Prisma ne sait pas l'exprimer.
+  dedupKey     String?
+  /// Résolu par le système quand sa cause a disparu (R-04.2).
+  autoResolved Boolean          @default(false)
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
   resolvedAt   DateTime?

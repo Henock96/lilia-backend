@@ -1,4 +1,5 @@
 ﻿// app.module.ts
+import { OpsModule } from './modules/ops/ops.module';
 import { OrderOutboxEffectsModule } from './modules/outbox/order-outbox-effects.module';
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -249,6 +250,7 @@ import { DeliveryPricingModule } from './modules/delivery-pricing/delivery-prici
     PlatformSettingsModule,
     DashboardModule,
     PromoModule,
+    OpsModule,
     FavoritesModule,
     VendorsModule,
     VendorPhotosModule,
