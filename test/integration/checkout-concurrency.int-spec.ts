@@ -51,6 +51,7 @@ describeIfDb(
         unused, // preorderValidator
         unused, // quartiers
         unused, // destination
+        unused, // deliveryPricing
         unused, // transitions
       );
     });

@@ -193,6 +193,15 @@ export const WITHHELD_VENDOR_FIELDS = {
   /** Conditions commerciales, négociées vendeur par vendeur. */
   commissionPercent: 'condition commerciale',
 
+  /**
+   * Part de la livraison offerte par le vendeur (F3-02). Le client n'en voit
+   * que l'effet, calculé par le devis `GET /quartiers/delivery-fee` (prix
+   * client, part offerte, seuil) — jamais le réglage brut.
+   */
+  deliverySubsidyMode: 'condition commerciale',
+  deliverySubsidyXaf: 'condition commerciale',
+  freeDeliveryThresholdXaf: 'condition commerciale',
+
   /** Identité du propriétaire, distincte du contact de l'établissement. */
   email: 'donnée personnelle du propriétaire',
   ownerId: 'identifiant interne de compte',

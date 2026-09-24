@@ -116,6 +116,24 @@ export class PlatformSettingsService {
       }
     }
 
+    // F3-02 — en mode PLATFORM, un checkout sans grille publiée est refusé
+    // (jamais de repli sur le prix du vendeur). Basculer sans grille fermerait
+    // la caisse de toute la plateforme : c'est la bascule qu'on refuse. Le
+    // retour à VENDOR_LEGACY, lui, n'exige rien — c'est la sortie de secours.
+    if (
+      changes.deliveryPricingMode === 'PLATFORM' &&
+      before.deliveryPricingMode !== 'PLATFORM'
+    ) {
+      const published = await this.prisma.deliveryTariff.count({
+        where: { status: 'PUBLISHED' },
+      });
+      if (published === 0) {
+        throw new ConflictException(
+          'Publiez une grille de livraison avant de passer la tarification en mode plateforme.',
+        );
+      }
+    }
+
     // PATCH vide : ne rien écrire. Un UPDATE sans colonne ferait tout de même
     // avancer `updatedAt` et périmerait à tort les formulaires ouverts ailleurs.
     if (Object.keys(changes).length === 0) {

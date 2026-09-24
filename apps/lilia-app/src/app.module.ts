@@ -80,6 +80,7 @@ import { TrackingModule } from './modules/tracking/tracking.module';
 // Email + SMS de bienvenue : gérés par UserListener (modules/listeners/user.listener.ts)
 import { RedisModule } from '@nestjs-modules/ioredis';
 import { envValidationSchema } from './config/env.validation';
+import { DeliveryPricingModule } from './modules/delivery-pricing/delivery-pricing.module';
 @Module({
   imports: [
     // Sentry — doit être l'un des tout premiers modules importés.
@@ -242,6 +243,7 @@ import { envValidationSchema } from './config/env.validation';
     PaymentModule,
     AdressesModule,
     QuartiersModule,
+    DeliveryPricingModule,
     BannersModule,
     AdminModule,
     PlatformSettingsModule,

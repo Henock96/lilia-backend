@@ -20,6 +20,28 @@ import { QuartiersService } from './quartiers.service';
  * Le calcul interne (`calculateDeliveryFee`), utilisé par le checkout, reste
  * inchangé : le checkout a sa propre garde de visibilité (OrderValidator).
  */
+function build(
+  publicVendor: Record<string, unknown> | null,
+  platformQuote: Record<string, unknown> | null = null,
+) {
+  const findFirst = jest.fn().mockResolvedValue(publicVendor);
+  const findUnique = jest.fn().mockResolvedValue({
+    id: 'r1',
+    deliveryPriceMode: 'FIXED',
+    fixedDeliveryFee: 1000,
+    deliveryZones: [],
+  });
+  // `null` = mode historique VENDOR_LEGACY (F3-02).
+  const pricing = {
+    quoteForVendor: jest.fn().mockResolvedValue(platformQuote),
+  };
+  const service = new QuartiersService(
+    { restaurant: { findFirst, findUnique } } as never,
+    pricing as never,
+  );
+  return { service, findFirst, findUnique, pricing };
+}
+
 describe('Devis de livraison public — frontière et validation', () => {
   describe('DeliveryFeeQueryDto', () => {
     it('refuse une requête sans restaurantId ni quartierId', async () => {
@@ -52,20 +74,6 @@ describe('Devis de livraison public — frontière et validation', () => {
   });
 
   describe('QuartiersService.quotePublicDeliveryFee', () => {
-    function build(publicVendor: { id: string } | null) {
-      const findFirst = jest.fn().mockResolvedValue(publicVendor);
-      const findUnique = jest.fn().mockResolvedValue({
-        id: 'r1',
-        deliveryPriceMode: 'FIXED',
-        fixedDeliveryFee: 1000,
-        deliveryZones: [],
-      });
-      const service = new QuartiersService({
-        restaurant: { findFirst, findUnique },
-      } as never);
-      return { service, findFirst, findUnique };
-    }
-
     it('interroge le vendeur à travers PUBLIC_VENDOR_WHERE', async () => {
       const { service, findFirst } = build({ id: 'r1' });
 
@@ -96,6 +104,109 @@ describe('Devis de livraison public — frontière et validation', () => {
     });
   });
 
+  /**
+   * F3-02 — en mode PLATFORM, le devis public passe par le MÊME moteur que le
+   * checkout : le prix affiché est le prix facturé. La clé `fee` reste le
+   * prix client, pour les apps déjà publiées qui ne lisent qu'elle.
+   */
+  describe('mode PLATFORM (F3-02)', () => {
+    const VENDOR = {
+      id: 'r1',
+      latitude: -4.2634,
+      longitude: 15.2729,
+      quartierId: 'q-poto',
+      deliverySubsidyMode: 'FREE_ABOVE',
+      deliverySubsidyXaf: null,
+      freeDeliveryThresholdXaf: 10000,
+    };
+    const QUOTE = {
+      tariffVersion: 2,
+      baseFeeXaf: 1500,
+      subsidyXaf: 0,
+      customerFeeXaf: 1500,
+      distanceKm: 4.1,
+      basis: 'BAND',
+    };
+
+    it('répond avec le prix client dans `fee`, et le détail du devis', async () => {
+      const { service } = build(VENDOR, QUOTE);
+      await expect(
+        service.quotePublicDeliveryFee('r1', 'q-moungali', 7700),
+      ).resolves.toEqual({
+        mode: 'PLATFORM',
+        fee: 1500,
+        baseFee: 1500,
+        vendorSubsidy: 0,
+        distanceKm: 4.1,
+        tariffVersion: 2,
+        freeDeliveryThreshold: 10000,
+      });
+    });
+
+    it('passe le vendeur, le quartier et le sous-total au moteur', async () => {
+      const { service, pricing } = build(VENDOR, QUOTE);
+      await service.quotePublicDeliveryFee('r1', 'q-moungali', 7700);
+      expect(pricing.quoteForVendor).toHaveBeenCalledWith({
+        vendor: VENDOR,
+        destination: {
+          quartierId: 'q-moungali',
+          latitude: null,
+          longitude: null,
+        },
+        subTotalXaf: 7700,
+      });
+    });
+
+    it('sans sous-total : devis au prix plein (pas de livraison offerte présumée)', async () => {
+      const { service, pricing } = build(VENDOR, QUOTE);
+      await service.quotePublicDeliveryFee('r1', 'q-moungali');
+      expect(pricing.quoteForVendor).toHaveBeenCalledWith(
+        expect.objectContaining({ subTotalXaf: 0 }),
+      );
+    });
+
+    it('seuil annoncé seulement en mode « offerte dès X »', async () => {
+      const { service } = build(
+        { ...VENDOR, deliverySubsidyMode: 'FIXED', deliverySubsidyXaf: 300 },
+        { ...QUOTE, subsidyXaf: 300, customerFeeXaf: 1200 },
+      );
+      const res = await service.quotePublicDeliveryFee('r1', 'q-moungali');
+      expect(res).toMatchObject({ fee: 1200, vendorSubsidy: 300 });
+      expect(res).toMatchObject({ freeDeliveryThreshold: null });
+    });
+
+    it('ne lit pas le prix du vendeur', async () => {
+      const { service, findUnique } = build(VENDOR, QUOTE);
+      await service.quotePublicDeliveryFee('r1', 'q-moungali');
+      expect(findUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('DeliveryFeeQueryDto — subTotal (F3-02)', () => {
+    it('accepte un sous-total entier positif, venu en chaîne', async () => {
+      const dto = plainToInstance(DeliveryFeeQueryDto, {
+        restaurantId: 'r1',
+        quartierId: 'q1',
+        subTotal: '7700',
+      });
+      expect(await validate(dto)).toHaveLength(0);
+      expect(dto.subTotal).toBe(7700);
+    });
+
+    it('refuse un sous-total négatif ou décimal', async () => {
+      for (const subTotal of ['-1', '12.5', 'abc']) {
+        const errors = await validate(
+          plainToInstance(DeliveryFeeQueryDto, {
+            restaurantId: 'r1',
+            quartierId: 'q1',
+            subTotal,
+          }),
+        );
+        expect(errors.map((e) => e.property)).toEqual(['subTotal']);
+      }
+    });
+  });
+
   it('le contrôleur passe par le devis public, jamais par le calcul interne', async () => {
     const quartiersService = {
       quotePublicDeliveryFee: jest.fn().mockResolvedValue({ fee: 1000 }),
@@ -114,6 +225,7 @@ describe('Devis de livraison public — frontière et validation', () => {
     expect(quartiersService.quotePublicDeliveryFee).toHaveBeenCalledWith(
       'r1',
       'q1',
+      undefined,
     );
     expect(quartiersService.calculateDeliveryFee).not.toHaveBeenCalled();
   });

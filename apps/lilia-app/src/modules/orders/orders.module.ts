@@ -17,6 +17,7 @@ import { PlatformSettingsModule } from '../platform-settings/platform-settings.m
 import { VendorsModule } from '../vendors/vendors.module';
 import { QuartiersModule } from '../quartiers/quartiers.module';
 import { OrdersCoreModule } from './orders-core.module';
+import { DeliveryPricingCoreModule } from '../delivery-pricing/delivery-pricing-core.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { OrdersCoreModule } from './orders-core.module';
     VendorsModule,
     QuartiersModule,
     OrdersCoreModule,
+    DeliveryPricingCoreModule,
   ],
   controllers: [OrdersController],
   providers: [

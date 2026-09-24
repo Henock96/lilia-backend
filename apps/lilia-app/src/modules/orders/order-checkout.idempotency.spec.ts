@@ -14,6 +14,7 @@ import { PlatformSettingsService } from '../platform-settings/platform-settings.
 import { PreorderValidatorService } from '../vendors/preorder-validator.service';
 import { QuartiersService } from '../quartiers/quartiers.service';
 import { DeliveryDestinationService } from './delivery-destination.service';
+import { DeliveryPricingService } from '../delivery-pricing/delivery-pricing.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { OrderTransitionService } from './order-transition.service';
 
@@ -181,6 +182,10 @@ describe('OrderCheckoutService — idempotence', () => {
         {
           provide: DeliveryDestinationService,
           useValue: destinationService,
+        },
+        {
+          provide: DeliveryPricingService,
+          useValue: { quoteForVendor: jest.fn().mockResolvedValue(null) },
         },
         {
           provide: ConfigService,

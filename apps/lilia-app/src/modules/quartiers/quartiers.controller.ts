@@ -82,6 +82,7 @@ export class QuartiersController {
     return this.quartiersService.quotePublicDeliveryFee(
       query.restaurantId,
       query.quartierId,
+      query.subTotal,
     );
   }
 

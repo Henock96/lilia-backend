@@ -152,6 +152,7 @@ describe('RestaurantPayoutService', () => {
         grossAmount: 5000,
         commissionPercent: 10,
         commissionAmount: 500,
+        deliverySubsidyAmount: 0,
         payoutAmount: 4500,
         currency: 'XAF',
       });
@@ -440,6 +441,43 @@ describe('RestaurantPayoutService', () => {
           }),
         }),
       );
+    });
+
+    /**
+     * F3-02 — la part de la course offerte par le vendeur à son client est
+     * retenue sur SON reversement, et figée sur la pièce comptable.
+     */
+    it('retient la part de livraison offerte par le vendeur, et la fige', async () => {
+      const order = readyOrder({ vendorDeliverySubsidyXaf: 300 });
+      prisma.order.findUnique.mockResolvedValue(order);
+      prisma.order.findUniqueOrThrow.mockResolvedValue(order);
+
+      await service.requestPayout({ orderId: 'o1', adminUserId: 'admin-1' });
+
+      expect(payoutProvider.createPayout).toHaveBeenCalledWith(
+        expect.objectContaining({ amountXaf: 4200 }), // 5 000 − 500 − 300
+      );
+      expect(prisma.restaurantPayout.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            grossAmount: 5000,
+            commissionAmount: 500,
+            deliverySubsidyAmount: 300,
+            amount: 4200,
+          }),
+        }),
+      );
+    });
+
+    it('l’éligibilité annonce le net après subvention', async () => {
+      prisma.order.findUnique.mockResolvedValue(
+        readyOrder({ vendorDeliverySubsidyXaf: 300 }),
+      );
+      const e = await service.checkEligibility('o1');
+      expect(e.breakdown).toMatchObject({
+        deliverySubsidyAmount: 300,
+        payoutAmount: 4200,
+      });
     });
 
     it('fige le taux de la COMMANDE, pas celui que le vendeur porte au moment du clic', async () => {

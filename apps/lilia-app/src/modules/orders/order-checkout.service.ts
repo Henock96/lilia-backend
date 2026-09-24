@@ -31,6 +31,8 @@ import {
   ResolvedDestination,
 } from './delivery-destination.service';
 import { OrderTransitionService } from './order-transition.service';
+import { DeliveryPricingService } from '../delivery-pricing/delivery-pricing.service';
+import { DeliveryQuote } from '../delivery-pricing/delivery-pricing.engine';
 
 /**
  * Checkout : création d'une commande à partir du panier (LIL-134).
@@ -65,6 +67,8 @@ export class OrderCheckoutService {
     private readonly preorderValidator: PreorderValidatorService,
     private readonly quartiersService: QuartiersService,
     private readonly destinationService: DeliveryDestinationService,
+    // F3-02 : prix de base plateforme et part offerte par le vendeur.
+    private readonly deliveryPricing: DeliveryPricingService,
     // P0-4 : ouvre l'historique de la commande dans la transaction de création.
     private readonly transitions: OrderTransitionService,
     // Client partagé fourni par `RedisModule.forRootAsync` (app.module). On
@@ -224,12 +228,18 @@ export class OrderCheckoutService {
     // même lecture d'adresse qui sert au calcul des frais et à la position du
     // livreur, donc les deux ne peuvent plus diverger — et une requête
     // Prisma de moins.
+    //
+    // F3-02 — en mode PLATFORM, ni le prix fixe ni la zone du vendeur ne sont
+    // lus (R-02.9) : la plateforme fixe le prix de base plus bas.
+    const settings = await this.platformSettings.getSettings();
+    const platformPricing = settings.deliveryPricingMode === 'PLATFORM';
     let effectiveDeliveryFee = restaurant.fixedDeliveryFee;
     const deliveryQuartierId = isDelivery
       ? (destination?.quartierId ?? null)
       : null;
     if (
       isDelivery &&
+      !platformPricing &&
       restaurant.deliveryPriceMode === 'ZONE_BASED' &&
       deliveryQuartierId
     ) {
@@ -240,27 +250,59 @@ export class OrderCheckoutService {
       effectiveDeliveryFee = zoneFee.fee;
     }
 
+    // Le taux du vendeur est lu maintenant et figé sur la commande : le
+    // modifier ensuite ne doit pas réécrire ce que la plateforme a prélevé
+    // sur des commandes déjà passées.
+    //
+    // ⚠️ C'est le SEUL endroit du système qui résout « quel taux ? ». Le
+    // repli « vendeur sinon plateforme » vivait aussi dans
+    // `RestaurantPayoutService`, avec une valeur différente (`0` ici, taux
+    // plateforme là-bas) : les 124 commandes de production portaient donc
+    // `commissionPercent = 0` pendant que les reversements prélevaient 10 %.
+    // Le reversement lit désormais ce snapshot et ne résout plus rien.
+    //
+    // `??` et non `||` : un vendeur à 0 % a bien un taux, et il vaut 0.
+    const commissionPercent =
+      restaurant.commissionPercent ?? settings.restaurantCommissionPercent;
+
     // 2. Calcul — isolé, testable unitairement
-    const settings = await this.platformSettings.getSettings();
-    const amounts = this.calculator.calculate(
+    let amounts = this.calculator.calculate(
       cartItems,
       effectiveDeliveryFee,
       isDelivery,
       settings.serviceFeePercent,
-      // Le taux du vendeur est lu maintenant et figé sur la commande : le
-      // modifier ensuite ne doit pas réécrire ce que la plateforme a prélevé
-      // sur des commandes déjà passées.
-      //
-      // ⚠️ C'est le SEUL endroit du système qui résout « quel taux ? ». Le
-      // repli « vendeur sinon plateforme » vivait aussi dans
-      // `RestaurantPayoutService`, avec une valeur différente (`0` ici, taux
-      // plateforme là-bas) : les 124 commandes de production portaient donc
-      // `commissionPercent = 0` pendant que les reversements prélevaient 10 %.
-      // Le reversement lit désormais ce snapshot et ne résout plus rien.
-      //
-      // `??` et non `||` : un vendeur à 0 % a bien un taux, et il vaut 0.
-      restaurant.commissionPercent ?? settings.restaurantCommissionPercent,
+      commissionPercent,
     );
+
+    // F3-02 — devis plateforme. Il lui faut le sous-total (seuil « livraison
+    // offerte dès X »), d'où un second calcul avec le prix client ; le
+    // calculateur est pur et le sous-total ne dépend pas des frais.
+    let deliveryQuote: DeliveryQuote | null = null;
+    if (isDelivery && platformPricing) {
+      deliveryQuote = await this.deliveryPricing.quoteForVendor({
+        vendor: restaurant,
+        destination: {
+          quartierId: deliveryQuartierId,
+          latitude: destination?.latitude ?? null,
+          longitude: destination?.longitude ?? null,
+        },
+        subTotalXaf: amounts.subTotal,
+      });
+      if (deliveryQuote) {
+        if (deliveryQuote.basis === 'FALLBACK') {
+          this.logger.warn(
+            `📦 [COMMANDE] Tarif de repli (position inconnue) — vendeur ${restaurantId}, quartier ${deliveryQuartierId ?? 'aucun'}`,
+          );
+        }
+        amounts = this.calculator.calculate(
+          cartItems,
+          deliveryQuote.customerFeeXaf,
+          isDelivery,
+          settings.serviceFeePercent,
+          commissionPercent,
+        );
+      }
+    }
     this.validator.validateMinimumOrderAmount(
       amounts.subTotal,
       restaurant.minimumOrderAmount,
@@ -361,7 +403,15 @@ export class OrderCheckoutService {
           // porter au livreur une campagne qu'il n'a pas décidée. C'est la
           // règle déjà posée pour le vendeur, dont le reversement ignore les
           // remises ; elle vaut des deux côtés de la course.
-          deliveryFeeGross: amounts.deliveryFee,
+          //
+          // F3-02 : en mode PLATFORM, c'est le prix de BASE de la grille, et
+          // non le prix client — la part offerte par le vendeur ne doit pas
+          // réduire la paie du livreur (décision D3 : % de la base).
+          deliveryFeeGross: deliveryQuote?.baseFeeXaf ?? amounts.deliveryFee,
+          deliveryTariffVersion: deliveryQuote?.tariffVersion ?? null,
+          deliveryDistanceKm: deliveryQuote?.distanceKm ?? null,
+          deliveryFeeBaseXaf: deliveryQuote?.baseFeeXaf ?? null,
+          vendorDeliverySubsidyXaf: deliveryQuote?.subsidyXaf ?? 0,
           serviceFee: amounts.serviceFee,
           commissionPercent: amounts.commissionPercent,
           commissionAmount: amounts.commissionAmount,

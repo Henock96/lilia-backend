@@ -25,6 +25,7 @@ describe('money.util — arithmétique du reversement', () => {
         grossAmount: 5000,
         commissionPercent: 10,
         commissionAmount: 500,
+        deliverySubsidyAmount: 0,
         payoutAmount: 4500,
       });
     });
@@ -110,6 +111,66 @@ describe('money.util — arithmétique du reversement', () => {
         computePayoutBreakdown({ subTotalXaf: 335, commissionPercent: 10 })
           .commissionAmount,
       ).toBe(34);
+    });
+  });
+
+  /**
+   * F3-02 — la part de la livraison offerte par le vendeur est retenue sur son
+   * reversement : c'est lui qui l'a décidée, pas Lilia Food.
+   */
+  describe('computePayoutBreakdown — subvention de livraison (F3-02)', () => {
+    it('5 000 F à 10 %, 300 F offerts → net 4 200', () => {
+      const r = computePayoutBreakdown({
+        subTotalXaf: 5000,
+        commissionPercent: 10,
+        deliverySubsidyXaf: 300,
+      });
+      expect(r).toMatchObject({
+        grossAmount: 5000,
+        commissionAmount: 500,
+        deliverySubsidyAmount: 300,
+        payoutAmount: 4200,
+      });
+    });
+
+    it('sans subvention (commandes antérieures) : inchangé', () => {
+      const r = computePayoutBreakdown({
+        subTotalXaf: 5000,
+        commissionPercent: 10,
+      });
+      expect(r).toMatchObject({ deliverySubsidyAmount: 0, payoutAmount: 4500 });
+    });
+
+    it('la subvention ne rend jamais le reversement négatif', () => {
+      const r = computePayoutBreakdown({
+        subTotalXaf: 1000,
+        commissionPercent: 10,
+        deliverySubsidyXaf: 1500,
+      });
+      expect(r.payoutAmount).toBe(0);
+    });
+
+    it('invariant : brut = commission + subvention + net (tant que le net est positif)', () => {
+      for (const subsidy of [0, 1, 250, 999, 1500]) {
+        const r = computePayoutBreakdown({
+          subTotalXaf: 7300,
+          commissionPercent: 12.5,
+          deliverySubsidyXaf: subsidy,
+        });
+        expect(
+          r.commissionAmount + r.deliverySubsidyAmount + r.payoutAmount,
+        ).toBe(r.grossAmount);
+      }
+    });
+
+    it('une subvention non entière est refusée, pas arrondie en silence', () => {
+      expect(() =>
+        computePayoutBreakdown({
+          subTotalXaf: 5000,
+          commissionPercent: 10,
+          deliverySubsidyXaf: 12.5,
+        }),
+      ).toThrow();
     });
   });
 
