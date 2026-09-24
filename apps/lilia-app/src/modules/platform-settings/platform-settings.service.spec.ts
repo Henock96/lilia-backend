@@ -167,6 +167,18 @@ describe('PlatformSettingsService', () => {
       ).rejects.toBeInstanceOf(ConflictException);
     });
 
+    it('le verrou perdu porte le code SETTINGS_STALE (seul signal de « rechargez »)', async () => {
+      const error = await service
+        .updateSettings({
+          serviceFeePercent: 12,
+          expectedUpdatedAt: '2026-09-22T09:00:00.000Z',
+        })
+        .catch((e: ConflictException) => e);
+      expect((error as ConflictException).getResponse()).toMatchObject({
+        code: 'SETTINGS_STALE',
+      });
+    });
+
     it("n'invalide pas le cache sur un 409", async () => {
       await service.getSettings();
       prisma.platformSettings.updateMany.mockResolvedValue({ count: 0 });
@@ -267,6 +279,17 @@ describe('PlatformSettingsService', () => {
         where: { status: 'PUBLISHED' },
       });
       expect(prisma.platformSettings.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('ce refus n’est PAS un conflit entre administrateurs (code distinct)', async () => {
+      prisma.deliveryTariff.count.mockResolvedValue(0);
+      const error = await service
+        .updateSettings({ deliveryPricingMode: 'PLATFORM' })
+        .catch((e: ConflictException) => e);
+      expect((error as ConflictException).getResponse()).toMatchObject({
+        code: 'DELIVERY_TARIFF_NOT_PUBLISHED',
+        message: expect.stringContaining('Publiez une grille'),
+      });
     });
 
     it('passe en PLATFORM quand une grille est publiée', async () => {

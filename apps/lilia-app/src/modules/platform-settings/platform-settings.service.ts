@@ -17,6 +17,18 @@ export const PLATFORM_SETTINGS_CONFLICT_MESSAGE =
   "l'avez ouverte. Rechargez-la pour voir les valeurs actuelles, puis refaites " +
   'vos changements.';
 
+/**
+ * Verrou optimiste perdu. Code machine : c'est **lui**, et non le 409, qui
+ * dit « rechargez » — la bascule refusée faute de grille est aussi un 409, et
+ * les écrans la maquillaient en conflit entre administrateurs (24/09/2026).
+ */
+export function staleSettings(): ConflictException {
+  return new ConflictException({
+    message: PLATFORM_SETTINGS_CONFLICT_MESSAGE,
+    code: 'SETTINGS_STALE',
+  });
+}
+
 /** Résultat d'une mise à jour : l'état lu avant l'écriture, et celui écrit. */
 export interface PlatformSettingsUpdate {
   before: PlatformSettings;
@@ -94,7 +106,7 @@ export class PlatformSettingsService {
       expectedUpdatedAt !== undefined &&
       new Date(expectedUpdatedAt).getTime() !== before.updatedAt.getTime()
     ) {
-      throw new ConflictException(PLATFORM_SETTINGS_CONFLICT_MESSAGE);
+      throw staleSettings();
     }
 
     // Les invariants ne sont jugés que si le PATCH touche une version : un
@@ -128,9 +140,11 @@ export class PlatformSettingsService {
         where: { status: 'PUBLISHED' },
       });
       if (published === 0) {
-        throw new ConflictException(
-          'Publiez une grille de livraison avant de passer la tarification en mode plateforme.',
-        );
+        throw new ConflictException({
+          message:
+            'Publiez une grille de livraison avant de passer la tarification en mode plateforme.',
+          code: 'DELIVERY_TARIFF_NOT_PUBLISHED',
+        });
       }
     }
 
@@ -145,7 +159,7 @@ export class PlatformSettingsService {
       data: changes,
     });
     if (count === 0) {
-      throw new ConflictException(PLATFORM_SETTINGS_CONFLICT_MESSAGE);
+      throw staleSettings();
     }
 
     const after = await this.prisma.platformSettings.findUniqueOrThrow({
