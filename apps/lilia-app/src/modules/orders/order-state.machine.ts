@@ -75,15 +75,19 @@ export const ORDER_TRANSITION_MATRIX: Record<
     // livrée sans qu'un livreur l'ait prise.
     LIVRER: ['RESTAURATEUR', 'ADMIN'],
     ANNULER: ['RESTAURATEUR', 'ADMIN'], // fix M16 : plus aucun livreur
+    // F3-05 : échec déclaré avant la récupération, conclu par l'ADMIN.
+    ECHEC_LIVRAISON: ['ADMIN'],
   },
   EN_ROUTE: {
     LIVRER: ['LIVREUR', 'ADMIN'],
     ANNULER: ['ADMIN'], // fix M16 : arbitrage humain uniquement
+    // F3-05 : conclusion d'un échec déclaré, par l'ADMIN seul, avec un
+    // responsable — jamais un bouton générique (POST …/conclude-failure).
+    ECHEC_LIVRAISON: ['ADMIN'],
   },
   LIVRER: {}, // terminal
   ANNULER: {}, // terminal
-  // Terminal (F3-05). Aucune entrée tant que l'arbitrage d'échec n'existe pas :
-  // l'état est posé en base maintenant pour ne payer qu'un `ALTER TYPE`.
+  // Terminal (F3-05). Atteint seulement par `DeliveryFailureService.conclude`.
   ECHEC_LIVRAISON: {},
 };
 

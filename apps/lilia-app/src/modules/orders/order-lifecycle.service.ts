@@ -815,6 +815,14 @@ export class OrderLifecycleService {
     order: { id: string; isDelivery: boolean; status: OrderStatus },
     newStatus: OrderStatus,
   ): Promise<void> {
+    // F3-05 — un échec de livraison se conclut avec un responsable, qui décide
+    // du remboursement, du reversement et de la paie. Le changement de statut
+    // générique n'en sait rien : il ne peut pas y conduire.
+    if (newStatus === 'ECHEC_LIVRAISON') {
+      throw new BadRequestException(
+        "Un échec de livraison se conclut depuis l'arbitrage (POST /admin/orders/:id/conclude-failure), avec un responsable.",
+      );
+    }
     if (newStatus === 'EN_ROUTE') {
       const enTransit = await this.prisma.delivery.findFirst({
         where: { orderId: order.id, status: 'EN_TRANSIT' },

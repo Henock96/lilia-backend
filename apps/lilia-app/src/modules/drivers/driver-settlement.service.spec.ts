@@ -106,11 +106,45 @@ describe('DriverSettlementService', () => {
 
       const where = prisma.delivery.findMany.mock.calls[0][0].where;
       expect(where.delivererId).toBe('liv1');
-      expect(where.status).toBe('LIVRER');
       expect(where.driverSettlementId).toBeNull();
       // Le gel est exigé : une course sans économie n'a pas de montant dû.
       expect(where.driverEconomicsFrozenAt).toEqual({ not: null });
-      expect(where.deliveredAt).toEqual({ lte: CUTOFF });
+      expect(where.OR).toEqual([
+        { status: 'LIVRER', deliveredAt: { lte: CUTOFF } },
+        // F3-05 : l'échec conclu sans faute du livreur lui est payé ; l'échec
+        // déclaré mais pas arbitré, ou imputé au livreur, ne l'est pas.
+        {
+          status: 'ECHEC',
+          failedAt: { lte: CUTOFF },
+          order: {
+            status: 'ECHEC_LIVRAISON',
+            failureLiability: { in: ['CLIENT', 'VENDOR', 'PLATFORM'] },
+          },
+        },
+      ]);
+    });
+
+    it('période : une course échouée payée compte par sa date d’échec', async () => {
+      prisma.delivery.findMany.mockResolvedValue([
+        {
+          id: 'd2',
+          driverPayXaf: 700,
+          deliveredAt: null,
+          failedAt: new Date('2026-09-10T10:00:00Z'),
+        },
+        {
+          id: 'd1',
+          driverPayXaf: 700,
+          deliveredAt: new Date('2026-09-12T10:00:00Z'),
+          failedAt: null,
+        },
+      ]);
+      const result = await service.getOutstanding('liv1', CUTOFF);
+      expect(result).toMatchObject({
+        amountXaf: 1400,
+        courseCount: 2,
+        periodStart: new Date('2026-09-10T10:00:00Z'),
+      });
     });
 
     it('rien à régler → 0 course et 0 XAF, sans erreur', async () => {

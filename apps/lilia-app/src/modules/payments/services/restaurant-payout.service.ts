@@ -59,6 +59,7 @@ export type PayoutIneligibilityCode =
   | 'ORDER_NOT_READY'
   | 'PAYMENT_NOT_COMPLETED'
   | 'ORDER_REFUNDED'
+  | 'ORDER_FAILED_VENDOR_LIABLE'
   | 'VENDOR_PAYOUT_ACCOUNT_MISSING'
   | 'VENDOR_PAYOUT_ACCOUNT_COOLING_DOWN'
   | 'PAYOUT_ALREADY_COMPLETED'
@@ -182,7 +183,18 @@ export class RestaurantPayoutService {
         reason: 'Cette commande est annulée.',
       });
     }
-    if (!PAYOUT_ELIGIBLE_ORDER_STATUSES.includes(order.status)) {
+    // F3-05 — échec de livraison conclu : le vendeur est payé sauf s'il en
+    // est responsable (R-05.3).
+    const failed = order.status === OrderStatus.ECHEC_LIVRAISON;
+    if (failed && order.failureLiability === 'VENDOR') {
+      return withBreakdown({
+        eligible: false,
+        code: 'ORDER_FAILED_VENDOR_LIABLE',
+        reason:
+          "L'échec de livraison a été imputé au vendeur : il n'est pas payé pour cette commande.",
+      });
+    }
+    if (!failed && !PAYOUT_ELIGIBLE_ORDER_STATUSES.includes(order.status)) {
       return withBreakdown({
         eligible: false,
         code: 'ORDER_NOT_READY',
@@ -203,7 +215,14 @@ export class RestaurantPayoutService {
 
     // Un remboursement ouvert signifie que l'argent est dû au client. Reverser
     // le vendeur dans cet intervalle, c'est payer deux fois la même commande.
-    if (order.refund && order.refund.status !== RefundStatus.REJECTED) {
+    // Exception F3-05 : après un échec dont le vendeur ne répond pas, le
+    // remboursement du client est une perte de la plateforme (ou du livreur),
+    // pas une raison de retenir ce qui est dû au vendeur.
+    if (
+      !failed &&
+      order.refund &&
+      order.refund.status !== RefundStatus.REJECTED
+    ) {
       return withBreakdown({
         eligible: false,
         code: 'ORDER_REFUNDED',

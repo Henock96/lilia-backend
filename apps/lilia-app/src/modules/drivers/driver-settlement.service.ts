@@ -65,13 +65,25 @@ export class DriverSettlementService {
   ): Prisma.DeliveryWhereInput {
     return {
       delivererId: driverId,
-      status: DeliveryStatus.LIVRER,
       // Pas encore couverte par un règlement.
       driverSettlementId: null,
       // Le gel est exigé : une course sans économie n'a pas de montant dû, et
       // on ne lui en invente pas.
       driverEconomicsFrozenAt: { not: null },
-      deliveredAt: { lte: coveredUntil },
+      OR: [
+        { status: DeliveryStatus.LIVRER, deliveredAt: { lte: coveredUntil } },
+        // F3-05 — une course échouée dont le livreur ne répond pas (client,
+        // vendeur ou plateforme responsable) lui est payée ; l'échec
+        // simplement déclaré, pas encore arbitré, ne l'est pas.
+        {
+          status: DeliveryStatus.ECHEC,
+          failedAt: { lte: coveredUntil },
+          order: {
+            status: 'ECHEC_LIVRAISON',
+            failureLiability: { in: ['CLIENT', 'VENDOR', 'PLATFORM'] },
+          },
+        },
+      ],
     };
   }
 
@@ -104,8 +116,12 @@ export class DriverSettlementService {
 
     const courses = await this.prisma.delivery.findMany({
       where: this.payableWhere(driverId, coveredUntil),
-      select: { id: true, driverPayXaf: true, deliveredAt: true },
-      orderBy: { deliveredAt: 'asc' },
+      select: {
+        id: true,
+        driverPayXaf: true,
+        deliveredAt: true,
+        failedAt: true,
+      },
     });
 
     return {
@@ -113,7 +129,7 @@ export class DriverSettlementService {
       coveredUntil,
       amountXaf: courses.reduce((sum, c) => sum + (c.driverPayXaf ?? 0), 0),
       courseCount: courses.length,
-      periodStart: courses[0]?.deliveredAt ?? null,
+      periodStart: periodStart(courses),
       currency: 'XAF',
     };
   }
@@ -143,8 +159,12 @@ export class DriverSettlementService {
 
     const courses = await this.prisma.delivery.findMany({
       where: this.payableWhere(params.driverId, params.coveredUntil),
-      select: { id: true, driverPayXaf: true, deliveredAt: true },
-      orderBy: { deliveredAt: 'asc' },
+      select: {
+        id: true,
+        driverPayXaf: true,
+        deliveredAt: true,
+        failedAt: true,
+      },
     });
 
     if (courses.length === 0) {
@@ -165,9 +185,9 @@ export class DriverSettlementService {
           driverId: params.driverId,
           amountXaf,
           courseCount: courses.length,
-          // `deliveredAt` est non nul par construction : le filtre exige
-          // `status = LIVRER`, et ce statut l'écrit dans la même transaction.
-          periodStart: courses[0].deliveredAt!,
+          // Non nul : une course payable est livrée (`deliveredAt`) ou échouée
+          // sans faute du livreur (`failedAt`) — le filtre exige l'un ou l'autre.
+          periodStart: periodStart(courses)!,
           coveredUntil: params.coveredUntil,
           status: DriverSettlementStatus.PAID,
           method: params.method,
@@ -254,4 +274,18 @@ export class DriverSettlementService {
     ]);
     return { data: rows, meta: { page, limit, total } };
   }
+}
+
+/**
+ * Première course couverte. Une course payable est soit livrée, soit échouée
+ * sans faute du livreur (F3-05) : sa date est l'une ou l'autre.
+ */
+function periodStart(
+  courses: ReadonlyArray<{ deliveredAt: Date | null; failedAt: Date | null }>,
+): Date | null {
+  const dates = courses
+    .map((c) => c.deliveredAt ?? c.failedAt)
+    .filter((d): d is Date => d != null)
+    .map((d) => d.getTime());
+  return dates.length ? new Date(Math.min(...dates)) : null;
 }
