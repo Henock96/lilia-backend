@@ -8,6 +8,24 @@ export interface SseMessage {
   data: any;
 }
 
+/**
+ * Canal Android d'un push (sonnerie vendeur, Phase 3 F3-01).
+ *
+ * Une commande payée à accepter part sur `new_orders_channel`, que l'app
+ * vendeur crée avec un carillon dédié (`res/raw/new_order`) : c'est ce canal
+ * qui sonne quand l'app est en arrière-plan. Une app antérieure, qui ne l'a
+ * pas créé, retombe sur le canal par défaut d'Android.
+ */
+export function pushChannelFor(data?: Record<string, string>): {
+  channelId: string;
+  sound: string;
+} {
+  if (data?.type === 'new_order') {
+    return { channelId: 'new_orders_channel', sound: 'new_order' };
+  }
+  return { channelId: 'high_importance_channel', sound: 'default' };
+}
+
 @Injectable()
 export class NotificationsService {
   /** Plafond imposé par FCM sur `sendEachForMulticast`. */
@@ -212,10 +230,7 @@ export class NotificationsService {
           data: data ?? {},
           android: {
             priority: 'high',
-            notification: {
-              channelId: 'high_importance_channel',
-              sound: 'default',
-            },
+            notification: pushChannelFor(data),
           },
           apns: {
             headers: {
