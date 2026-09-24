@@ -306,6 +306,14 @@ export class DeliveryAssignmentService {
     // n'était jamais prévenu que la mission lui avait été retirée.
     const previousDelivererId: string | null = delivery.delivererId ?? null;
     const previousDeliveryStatus: DeliveryStatus = delivery.status;
+    // F3-05 — après un échec déclaré en course, le livreur reste attaché à la
+    // livraison (sa paie attend l'arbitrage) mais il est déjà libéré et
+    // prévenu. Le traiter en « ancien livreur » lui enverrait « mission
+    // retirée » pour une course qu'il a lui-même déclarée en échec.
+    const notifiedPreviousDelivererId =
+      previousDeliveryStatus === DeliveryStatus.ECHEC
+        ? null
+        : previousDelivererId;
 
     if (previousDelivererId === delivererId) {
       throw new BadRequestException(
@@ -415,7 +423,7 @@ export class DeliveryAssignmentService {
         delivery.order.status,
         isPreorder,
         scheduledFor ?? null,
-        previousDelivererId,
+        notifiedPreviousDelivererId,
         previousDeliveryStatus,
         delivery.order.userId,
       ),

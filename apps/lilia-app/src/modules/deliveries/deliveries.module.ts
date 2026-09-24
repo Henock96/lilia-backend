@@ -1,4 +1,10 @@
 import { Module } from '@nestjs/common';
+import { SmsModule } from '../sms/sms.module';
+import { DeliveryFailureService } from './delivery-failure.service';
+import {
+  AdminDeliveryFailureController,
+  DeliveryFailureController,
+} from './delivery-failure.controller';
 import { DeliveriesService } from './deliveries.service';
 import { DeliveryQueryService } from './delivery-query.service';
 import { DeliveryAssignmentService } from './delivery-assignment.service';
@@ -21,6 +27,7 @@ import { ReferralCoreModule } from '../users/referral-core.module';
     TrackingModule,
     LoyaltyModule,
     ReferralCoreModule,
+    SmsModule,
   ],
   providers: [
     DeliveriesService,
@@ -29,8 +36,14 @@ import { ReferralCoreModule } from '../users/referral-core.module';
     DeliveryAssignmentLogService,
     OrderStateMachine,
     OrderTransitionService,
+    DeliveryFailureService,
   ],
-  controllers: [DeliveriesController],
+  controllers: [
+    DeliveriesController,
+    // F3-05 — échec de livraison : protocole, déclaration, arbitrage.
+    DeliveryFailureController,
+    AdminDeliveryFailureController,
+  ],
   // `DeliveryAssignmentLogService` est exporté parce que `DeliveriesListener`
   // — déclaré dans `AppModule`, pas ici — ferme le journal quand une commande
   // est annulée. Sans cet export, le processus web meurt au bootstrap avec

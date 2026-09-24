@@ -261,6 +261,19 @@ export class DeliveriesService {
       throw new ForbiddenException("Vous n'êtes pas autorisé à modifier cette livraison.");
     }
 
+    // F3-05 (défaut P3) — une fois le repas parti avec le livreur, le vendeur
+    // ne sait pas ce qui s'est passé : il ne peut plus déclarer l'échec.
+    if (
+      status === DeliveryStatus.ECHEC &&
+      delivery.status === DeliveryStatus.EN_TRANSIT &&
+      !isAdmin &&
+      !isAssignedDeliverer
+    ) {
+      throw new ForbiddenException(
+        'Le repas est parti avec le livreur : seul lui ou l’administration peut déclarer l’échec.',
+      );
+    }
+
     // Valide la transition du cycle de vie de la livraison (anti-incohérence) :
     // empêche les sauts arbitraires (LIVRER↔ECHEC, re-livraison d'un état
     // terminal, passage direct à EN_TRANSIT qui doit passer par /accept).

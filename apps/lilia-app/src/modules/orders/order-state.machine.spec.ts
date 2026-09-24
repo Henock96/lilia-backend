@@ -168,9 +168,21 @@ describe('OrderStateMachine — matrice complète', () => {
       },
     );
 
-    it('ECHEC_LIVRAISON existe mais reste inatteignable tant que F3-05 n’a pas posé ses entrées', () => {
-      for (const from of ALL_STATUSES) {
-        expect(machine.canTransition(from, 'ECHEC_LIVRAISON')).toBe(false);
+    it('ECHEC_LIVRAISON : depuis PRET ou EN_ROUTE, par l’ADMIN seul (F3-05, R-05.1)', () => {
+      const reachableFrom = ALL_STATUSES.filter((from) =>
+        machine.canTransition(from, 'ECHEC_LIVRAISON'),
+      );
+      expect(reachableFrom.sort()).toEqual(['EN_ROUTE', 'PRET']);
+      for (const from of ['PRET', 'EN_ROUTE'] as const) {
+        expect(() =>
+          machine.assertTransition(from, 'ECHEC_LIVRAISON', 'ADMIN'),
+        ).not.toThrow();
+        // Le livreur déclare, il ne conclut pas ; le vendeur non plus.
+        for (const actor of ['LIVREUR', 'RESTAURATEUR', 'CLIENT'] as const) {
+          expect(() =>
+            machine.assertTransition(from, 'ECHEC_LIVRAISON', actor),
+          ).toThrow(ForbiddenException);
+        }
       }
     });
 

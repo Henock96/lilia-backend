@@ -918,6 +918,12 @@ model Order {
   paymentMethod      PaymentMethod // Méthode de paiement
   status             OrderStatus       @default(EN_ATTENTE)
   paidAt             DateTime? // Date de paiement
+  /// F3-05 — échec de livraison conclu par l'admin (`ECHEC_LIVRAISON`) : quand,
+  /// pourquoi, et QUI en répond. Le responsable décide de l'argent (R-05.3).
+  failedAt           DateTime?
+  failureReason      DeliveryFailureReason?
+  failureLiability   FailureLiability?
+  failureDecidedBy   String?
   notes              String? // Notes optionnelles du client pour le restaurant
   contactPhone       String? // Numéro de téléphone saisi lors de la commande
   items              OrderItem[]
@@ -1254,6 +1260,10 @@ model Delivery {
   acceptedAt       DateTime? // le livreur a accepté et part au restaurant
   pickedUpAt       DateTime? // le livreur a le repas en main
   deliveredAt      DateTime? // timestamp réel de livraison
+  /// F3-05 — déclaration d'échec. Couvre le règlement du livreur quand il
+  /// n'est pas responsable (sa course échouée lui est payée).
+  failedAt         DateTime?
+  failureReports   DeliveryFailureReport[]
 
   // Position dernière connue du livreur
   lastLatitude   Float?
@@ -1425,6 +1435,52 @@ enum DeliveryHandoverMethod {
   CODE // le livreur a saisi le code montré au client
   ADMIN_OVERRIDE // un administrateur a conclu la course (arbitrage, audité)
   UNVERIFIED // course sans code (antérieure au dispositif, ou code non exigé)
+}
+
+/// F3-05 — motif déclaré d'un échec de livraison.
+enum DeliveryFailureReason {
+  CUSTOMER_UNREACHABLE
+  ADDRESS_NOT_FOUND
+  CUSTOMER_REFUSED
+  ACCIDENT
+  LOST_OR_DAMAGED
+  DRIVER_NO_SHOW // déclaré par le vendeur : personne n'est venu chercher
+  OTHER
+}
+
+/// F3-05 — qui répond d'un échec conclu. Décide du remboursement client, du
+/// reversement vendeur et de la paie livreur (matrice R-05.3).
+enum FailureLiability {
+  CLIENT
+  DRIVER
+  VENDOR
+  PLATFORM
+}
+
+/// F3-05 — preuve d'un échec : qui l'a déclaré, où, et le protocole « client
+/// injoignable » (appels, SMS, attente). `declaredAt` null = protocole en cours.
+model DeliveryFailureReport {
+  id                String                 @id @default(cuid())
+  deliveryId        String
+  delivery          Delivery               @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  orderId           String
+  reportedBy        String
+  reportedByRole    String
+  reason            DeliveryFailureReason?
+  note              String?
+  latitude          Float?
+  longitude         Float?
+  /// Distance à la destination au moment de la déclaration (centroïde ou point).
+  distanceToDestM   Int?
+  callAttempts      Int                    @default(0)
+  smsSentAt         DateTime?
+  protocolStartedAt DateTime?
+  declaredAt        DateTime?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  @@index([orderId])
+  @@index([deliveryId, declaredAt])
 }
 
 enum DeliveryAssignmentOutcome {
@@ -2391,6 +2447,7 @@ enum AdminAuditAction {
   VENDOR_SUSPENDED
   VENDOR_ACTIVE_TOGGLED
   VENDOR_PAUSED
+  ORDER_FAILURE_CONCLUDED
   PUBLIC_HOLIDAY_UPDATED
   PAYMENT_CONFIRMED
   PAYMENT_REJECTED

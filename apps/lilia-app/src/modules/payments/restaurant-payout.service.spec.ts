@@ -221,6 +221,34 @@ describe('RestaurantPayoutService', () => {
       });
     });
 
+    describe('échec de livraison conclu (F3-05)', () => {
+      it('vendeur responsable → ORDER_FAILED_VENDOR_LIABLE', async () => {
+        prisma.order.findUnique.mockResolvedValue(
+          readyOrder({ status: 'ECHEC_LIVRAISON', failureLiability: 'VENDOR' }),
+        );
+        const result = await service.checkEligibility('o1');
+        expect(result).toMatchObject({
+          eligible: false,
+          code: 'ORDER_FAILED_VENDOR_LIABLE',
+        });
+      });
+
+      it.each(['CLIENT', 'DRIVER', 'PLATFORM'])(
+        '%s responsable → le vendeur est payé, même si le client est remboursé',
+        async (liability) => {
+          prisma.order.findUnique.mockResolvedValue(
+            readyOrder({
+              status: 'ECHEC_LIVRAISON',
+              failureLiability: liability,
+              refund: { status: 'PENDING' },
+            }),
+          );
+          const result = await service.checkEligibility('o1');
+          expect(result.eligible).toBe(true);
+        },
+      );
+    });
+
     it('remboursement REJETÉ → redevient éligible', async () => {
       prisma.order.findUnique.mockResolvedValue(
         readyOrder({ refund: { status: 'REJECTED' } }),

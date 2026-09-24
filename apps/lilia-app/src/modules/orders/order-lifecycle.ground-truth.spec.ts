@@ -131,6 +131,25 @@ describe('OrderLifecycleService — le statut ne ment pas sur le terrain', () =>
     });
   });
 
+  describe('ECHEC_LIVRAISON — jamais par le changement de statut générique (F3-05)', () => {
+    it('refusé même à l’ADMIN : un échec se conclut avec un responsable', async () => {
+      const { service, prisma, eventEmitter } = buildService({
+        order: { status: 'EN_ROUTE' },
+        user: ADMIN,
+      });
+
+      await expect(
+        service.updateOrderStatusByRestaurateur(
+          'o-1',
+          ADMIN.firebaseUid,
+          'ECHEC_LIVRAISON',
+        ),
+      ).rejects.toThrow(/conclude-failure/);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+  });
+
   describe('PRET → LIVRER — le raccourci du comptoir', () => {
     it('laisse le vendeur clôturer une commande à emporter', async () => {
       const { service, loyalty } = buildService({
