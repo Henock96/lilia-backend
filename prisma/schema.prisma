@@ -473,6 +473,14 @@ model Restaurant {
   isOpen         Boolean          @default(false)
   manualOverride Boolean          @default(false) // Si true, le cron ne modifie pas isOpen
   operatingHours OperatingHours[]
+  /// F3-03 — pause qui se termine seule (« fermé jusqu'à 14:30 »). Bornée à
+  /// 7 jours : au-delà, c'est un congé (`VendorClosure`). Prime sur les
+  /// horaires et sur `manualOverride`.
+  pausedUntil      DateTime?
+  pauseReason      String?
+  /// F3-03 — fermé les jours de `PublicHoliday`.
+  closedOnHolidays Boolean          @default(true)
+  closures         VendorClosure[]
   promoCodes     PromoCode[]      @relation("RestaurantPromoCodes")
 
   // Configuration de la livraison
@@ -2057,6 +2065,30 @@ model MenuImage {
   @@index([menuDuJourId, isCover])
 }
 
+/// F3-03 — congé ou fermeture datée d'un vendeur (« du 24 au 31 décembre »).
+/// Se termine seule ; ne touche pas aux commandes déjà payées (R-03.4).
+model VendorClosure {
+  id           String     @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  startsAt     DateTime
+  endsAt       DateTime // CHECK "endsAt" > "startsAt"
+  reason       String?
+  createdBy    String
+  createdAt    DateTime   @default(now())
+
+  @@index([restaurantId, endsAt])
+}
+
+/// F3-03 — jour férié de la plateforme (Congo). Les vendeurs dont
+/// `closedOnHolidays` est vrai sont fermés ce jour-là (heure de Brazzaville).
+model PublicHoliday {
+  date      DateTime @id @db.Date
+  label     String
+  country   String   @default("CG")
+  createdAt DateTime @default(now())
+}
+
 model OperatingHours {
   id           String     @id @default(cuid())
   restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
@@ -2354,6 +2386,8 @@ enum AdminAuditAction {
   VENDOR_APPROVED
   VENDOR_SUSPENDED
   VENDOR_ACTIVE_TOGGLED
+  VENDOR_PAUSED
+  PUBLIC_HOLIDAY_UPDATED
   PAYMENT_CONFIRMED
   PAYMENT_REJECTED
   REFUND_CREATED

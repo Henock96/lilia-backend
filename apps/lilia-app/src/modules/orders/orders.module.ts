@@ -18,6 +18,7 @@ import { VendorsModule } from '../vendors/vendors.module';
 import { QuartiersModule } from '../quartiers/quartiers.module';
 import { OrdersCoreModule } from './orders-core.module';
 import { DeliveryPricingCoreModule } from '../delivery-pricing/delivery-pricing-core.module';
+import { VendorOpeningService } from '../vendors/vendor-opening.service';
 
 @Module({
   imports: [
@@ -38,6 +39,8 @@ import { DeliveryPricingCoreModule } from '../delivery-pricing/delivery-pricing-
     OrderReorderService,
     PaginationService,
     OrderValidatorService,
+    // F3-03 : le checkout recalcule l'ouverture (même règle que le cron).
+    VendorOpeningService,
     OrderCalculatorService,
     DeliveryDestinationService,
     PromoService,

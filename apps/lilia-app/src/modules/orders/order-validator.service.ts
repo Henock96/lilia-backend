@@ -1,6 +1,11 @@
 /* eslint-disable prettier/prettier */
 // orders/order-validator.service.ts
 import {
+  closedMessage,
+  formatUntil,
+  VendorOpeningService,
+} from '../vendors/vendor-opening.service';
+import {
   BadRequestException,
   Injectable,
   NotFoundException,
@@ -13,7 +18,11 @@ import { countMenus } from './menu-quantities';
 
 @Injectable()
 export class OrderValidatorService {
-  constructor(private readonly prisma: PrismaService, private readonly promoService: PromoService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly promoService: PromoService,
+    private readonly opening: VendorOpeningService,
+  ) {}
 
   async validateAndGetUser(firebaseUid: string) {
     const user = await this.prisma.user.findUnique({
@@ -72,11 +81,34 @@ export class OrderValidatorService {
         `"${restaurant.nom}" n'est plus disponible sur la plateforme.`,
       );
     }
-    if (!restaurant.isOpen)
-      throw new BadRequestException(
-        `Le restaurant "${restaurant.nom}" est actuellement fermé.`,
-      );
+    // F3-03 — la règle d'ouverture est recalculée ici, pas lue dans la
+    // colonne `isOpen` : celle-ci n'est rafraîchie que chaque minute par le
+    // cron, et une boutique mise en pause prenait encore commande entre-temps
+    // (écart E7).
+    const decision = await this.opening.decide(restaurant.id);
+    if (!decision.open) {
+      throw new BadRequestException(closedMessage(restaurant.nom, decision));
+    }
     return restaurant;
+  }
+
+  /**
+   * F3-03, R-03.3 — une précommande dont l'échéance tombe dans une pause ou
+   * un congé déclarés est refusée, en disant quand le vendeur rouvre. Un
+   * vendeur en congés ne doit pas découvrir le jour de son retour une
+   * commande qu'il n'a jamais pu préparer.
+   */
+  async validateScheduledNotClosed(
+    restaurant: { id: string; nom: string },
+    scheduledFor: Date | null | undefined,
+  ) {
+    if (!scheduledFor) return;
+    const closure = await this.opening.datedClosureAt(restaurant.id, scheduledFor);
+    if (closure) {
+      throw new BadRequestException(
+        `« ${restaurant.nom} » est fermé à la date choisie (jusqu'${formatUntil(closure.until)}). Choisissez un autre créneau.`,
+      );
+    }
   }
 
   // Clé du fix : on récupère TOUS les produits d'un coup, pas en boucle

@@ -220,6 +220,10 @@ export class OrderCheckoutService {
       scheduledForDate,
     );
     await this.preorderValidator.validateDailyCapacity(restaurant);
+    await this.validator.validateScheduledNotClosed(
+      restaurant,
+      scheduledForDate,
+    );
 
     // Frais de livraison : FIXED par défaut, ZONE_BASED selon le quartier de
     // l'adresse de livraison (le mode ZONE_BASED n'était jamais appliqué — B11).

@@ -146,6 +146,9 @@ export const PUBLIC_VENDOR_SELECT = {
 
   // ── État commandable ────────────────────────────────────────────────────
   isOpen: true,
+  // F3-03 — « En pause · rouvre à 14h30 ». Une échéance, pas un motif : le
+  // motif reste privé (`pauseReason`).
+  pausedUntil: true,
   // Toujours `true` sur une réponse publique (cf. PUBLIC_VENDOR_WHERE), mais
   // servi quand même : les clients déployés désérialisent ces champs, et les
   // retirer casserait leur parsing pour un gain de confidentialité nul.
@@ -214,6 +217,10 @@ export const WITHHELD_VENDOR_FIELDS = {
 
   /** Drapeau d'exploitation lu par le cron d'ouverture — sans sens pour un client. */
   manualOverride: 'drapeau d’exploitation',
+  /** F3-03 — réglage lu par la règle d'ouverture ; le client en voit l'effet (`isOpen`). */
+  closedOnHolidays: 'drapeau d’exploitation',
+  /** F3-03 — note du vendeur pour lui-même (« inventaire »), pas une annonce. */
+  pauseReason: 'note interne du vendeur',
 
   /**
    * Champ mort : conservé pour une réintroduction de l'alcool sans migration,

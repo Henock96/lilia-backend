@@ -9,6 +9,7 @@ import { PaymentReconciliationService } from './payment-reconciliation.service';
 import { WebhookSilenceService } from './webhook-silence.service';
 import { TrackingRetentionService } from './tracking-retention.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { VendorOpeningService } from '../vendors/vendor-opening.service';
 import { NotificationsCoreModule } from '../notifications/notifications-core.module';
 import { OrdersCoreModule } from '../orders/orders-core.module';
 import { PaymentCoreModule } from '../payments/payment-core.module';
@@ -39,6 +40,8 @@ import { RefundsCoreModule } from '../refunds/refunds-core.module';
         PaymentReconciliationService,
         WebhookSilenceService,
         TrackingRetentionService,
+        // F3-03 : la règle d'ouverture partagée avec le checkout.
+        VendorOpeningService,
         PrismaService,
     ],
 })
