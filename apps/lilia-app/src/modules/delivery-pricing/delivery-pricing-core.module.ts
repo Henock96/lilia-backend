@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { PlatformSettingsCoreModule } from '../platform-settings/platform-settings-core.module';
 import { DeliveryPricingService } from './delivery-pricing.service';
+import { DeliverySimulationService } from './delivery-simulation.service';
 
 /**
  * Tarification de la livraison (F3-02), **sans controller** : le checkout et
@@ -10,7 +11,7 @@ import { DeliveryPricingService } from './delivery-pricing.service';
  */
 @Module({
   imports: [PrismaModule, PlatformSettingsCoreModule],
-  providers: [DeliveryPricingService],
-  exports: [DeliveryPricingService],
+  providers: [DeliveryPricingService, DeliverySimulationService],
+  exports: [DeliveryPricingService, DeliverySimulationService],
 })
 export class DeliveryPricingCoreModule {}

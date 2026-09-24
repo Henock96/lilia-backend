@@ -37,4 +37,14 @@ export class ValidatePromoDto {
   @Min(0)
   @IsOptional()
   deliveryFee?: number;
+
+  /**
+   * Quartier de l'adresse de livraison choisie (F3-02). Sert seulement à
+   * chiffrer la course pour un code `FREE_DELIVERY` en mode PLATFORM ; absent,
+   * l'aperçu prend la tranche la plus haute. Le checkout recalcule tout.
+   */
+  @IsString()
+  @IsOptional()
+  @MaxLength(64)
+  quartierId?: string;
 }

@@ -8,6 +8,7 @@ import { AdminAuditModule } from '../admin-audit/admin-audit.module';
 import { RestaurantsModule } from '../restaurants/restaurants.module';
 import { QuartiersModule } from '../quartiers/quartiers.module';
 import { VendorsCoreModule } from './vendors-core.module';
+import { DeliveryPricingCoreModule } from '../delivery-pricing/delivery-pricing-core.module';
 import { VendorsController } from './vendors.controller';
 import {
   AdminVendorOnboardingController,
@@ -30,6 +31,8 @@ import { PreorderValidatorService } from './preorder-validator.service';
     // Fournit DeliveryZonesService à `GET /vendors/:id/delivery-zones`.
     // QuartiersModule n'importe que PrismaModule : aucun cycle possible.
     QuartiersModule,
+    // Simulateur de subvention de livraison (F3-02).
+    DeliveryPricingCoreModule,
   ],
   controllers: [
     VendorsController,
