@@ -241,7 +241,7 @@ describeIfDb(
         'fb-pr-a',
         OrderStatus.ANNULER,
       );
-      const refund = await prisma.refund.findUniqueOrThrow({
+      const refund = await prisma.refund.findFirstOrThrow({
         where: { orderId: ORDER },
       });
       providerCalls.length = 0;

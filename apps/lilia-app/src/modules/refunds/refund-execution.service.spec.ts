@@ -35,6 +35,8 @@ describe('RefundExecutionService', () => {
     orderId: 'o1',
     amount: 6400,
     status: 'PENDING',
+    reasonCode: 'ORDER_CANCELLED',
+    bearer: 'PLATFORM',
     provider: null,
     providerRefundId: null,
     payment: {
@@ -268,6 +270,65 @@ describe('RefundExecutionService', () => {
       );
       await service.execute('ref-1', ADMIN);
       expect(createPayout).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('R-06.5 — F-04 reformulé (F3-06)', () => {
+    it('geste de la plateforme sur une commande livrée : le vendeur payé n’y change rien', async () => {
+      const { service, prisma, createPayout } = make(
+        buildRefund({
+          reasonCode: 'GOODWILL',
+          bearer: 'PLATFORM',
+          order: { id: 'o1', status: 'LIVRER', payout: { status: 'SUCCESS' } },
+        }),
+        {},
+        { status: 'SUCCESS' },
+      );
+      await service.execute('ref-1', ADMIN);
+      expect(createPayout).toHaveBeenCalledTimes(1);
+      expect(prisma.restaurantPayout.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('échec de livraison dont la plateforme répond : remboursable, vendeur payé', async () => {
+      const { service, createPayout } = make(
+        buildRefund({
+          reasonCode: 'DELIVERY_FAILED',
+          bearer: 'PLATFORM',
+          order: {
+            id: 'o1',
+            status: 'ECHEC_LIVRAISON',
+            payout: { status: 'SUCCESS' },
+          },
+        }),
+      );
+      await service.execute('ref-1', ADMIN);
+      expect(createPayout).toHaveBeenCalledTimes(1);
+    });
+
+    it('article manquant à la charge du vendeur, vendeur déjà payé : refusé', async () => {
+      const { service, createPayout } = make(
+        buildRefund({
+          reasonCode: 'MISSING_ITEM',
+          bearer: 'VENDOR',
+          order: { id: 'o1', status: 'LIVRER', payout: { status: 'SUCCESS' } },
+        }),
+      );
+      await expect(service.execute('ref-1', ADMIN)).rejects.toThrow(
+        /déjà été reversé/,
+      );
+      expect(createPayout).not.toHaveBeenCalled();
+    });
+
+    it('à la charge du vendeur, reversement apparu sous verrou : refusé', async () => {
+      const { service, createPayout } = make(
+        buildRefund({ reasonCode: 'DAMAGED', bearer: 'VENDOR' }),
+        {},
+        { status: 'PENDING' },
+      );
+      await expect(service.execute('ref-1', ADMIN)).rejects.toThrow(
+        /reversement au vendeur est en cours/,
+      );
+      expect(createPayout).not.toHaveBeenCalled();
     });
   });
 });

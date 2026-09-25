@@ -142,7 +142,10 @@ export class PromoService {
     });
 
     // ── Existence ──────────────────────────────────────────────────────
-    if (!promo) {
+    // F3-06 — un avoir nominatif n'existe que pour son titulaire : même
+    // réponse qu'un code inconnu, pour qu'un code dicté ne serve à personne
+    // d'autre et que l'on ne puisse pas sonder les avoirs émis.
+    if (!promo || (promo.assignedUserId && promo.assignedUserId !== userId)) {
       throw new NotFoundException(`Code "${code}" invalide ou introuvable.`);
     }
 
@@ -248,9 +251,14 @@ export class PromoService {
     // verrou, deux checkouts simultanés passent tous deux la validation lue en
     // amont et consomment le code deux fois (faille de double-spend).
     const locked = await tx.$queryRaw<
-      { id: string; maxUsageTotal: number | null; maxUsagePerUser: number }[]
+      {
+        id: string;
+        maxUsageTotal: number | null;
+        maxUsagePerUser: number;
+        assignedUserId: string | null;
+      }[]
     >`
-      SELECT id, "maxUsageTotal", "maxUsagePerUser"
+      SELECT id, "maxUsageTotal", "maxUsagePerUser", "assignedUserId"
       FROM "PromoCode"
       WHERE id = ${promoCodeId}
       FOR UPDATE
@@ -260,6 +268,10 @@ export class PromoService {
       throw new NotFoundException('Code promo introuvable.');
     }
     const promo = locked[0];
+    // F3-06 — défense en profondeur : l'avoir nominatif, relu sous verrou.
+    if (promo.assignedUserId && promo.assignedUserId !== userId) {
+      throw new NotFoundException('Code promo introuvable.');
+    }
 
     // Re-vérification des quotas SOUS verrou — les count() voient désormais les
     // usages déjà committés par une transaction concurrente terminée avant nous.

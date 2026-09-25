@@ -11,6 +11,8 @@ import {
   PaymentEventOutcome,
   PaymentEventSource,
   PayoutProvider,
+  RefundBearer,
+  RefundReasonCode,
   RefundStatus,
 } from '@prisma/client';
 
@@ -20,6 +22,7 @@ import { PaymentProviderRegistry } from '../payments/payment-provider.registry';
 import { PaymentEventService } from '../payments/services/payment-event.service';
 import { ProviderUnavailableError } from '../payments/providers/payment-provider.interface';
 import { maskPhone, maskRef } from '../payments/services/payment.service';
+import { refundConflictsWithPayout } from './refund-lines.policy';
 
 /**
  * Exécution du virement de remboursement au client.
@@ -106,14 +109,17 @@ export class RefundExecutionService {
     // hors transaction ; un reversement demandé entre cette lecture et le
     // virement client aurait fait partir les deux. Sous verrou, on relit : un
     // reversement PENDING ou SUCCESS bloque le remboursement (voir
-    // `assertNoActivePayout`).
+    // `assertNoActivePayout`) — s'il touche à ce que le vendeur doit recevoir
+    // (R-06.5, F3-06).
     const claimed = await this.prisma.$transaction(async (tx) => {
       await lockOrderRow(tx, refund.orderId);
-      const payout = await tx.restaurantPayout.findUnique({
-        where: { orderId: refund.orderId },
-        select: { status: true },
-      });
-      assertNoActivePayout(payout?.status ?? null);
+      if (refundConflictsWithPayout(refund)) {
+        const payout = await tx.restaurantPayout.findUnique({
+          where: { orderId: refund.orderId },
+          select: { status: true },
+        });
+        assertNoActivePayout(payout?.status ?? null);
+      }
       return tx.refund.updateMany({
         where: { id: refund.id, status: RefundStatus.PENDING },
         data: {
@@ -222,6 +228,8 @@ export class RefundExecutionService {
    */
   private assertExecutable(refund: {
     status: RefundStatus;
+    bearer: RefundBearer;
+    reasonCode: RefundReasonCode;
     amount: number;
     payment: { status: string; phoneNumber: string } | null;
     order: { payout: { status: string } | null } | null;
@@ -245,7 +253,12 @@ export class RefundExecutionService {
           'automatiquement sans risquer de virer au mauvais destinataire.',
       );
     }
-    assertNoActivePayout(refund.order?.payout?.status ?? null);
+    // F3-06 (R-06.5) — un geste de la plateforme sur une commande livrée ne
+    // retire rien au vendeur : son reversement, même déjà parti, n'est pas en
+    // cause. Seul un remboursement qui le touche est soumis à l'invariant.
+    if (refundConflictsWithPayout(refund)) {
+      assertNoActivePayout(refund.order?.payout?.status ?? null);
+    }
   }
 
   /** Référence lisible par le client dans son SMS. */

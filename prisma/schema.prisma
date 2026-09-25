@@ -91,6 +91,10 @@ model User {
   reviews           Review[]
   orders            Order[] // Commandes passées par l'utilisateur
   promoUsages       PromoUsage[]       @relation("UserPromoUsages")
+  /// F3-06 — avoirs personnels (codes promo nominatifs).
+  assignedPromoCodes PromoCode[]       @relation("AssignedPromoCodes")
+  /// F3-06 — messages écrits dans les fils de réclamation.
+  incidentMessages  IncidentMessage[]
 
   // Ajout recent 04/04/2026
   statusUser StatusUser @default(ACTIVE)
@@ -996,8 +1000,9 @@ model Order {
   ageVerified   Boolean   @default(false)
   ageVerifiedAt DateTime?
 
-  // Remboursement ouvert si la commande est annulée après paiement (fix H5)
-  refund Refund?
+  // Remboursements de la commande (fix H5, puis F3-06 : N par commande, au
+  // plus un en vol — index unique partiel `Refund_orderId_inflight_uq`).
+  refunds Refund[]
 
   /// Reversement au vendeur — au plus un par commande (`@@unique` côté
   /// `RestaurantPayout.orderId`). Absent tant qu'un administrateur ne l'a pas
@@ -1033,6 +1038,9 @@ model OrderItem {
   variantId     String? // nullable pour les commandes existantes
   variantLabel  String? // snapshot du label au moment de la commande
   snapshotPrice Int? // snapshot du prix à la commande, en XAF
+
+  /// F3-06 — lignes de remboursement partiel portant sur cet article.
+  refundLines RefundLine[]
 
   @@index([orderId])
   @@index([productId])
@@ -1722,6 +1730,8 @@ model RestaurantPayout {
   /// Part de la livraison offerte par le vendeur (F3-02), retenue ici —
   /// snapshot de `Order.vendorDeliverySubsidyXaf`. `0` avant le mode PLATFORM.
   deliverySubsidyAmount Int @default(0)
+  /// F3-06 — remboursements à la charge du vendeur, retenus sur ce reversement.
+  refundDeductionAmount Int @default(0)
   /// `grossAmount - commissionAmount - deliverySubsidyAmount` — c'est CE
   /// montant qui part au prestataire.
   amount            Int
@@ -2204,6 +2214,13 @@ model PromoCode {
   startsAt     DateTime    @default(now())
   expiresAt    DateTime? // null = pas d'expiration
 
+  /// F3-06 — avoir nominatif : seul ce client peut utiliser le code (R-06.6).
+  assignedUserId String?
+  assignedUser   User?        @relation("AssignedPromoCodes", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  /// Qui finance la remise. Les avoirs sont à la charge de la plateforme ;
+  /// `VENDOR` servira aux campagnes vendeur (F3-11).
+  fundingSource  PromoFunding @default(PLATFORM)
+
   usages    PromoUsage[]
   orders    Order[]
   createdAt DateTime     @default(now())
@@ -2212,6 +2229,7 @@ model PromoCode {
   @@index([code])
   @@index([isActive, startsAt, expiresAt])
   @@index([restaurantId])
+  @@index([assignedUserId])
 }
 
 model PromoUsage {
@@ -2260,6 +2278,8 @@ enum IncidentType {
   OPS_SLA_BREACH
   /// F3-04 — un taux sur fenêtre glissante a franchi son seuil (ex. échec de paiement).
   METRIC_ANOMALY
+  /// F3-06 — réclamation client sur une commande livrée (articles, fil, issue).
+  CUSTOMER_CLAIM
 }
 
 enum IncidentSeverity {
@@ -2377,8 +2397,53 @@ model Refund {
   failureCode    String?
   failureMessage String?
 
-  @@unique([orderId]) // une commande = au plus un remboursement en cours
+  // ─── Remboursements partiels (F3-06, septembre 2026) ─────────────────────
+  //
+  // `@@unique([orderId])` a disparu : une commande peut être remboursée en
+  // plusieurs fois (article manquant, puis geste commercial). Deux garde-fous
+  // le remplacent, en SQL — Prisma ne sait pas exprimer un index partiel :
+  //
+  //  - `Refund_orderId_inflight_uq` : au plus UN remboursement `PENDING` ou
+  //    `PROCESSING` par commande (R-06.1) ;
+  //  - `Refund_orderId_auto_uq` : au plus UN remboursement « total »
+  //    automatique (annulation, refus ou silence du vendeur, échec de
+  //    livraison) — c'est lui qui rend l'outbox `order.refund_due` rejouable
+  //    sans rembourser deux fois.
+  //
+  // `lines` vide = remboursement total historique (antérieur à F3-06, ou
+  // ouvert automatiquement) ; on ne fabrique pas de lignes synthétiques.
+
+  reasonCode RefundReasonCode @default(ORDER_CANCELLED)
+  /// Qui supporte la perte (R-06.4). `VENDOR` = déduit de son reversement.
+  bearer     RefundBearer     @default(PLATFORM)
+  /// Réclamation à l'origine du remboursement, s'il y en a une.
+  incidentId String?
+  incident   Incident?        @relation(fields: [incidentId], references: [id], onDelete: SetNull)
+  lines      RefundLine[]
+
+  @@index([orderId])
   @@index([status, createdAt])
+  @@index([incidentId])
+}
+
+/// Ligne d'un remboursement partiel (F3-06, R-06.3).
+///
+/// Le montant d'une ligne `ITEM` est `snapshotPrice × quantity` — le prix
+/// figé à la commande, jamais relu sur le catalogue. Il est **recopié** ici :
+/// un remboursement passé ne se recalcule pas.
+model RefundLine {
+  id          String         @id @default(cuid())
+  refundId    String
+  refund      Refund         @relation(fields: [refundId], references: [id], onDelete: Cascade)
+  kind        RefundLineKind
+  orderItemId String?
+  orderItem   OrderItem?     @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+  quantity    Int?
+  amountXaf   Int
+  createdAt   DateTime       @default(now())
+
+  @@index([refundId])
+  @@index([orderItemId])
 }
 
 enum RefundStatus {
@@ -2386,6 +2451,65 @@ enum RefundStatus {
   PROCESSING // virement en cours
   COMPLETED // client remboursé
   REJECTED // refus motivé (fraude, commande déjà consommée…)
+}
+
+/// Motif d'un remboursement (F3-06). Les quatre premiers sont « automatiques »
+/// (remboursement total, au plus un par commande) ; les autres naissent du
+/// composeur de l'administration.
+enum RefundReasonCode {
+  ORDER_CANCELLED
+  VENDOR_REJECTED
+  VENDOR_TIMEOUT
+  DELIVERY_FAILED
+  MISSING_ITEM
+  WRONG_ITEM
+  DAMAGED
+  LATE
+  GOODWILL
+  OTHER
+}
+
+/// Qui supporte un remboursement (R-06.4).
+enum RefundBearer {
+  VENDOR // retenu sur le reversement du vendeur
+  PLATFORM // coût Lilia
+  DRIVER // noté, réglé hors système
+}
+
+enum RefundLineKind {
+  ITEM
+  DELIVERY_FEE
+  SERVICE_FEE
+  GOODWILL
+}
+
+/// Visibilité d'un message de réclamation.
+enum MessageVisibility {
+  ALL // client compris
+  STAFF_ONLY // support et vendeur, jamais le client
+}
+
+/// Financement d'un code promo.
+enum PromoFunding {
+  PLATFORM
+  VENDOR
+}
+
+/// Message d'un fil de réclamation (F3-06).
+model IncidentMessage {
+  id          String            @id @default(cuid())
+  incidentId  String
+  incident    Incident          @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  authorId    String
+  author      User              @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  authorRole  Role
+  visibility  MessageVisibility @default(ALL)
+  body        String            @db.Text
+  /// URLs d'images (Cloudinary uniquement, vérifié par le DTO).
+  attachments Json              @default("[]")
+  createdAt   DateTime          @default(now())
+
+  @@index([incidentId, createdAt])
 }
 
 /// Journal d'audit des actions d'administration (audit du 28/08/2026).
@@ -2466,6 +2590,10 @@ enum AdminAuditAction {
   /// Publication d'une grille de livraison (F3-02) : elle fixe d'un coup ce
   /// que paient tous les clients et ce que touchent tous les livreurs.
   DELIVERY_TARIFF_PUBLISHED
+  /// F3-06 — avoir nominatif émis sur une réclamation.
+  CLAIM_VOUCHER_ISSUED
+  /// F3-06 — réclamation refusée (motif communiqué au client).
+  CLAIM_REJECTED
 }
 
 model Incident {
@@ -2489,6 +2617,10 @@ model Incident {
   dedupKey     String?
   /// Résolu par le système quand sa cause a disparu (R-04.2).
   autoResolved Boolean          @default(false)
+  /// F3-06 — fil de discussion d'une réclamation.
+  messages     IncidentMessage[]
+  /// F3-06 — remboursements décidés sur cette réclamation.
+  refunds      Refund[]
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
   resolvedAt   DateTime?

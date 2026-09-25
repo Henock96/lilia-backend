@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { RefundsCoreModule } from './refunds-core.module';
 import { RefundsController } from './refunds.controller';
+import { AdminOrderRefundsController } from './admin-order-refunds.controller';
 
 /**
  * Remboursements des commandes annulées après paiement (fix H5).
@@ -13,7 +14,7 @@ import { RefundsController } from './refunds.controller';
  */
 @Module({
   imports: [RefundsCoreModule],
-  controllers: [RefundsController],
+  controllers: [RefundsController, AdminOrderRefundsController],
   exports: [RefundsCoreModule],
 })
 export class RefundsModule {}

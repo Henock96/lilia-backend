@@ -16,6 +16,7 @@ import {
   FailureLiability,
   OrderStatus,
   PayoutStatus,
+  RefundReasonCode,
   RefundStatus,
   User,
 } from '@prisma/client';
@@ -29,6 +30,11 @@ import { OrderTransitionService } from '../orders/order-transition.service';
 import { SmsService } from '../sms/sms.service';
 import { CLEARED_DRIVER_ECONOMICS } from './delivery-assignment.service';
 import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
+import {
+  AUTO_REFUND_REASON_CODES,
+  COUNTED_REFUND_STATUSES,
+  defaultBearer,
+} from '../refunds/refund-lines.policy';
 import {
   clientLiabilityGaps,
   FAILURE_OUTCOMES,
@@ -342,7 +348,7 @@ export class DeliveryFailureService {
           take: 1,
         },
         payout: { select: { status: true } },
-        refund: { select: { id: true, status: true } },
+        refunds: { select: { status: true, amount: true, reasonCode: true } },
         restaurant: { select: { nom: true } },
       },
     });
@@ -393,11 +399,24 @@ export class DeliveryFailureService {
       );
     }
 
-    const paid = order.Payment[0]?.amount ?? 0;
+    // F3-06 — N remboursements par commande : on rembourse ce qui reste dû,
+    // et jamais deux fois l'échec (un seul remboursement automatique).
+    const counted = order.refunds.filter((r) =>
+      COUNTED_REFUND_STATUSES.includes(r.status),
+    );
+    const alreadyAuto = order.refunds.some((r) =>
+      AUTO_REFUND_REASON_CODES.includes(r.reasonCode),
+    );
+    const paid = Math.max(
+      0,
+      (order.Payment[0]?.amount ?? 0) -
+        counted.reduce((sum, r) => sum + r.amount, 0),
+    );
+    const refundXaf = outcome.refundClient && !alreadyAuto ? paid : 0;
     const summary = {
       orderId,
       liability,
-      refundXaf: outcome.refundClient ? paid : 0,
+      refundXaf,
       vendorPaid: outcome.payVendor,
       driverPayXaf: outcome.payDriver ? (delivery.driverPayXaf ?? 0) : 0,
       reason: report?.reason ?? null,
@@ -427,13 +446,15 @@ export class DeliveryFailureService {
           data: { driverPayXaf: 0 },
         });
       }
-      if (outcome.refundClient && paid > 0 && !order.refund) {
+      if (refundXaf > 0) {
         await tx.refund.create({
           data: {
             orderId,
             paymentId: order.Payment[0].id,
-            amount: paid,
+            amount: refundXaf,
             reason: `Échec de livraison (${liability})`,
+            reasonCode: RefundReasonCode.DELIVERY_FAILED,
+            bearer: defaultBearer(RefundReasonCode.DELIVERY_FAILED, liability),
             requestedBy: admin.id,
             status: RefundStatus.PENDING,
           },

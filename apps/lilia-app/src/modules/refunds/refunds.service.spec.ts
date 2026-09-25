@@ -20,6 +20,8 @@ describe('RefundsService', () => {
     refund: {
       create: jest.Mock;
       findUnique: jest.Mock;
+      findFirst: jest.Mock;
+      aggregate: jest.Mock;
       findMany: jest.Mock;
       updateMany: jest.Mock;
       count: jest.Mock;
@@ -34,6 +36,9 @@ describe('RefundsService', () => {
       refund: {
         create: jest.fn(),
         findUnique: jest.fn(),
+        // Aucun remboursement automatique existant, rien de déjà remboursé.
+        findFirst: jest.fn().mockResolvedValue(null),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { amount: null } }),
         findMany: jest.fn(),
         updateMany: jest.fn(),
         count: jest.fn(),
@@ -97,21 +102,59 @@ describe('RefundsService', () => {
       expect(prisma.refund.create).not.toHaveBeenCalled();
     });
 
-    it('reste idempotent si l’annulation est rejouée', async () => {
-      // `Refund.orderId` est `@unique` : la base refuse le doublon. Le service
-      // doit rendre la ligne existante plutôt que de propager le P2002 —
-      // sinon un retour d'annulation ferait échouer toute la requête, alors
-      // que la dette est déjà correctement enregistrée.
+    it('reste idempotent si l’annulation est rejouée en concurrence', async () => {
+      // L'index `Refund_orderId_auto_uq` refuse le doublon. Le service doit
+      // rendre la ligne existante plutôt que de propager le P2002 — sinon un
+      // retour d'annulation ferait échouer toute la requête, alors que la
+      // dette est déjà correctement enregistrée.
       prisma.payment.findFirst.mockResolvedValue({ id: 'p-1', amount: 6400 });
       prisma.refund.create.mockRejectedValue(uniqueViolation());
-      prisma.refund.findUnique.mockResolvedValue({
-        id: 'ref-existant',
-        amount: 6400,
-      });
+      prisma.refund.findFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ id: 'ref-existant', amount: 6400 });
 
       await expect(
         service.openForCancelledOrder({ orderId: 'o-1', reason: 'Rejeu' }),
       ).resolves.toEqual({ id: 'ref-existant', amount: 6400 });
+    });
+
+    it('F3-06 — un rejeu après un remboursement DÉJÀ VERSÉ n’en rouvre pas', async () => {
+      // `@@unique([orderId])` ne protège plus rien : la contrainte est devenue
+      // partielle. Sans la recherche du remboursement automatique, l'outbox
+      // rejouée après un `COMPLETED` rembourserait le client une seconde fois.
+      prisma.refund.findFirst.mockResolvedValue({ id: 'ref-1', amount: 6400 });
+
+      await expect(
+        service.openForCancelledOrder({ orderId: 'o-1', reason: 'Rejeu' }),
+      ).resolves.toEqual({ id: 'ref-1', amount: 6400 });
+      expect(prisma.refund.create).not.toHaveBeenCalled();
+      expect(prisma.refund.findFirst.mock.calls[0][0].where).toMatchObject({
+        orderId: 'o-1',
+        reasonCode: {
+          in: [
+            'ORDER_CANCELLED',
+            'VENDOR_REJECTED',
+            'VENDOR_TIMEOUT',
+            'DELIVERY_FAILED',
+          ],
+        },
+      });
+    });
+
+    it('F3-06 — rembourse le reliquat, pas l’encaissement entier', async () => {
+      prisma.payment.findFirst.mockResolvedValue({ id: 'p-1', amount: 6400 });
+      prisma.refund.aggregate.mockResolvedValue({ _sum: { amount: 1500 } });
+      prisma.refund.create.mockResolvedValue({ id: 'ref-2', amount: 4900 });
+
+      await service.openForCancelledOrder({
+        orderId: 'o-1',
+        reason: 'Refus vendeur',
+        reasonCode: 'VENDOR_REJECTED',
+      });
+      expect(prisma.refund.create.mock.calls[0][0].data).toMatchObject({
+        amount: 4900,
+        reasonCode: 'VENDOR_REJECTED',
+      });
     });
 
     it('laisse remonter une erreur base qui n’est pas un doublon', async () => {
@@ -241,6 +284,8 @@ describe('RefundsService', () => {
       id: 'r1',
       orderId: 'o1',
       status: RefundStatus.PENDING,
+      reasonCode: 'ORDER_CANCELLED',
+      bearer: 'PLATFORM',
       notes: null,
       processedAt: null,
     };
@@ -264,6 +309,17 @@ describe('RefundsService', () => {
       prisma.refund.updateMany.mockResolvedValue({ count: 1 });
       await service.updateStatus('r1', RefundStatus.COMPLETED, 'admin-1');
       expect(prisma.refund.updateMany).toHaveBeenCalled();
+    });
+
+    it('F3-06 — un geste de la plateforme ne consulte pas le reversement (R-06.5)', async () => {
+      prisma.refund.findUnique.mockResolvedValue({
+        ...open,
+        reasonCode: 'GOODWILL',
+        bearer: 'PLATFORM',
+      });
+      prisma.refund.updateMany.mockResolvedValue({ count: 1 });
+      await service.updateStatus('r1', RefundStatus.COMPLETED, 'admin-1');
+      expect(prisma.restaurantPayout.findUnique).not.toHaveBeenCalled();
     });
 
     it('un refus (REJECTED) ne consulte pas le reversement', async () => {

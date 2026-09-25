@@ -3,6 +3,7 @@ import { PrismaModule } from '../../prisma/prisma.module';
 import { RefundsService } from './refunds.service';
 import { RefundExecutionService } from './refund-execution.service';
 import { RefundProviderService } from './refund-provider.service';
+import { RefundComposerService } from './refund-composer.service';
 import { PaymentCoreModule } from '../payments/payment-core.module';
 
 /**
@@ -24,7 +25,17 @@ import { PaymentCoreModule } from '../payments/payment-core.module';
   // ci-dessus vaut dans les deux sens — importer le module complet ferait
   // remonter `POST /admin/orders/:id/payout` dans le graphe du worker.
   imports: [PrismaModule, PaymentCoreModule],
-  providers: [RefundsService, RefundExecutionService, RefundProviderService],
-  exports: [RefundsService, RefundExecutionService, RefundProviderService],
+  providers: [
+    RefundsService,
+    RefundExecutionService,
+    RefundProviderService,
+    RefundComposerService,
+  ],
+  exports: [
+    RefundsService,
+    RefundExecutionService,
+    RefundProviderService,
+    RefundComposerService,
+  ],
 })
 export class RefundsCoreModule {}

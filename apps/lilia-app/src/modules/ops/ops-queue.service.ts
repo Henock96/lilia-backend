@@ -16,6 +16,8 @@ export const OPS_THRESHOLDS = {
   enRouteMinutes: 60,
   /** Remboursement en attente depuis plus de 2 h. */
   refundPendingMinutes: 120,
+  /** Réclamation client sans première réponse du support (F3-06). */
+  claimUnansweredMinutes: 120,
 } as const;
 
 export type OpsBucketKey =
@@ -24,6 +26,7 @@ export type OpsBucketKey =
   | 'en_route_long'
   | 'delivery_failed'
   | 'refunds_pending'
+  | 'claims_unanswered'
   | 'payouts_failed'
   | 'incidents_open'
   | 'outbox_failed';
@@ -118,6 +121,13 @@ export class OpsQueueService {
       status: 'PENDING' as const,
       createdAt: { lte: minutesAgo(now, t.refundPendingMinutes) },
     };
+    // F3-06 — une réclamation reste « OPEN » tant que le support n'a pas
+    // répondu (sa première réponse la passe IN_PROGRESS).
+    const claimWhere: Prisma.IncidentWhereInput = {
+      type: IncidentType.CUSTOMER_CLAIM,
+      status: 'OPEN' as const,
+      createdAt: { lte: minutesAgo(now, t.claimUnansweredMinutes) },
+    };
     const incidentWhere: Prisma.IncidentWhereInput = {
       status: { in: ['OPEN' as const, 'IN_PROGRESS' as const] },
       severity: { in: [IncidentSeverity.HIGH, IncidentSeverity.CRITICAL] },
@@ -133,6 +143,7 @@ export class OpsQueueService {
       enRoute,
       failedDeliveries,
       refunds,
+      claims,
       payouts,
       incidents,
       outbox,
@@ -187,6 +198,21 @@ export class OpsQueueService {
           where: refundWhere,
           orderBy: { createdAt: 'asc' },
           select: { id: true, orderId: true, amount: true, createdAt: true },
+          take,
+        }),
+      ),
+      pair(
+        this.prisma.incident.count({ where: claimWhere }),
+        this.prisma.incident.findMany({
+          where: claimWhere,
+          orderBy: { createdAt: 'asc' },
+          select: {
+            id: true,
+            orderId: true,
+            title: true,
+            description: true,
+            createdAt: true,
+          },
           take,
         }),
       ),
@@ -296,6 +322,19 @@ export class OpsQueueService {
           title: `Remboursement de ${r.amount} FCFA — commande ${shortId(r.orderId)}`,
           detail: null,
           since: iso(r.createdAt),
+        }),
+      ),
+      bucket(
+        'claims_unanswered',
+        'Réclamations sans réponse depuis 2 h',
+        'MEDIUM',
+        claims,
+        (c) => ({
+          id: c.id,
+          orderId: c.orderId,
+          title: c.title,
+          detail: c.description,
+          since: iso(c.createdAt),
         }),
       ),
       bucket(

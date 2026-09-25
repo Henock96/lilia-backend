@@ -176,6 +176,7 @@ const TYPE_LABELS: Record<IncidentType, string> = {
   OTHER: 'Incident',
   OPS_SLA_BREACH: 'File « À traiter » en retard',
   METRIC_ANOMALY: 'Indicateur anormal',
+  CUSTOMER_CLAIM: 'Réclamation client',
 };
 
 function formatIncidentTitle(

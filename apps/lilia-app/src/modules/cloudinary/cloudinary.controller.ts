@@ -25,10 +25,10 @@ const ALLOWED_FOLDERS_BY_ROLE: Record<string, CloudinaryFolder[]> = {
   // Un client ne publie que sa propre photo de profil : il n'a aucune raison
   // d'écrire dans le catalogue, et 5 Mo par requête sur le quota Cloudinary de
   // la plateforme est un abus facile.
-  CLIENT: ['users'],
+  CLIENT: ['users', 'claims'],
   LIVREUR: ['users'],
-  RESTAURATEUR: ['users', 'restaurants', 'products', 'menus'],
-  ADMIN: ['users', 'restaurants', 'products', 'menus', 'banners'],
+  RESTAURATEUR: ['users', 'restaurants', 'products', 'menus', 'claims'],
+  ADMIN: ['users', 'restaurants', 'products', 'menus', 'banners', 'claims'],
 };
 
 @ApiTags('Upload')
@@ -81,7 +81,7 @@ export class CloudinaryController {
         file: { type: 'string', format: 'binary' },
         folder: {
           type: 'string',
-          enum: ['restaurants', 'products', 'menus', 'users', 'banners'],
+          enum: ['restaurants', 'products', 'menus', 'users', 'banners', 'claims'],
         },
       },
     },

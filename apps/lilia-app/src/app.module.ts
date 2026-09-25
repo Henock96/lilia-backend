@@ -64,6 +64,7 @@ import { HealthsModule } from './modules/health/health.module';
 import { IncidentsModule } from './modules/incidents/incidents.module';
 import { AdminAuditModule } from './modules/admin-audit/admin-audit.module';
 import { RefundsModule } from './modules/refunds/refunds.module';
+import { ClaimsModule } from './modules/claims/claims.module';
 import { OutboxModule } from './modules/outbox/outbox.module';
 
 import { CatalogCacheModule } from './modules/catalog-cache/catalog-cache.module';
@@ -267,6 +268,7 @@ import { DeliveryPricingModule } from './modules/delivery-pricing/delivery-prici
     IncidentsModule,
     AdminAuditModule,
     RefundsModule,
+    ClaimsModule,
     OutboxModule,
     OrderOutboxEffectsModule, // lot 4 : effets de commande rejoués par l'outbox
   ],

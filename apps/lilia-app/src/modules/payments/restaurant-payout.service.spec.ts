@@ -33,7 +33,7 @@ describe('RestaurantPayoutService', () => {
       groupBy: jest.fn(),
     },
     incident: { create: jest.fn() },
-    refund: { findUnique: jest.fn() },
+    refund: { findMany: jest.fn() },
     // Compte de reversement relu sous verrou (fix F-08).
     restaurant: { findUniqueOrThrow: jest.fn() },
     // Verrou de la ligne `Order` sous lequel naît le reversement (fix F-04).
@@ -97,7 +97,7 @@ describe('RestaurantPayoutService', () => {
       payoutProvider: 'MTN_MOMO',
     },
     Payment: [{ status: 'SUCCESS', amount: 6400 }],
-    refund: null,
+    refunds: [],
     payout: null,
     ...overrides,
   });
@@ -105,7 +105,7 @@ describe('RestaurantPayoutService', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     prisma.$queryRaw.mockResolvedValue([{ status: 'PRET' }]);
-    prisma.refund.findUnique.mockResolvedValue(null);
+    prisma.refund.findMany.mockResolvedValue([]);
     // Par défaut, le compte relu est celui de la commande, hors délai de carence.
     prisma.restaurant.findUniqueOrThrow.mockImplementation(async () => {
       const order =
@@ -153,6 +153,7 @@ describe('RestaurantPayoutService', () => {
         commissionPercent: 10,
         commissionAmount: 500,
         deliverySubsidyAmount: 0,
+        refundDeductionAmount: 0,
         payoutAmount: 4500,
         currency: 'XAF',
       });
@@ -210,14 +211,53 @@ describe('RestaurantPayoutService', () => {
       });
     });
 
-    it('remboursement ouvert → ORDER_REFUNDED (on ne paie pas deux fois)', async () => {
+    const refund = (over: Record<string, unknown> = {}) => ({
+      status: 'PENDING',
+      bearer: 'VENDOR',
+      reasonCode: 'MISSING_ITEM',
+      amount: 1500,
+      ...over,
+    });
+
+    it('remboursement à la charge du vendeur en vol → ORDER_REFUNDED', async () => {
       prisma.order.findUnique.mockResolvedValue(
-        readyOrder({ refund: { status: 'PENDING' } }),
+        readyOrder({ refunds: [refund()] }),
       );
       const result = await service.checkEligibility('o1');
       expect(result).toMatchObject({
         eligible: false,
         code: 'ORDER_REFUNDED',
+      });
+    });
+
+    it('F3-06 — geste de la plateforme en vol : le vendeur reste payable', async () => {
+      prisma.order.findUnique.mockResolvedValue(
+        readyOrder({
+          refunds: [refund({ bearer: 'PLATFORM', reasonCode: 'GOODWILL' })],
+        }),
+      );
+      const result = await service.checkEligibility('o1');
+      expect(result.eligible).toBe(true);
+      expect(result.breakdown?.payoutAmount).toBe(4500);
+    });
+
+    it('F3-06 — remboursement vendeur VERSÉ : retenu sur le reversement', async () => {
+      prisma.order.findUnique.mockResolvedValue(
+        readyOrder({
+          refunds: [
+            refund({ status: 'COMPLETED' }),
+            // Une ligne rejetée ne retient rien.
+            refund({ status: 'REJECTED', amount: 900 }),
+          ],
+        }),
+      );
+      const result = await service.checkEligibility('o1');
+      expect(result.eligible).toBe(true);
+      expect(result.breakdown).toMatchObject({
+        grossAmount: 5000,
+        commissionAmount: 500,
+        refundDeductionAmount: 1500,
+        payoutAmount: 3000,
       });
     });
 
@@ -240,7 +280,12 @@ describe('RestaurantPayoutService', () => {
             readyOrder({
               status: 'ECHEC_LIVRAISON',
               failureLiability: liability,
-              refund: { status: 'PENDING' },
+              refunds: [
+                refund({
+                  reasonCode: 'DELIVERY_FAILED',
+                  bearer: liability === 'DRIVER' ? 'DRIVER' : 'PLATFORM',
+                }),
+              ],
             }),
           );
           const result = await service.checkEligibility('o1');
@@ -251,7 +296,7 @@ describe('RestaurantPayoutService', () => {
 
     it('remboursement REJETÉ → redevient éligible', async () => {
       prisma.order.findUnique.mockResolvedValue(
-        readyOrder({ refund: { status: 'REJECTED' } }),
+        readyOrder({ refunds: [refund({ status: 'REJECTED' })] }),
       );
       const result = await service.checkEligibility('o1');
       expect(result.eligible).toBe(true);
@@ -439,6 +484,50 @@ describe('RestaurantPayoutService', () => {
         duplicate: false,
         raw: { status: 'ACCEPTED' },
       });
+    });
+
+    it('F3-06 — un remboursement vendeur ouvert sous verrou bloque le virement', async () => {
+      prisma.refund.findMany.mockResolvedValue([
+        {
+          status: 'PENDING',
+          bearer: 'VENDOR',
+          reasonCode: 'MISSING_ITEM',
+          amount: 1500,
+        },
+      ]);
+      await expect(
+        service.requestPayout({ orderId: 'o1', adminUserId: 'admin-1' }),
+      ).rejects.toMatchObject({ response: { code: 'ORDER_REFUNDED' } });
+      expect(payoutProvider.createPayout).not.toHaveBeenCalled();
+    });
+
+    it('F3-06 — fige la retenue des remboursements vendeur versés', async () => {
+      const vendorRefund = {
+        status: 'COMPLETED',
+        bearer: 'VENDOR',
+        reasonCode: 'MISSING_ITEM',
+        amount: 1500,
+      };
+      prisma.order.findUniqueOrThrow.mockResolvedValue(
+        readyOrder({ refunds: [vendorRefund] }),
+      );
+      prisma.refund.findMany.mockResolvedValue([vendorRefund]);
+      await service.requestPayout({ orderId: 'o1', adminUserId: 'admin-1' });
+      expect(
+        prisma.restaurantPayout.create.mock.calls[0][0].data,
+      ).toMatchObject({ refundDeductionAmount: 1500, amount: 3000 });
+    });
+
+    it('F3-05 — un échec conclu hors vendeur reste payable sous verrou', async () => {
+      prisma.$queryRaw.mockResolvedValue([{ status: 'ECHEC_LIVRAISON' }]);
+      prisma.order.findUniqueOrThrow.mockResolvedValue(
+        readyOrder({ status: 'ECHEC_LIVRAISON', failureLiability: 'PLATFORM' }),
+      );
+      prisma.order.findUnique.mockResolvedValue(
+        readyOrder({ status: 'ECHEC_LIVRAISON', failureLiability: 'PLATFORM' }),
+      );
+      await service.requestPayout({ orderId: 'o1', adminUserId: 'admin-1' });
+      expect(payoutProvider.createPayout).toHaveBeenCalled();
     });
 
     it('envoie le montant NET, jamais le brut', async () => {

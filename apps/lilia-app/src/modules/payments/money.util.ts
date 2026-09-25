@@ -111,6 +111,11 @@ export interface PayoutBreakdown {
    * reversement. `0` pour toute commande antérieure au mode PLATFORM.
    */
   deliverySubsidyAmount: number;
+  /**
+   * Remboursements clients à la charge du vendeur (F3-06, R-06.4), retenus
+   * sur ce reversement. `0` sans réclamation.
+   */
+  refundDeductionAmount: number;
   /** Montant NET effectivement envoyé au vendeur. */
   payoutAmount: number;
 }
@@ -121,7 +126,8 @@ export interface PayoutBreakdown {
  * ```
  * grossAmount    = montant des produits (Order.subTotal)
  * commission     = grossAmount × commissionPercent
- * payoutAmount   = grossAmount − commission − deliverySubsidy   (≥ 0)
+ * payoutAmount   = grossAmount − commission − deliverySubsidy
+ *                  − refundDeduction                              (≥ 0)
  * ```
  *
  * `deliverySubsidy` (F3-02) est la part de la course que le vendeur a choisi
@@ -129,6 +135,12 @@ export interface PayoutBreakdown {
  * déduction qui ne soit pas une commission : le vendeur l'a décidée, il la
  * finance. Le reversement ne descend jamais sous 0 — le cas ne peut survenir
  * que sur un panier minuscule, et la plateforme en absorbe alors le reste.
+ *
+ * `refundDeduction` (F3-06) : ce que le client a été remboursé **à la charge
+ * du vendeur** (article manquant, erroné, abîmé). Tant que le grand livre
+ * vendeur (F3-07) n'existe pas, c'est ici, avant le virement, que la perte lui
+ * est imputée — et un remboursement vendeur est refusé une fois le vendeur
+ * payé (R-06.5). Même plancher à 0 que la subvention.
  *
  * **Ce qui n'entre PAS dans le calcul**, et c'est délibéré :
  *  · `serviceFee` — frais payés en plus par le client, ils appartiennent à
@@ -147,6 +159,7 @@ export function computePayoutBreakdown(params: {
   subTotalXaf: number;
   commissionPercent: number;
   deliverySubsidyXaf?: number;
+  refundDeductionXaf?: number;
 }): PayoutBreakdown {
   const grossAmount = toXaf(params.subTotalXaf, 'sous-total de la commande');
   const bps = percentToBasisPoints(params.commissionPercent);
@@ -161,7 +174,19 @@ export function computePayoutBreakdown(params: {
     toXaf(subsidy, 'subvention de livraison'),
     grossAmount - commissionAmount,
   );
-  const payoutAmount = grossAmount - commissionAmount - deliverySubsidyAmount;
+  const deduction = params.refundDeductionXaf ?? 0;
+  if (!Number.isInteger(deduction)) {
+    throw new Error(`retenue de remboursement invalide : ${deduction}`);
+  }
+  const refundDeductionAmount = Math.min(
+    toXaf(deduction, 'retenue de remboursement'),
+    grossAmount - commissionAmount - deliverySubsidyAmount,
+  );
+  const payoutAmount =
+    grossAmount -
+    commissionAmount -
+    deliverySubsidyAmount -
+    refundDeductionAmount;
 
   return {
     grossAmount,
@@ -170,6 +195,7 @@ export function computePayoutBreakdown(params: {
     commissionPercent: bps / 100,
     commissionAmount,
     deliverySubsidyAmount,
+    refundDeductionAmount,
     payoutAmount,
   };
 }
