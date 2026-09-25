@@ -1,3 +1,5 @@
+import { RequireCapability } from '../auth/decorators/require-capability.decorator';
+import { AdminCapability } from '@prisma/client';
 import {
   Body,
   Controller,
@@ -48,6 +50,7 @@ export class AdminDeliveryTariffsController {
 
   @Post()
   @ApiOperation({ summary: 'Créer un brouillon de grille' })
+  @RequireCapability(AdminCapability.SETTINGS)
   async create(
     @Body() dto: DeliveryTariffDraftDto,
     @CurrentUser() admin: User,
@@ -57,12 +60,14 @@ export class AdminDeliveryTariffsController {
 
   @Patch(':id')
   @ApiOperation({ summary: 'Remplacer un brouillon (409 s’il est publié)' })
+  @RequireCapability(AdminCapability.SETTINGS)
   async update(@Param('id') id: string, @Body() dto: DeliveryTariffDraftDto) {
     return { data: await this.tariffs.updateDraft(id, dto) };
   }
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
+  @RequireCapability(AdminCapability.SETTINGS)
   async remove(@Param('id') id: string) {
     await this.tariffs.deleteDraft(id);
   }
@@ -72,6 +77,7 @@ export class AdminDeliveryTariffsController {
   @ApiOperation({
     summary: 'Publier un brouillon (retire la grille en vigueur)',
   })
+  @RequireCapability(AdminCapability.SETTINGS)
   async publish(@Param('id') id: string, @CurrentUser() admin: User) {
     return {
       data: await this.tariffs.publish(id, admin.id),

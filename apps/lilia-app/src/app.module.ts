@@ -1,6 +1,7 @@
 ﻿// app.module.ts
 import { OpsModule } from './modules/ops/ops.module';
 import { OrderOutboxEffectsModule } from './modules/outbox/order-outbox-effects.module';
+import { ApprovalsModule } from './modules/approvals/approvals.module';
 import { PayoutOutboxEffectsModule } from './modules/outbox/payout-outbox-effects.module';
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -273,6 +274,7 @@ import { DeliveryPricingModule } from './modules/delivery-pricing/delivery-prici
     OutboxModule,
     OrderOutboxEffectsModule, // lot 4 : effets de commande rejoués par l'outbox
     PayoutOutboxEffectsModule, // F3-07 : notifications de versement par l'outbox
+    ApprovalsModule, // F3-08 : gestes financiers à deux administrateurs
   ],
   providers: [
     // `ParallelThrottlerGuard` et non `ThrottlerGuard` : les deux limiteurs

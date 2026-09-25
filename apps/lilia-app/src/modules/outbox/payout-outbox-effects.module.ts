@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { NotificationsCoreModule } from '../notifications/notifications-core.module';
 import { PayoutOutboxEffectsService } from './payout-outbox-effects.service';
+import { ApprovalOutboxEffectsService } from './approval-outbox-effects.service';
 
 /**
  * Notifications de versement dépilées par l'outbox (F3-07).
@@ -11,6 +12,7 @@ import { PayoutOutboxEffectsService } from './payout-outbox-effects.service';
  */
 @Module({
   imports: [PrismaModule, NotificationsCoreModule],
-  providers: [PayoutOutboxEffectsService],
+  // F3-08 — les demandes d'approbation, même mécanique.
+  providers: [PayoutOutboxEffectsService, ApprovalOutboxEffectsService],
 })
 export class PayoutOutboxEffectsModule {}

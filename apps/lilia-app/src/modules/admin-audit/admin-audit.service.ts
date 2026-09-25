@@ -11,7 +11,9 @@ export interface AdminAuditEntry {
     | 'Payment'
     | 'Order'
     | 'PublicHoliday'
-    | 'Incident';
+    | 'Incident'
+    // F3-08 — demande de geste financier à deux administrateurs.
+    | 'FinancialApproval';
   targetId: string;
   reason?: string | null;
   metadata?: Prisma.InputJsonValue;

@@ -67,6 +67,10 @@ model User {
   phone             String?
   imageUrl          String?
   role              Role               @default(CLIENT)
+  /// F3-08 — ce qu'un ADMIN a le droit de faire. Le rôle `ADMIN` reste la
+  /// porte d'entrée ; la capacité autorise le geste (`@RequireCapability`).
+  /// Vide pour tout autre rôle. S'attribue à deux administrateurs.
+  adminCapabilities AdminCapability[]  @default([])
   /// Disponibilité **du moment**, changée plusieurs fois par jour par le livreur
   /// lui-même. À ne pas confondre avec `DriverProfile.isActive` (le livreur
   /// est-il en service sur la plateforme ?) ni avec `statusUser` (son compte
@@ -1746,6 +1750,68 @@ enum PaymentStatus {
 /// cliquant simultanément incapables de créer deux reversements. Une ligne
 /// `FAILED` est supprimée avant de réessayer (cf. RestaurantPayoutService), ce
 /// qui garde la contrainte intacte tout en autorisant une nouvelle tentative.
+/// F3-08 — capacités d'un administrateur (R-08.1). Plutôt qu'un rôle
+/// SUPER_ADMIN : pas d'`ALTER TYPE Role`, pas de 5ᵉ rôle dans trois apps.
+enum AdminCapability {
+  /// Faire partir de l'argent : versements, remboursements, avoirs, points.
+  FINANCE_EXECUTE
+  /// Être le second administrateur d'un geste financier.
+  FINANCE_APPROVE
+  /// Rôles, bannissements, capacités.
+  USER_ROLES
+  /// Paramètres plateforme et grille de livraison.
+  SETTINGS
+  /// Opérations courantes (lecture, cockpit, commandes, vendeurs).
+  SUPPORT
+}
+
+/// Geste soumis à deux administrateurs (D7).
+enum ApprovalKind {
+  /// Changement d'un numéro de versement existant (la première saisie est directe).
+  PAYOUT_ACCOUNT_CHANGE
+  /// Exécution d'un remboursement ≥ 50 000 XAF.
+  REFUND_EXECUTION
+  /// Attribution ou retrait de capacités.
+  CAPABILITY_GRANT
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  /// Le geste a été exécuté : une approbation ne sert qu'une fois.
+  CONSUMED
+}
+
+/// F3-08 — demande d'approbation d'un geste financier (4 yeux).
+///
+/// `payloadHash` lie l'approbation au geste EXACT (ce compte, ce montant) :
+/// approuver « changer le numéro en 06 111 » n'autorise pas « 06 222 ».
+/// `approvedBy <> requestedBy` est une CHECK en base, pas un `if`.
+model FinancialApproval {
+  id          String         @id @default(cuid())
+  kind        ApprovalKind
+  /// Objet visé : `Restaurant.id`, `Refund.id`, `User.id`.
+  refId       String
+  /// Le geste lui-même, rejoué à l'approbation (numéro, capacités…).
+  payload     Json
+  payloadHash String
+  amountXaf   Int?
+  /// `User.id` — sans clé étrangère, comme les autres colonnes d'audit.
+  requestedBy String
+  approvedBy  String?
+  status      ApprovalStatus @default(PENDING)
+  reason      String?
+  expiresAt   DateTime
+  createdAt   DateTime       @default(now())
+  decidedAt   DateTime?
+  consumedAt  DateTime?
+
+  @@index([status, createdAt])
+  // + index unique partiel SQL : une seule demande PENDING par (kind, refId).
+}
+
 /// F3-07 — mouvements de la dette d'un vendeur envers Lilia Food.
 ///
 /// Un versement par commande (D6) ne laisse aucun endroit où retenir un
@@ -2677,6 +2743,12 @@ enum AdminAuditAction {
   CLAIM_VOUCHER_ISSUED
   /// F3-06 — réclamation refusée (motif communiqué au client).
   CLAIM_REJECTED
+  /// F3-08 — un geste financier attend un second administrateur.
+  APPROVAL_REQUESTED
+  /// F3-08 — approbation accordée ou refusée par le second administrateur.
+  APPROVAL_DECIDED
+  /// F3-08 — capacités d'un administrateur modifiées (toujours à deux).
+  CAPABILITY_CHANGED
 }
 
 model Incident {
