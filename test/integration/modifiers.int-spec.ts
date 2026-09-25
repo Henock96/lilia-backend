@@ -403,7 +403,9 @@ describeIfDb('F3-09 — options & suppléments (PostgreSQL réel)', () => {
       await addPoulet([ALLOCO]);
       await expect(
         prisma.modifierOption.delete({ where: { id: 'opt-alloco' } }),
-      ).rejects.toThrow(/RESTRICT.*CartItemOption_optionId_fkey/);
+        // Le libellé dépend de la version de PostgreSQL (RESTRICT 23001 en
+        // local, P2003 en CI) : seule la contrainte fait foi.
+      ).rejects.toThrow(/CartItemOption_optionId_fkey/);
     });
   });
 
