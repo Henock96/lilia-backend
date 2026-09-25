@@ -6,6 +6,16 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import {
+  PRODUCT_MODIFIER_GROUPS_ARGS,
+  toModifierContext,
+} from '../modifiers/modifier-catalog';
+import {
+  ModifierSelectionError,
+  resolveSelection,
+} from '../modifiers/modifier-selection';
+import { mergeCartLine } from '../modifiers/cart-line-merge';
 
 /**
  * Recommande (reorder) une commande précédente (LIL-134).
@@ -18,7 +28,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 export class OrderReorderService {
   private readonly logger = new Logger(OrderReorderService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // F3-09 — l'interrupteur des options décide de la résolution.
+    private readonly platformSettings: PlatformSettingsService,
+  ) {}
 
   async reorderFromPreviousOrder(orderId: string, firebaseUid: string) {
     // 1. Vérifier l'utilisateur
@@ -40,7 +54,13 @@ export class OrderReorderService {
             product: {
               include: {
                 variants: true,
+                modifierGroups: PRODUCT_MODIFIER_GROUPS_ARGS,
               },
+            },
+            // Options figées de la commande : ce que le client avait choisi.
+            options: {
+              orderBy: { position: 'asc' },
+              select: { optionId: true, optionName: true, quantity: true },
             },
           },
         },
@@ -86,6 +106,8 @@ export class OrderReorderService {
         );
       }
     }
+
+    const { modifiersEnabled } = await this.platformSettings.getSettings();
 
     // 5. Ajouter les items de la commande au panier
     const results = {
@@ -145,39 +167,59 @@ export class OrderReorderService {
           continue;
         }
 
-        // Vérifier si l'item existe déjà dans le panier (individuel uniquement)
-        const existingCartItem = await this.prisma.cartItem.findFirst({
-          where: {
-            cartId: cart.id,
-            variantId: variant.id,
-            menuId: null,
-          },
-        });
-
-        if (existingCartItem) {
-          // Mettre à jour la quantité
-          await this.prisma.cartItem.update({
-            where: { id: existingCartItem.id },
-            data: {
-              quantite: existingCartItem.quantite + orderItem.quantite,
-            },
+        // F3-09 — la sélection d'options d'origine, résolue par LE moteur
+        // contre la carte d'aujourd'hui (décision Q7). Une option disparue,
+        // en rupture, ou un groupe devenu obligatoire : la ligne est IGNORÉE
+        // et signalée. Jamais « Poulet + Alloco » recréé en « Poulet » seul —
+        // ce serait un autre plat, à un autre prix, que le client n'a pas
+        // demandé.
+        const gone = orderItem.options.find(
+          (option) => option.optionId === null,
+        );
+        if (gone) {
+          results.unavailable.push({
+            productName: product.nom,
+            reason: `L'option « ${gone.optionName} » n'est plus proposée.`,
           });
-        } else {
-          // Créer un nouvel item
-          await this.prisma.cartItem.create({
-            data: {
-              cartId: cart.id,
-              productId: product.id,
-              variantId: variant.id,
-              quantite: orderItem.quantite,
-            },
-          });
+          continue;
         }
+        let selection;
+        try {
+          selection = resolveSelection({
+            basePriceXaf: variant.prix,
+            product: toModifierContext(product),
+            selection: orderItem.options.map((option) => ({
+              optionId: option.optionId!,
+              quantity: option.quantity,
+            })),
+            modifiersEnabled,
+          });
+        } catch (err) {
+          if (!(err instanceof ModifierSelectionError)) throw err;
+          results.unavailable.push({
+            productName: product.nom,
+            reason: err.message,
+            code: err.code,
+          });
+          continue;
+        }
+
+        // Même écriture que `POST /cart/add` : fusion atomique par
+        // `(variante, signature)` — l'ancienne forme lisait la quantité puis
+        // la réécrivait, et perdait un ajout concurrent.
+        await mergeCartLine(this.prisma, {
+          cartId: cart.id,
+          productId: product.id,
+          variantId: variant.id,
+          selection,
+          quantite: orderItem.quantite,
+        });
 
         results.added.push({
           productName: product.nom,
           variant: variant.label,
           quantity: orderItem.quantite,
+          options: selection.lines.map((option) => option.optionName),
         });
       } catch (error) {
         this.logger.error(
@@ -210,6 +252,7 @@ export class OrderReorderService {
                 prix: true,
               },
             },
+            options: { select: { optionId: true, quantity: true } },
           },
         },
       },

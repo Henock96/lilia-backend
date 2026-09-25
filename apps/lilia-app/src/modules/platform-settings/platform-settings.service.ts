@@ -148,6 +148,31 @@ export class PlatformSettingsService {
       }
     }
 
+    // F3-09 — l'éditeur d'options n'a de sens que si la plateforme vend des
+    // options (CHECK `PlatformSettings_modifiers_rollout_chk` en base).
+    //
+    // - ouvrir l'éditeur sans les options : refusé, c'est l'ordre de
+    //   déploiement à l'envers (un vendeur créerait un groupe obligatoire que
+    //   personne ne pourrait choisir) ;
+    // - éteindre les options : l'éditeur se ferme **avec**, sans exiger un
+    //   second geste — la sortie de secours doit rester un seul clic.
+    const nextModifiers =
+      'modifiersEnabled' in changes
+        ? Boolean(changes.modifiersEnabled)
+        : before.modifiersEnabled;
+    if (!nextModifiers) {
+      if (changes.modifiersManagementEnabled === true) {
+        throw new ConflictException({
+          message:
+            "Activez d'abord les options côté clients (`modifiersEnabled`), après publication des applications compatibles.",
+          code: 'MODIFIERS_ROLLOUT_ORDER',
+        });
+      }
+      if (before.modifiersManagementEnabled) {
+        changes.modifiersManagementEnabled = false;
+      }
+    }
+
     // PATCH vide : ne rien écrire. Un UPDATE sans colonne ferait tout de même
     // avancer `updatedAt` et périmerait à tort les formulaires ouverts ailleurs.
     if (Object.keys(changes).length === 0) {

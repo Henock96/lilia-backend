@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Optional, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, ProductType, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
@@ -14,6 +14,12 @@ import {
   MENU_PRODUCTS_ORDER_BY,
   MENU_VARIANTS_ORDER_BY,
 } from './vendor-menu.include';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import { modifiersEnabled } from '../modifiers/modifiers-switch';
+import {
+  PUBLIC_PRODUCT_MODIFIER_GROUPS_ARGS,
+  withPublicModifiers,
+} from '../modifiers/modifier-views';
 
 /**
  * Lectures du catalogue produits (extrait de ProductsService — LIL-143).
@@ -25,6 +31,8 @@ export class ProductQueryService {
   constructor(
     private prisma: PrismaService,
     private readonly access: RestaurantAccessService,
+    // F3-09 — interrupteur des options (catalogue) ; absent en test = éteint.
+    @Optional() private readonly platformSettings?: PlatformSettingsService,
   ) {}
 
   /**
@@ -78,6 +86,7 @@ export class ProductQueryService {
             },
           },
           images: { orderBy: [...MENU_IMAGES_ORDER_BY] },
+          modifierGroups: PUBLIC_PRODUCT_MODIFIER_GROUPS_ARGS,
         },
         // Le **même** tri que la carte (`vendorMenuInclude`), et ce n'est pas
         // une coquetterie : c'est par cette route que les clients complètent un
@@ -92,7 +101,10 @@ export class ProductQueryService {
     ]);
 
     return {
-      data: products,
+      data: withPublicModifiers(
+        products,
+        await modifiersEnabled(this.platformSettings),
+      ),
       meta: {
         total,
         page,
@@ -235,16 +247,21 @@ export class ProductQueryService {
           },
         },
         images: { orderBy: [...MENU_IMAGES_ORDER_BY] },
+        modifierGroups: PUBLIC_PRODUCT_MODIFIER_GROUPS_ARGS,
       },
     });
 
     if (!product) {
       throw new NotFoundException(`Produit avec l'ID "${id}" non trouvé.`);
     }
+    const [withModifiers] = withPublicModifiers(
+      [product],
+      await modifiersEnabled(this.platformSettings),
+    );
 
     return {
       data: {
-        ...product,
+        ...withModifiers,
         /**
          * Le produit est-il dans sa fenêtre de vente **maintenant** ?
          *

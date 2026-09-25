@@ -8,6 +8,10 @@ import { User } from '@prisma/client';
 import type { TDocumentDefinitions } from 'pdfmake/interfaces';
 import { PrismaService } from '../../prisma/prisma.service';
 import { renderPdf } from './order-receipt-pdf.util';
+import {
+  optionLabel,
+  ORDER_ITEM_OPTIONS_ARGS,
+} from '../modifiers/order-item-options';
 
 /**
  * Libellé des frais de service, taux compris.
@@ -42,7 +46,12 @@ export class OrderReceiptService {
       include: {
         restaurant: { select: { nom: true, ownerId: true } },
         user: { select: { nom: true } },
-        items: { include: { product: { select: { nom: true } } } },
+        items: {
+          include: {
+            product: { select: { nom: true } },
+            options: ORDER_ITEM_OPTIONS_ARGS,
+          },
+        },
       },
     });
 
@@ -96,7 +105,10 @@ export class OrderReceiptService {
     });
 
     const itemRows = order.items.map((it: any) => {
-      const label = `${it.quantite}x ${it.product.nom} (${it.variantLabel ?? it.variant})`;
+      // F3-09 — options figées sous le nom du plat. Le montant de la ligne
+      // (`snapshotPrice × quantite`) les inclut déjà : on ne les additionne pas.
+      const options = (it.options ?? []).map(optionLabel).join(', ');
+      const label = `${it.quantite}x ${it.product.nom} (${it.variantLabel ?? it.variant})${options ? ` — ${options}` : ''}`;
       const lineTotal = (it.snapshotPrice ?? it.prix) * it.quantite;
       return {
         columns: [

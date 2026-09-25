@@ -1,6 +1,12 @@
 /* eslint-disable prettier/prettier */
 // orders/order-calculator.service.ts
 import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  cartSubtotalXaf,
+  orderItemSnapshots,
+  type OrderItemSnapshot,
+  type PricedCartLine,
+} from '../modifiers/cart-line-pricing';
 
 export interface OrderAmounts {
   subTotal: number;
@@ -18,21 +24,19 @@ export interface OrderAmounts {
   commissionAmount: number;
 }
 
-export interface OrderItemSnapshot {
-  productId: string;
-  menuId?: string;
-  quantite: number;
-  prix: number;
-  variant: string;       // label snapshot
-  variantId: string;     // ID pour traçabilité
-  snapshotPrice: number; // prix au moment de la commande
-}
+/** Figé d'une ligne de commande — défini avec le calcul de prix (F3-09). */
+export type { OrderItemSnapshot } from '../modifiers/cart-line-pricing';
 
 @Injectable()
 export class OrderCalculatorService {
 
   calculate(
-    cartItems: any[],
+    /**
+     * Lignes du panier **déjà résolues** par le moteur d'options : le prix
+     * d'une ligne individuelle est `selection.unitPriceXaf` (variante +
+     * options), jamais `variant.prix` seul (F3-09).
+     */
+    lines: readonly PricedCartLine[],
     deliveryFee: number,
     isDelivery: boolean,
     serviceFeePercent: number,
@@ -43,27 +47,10 @@ export class OrderCalculatorService {
      */
     commissionPercent: number | null = null,
   ): OrderAmounts {
-    const menuGroups = new Map<string, any[]>();
-    const individualItems: any[] = [];
-
-    for (const item of cartItems) {
-      if (item.menuId && item.menu) {
-        if (!menuGroups.has(item.menuId)) menuGroups.set(item.menuId, []);
-        menuGroups.get(item.menuId)!.push(item);
-      } else {
-        individualItems.push(item);
-      }
-    }
-
-    let subTotal = individualItems.reduce(
-      (acc, item) => acc + item.variant.prix * item.quantite,
-      0,
-    );
-
-    for (const [, groupItems] of menuGroups) {
-      // Le prix du menu est porté par le menu, pas par les variants individuels
-      subTotal += groupItems[0].menu!.prix * groupItems[0].quantite;
-    }
+    // F3-09 — le sous-total est celui de `cart-line-pricing.ts`, le même que
+    // lisent `GET /cart` et l'aperçu promo. Un menu porte son propre prix ;
+    // une ligne individuelle, variante + options.
+    const subTotal = cartSubtotalXaf(lines);
 
     // Garde défensive (fix H3) : les DTO produit bornent désormais les prix à
     // [0, MAX_PRIX_XAF], mais des lignes antérieures au correctif peuvent
@@ -100,50 +87,9 @@ export class OrderCalculatorService {
     };
   }
 
-  // Snapshot : capture les prix au moment T — immuable pour l'historique
-  buildOrderItemSnapshots(cartItems: any[]): OrderItemSnapshot[] {
-    const menuGroups = new Map<string, any[]>();
-    const individualItems: any[] = [];
-
-    for (const item of cartItems) {
-      if (item.menuId && item.menu) {
-        if (!menuGroups.has(item.menuId)) menuGroups.set(item.menuId, []);
-        menuGroups.get(item.menuId)!.push(item);
-      } else {
-        individualItems.push(item);
-      }
-    }
-
-    const snapshots: OrderItemSnapshot[] = [];
-
-    // Produits individuels : prix = variant.prix
-    for (const item of individualItems) {
-      snapshots.push({
-        productId: item.productId,
-        quantite: item.quantite,
-        prix: item.variant.prix,
-        variant: item.variant.label ?? 'Standard',
-        variantId: item.variantId,
-        snapshotPrice: item.variant.prix,
-      });
-    }
-
-    // Menus : le premier item du groupe porte le prix total du menu
-    for (const [menuId, groupItems] of menuGroups) {
-      const menuPrix = groupItems[0].menu!.prix;
-      groupItems.forEach((item, idx) => {
-        snapshots.push({
-          productId: item.productId,
-          menuId,
-          quantite: item.quantite,
-          prix: idx === 0 ? menuPrix : 0, // logique métier préservée
-          variant: item.variant.label ?? 'Standard',
-          variantId: item.variantId,
-          snapshotPrice: idx === 0 ? menuPrix : 0,
-        });
-      });
-    }
-
-    return snapshots;
+  // Snapshot : capture les prix au moment T — immuable pour l'historique.
+  // `prix = snapshotPrice = unitPriceXaf` (options comprises, décision Q1).
+  buildOrderItemSnapshots(lines: readonly PricedCartLine[]): OrderItemSnapshot[] {
+    return orderItemSnapshots(lines);
   }
 }

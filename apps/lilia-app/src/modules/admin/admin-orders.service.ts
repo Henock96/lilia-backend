@@ -11,6 +11,7 @@ import {
   toOrderStatusCounts,
 } from '../orders/order-status-filter';
 import { buildOrderSearchWhere } from '../orders/order-search';
+import { ORDER_ITEM_OPTIONS_ARGS } from '../modifiers/order-item-options';
 
 /**
  * Relations chargées avec chaque commande de la vue d'administration.
@@ -26,7 +27,13 @@ import { buildOrderSearchWhere } from '../orders/order-search';
 const ADMIN_ORDER_INCLUDE = {
   restaurant: { select: { id: true, nom: true, vendorType: true } },
   user: { select: { id: true, nom: true, phone: true, imageUrl: true } },
-  items: { include: { product: { select: { nom: true, imageUrl: true } } } },
+  items: {
+    include: {
+      product: { select: { nom: true, imageUrl: true } },
+      // F3-09 — options figées (jamais relues au catalogue).
+      options: ORDER_ITEM_OPTIONS_ARGS,
+    },
+  },
   delivery: {
     select: {
       id: true,

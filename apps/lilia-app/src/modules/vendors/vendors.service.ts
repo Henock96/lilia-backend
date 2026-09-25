@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import {
+import { Optional,
   BadRequestException,
   ForbiddenException,
   Injectable,
@@ -28,6 +28,9 @@ import { CreateVendorDto } from './dto/create-vendor.dto';
 import { FilterVendorsDto } from './dto/filter-vendors.dto';
 import { UpdateVendorProfileDto } from './dto/update-vendor-profile.dto';
 import { VendorApprovedEvent, VendorCreatedEvent } from './events/vendor-events';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import { modifiersEnabled } from '../modifiers/modifiers-switch';
+import { withPublicModifiers } from '../modifiers/modifier-views';
 
 /**
  * Relations servies avec une fiche vendeur.
@@ -91,6 +94,10 @@ export class VendorsService {
     private readonly pagination: PaginationService,
     private readonly eventEmitter: EventEmitter2,
     private readonly audit: AdminAuditService,
+    // F3-09 — interrupteur des options (carte). Facultatif pour les tests
+    // unitaires qui montent le service seul : absent, les options sont
+    // éteintes, c'est-à-dire la carte d'avant F3-09.
+    @Optional() private readonly platformSettings?: PlatformSettingsService,
   ) {}
 
   async createVendor(dto: CreateVendorDto, adminUserId: string) {
@@ -221,7 +228,10 @@ export class VendorsService {
     return {
       data: {
         ...rest,
-        products: withAvailableNow(products, now),
+        products: withPublicModifiers(
+          withAvailableNow(products, now),
+          await modifiersEnabled(this.platformSettings),
+        ),
         ...(await ratingOf(this.prisma, id)),
         totalProducts: _count.products,
         hasMoreProducts: _count.products > MENU_PRODUCTS_LIMIT,

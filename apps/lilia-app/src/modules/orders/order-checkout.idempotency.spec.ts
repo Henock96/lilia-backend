@@ -17,6 +17,7 @@ import { DeliveryDestinationService } from './delivery-destination.service';
 import { DeliveryPricingService } from '../delivery-pricing/delivery-pricing.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { OrderTransitionService } from './order-transition.service';
+import { cartLine } from '../modifiers/testing/cart-line.fixture';
 
 /**
  * Garde d'idempotence du checkout.
@@ -116,7 +117,7 @@ describe('OrderCheckoutService — idempotence', () => {
 
     validator.validateAndGetUser.mockResolvedValue({
       id: 'u1',
-      cart: { id: 'cart1', items: [{ id: 'ci1', quantite: 1 }] },
+      cart: { id: 'cart1', items: [cartLine({ id: 'ci1', quantite: 1 })] },
     });
     validator.validateSameRestaurant.mockReturnValue('resto1');
     destinationService.resolveForAddress.mockResolvedValue({

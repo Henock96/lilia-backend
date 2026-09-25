@@ -5,8 +5,11 @@ import { RestaurantQueryService } from './restaurant-query.service';
 import { RestaurantHoursService } from './restaurant-hours.service';
 import { RestaurantsController } from './restaurants.controller';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PlatformSettingsCoreModule } from '../platform-settings/platform-settings-core.module';
 
 @Module({
+  // F3-09 — interrupteur `modifiersEnabled` lu par la carte publique.
+  imports: [PlatformSettingsCoreModule],
   providers: [
     RestaurantsService,
     RestaurantAccessService,

@@ -414,6 +414,8 @@ model Restaurant {
   reviews     Review[]
   favorites   Favorite[]
   categories  Category[] // Sections de menu propres à ce vendeur
+  /// F3-09 — bibliothèque de groupes d'options (accompagnement, sauce, suppléments).
+  modifierGroups ModifierGroup[]
   specialties Specialty[] // Spécialités du restaurant
   banners     Banner[] // Bannières du restaurant
   photos      VendorPhoto[] // Galerie photos vendeur
@@ -743,6 +745,10 @@ model Product {
   orderItems     OrderItem[]
   cartItems      CartItem[]
   images         ProductImage[] // Galerie photos produit
+  /// F3-09 — groupes d'options attachés, dans l'ordre du vendeur. Portés par le
+  /// produit, pas par la variante : toutes les variantes partagent les mêmes
+  /// groupes (limite assumée de la V1).
+  modifierGroups ProductModifierGroup[]
 
   // Multi-vendeurs (Sprint A — LIL-111)
   productType ProductType @default(FOOD)
@@ -811,6 +817,10 @@ model Product {
   @@index([restaurantId, deletedAt, isAvailable]) // catalogue vendeur filtré (fix M2)
   /// Tri du menu : on lit toujours « les produits d'un vendeur, dans l'ordre ».
   @@index([restaurantId, displayOrder])
+  /// F3-09 — cible de la FK composite de `ProductModifierGroup` : un groupe
+  /// d'options du vendeur B ne peut pas être attaché à un produit du vendeur A,
+  /// et c'est PostgreSQL qui le refuse (motif de `Category`).
+  @@unique([id, restaurantId])
 }
 
 /// Format d'un produit — « 30cl », « Grand », « Standard ».
@@ -860,13 +870,22 @@ model CartItem {
   quantite  Int
   createdAt DateTime       @default(now())
 
+  /// F3-09 — sélection d'options de la ligne, sous forme canonique
+  /// (`optionId:qty` triés par identifiant, joints par `,`). `""` = aucune
+  /// option. Calculée par `modifier-selection.ts` et **seulement** par lui ;
+  /// elle fait partie de l'identité de la ligne : « Poulet + Alloco » et
+  /// « Poulet + Frites » sont deux lignes. Une ligne de menu n'en porte jamais
+  /// (CHECK `CartItem_menu_without_options`).
+  optionsSignature String           @default("")
+  options          CartItemOption[]
+
   // ⚠️ En PostgreSQL, `NULL != NULL` : cette contrainte ne protège PAS les
   // lignes `menuId = null`, c'est-à-dire les produits individuels — soit le cas
   // le plus fréquent (fix L9). Un index unique **partiel**
-  // `WHERE "menuId" IS NULL` la complète, créé par la migration
-  // `20260828200000_cart_item_partial_unique` (Prisma ne sait pas déclarer un
-  // index partiel).
-  @@unique([cartId, variantId, menuId]) // Permet un même variant comme produit individuel ET dans un menu
+  // `WHERE "menuId" IS NULL` sur `(cartId, variantId, optionsSignature)` la
+  // complète, créé à la main par la migration `20260926100000_modifiers`
+  // (Prisma ne sait pas déclarer un index partiel).
+  @@unique([cartId, variantId, menuId, optionsSignature]) // Permet un même variant comme produit individuel ET dans un menu
   @@index([variantId])
   @@index([productId])
   @@index([menuId])
@@ -1066,6 +1085,16 @@ model OrderItem {
 
   /// F3-06 — lignes de remboursement partiel portant sur cet article.
   refundLines RefundLine[]
+
+  /// F3-09 — part des options dans le prix unitaire, pour la ventilation à
+  /// l'affichage. **`prix` et `snapshotPrice` l'incluent déjà** (décision Q1) :
+  /// le reçu, le remboursement par ligne et les applications installées lisent
+  /// `prix × quantite` et restent justes sans rien additionner. Ne jamais
+  /// l'ajouter une seconde fois.
+  optionsTotalXaf Int               @default(0)
+  /// Options figées à la commande (noms et prix recopiés, jamais relus du
+  /// catalogue).
+  options         OrderItemOption[]
 
   @@index([orderId])
   @@index([productId])
@@ -2915,6 +2944,19 @@ model PlatformSettings {
   /// grille plateforme publiée. Basculé après publication d'une grille.
   deliveryPricingMode DeliveryPricingMode @default(VENDOR_LEGACY)
 
+  // ── Options & suppléments (Phase 3, F3-09) ───────────────────────────────
+
+  /// Interrupteur « la plateforme vend des options ». Éteint : la carte ne
+  /// sert aucun groupe, le panier refuse toute option et le checkout ignore
+  /// les groupes attachés — c'est exactement le comportement d'avant F3-09,
+  /// donc aussi la sortie de secours. À allumer après publication des apps
+  /// clientes qui savent choisir une option.
+  modifiersEnabled           Boolean @default(false)
+  /// L'éditeur d'options est-il ouvert aux vendeurs ? Exige `modifiersEnabled`
+  /// (vérifié à l'écriture des réglages). Un ADMIN peut préparer une carte
+  /// même éteint : sans `modifiersEnabled`, rien n'en est visible ni exigé.
+  modifiersManagementEnabled Boolean @default(false)
+
   updatedAt DateTime @updatedAt
 }
 
@@ -3036,4 +3078,122 @@ model DriverSettlement {
   @@index([driverId, status])
   @@index([driverId, paidAt])
   @@map("driver_settlements")
+}
+
+// ─── F3-09 — Options & suppléments ──────────────────────────────────────────
+//
+// Product ──< ProductModifierGroup >── ModifierGroup ──< ModifierOption
+//                                                         │
+//   CartItem ──< CartItemOption >─────────────────────────┤ (identité de ligne)
+//   OrderItem ──< OrderItemOption (snapshot : noms et prix recopiés)
+//
+// Toute transformation « sélection → prix » passe par
+// `apps/lilia-app/src/modules/modifiers/modifier-selection.ts`.
+
+/// Groupe d'options d'un vendeur — « Accompagnement », « Sauce », « Suppléments ».
+/// Réutilisable d'un produit à l'autre (bibliothèque du vendeur).
+model ModifierGroup {
+  id           String     @id @default(cuid())
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+  restaurantId String
+  /// Libellé montré au client (« Accompagnement »).
+  name         String
+  /// Nombre minimum d'options **distinctes** à choisir. `>= 1` = obligatoire.
+  minSelect    Int        @default(0)
+  /// Nombre maximum d'options **distinctes**. `1` = choix unique (radio).
+  maxSelect    Int        @default(1)
+  displayOrder Int        @default(0)
+  /// Retiré (déjà commandé une fois) : n'apparaît plus nulle part, mais les
+  /// commandes passées gardent leur copie du nom.
+  deletedAt    DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  options  ModifierOption[]
+  products ProductModifierGroup[]
+
+  /// Cible de la FK composite `(groupId, restaurantId)` de
+  /// `ProductModifierGroup`.
+  @@unique([id, restaurantId])
+  @@index([restaurantId, deletedAt, displayOrder])
+}
+
+/// Option d'un groupe — « Alloco », « Œuf (+300) ».
+model ModifierOption {
+  id            String        @id @default(cuid())
+  group         ModifierGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  groupId       String
+  name          String
+  /// Supplément en francs CFA, **jamais négatif** (R-09.6, CHECK en base).
+  priceDeltaXaf Int           @default(0)
+  /// Combien de fois la même option peut être prise sur une unité (1–10).
+  maxQuantity   Int           @default(1)
+  /// Rupture du jour (« plus d'alloco ce soir ») — la ligne reste à la carte,
+  /// grisée.
+  isAvailable   Boolean       @default(true)
+  displayOrder  Int           @default(0)
+  deletedAt     DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  cartItemOptions  CartItemOption[]
+  orderItemOptions OrderItemOption[]
+
+  @@index([groupId, deletedAt, displayOrder])
+}
+
+/// Attache d'un groupe à un produit. Les deux FK sont **composites** sur
+/// `restaurantId` : un produit du vendeur A ne peut porter qu'un groupe du
+/// vendeur A, quel que soit l'écrivain (service, script, SQL).
+model ProductModifierGroup {
+  product      Product       @relation(fields: [productId, restaurantId], references: [id, restaurantId], onDelete: Cascade)
+  productId    String
+  group        ModifierGroup @relation(fields: [groupId, restaurantId], references: [id, restaurantId], onDelete: Cascade)
+  groupId      String
+  restaurantId String
+  displayOrder Int           @default(0)
+  createdAt    DateTime      @default(now())
+
+  @@id([productId, groupId])
+  @@index([groupId])
+  @@index([restaurantId])
+}
+
+/// Option choisie sur une ligne de panier. Le prix n'y est **pas** : il est
+/// relu au catalogue à chaque lecture du panier et au checkout.
+model CartItemOption {
+  cartItem   CartItem       @relation(fields: [cartItemId], references: [id], onDelete: Cascade)
+  cartItemId String
+  /// `Restrict` : supprimer une option exige d'avoir purgé les lignes de panier
+  /// qui la portent — la ligne entière, jamais la seule option.
+  option     ModifierOption @relation(fields: [optionId], references: [id], onDelete: Restrict)
+  optionId   String
+  quantity   Int            @default(1)
+
+  @@id([cartItemId, optionId])
+  @@index([optionId])
+}
+
+/// Option figée sur une ligne de commande. Nom du groupe, nom de l'option et
+/// supplément sont **recopiés** : renommer, réévaluer ou supprimer l'option
+/// ensuite ne change rien à la commande.
+model OrderItemOption {
+  id            String          @id @default(cuid())
+  orderItem     OrderItem       @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  orderItemId   String
+  /// Lien vers le catalogue, pour l'analyse seulement. `SetNull` : une option
+  /// réellement supprimée laisse la copie intacte.
+  option        ModifierOption? @relation(fields: [optionId], references: [id], onDelete: SetNull)
+  optionId      String?
+  groupId       String?
+  groupName     String
+  optionName    String
+  priceDeltaXaf Int
+  quantity      Int
+  /// Ordre d'affichage figé (ordre des groupes du produit, puis des options).
+  position      Int             @default(0)
+  createdAt     DateTime        @default(now())
+
+  @@index([orderItemId])
+  @@index([optionId])
 }

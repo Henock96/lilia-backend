@@ -24,9 +24,12 @@ import { VendorOpeningService } from './vendor-opening.service';
 import { PublicHolidaysService } from './public-holidays.service';
 import { VendorOnboardingService } from './vendor-onboarding.service';
 import { PreorderValidatorService } from './preorder-validator.service';
+import { PlatformSettingsCoreModule } from '../platform-settings/platform-settings-core.module';
 
 @Module({
   imports: [
+    // F3-09 — interrupteur `modifiersEnabled` lu par la carte publique.
+    PlatformSettingsCoreModule,
     PrismaModule,
     FirebaseModule,
     PhotosCommonModule,

@@ -1,5 +1,5 @@
 /* eslint-disable prettier/prettier */
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Optional, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   PUBLIC_VENDOR_ORDER_BY,
@@ -17,6 +17,10 @@ import {
   RESTAURANT_LIST_INCLUDE,
 } from './restaurant.includes';
 import { aggregateRatings, NO_RATING } from './restaurant-ratings';
+import { ORDER_ITEM_OPTIONS_ARGS } from '../modifiers/order-item-options';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import { modifiersEnabled } from '../modifiers/modifiers-switch';
+import { withPublicModifiers } from '../modifiers/modifier-views';
 
 /**
  * Lectures, scoring et analytics restaurants (extrait de RestaurantsService —
@@ -34,7 +38,11 @@ export class RestaurantQueryService {
   /** Taille de page par défaut du catalogue vendeurs. */
   private static readonly LIST_DEFAULT_LIMIT = 50;
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    // F3-09 — interrupteur des options (carte) ; absent en test = éteint.
+    @Optional() private readonly platformSettings?: PlatformSettingsService,
+  ) {}
 
   // ─── LECTURE ───────────────────────────────────────────────────────────────
 
@@ -115,7 +123,10 @@ export class RestaurantQueryService {
     return {
       data: {
         ...rest,
-        products: withAvailableNow(products, now),
+        products: withPublicModifiers(
+          withAvailableNow(products, now),
+          await modifiersEnabled(this.platformSettings),
+        ),
         ...(ratings.get(id) ?? NO_RATING),
         totalProducts: _count.products,
         hasMoreProducts: _count.products > MENU_PRODUCTS_LIMIT,
@@ -260,6 +271,7 @@ export class RestaurantQueryService {
         items: {
           include: {
             product: true,
+            options: ORDER_ITEM_OPTIONS_ARGS,
           },
         },
       },

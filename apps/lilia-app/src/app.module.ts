@@ -34,6 +34,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { RestaurantsModule } from './modules/restaurants/restaurants.module';
 import { ProductsModule } from './modules/products/products.module';
+import { ModifiersModule } from './modules/modifiers/modifiers.module';
 import { CategoriesModule } from './modules/categories/categories.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { DeliveriesModule } from './modules/deliveries/deliveries.module';
@@ -236,6 +237,7 @@ import { DeliveryPricingModule } from './modules/delivery-pricing/delivery-prici
     // Sans controller : rien de nouveau n'est exposé.
     CatalogCacheModule,
     ProductsModule,
+    ModifiersModule, // F3-09 — éditeur d'options
     CategoriesModule,
     OrdersModule,
     DeliveriesModule,

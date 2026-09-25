@@ -8,10 +8,9 @@ import { countMenus } from './menu-quantities';
 export class StockService {
 
   // Utilise UPDATE avec WHERE conditionnel — atomique en SQL, pas de read-then-write
-  async decrementInTransaction(
-    tx: Prisma.TransactionClient,
-    cartItems: any[],
-  ): Promise<void> {
+  async decrementInTransaction<
+    Line extends { productId: string; menuId?: string | null; quantite: number },
+  >(tx: Prisma.TransactionClient, cartItems: readonly Line[]): Promise<void> {
     // Quantités par produit
     const qtyByProduct = new Map<string, number>();
     for (const item of cartItems) {

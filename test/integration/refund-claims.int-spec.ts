@@ -65,7 +65,7 @@ describeIfDb(
       );
       claims = new ClaimsService(prisma as never, new EventEmitter2());
       refunds = new RefundsService(prisma as never);
-      promo = new PromoService(prisma as never, {} as never);
+      promo = new PromoService(prisma as never, {} as never, {} as never);
     });
 
     afterAll(async () => {

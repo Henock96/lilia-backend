@@ -48,7 +48,7 @@ describe('PromoService.validateCode — firstOrderOnly', () => {
         ),
       },
     };
-    return new PromoService(prisma as never, {} as never);
+    return new PromoService(prisma as never, {} as never, {} as never);
   }
 
   const validate = (service: PromoService) =>

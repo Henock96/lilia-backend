@@ -251,6 +251,24 @@ export class UpdatePlatformSettingsDto {
   vendorPayoutAutoEnabled?: boolean;
 
   /**
+   * F3-09 — la plateforme vend-elle des options ? À allumer **après**
+   * publication des applications clientes qui savent les choisir. L'éteindre
+   * est la sortie de secours : la carte redevient celle d'avant F3-09, et
+   * l'éditeur vendeur se ferme avec.
+   */
+  @IsOptional()
+  @IsBoolean()
+  modifiersEnabled?: boolean;
+
+  /**
+   * F3-09 — éditeur d'options ouvert aux vendeurs. Exige `modifiersEnabled`
+   * (409 `MODIFIERS_ROLLOUT_ORDER` sinon).
+   */
+  @IsOptional()
+  @IsBoolean()
+  modifiersManagementEnabled?: boolean;
+
+  /**
    * F3-07 / D5 — délai entre la preuve de remise et le versement, en minutes.
    * Ne réécrit pas les échéances déjà posées : il s'applique aux remises
    * suivantes. Bornes identiques au CHECK en base.

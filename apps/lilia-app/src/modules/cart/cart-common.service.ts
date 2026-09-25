@@ -1,30 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-
-export const CART_INCLUDE = {
-  items: {
-    include: {
-      // `madeToOrder` exposé pour que le client puisse afficher la modal
-      // de conflit (LIL-122 décision 2a) avant d'appeler addItem.
-      product: {
-        select: {
-          nom: true,
-          imageUrl: true,
-          restaurantId: true,
-          madeToOrder: true,
-          // Fix S-2 : sans le stock, l'interface ne peut pas plafonner le
-          // bouton « + » et laisse le client monter une quantité que le
-          // serveur refusera au checkout. `null` = illimité, `0` = épuisé —
-          // les clients doivent recevoir la distinction, pas la deviner.
-          stockRestant: true,
-        },
-      },
-      variant: { select: { label: true, prix: true } },
-      menu: { select: { id: true, nom: true, prix: true, imageUrl: true } },
-    },
-  },
-} as const;
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import { CART_VIEW_INCLUDE, toCartView, type CartView } from './cart-view';
 
 /**
  * Helpers partagés du panier (extrait de CartService — LIL-147).
@@ -35,7 +13,10 @@ export const CART_INCLUDE = {
  */
 @Injectable()
 export class CartCommonService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly platformSettings: PlatformSettingsService,
+  ) {}
 
   /**
    * Récupère ou crée le panier d'un utilisateur.
@@ -100,15 +81,20 @@ export class CartCommonService {
   }
 
   /**
-   * Récupère le contenu complet du panier de l'utilisateur.
+   * Récupère le contenu complet du panier de l'utilisateur, **chiffré par le
+   * serveur** (F3-09 — voir `cart-view.ts`).
    */
-  async getCart(firebaseUid: string) {
+  async getCart(firebaseUid: string): Promise<CartView | null> {
     const user = await this.getUserOrThrow(firebaseUid);
     const cart = await this.getCartOrThrow(user.id);
 
-    return this.prisma.cart.findUnique({
-      where: { id: cart.id },
-      include: CART_INCLUDE,
-    });
+    const [full, settings] = await Promise.all([
+      this.prisma.cart.findUnique({
+        where: { id: cart.id },
+        include: CART_VIEW_INCLUDE,
+      }),
+      this.platformSettings.getSettings(),
+    ]);
+    return full ? toCartView(full, settings.modifiersEnabled) : null;
   }
 }
