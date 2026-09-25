@@ -36,3 +36,12 @@ export const ORDER_EXPIRED_EVENT = 'order.expired';
  * personne ne l'apprendrait.
  */
 export const ORDER_ACCEPTANCE_EXPIRED_EVENT = 'order.acceptance_expired';
+
+/**
+ * Versement vendeur abouti / en échec (F3-07). Écrits avec la transition du
+ * versement : c'est souvent le worker qui la conclut (réconciliation,
+ * versement automatique), et il n'a pas d'écouteur d'événements en mémoire.
+ * Dépilés par `PayoutOutboxEffectsService`.
+ */
+export const PAYOUT_SUCCEEDED_EVENT = 'payout.succeeded';
+export const PAYOUT_FAILED_EVENT = 'payout.failed';

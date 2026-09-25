@@ -11,6 +11,7 @@ import {
   COUNTED_REFUND_STATUSES,
   refundConflictsWithPayout,
 } from './refund-lines.policy';
+import { recordClawbackIfDue } from '../payments/vendor-balance';
 
 /**
  * Remboursements (fix H5 — audit du 28/08/2026).
@@ -209,14 +210,22 @@ export class RefundsService {
     const isFinal =
       status === RefundStatus.COMPLETED || status === RefundStatus.REJECTED;
 
-    const claimed = await this.prisma.refund.updateMany({
-      where: { id, status: refund.status },
-      data: {
-        status,
-        notes: notes ?? refund.notes,
-        processedBy: adminId,
-        processedAt: isFinal ? new Date() : refund.processedAt,
-      },
+    // F3-07 — clôturer « remboursé » un remboursement à la charge d'un vendeur
+    // déjà payé fait naître sa dette : même transaction.
+    const claimed = await this.prisma.$transaction(async (tx) => {
+      const moved = await tx.refund.updateMany({
+        where: { id, status: refund.status },
+        data: {
+          status,
+          notes: notes ?? refund.notes,
+          processedBy: adminId,
+          processedAt: isFinal ? new Date() : refund.processedAt,
+        },
+      });
+      if (moved.count > 0 && status === RefundStatus.COMPLETED) {
+        await recordClawbackIfDue(tx, refund);
+      }
+      return moved;
     });
 
     if (claimed.count === 0) {

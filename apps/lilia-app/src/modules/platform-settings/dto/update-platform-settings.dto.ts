@@ -242,6 +242,26 @@ export class UpdatePlatformSettingsDto {
   deliveryPricingMode?: DeliveryPricingMode;
 
   /**
+   * F3-07 / D6 — versement automatique au vendeur. Éteint par défaut ; ne
+   * l'allumer qu'avec le code client exigé à la livraison, la validation à
+   * deux administrateurs du numéro de versement (F3-08) et les apps publiées.
+   */
+  @IsOptional()
+  @IsBoolean()
+  vendorPayoutAutoEnabled?: boolean;
+
+  /**
+   * F3-07 / D5 — délai entre la preuve de remise et le versement, en minutes.
+   * Ne réécrit pas les échéances déjà posées : il s'applique aux remises
+   * suivantes. Bornes identiques au CHECK en base.
+   */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(1440)
+  vendorPayoutDelayMinutes?: number;
+
+  /**
    * Verrou optimiste (SET-001) : l'`updatedAt` de la configuration **telle que
    * l'administrateur l'a chargée**.
    *

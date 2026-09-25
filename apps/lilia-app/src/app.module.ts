@@ -1,6 +1,7 @@
 ﻿// app.module.ts
 import { OpsModule } from './modules/ops/ops.module';
 import { OrderOutboxEffectsModule } from './modules/outbox/order-outbox-effects.module';
+import { PayoutOutboxEffectsModule } from './modules/outbox/payout-outbox-effects.module';
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
@@ -271,6 +272,7 @@ import { DeliveryPricingModule } from './modules/delivery-pricing/delivery-prici
     ClaimsModule,
     OutboxModule,
     OrderOutboxEffectsModule, // lot 4 : effets de commande rejoués par l'outbox
+    PayoutOutboxEffectsModule, // F3-07 : notifications de versement par l'outbox
   ],
   providers: [
     // `ParallelThrottlerGuard` et non `ThrottlerGuard` : les deux limiteurs
