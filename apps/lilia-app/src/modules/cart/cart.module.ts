@@ -6,9 +6,11 @@ import { CartMenusService } from './cart-menus.service';
 import { CartController } from './cart.controller';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { FirebaseService } from '../firebase/firebase.service';
+import { PlatformSettingsCoreModule } from '../platform-settings/platform-settings-core.module';
 
 @Module({
-  imports: [PrismaModule],
+  // `PlatformSettingsCoreModule` : interrupteur `modifiersEnabled` (F3-09).
+  imports: [PrismaModule, PlatformSettingsCoreModule],
   controllers: [CartController],
   providers: [
     CartService,

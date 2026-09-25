@@ -56,6 +56,11 @@ export class PublicPlatformSettingsController {
         // eut changé les valeurs. Une donnée qu'on affiche doit être une donnée
         // qu'on peut lire.
         referrerBonusPoints: settings.referrerBonusPoints,
+        // F3-09 — les apps affichent le sélecteur d'options et l'éditeur
+        // vendeur selon ces deux interrupteurs. Le serveur, lui, ne s'y fie
+        // pas : il applique `modifiersEnabled` à chaque ajout et checkout.
+        modifiersEnabled: settings.modifiersEnabled,
+        modifiersManagementEnabled: settings.modifiersManagementEnabled,
         maintenanceMode: settings.maintenanceMode,
         // `""` et `null` voulaient tous deux dire « pas de message », mais les
         // clients ne les traitent pas pareil (`??` laisse passer `""`). Les

@@ -1,4 +1,5 @@
 import { PromoService } from './promo.service';
+import { cartLine } from '../modifiers/testing/cart-line.fixture';
 
 /**
  * Aperçu `POST /promo/validate` d'un code `FREE_DELIVERY` (F3-02).
@@ -13,12 +14,11 @@ describe('PromoService.validateCodeForCart — frais de livraison de l’aperçu
       cart: {
         findUnique: jest.fn().mockResolvedValue({
           items: [
-            {
-              menuId: null,
+            cartLine({
               quantite: 2,
               variant: { prix: 2500 },
               product: { restaurantId: 'r1' },
-            },
+            }),
           ],
         }),
       },
@@ -38,7 +38,13 @@ describe('PromoService.validateCodeForCart — frais de livraison de l’aperçu
     const deliveryPricing = {
       quoteForVendor: jest.fn().mockResolvedValue(quote),
     };
-    const service = new PromoService(prisma as never, deliveryPricing as never);
+    const service = new PromoService(
+      prisma as never,
+      deliveryPricing as never,
+      {
+        getSettings: async () => ({ modifiersEnabled: false }),
+      } as never,
+    );
     const validateCode = jest
       .spyOn(service, 'validateCode')
       .mockResolvedValue({} as never);

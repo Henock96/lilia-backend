@@ -26,6 +26,7 @@ import { RefundsService } from '../refunds/refunds.service';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { DeliveryPricingService } from '../delivery-pricing/delivery-pricing.service';
+import { cartLine } from '../modifiers/testing/cart-line.fixture';
 
 /**
  * Tests de CARACTÉRISATION de createOrderFromCart (le checkout) — LIL-134.
@@ -130,7 +131,7 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
     // Défauts "happy path"
     validator.validateAndGetUser.mockResolvedValue({
       id: 'u1',
-      cart: { id: 'cart1', items: [{ id: 'ci1', quantite: 1 }] },
+      cart: { id: 'cart1', items: [cartLine({ id: 'ci1', quantite: 1 })] },
     });
     validator.validateSameRestaurant.mockReturnValue('resto1');
     destinationService.resolveForAddress.mockResolvedValue({
@@ -163,6 +164,8 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
         variant: '',
         variantId: null,
         snapshotPrice: 10000,
+        optionsTotalXaf: 0,
+        options: [],
       },
     ]);
     platformSettings.getSettings.mockResolvedValue(SETTINGS);

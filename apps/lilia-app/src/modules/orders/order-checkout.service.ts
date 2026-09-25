@@ -33,6 +33,19 @@ import {
 import { OrderTransitionService } from './order-transition.service';
 import { DeliveryPricingService } from '../delivery-pricing/delivery-pricing.service';
 import { DeliveryQuote } from '../delivery-pricing/delivery-pricing.engine';
+import {
+  CART_LINE_INCLUDE,
+  resolveCartLine,
+  type CartLine,
+  type PricedCartLine,
+} from '../modifiers/cart-line-pricing';
+import { lockModifierRows } from '../modifiers/modifier-catalog';
+import {
+  ModifierSelectionError,
+  sameResolution,
+} from '../modifiers/modifier-selection';
+import { modifierErrorForCheckout } from '../modifiers/modifier-http';
+import { ORDER_ITEM_OPTIONS_ARGS } from '../modifiers/order-item-options';
 
 /**
  * Checkout : création d'une commande à partir du panier (LIL-134).
@@ -180,6 +193,15 @@ export class OrderCheckoutService {
     this.validator.validateCartNotEmpty(cartItems);
     const restaurantId = this.validator.validateSameRestaurant(cartItems);
 
+    // F3-09 — résolution des options de chaque ligne contre le catalogue
+    // COURANT (relu en base à l'instant, jamais repris du client). Une ligne
+    // devenue invalide — option en rupture ou supprimée, groupe obligatoire
+    // ajouté depuis, application ancienne qui l'a composée sans choisir — est
+    // refusée ici, nominativement, avant tout calcul. Elle sera résolue une
+    // seconde fois sous verrou, dans la transaction.
+    const settings = await this.platformSettings.getSettings();
+    const priced = this.priceLines(cartItems, settings.modifiersEnabled);
+
     // 1. Résoudre la destination de livraison (seulement si c'est une livraison)
     //
     // ⚠️ `deliveryLatitude` / `deliveryLongitude` du DTO ne sont **pas**
@@ -235,7 +257,6 @@ export class OrderCheckoutService {
     //
     // F3-02 — en mode PLATFORM, ni le prix fixe ni la zone du vendeur ne sont
     // lus (R-02.9) : la plateforme fixe le prix de base plus bas.
-    const settings = await this.platformSettings.getSettings();
     const platformPricing = settings.deliveryPricingMode === 'PLATFORM';
     let effectiveDeliveryFee = restaurant.fixedDeliveryFee;
     const deliveryQuartierId = isDelivery
@@ -271,7 +292,7 @@ export class OrderCheckoutService {
 
     // 2. Calcul — isolé, testable unitairement
     let amounts = this.calculator.calculate(
-      cartItems,
+      priced,
       effectiveDeliveryFee,
       isDelivery,
       settings.serviceFeePercent,
@@ -299,7 +320,7 @@ export class OrderCheckoutService {
           );
         }
         amounts = this.calculator.calculate(
-          cartItems,
+          priced,
           deliveryQuote.customerFeeXaf,
           isDelivery,
           settings.serviceFeePercent,
@@ -312,7 +333,7 @@ export class OrderCheckoutService {
       restaurant.minimumOrderAmount,
       restaurant.nom,
     );
-    const itemSnapshots = this.calculator.buildOrderItemSnapshots(cartItems);
+    const itemSnapshots = this.calculator.buildOrderItemSnapshots(priced);
     // Validation et calcul promo AVANT la transaction
     let promoResult: PromoValidationResult | null = null;
     if (promoCode) {
@@ -395,6 +416,17 @@ export class OrderCheckoutService {
       // promo) est annulée.
       await this.lockCartAndAssertUnchanged(tx, user.cart!.id, cartItems);
 
+      // F3-09 — seconde résolution des options, SOUS VERROU. Entre la lecture
+      // ci-dessus et ce point, un vendeur a pu mettre une option en rupture,
+      // la supprimer, changer son prix ou détacher un groupe : la commande ne
+      // doit être figée que sur un état encore valide à l'instant du verrou,
+      // et identique à celui qui a servi aux montants.
+      await this.revalidateModifiersInTransaction(
+        tx,
+        priced,
+        settings.modifiersEnabled,
+      );
+
       const newOrder = await tx.order.create({
         data: {
           userId: user.id,
@@ -454,11 +486,25 @@ export class OrderCheckoutService {
               variant: snap.variant,
               variantId: snap.variantId,
               snapshotPrice: snap.snapshotPrice,
+              // F3-09 — `prix` et `snapshotPrice` incluent déjà les options
+              // (Q1) ; `optionsTotalXaf` n'en est que la ventilation.
+              optionsTotalXaf: snap.optionsTotalXaf,
+              options: {
+                create: snap.options.map((option) => ({
+                  optionId: option.optionId,
+                  groupId: option.groupId,
+                  groupName: option.groupName,
+                  optionName: option.optionName,
+                  priceDeltaXaf: option.priceDeltaXaf,
+                  quantity: option.quantity,
+                  position: option.position,
+                })),
+              },
             })),
           },
         },
         include: {
-          items: true,
+          items: { include: { options: ORDER_ITEM_OPTIONS_ARGS } },
           restaurant: { select: { nom: true } }, // Correction: Toujours inclure le restaurant
         },
       });
@@ -593,6 +639,99 @@ export class OrderCheckoutService {
    * garde) plutôt que de refuser la commande : c'était déjà le comportement
    * historique, et une panne Redis ne doit pas fermer la caisse.
    */
+  /**
+   * F3-09 — résout les options de chaque ligne. Le premier refus devient un
+   * 409 qui désigne la ligne (`cartItemId`) et porte le `code` du moteur.
+   */
+  private priceLines(
+    lines: readonly CartLine[],
+    modifiersEnabled: boolean,
+  ): PricedCartLine[] {
+    return lines.map((line) => {
+      try {
+        return { line, selection: resolveCartLine(line, modifiersEnabled) };
+      } catch (err) {
+        if (err instanceof ModifierSelectionError) {
+          this.logger.warn(
+            `📦 [COMMANDE] Ligne ${line.id} refusée (${err.code}) : ${err.message}`,
+          );
+          throw modifierErrorForCheckout(err, line.id);
+        }
+        throw err;
+      }
+    });
+  }
+
+  /**
+   * F3-09 — relit et résout de nouveau, sous verrou partagé, les lignes dont
+   * le produit porte des groupes d'options (ou qui portent des options).
+   *
+   * Refuse (409) si une ligne n'est plus valide, ou si sa résolution diffère
+   * de celle qui a servi au calcul des montants (prix d'une option changé,
+   * option renommée…) : les montants de la commande ne seraient plus justifiés.
+   *
+   * Les lignes sans aucune option sur un produit sans groupe — le cas courant —
+   * ne coûtent aucune requête.
+   */
+  private async revalidateModifiersInTransaction(
+    tx: Prisma.TransactionClient,
+    priced: readonly PricedCartLine[],
+    modifiersEnabled: boolean,
+  ): Promise<void> {
+    const concerned = priced.filter(
+      ({ line }) =>
+        !line.menuId &&
+        (line.options.length > 0 || line.product.modifierGroups.length > 0),
+    );
+    if (concerned.length === 0) return;
+
+    await lockModifierRows(
+      tx,
+      concerned.map(({ line }) => line.productId),
+    );
+    const fresh = await tx.cartItem.findMany({
+      where: { id: { in: concerned.map(({ line }) => line.id) } },
+      include: CART_LINE_INCLUDE,
+    });
+    const freshById = new Map(fresh.map((line) => [line.id, line]));
+
+    for (const { line, selection } of concerned) {
+      const current = freshById.get(line.id);
+      if (!current) {
+        // La ligne a été purgée (option supprimée, groupe détaché) après le
+        // verrou du panier : `lockCartAndAssertUnchanged` l'aurait vue avant.
+        throw new ConflictException({
+          message:
+            'Votre panier a changé pendant la validation. Vérifiez-le puis recommencez.',
+          code: 'CART_CHANGED',
+          cartItemId: line.id,
+        });
+      }
+      let again;
+      try {
+        again = resolveCartLine(current, modifiersEnabled);
+      } catch (err) {
+        if (err instanceof ModifierSelectionError) {
+          throw modifierErrorForCheckout(err, line.id);
+        }
+        throw err;
+      }
+      if (
+        current.variant.prix !== line.variant.prix ||
+        !sameResolution(selection, again)
+      ) {
+        this.logger.warn(
+          `📦 [COMMANDE] Options de la ligne ${line.id} modifiées pendant la validation — checkout refusé`,
+        );
+        throw new ConflictException({
+          message: `Les options de « ${line.product.nom} » ont changé pendant la validation. Vérifiez votre panier puis recommencez.`,
+          code: 'MODIFIER_CHANGED',
+          cartItemId: line.id,
+        });
+      }
+    }
+  }
+
   /**
    * Verrouille le panier (`SELECT … FOR UPDATE`) et vérifie que son contenu est
    * exactement celui sur lequel la commande a été calculée — mêmes lignes,

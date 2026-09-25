@@ -312,6 +312,10 @@ export class RefundComposerService {
             variantLabel: true,
             product: { select: { nom: true } },
             menu: { select: { nom: true } },
+            options: {
+              orderBy: { position: 'asc' },
+              select: { optionName: true, quantity: true },
+            },
           },
         },
         Payment: {
@@ -386,12 +390,21 @@ export function itemLabel(it: {
   variantLabel: string | null;
   product: { nom: string };
   menu: { nom: string } | null;
+  /** F3-09 — options figées ; absentes des lignes antérieures. */
+  options?: { optionName: string; quantity: number }[];
 }): string {
   const variant =
     it.variantLabel && it.variantLabel.toLowerCase() !== 'default'
       ? ` (${it.variantLabel})`
       : '';
-  const base = `${it.product.nom}${variant}`;
+  // Le prix unitaire remboursé (`snapshotPrice`) inclut déjà ces options :
+  // on les nomme pour que l'admin sache ce qu'il rembourse, rien de plus.
+  const options = (it.options ?? [])
+    .map((o) =>
+      o.quantity > 1 ? `${o.optionName} ×${o.quantity}` : o.optionName,
+    )
+    .join(', ');
+  const base = `${it.product.nom}${variant}${options ? ` + ${options}` : ''}`;
   return it.menu ? `${it.menu.nom} · ${base}` : base;
 }
 

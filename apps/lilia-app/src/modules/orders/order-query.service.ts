@@ -20,6 +20,7 @@ import {
   readActionContext,
   withAllowedActions,
 } from './order-allowed-actions';
+import { ORDER_ITEM_OPTIONS_ARGS } from '../modifiers/order-item-options';
 
 /**
  * Lectures de commandes (queries) extraites de `OrdersService` (LIL-134).
@@ -46,6 +47,7 @@ export class OrderQueryService {
         items: {
           include: {
             product: { select: { nom: true, imageUrl: true } },
+            options: ORDER_ITEM_OPTIONS_ARGS,
           },
         },
         delivery: true,
@@ -99,6 +101,7 @@ export class OrderQueryService {
                   imageUrl: true,
                 },
               },
+              options: ORDER_ITEM_OPTIONS_ARGS,
             },
           },
         },
@@ -159,7 +162,10 @@ export class OrderQueryService {
 
     const baseInclude = {
       items: {
-        include: { product: { select: { nom: true, imageUrl: true } } },
+        include: {
+          product: { select: { nom: true, imageUrl: true } },
+          options: ORDER_ITEM_OPTIONS_ARGS,
+        },
       },
       restaurant: { select: { nom: true } },
     };
@@ -420,7 +426,10 @@ export class OrderQueryService {
         include: {
           restaurant: { select: { nom: true, imageUrl: true, adresse: true } },
           items: {
-            include: { product: { select: { nom: true, imageUrl: true } } },
+            include: {
+              product: { select: { nom: true, imageUrl: true } },
+              options: ORDER_ITEM_OPTIONS_ARGS,
+            },
           },
         },
         orderBy: { createdAt: 'desc' },

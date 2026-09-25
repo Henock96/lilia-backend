@@ -7,6 +7,12 @@ import {
 } from '@nestjs/common';
 import { DeliveryPricingService } from '../delivery-pricing/delivery-pricing.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import {
+  CART_LINE_INCLUDE,
+  cartSubtotalXaf,
+  quoteCartLine,
+} from '../modifiers/cart-line-pricing';
 import { PAID_ORDER_STATUSES } from '../orders/order-status-groups';
 import { CreatePromoCodeDto } from './dto/create-promo-code.dto';
 
@@ -28,6 +34,8 @@ export class PromoService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly deliveryPricing: DeliveryPricingService,
+    // F3-09 — l'interrupteur des options décide du prix d'une ligne.
+    private readonly platformSettings: PlatformSettingsService,
   ) {}
 
   // ─── Validation ─────────────────────────────────────────────────────────────
@@ -54,9 +62,7 @@ export class PromoService {
     const cart = await this.prisma.cart.findUnique({
       where: { userId },
       include: {
-        items: {
-          include: { product: true, variant: true, menu: true },
-        },
+        items: { include: CART_LINE_INCLUDE },
       },
     });
 
@@ -69,19 +75,17 @@ export class PromoService {
 
     const restaurantId = items[0].product.restaurantId;
 
-    // Même règle de calcul que le checkout : un menu porte son propre prix,
-    // les produits individuels celui de leur variante.
-    const menuIds = new Set<string>();
-    let subTotal = 0;
-    for (const item of items) {
-      if (item.menuId && item.menu) {
-        if (menuIds.has(item.menuId)) continue;
-        menuIds.add(item.menuId);
-        subTotal += item.menu.prix * item.quantite;
-      } else if (item.variant) {
-        subTotal += item.variant.prix * item.quantite;
-      }
-    }
+    // Même sous-total que le checkout et `GET /cart` (`cart-line-pricing.ts`) :
+    // un menu porte son propre prix, une ligne individuelle celui de sa
+    // variante PLUS ses options (F3-09). Chiffrage d'affichage : une ligne
+    // devenue invalide garde son prix courant, le checkout la refusera.
+    const { modifiersEnabled } = await this.platformSettings.getSettings();
+    const subTotal = cartSubtotalXaf(
+      items.map((line) => ({
+        line,
+        selection: quoteCartLine(line, modifiersEnabled).selection,
+      })),
+    );
 
     const restaurant = await this.prisma.restaurant.findUnique({
       where: { id: restaurantId },

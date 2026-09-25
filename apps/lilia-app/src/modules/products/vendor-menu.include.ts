@@ -6,6 +6,7 @@ import {
   isWithinAvailabilityWindow,
   type ProductTimeFields,
 } from './product-availability';
+import { PUBLIC_PRODUCT_MODIFIER_GROUPS_ARGS } from '../modifiers/modifier-views';
 
 /**
  * **La** vue « carte d'un vendeur ». Une seule, partagée.
@@ -120,6 +121,8 @@ export function menuProductsArgs(fields: ProductTimeFields, now = new Date()) {
       category: true,
       variants: { orderBy: [...MENU_VARIANTS_ORDER_BY] },
       images: { orderBy: [...MENU_IMAGES_ORDER_BY] },
+      // F3-09 — groupes d'options, projetés par `withPublicModifiers`.
+      modifierGroups: PUBLIC_PRODUCT_MODIFIER_GROUPS_ARGS,
     },
     orderBy: [...MENU_PRODUCTS_ORDER_BY],
   } satisfies Prisma.Restaurant$productsArgs;

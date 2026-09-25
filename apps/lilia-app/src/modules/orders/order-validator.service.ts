@@ -15,6 +15,13 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { unavailabilityReason } from '../products/product-availability';
 import { PromoService } from '../promo/promo.service';
 import { countMenus } from './menu-quantities';
+import { CART_LINE_INCLUDE, type CartLine } from '../modifiers/cart-line-pricing';
+
+/** Ce que les contrôles de restaurant lisent d'une ligne. */
+type LineWithVendor = { product: { restaurantId: string } };
+/** Ce que le contrôle de stock lit d'une ligne (sous-ensemble de `CartLine`). */
+type StockLine = Pick<CartLine, 'productId' | 'menuId' | 'quantite'> &
+  LineWithVendor;
 
 @Injectable()
 export class OrderValidatorService {
@@ -29,15 +36,10 @@ export class OrderValidatorService {
       where: { firebaseUid },
       include: {
         cart: {
-          include: {
-            items: {
-              include: {
-                product: true,
-                variant: true,
-                menu: { select: { id: true, nom: true, prix: true } },
-              },
-            },
-          },
+          // F3-09 — les options de chaque ligne et les groupes attachés à son
+          // produit, chargés par lots : le checkout les résout sans aller-retour
+          // supplémentaire par ligne.
+          include: { items: { include: CART_LINE_INCLUDE } },
         },
       },
     });
@@ -45,12 +47,12 @@ export class OrderValidatorService {
     return user;
   }
 
-  validateCartNotEmpty(cartItems: any[]) {
+  validateCartNotEmpty(cartItems: readonly unknown[]) {
     if (!cartItems || cartItems.length === 0)
       throw new BadRequestException('Votre panier est vide.');
   }
 
-  validateSameRestaurant(cartItems: any[]): string {
+  validateSameRestaurant(cartItems: readonly LineWithVendor[]): string {
     const restaurantId = cartItems[0].product.restaurantId;
     const allSame = cartItems.every(
       (item) => item.product.restaurantId === restaurantId,
@@ -112,7 +114,7 @@ export class OrderValidatorService {
   }
 
   // Clé du fix : on récupère TOUS les produits d'un coup, pas en boucle
-  async validateStock(cartItems: any[]) {
+  async validateStock(cartItems: readonly StockLine[]) {
     const productIds = [...new Set(cartItems.map((i) => i.productId))];
     const menuIds = [...new Set(cartItems.filter((i) => i.menuId).map((i) => i.menuId))];
 
@@ -229,7 +231,9 @@ export class OrderValidatorService {
 //
 
 /** Vendeur du panier : `validateSameRestaurant` a déjà garanti qu'il est unique. */
-function cartRestaurantId(cartItems: any[]): string | undefined {
+function cartRestaurantId(
+  cartItems: readonly LineWithVendor[],
+): string | undefined {
   return cartItems[0]?.product?.restaurantId;
 }
 

@@ -10,6 +10,18 @@ import { AddToCartDto } from './dto/add-to-cart.dto';
 import { UpdateCartItemDto } from './dto/update-cart-item.dto';
 import { CartCommonService } from './cart-common.service';
 import { unavailabilityReason } from '../products/product-availability';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import {
+  PRODUCT_MODIFIER_GROUPS_ARGS,
+  toModifierContext,
+} from '../modifiers/modifier-catalog';
+import {
+  ModifierSelectionError,
+  resolveSelection,
+  type ResolvedSelection,
+} from '../modifiers/modifier-selection';
+import { modifierErrorForCart } from '../modifiers/modifier-http';
+import { mergeCartLine } from '../modifiers/cart-line-merge';
 
 /**
  * Opérations panier sur les articles individuels (extrait de CartService —
@@ -20,6 +32,7 @@ export class CartItemsService {
   constructor(
     private prisma: PrismaService,
     private readonly common: CartCommonService,
+    private readonly platformSettings: PlatformSettingsService,
   ) {}
 
   /**
@@ -28,12 +41,36 @@ export class CartItemsService {
    */
   async addItem(firebaseUid: string, dto: AddToCartDto) {
     const user = await this.common.getUserOrThrow(firebaseUid);
-    const variant = await this.prisma.productVariant.findUnique({
-      where: { id: dto.variantId },
-      include: { product: true },
-    });
+    const [variant, settings] = await Promise.all([
+      this.prisma.productVariant.findUnique({
+        where: { id: dto.variantId },
+        include: {
+          product: {
+            include: { modifierGroups: PRODUCT_MODIFIER_GROUPS_ARGS },
+          },
+        },
+      }),
+      this.platformSettings.getSettings(),
+    ]);
     if (!variant)
       throw new NotFoundException('Variante de produit non trouvée.');
+
+    // F3-09 — options résolues par LE moteur, contre le catalogue courant.
+    // Refus nominatif et tôt : une application ancienne (sans `options`) sur
+    // un produit à groupe obligatoire reçoit `400 MODIFIER_REQUIRED` — on ne
+    // choisit jamais l'accompagnement à la place du client.
+    let selection: ResolvedSelection;
+    try {
+      selection = resolveSelection({
+        basePriceXaf: variant.prix,
+        product: toModifierContext(variant.product),
+        selection: dto.options ?? [],
+        modifiersEnabled: settings.modifiersEnabled,
+      });
+    } catch (err) {
+      if (err instanceof ModifierSelectionError) throw modifierErrorForCart(err);
+      throw err;
+    }
 
     const cart = await this.common.getOrCreateCart(user.id);
 
@@ -44,15 +81,6 @@ export class CartItemsService {
 
     this.common.assertSameRestaurant(cartItems, variant.product.restaurantId);
     this.common.assertSameMadeToOrderMode(cartItems, variant.product.madeToOrder);
-
-    // Chercher un item individuel existant (menuId = null)
-    const existingItem = await this.prisma.cartItem.findFirst({
-      where: {
-        cartId: cart.id,
-        variantId: dto.variantId,
-        menuId: null,
-      },
-    });
 
     // Fixes M1 + M2 + S-2 : produit retiré du catalogue, marqué indisponible,
     // hors de sa fenêtre horaire, ou stock insuffisant — refusé ici plutôt
@@ -79,30 +107,13 @@ export class CartItemsService {
     );
     if (reason) throw new BadRequestException(reason);
 
-    if (existingItem) {
-      // ⚠️ `increment` et non `existingItem.quantite + dto.quantite`.
-      //
-      // La seconde forme est un read-then-write : la quantité a été lue plus
-      // haut, hors transaction. Deux appareils du même compte ajoutant chacun
-      // une unité lisaient tous deux `1` et écrivaient tous deux `2` — le
-      // client voyait un de ses ajouts disparaître, sans aucune erreur.
-      //
-      // `increment` fait faire l'addition par PostgreSQL sur la valeur courante
-      // de la ligne : les deux ajouts se composent au lieu de s'écraser.
-      await this.prisma.cartItem.update({
-        where: { id: existingItem.id },
-        data: { quantite: { increment: dto.quantite } },
-      });
-    } else {
-      await this.prisma.cartItem.create({
-        data: {
-          cartId: cart.id,
-          productId: variant.productId,
-          variantId: dto.variantId,
-          quantite: dto.quantite,
-        },
-      });
-    }
+    await mergeCartLine(this.prisma, {
+      cartId: cart.id,
+      productId: variant.productId,
+      variantId: dto.variantId,
+      selection,
+      quantite: dto.quantite,
+    });
 
     return this.common.getCart(firebaseUid);
   }

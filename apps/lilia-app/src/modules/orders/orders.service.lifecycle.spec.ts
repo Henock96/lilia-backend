@@ -75,6 +75,7 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
       findMany: jest.fn(),
       findFirst: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
       create: jest.fn(),
     },
     loyaltyTransaction: { create: jest.fn() },
@@ -651,17 +652,20 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
             productId: 'p1',
             variant: 'Normal',
             quantite: 2,
+            options: [],
             product: {
               id: 'p1',
               nom: 'Plat',
               restaurantId: 'r1',
-              variants: [{ id: 'v1', label: 'Normal' }],
+              variants: [{ id: 'v1', label: 'Normal', prix: 1500 }],
+              modifierGroups: [],
             },
           },
         ],
       });
       prisma.cartItem.findMany.mockResolvedValue([]); // panier vide
-      prisma.cartItem.findFirst.mockResolvedValue(null);
+      // F3-09 : fusion par `increment` d'abord — aucune ligne existante.
+      prisma.cartItem.updateMany.mockResolvedValue({ count: 0 });
       prisma.cartItem.create.mockResolvedValue({});
       prisma.cart.findUnique.mockResolvedValue({ id: 'cart1', items: [] });
 
@@ -673,6 +677,8 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
           productId: 'p1',
           variantId: 'v1',
           quantite: 2,
+          optionsSignature: '',
+          options: { create: [] },
         },
       });
       expect(res.summary).toEqual({

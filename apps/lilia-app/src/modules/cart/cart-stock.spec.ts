@@ -18,6 +18,11 @@ import { CartItemsService } from './cart-items.service';
  * garante. Ces tests vérifient qu'on cesse de laisser un client remplir un
  * panier impayable, pas qu'on a déplacé la source de vérité.
  */
+/** Interrupteur F3-09 éteint : le comportement d'avant les options. */
+const SETTINGS = {
+  getSettings: jest.fn().mockResolvedValue({ modifiersEnabled: false }),
+};
+
 describe('Panier — contrôle de stock', () => {
   const PRODUCT = {
     id: 'p1',
@@ -45,12 +50,14 @@ describe('Panier — contrôle de stock', () => {
           id: 'v1',
           productId: 'p1',
           prix: 3000,
-          product,
+          product: { ...product, modifierGroups: [] },
         }),
       },
       cartItem: {
         findMany: jest.fn().mockResolvedValue(cartItems),
         findFirst: jest.fn().mockResolvedValue(null),
+        // F3-09 : fusion par `increment` d'abord — aucune ligne existante ici.
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
         update,
         create,
       },
@@ -64,7 +71,11 @@ describe('Panier — contrôle de stock', () => {
     };
 
     return {
-      service: new CartItemsService(prisma as never, common as never),
+      service: new CartItemsService(
+        prisma as never,
+        common as never,
+        SETTINGS as never,
+      ),
       prisma,
       create,
       update,
@@ -165,7 +176,11 @@ describe('Panier — contrôle de stock', () => {
         getCart: jest.fn().mockResolvedValue({ items: [] }),
       };
       return {
-        service: new CartItemsService(prisma as never, common as never),
+        service: new CartItemsService(
+          prisma as never,
+          common as never,
+          SETTINGS as never,
+        ),
         update,
       };
     }
