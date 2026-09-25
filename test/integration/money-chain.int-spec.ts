@@ -129,7 +129,7 @@ describeIfDb(
         registry as never,
         events,
         new PayoutStateMachine(),
-        emitter,
+        outbox,
       );
 
       await prisma.$executeRawUnsafe(`
@@ -311,7 +311,7 @@ describeIfDb(
     // 2. Éligibilité au reversement
     // ══════════════════════════════════════════════════════════════════════════
 
-    it('7. une commande PAYER n’est pas encore reversable — elle doit être PRÊTE', async () => {
+    it('7. une commande PAYER n’est pas encore reversable — elle doit être REMISE', async () => {
       // Ce délai est délibéré : un remboursement client est simple tant que le
       // vendeur n'a pas été payé, et devient une négociation ensuite.
       const eligibility = await payouts.checkEligibility(ORDER_ID);
@@ -319,12 +319,19 @@ describeIfDb(
       expect(eligibility.code).toBe('ORDER_NOT_READY');
     });
 
-    it('8. passée à PRET, la commande devient éligible', async () => {
+    it('8. prête ne suffit plus (F3-07, D5) ; remise, la commande devient éligible', async () => {
       await prisma.order.update({
         where: { id: ORDER_ID },
         data: { status: OrderStatus.PRET },
       });
+      expect((await payouts.checkEligibility(ORDER_ID)).code).toBe(
+        'ORDER_NOT_READY',
+      );
 
+      await prisma.order.update({
+        where: { id: ORDER_ID },
+        data: { status: OrderStatus.LIVRER },
+      });
       const eligibility = await payouts.checkEligibility(ORDER_ID);
       expect(eligibility.eligible).toBe(true);
     });

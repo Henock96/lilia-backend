@@ -305,12 +305,30 @@ describe('RefundExecutionService', () => {
       expect(createPayout).toHaveBeenCalledTimes(1);
     });
 
-    it('article manquant à la charge du vendeur, vendeur déjà payé : refusé', async () => {
+    // F3-07 (R-06.5) — le blocage est REMPLACÉ par la dette : versement 1 h
+    // après la remise, réclamation jusqu'à 24 h, c'est le cas normal. Le
+    // client est remboursé ; le montant sera retenu sur le versement suivant
+    // du vendeur (`recordClawbackIfDue`, à l'aboutissement).
+    it('article manquant à la charge du vendeur, vendeur déjà payé : exécuté (dette)', async () => {
       const { service, createPayout } = make(
         buildRefund({
           reasonCode: 'MISSING_ITEM',
           bearer: 'VENDOR',
           order: { id: 'o1', status: 'LIVRER', payout: { status: 'SUCCESS' } },
+        }),
+        {},
+        { status: 'SUCCESS' },
+      );
+      await service.execute('ref-1', ADMIN);
+      expect(createPayout).toHaveBeenCalledTimes(1);
+    });
+
+    it('annulation, vendeur déjà payé : toujours refusé (arbitrage humain)', async () => {
+      const { service, createPayout } = make(
+        buildRefund({
+          reasonCode: 'ORDER_CANCELLED',
+          bearer: 'PLATFORM',
+          order: { id: 'o1', status: 'ANNULER', payout: { status: 'SUCCESS' } },
         }),
       );
       await expect(service.execute('ref-1', ADMIN)).rejects.toThrow(

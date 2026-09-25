@@ -118,7 +118,7 @@ export class RefundExecutionService {
           where: { orderId: refund.orderId },
           select: { status: true },
         });
-        assertNoActivePayout(payout?.status ?? null);
+        assertNoActivePayout(payout?.status ?? null, refund.bearer);
       }
       return tx.refund.updateMany({
         where: { id: refund.id, status: RefundStatus.PENDING },
@@ -257,7 +257,7 @@ export class RefundExecutionService {
     // retire rien au vendeur : son reversement, même déjà parti, n'est pas en
     // cause. Seul un remboursement qui le touche est soumis à l'invariant.
     if (refundConflictsWithPayout(refund)) {
-      assertNoActivePayout(refund.order?.payout?.status ?? null);
+      assertNoActivePayout(refund.order?.payout?.status ?? null, refund.bearer);
     }
   }
 
@@ -270,16 +270,22 @@ export class RefundExecutionService {
 /**
  * Invariant F-04 : **jamais deux sorties d'argent pour une même commande.**
  *
- * - reversement `SUCCESS` : le vendeur a l'argent. Rembourser le client ferait
- *   porter les deux montants à la plateforme — arbitrage humain (un incident
- *   « vendeur payé sur une commande annulée » est ouvert à la confirmation).
+ * - reversement `SUCCESS` : le vendeur a l'argent. Pour un remboursement à
+ *   SA charge (`bearer VENDOR`), c'est le cas normal depuis F3-07 — versement
+ *   1 h après la remise, réclamation jusqu'à 24 h : on rembourse, et le
+ *   montant devient une dette retenue sur son versement suivant
+ *   (`recordClawbackIfDue`, R-06.5). Pour une annulation, rembourser ferait
+ *   porter les deux montants à la plateforme — arbitrage humain.
  * - reversement `PENDING` : l'argent est peut-être déjà parti, et un virement
  *   émis ne se rappelle pas. On attend son issue : `FAILED` libère le
  *   remboursement, `SUCCESS` renvoie au cas précédent.
  * - `FAILED` / `CANCELLED` / aucun : le vendeur n'a rien reçu, on rembourse.
  */
-export function assertNoActivePayout(payoutStatus: string | null): void {
-  if (payoutStatus === 'SUCCESS') {
+export function assertNoActivePayout(
+  payoutStatus: string | null,
+  bearer?: RefundBearer,
+): void {
+  if (payoutStatus === 'SUCCESS' && bearer !== RefundBearer.VENDOR) {
     throw new ConflictException(
       'Le vendeur a déjà été reversé pour cette commande. Rembourser le client ' +
         'ferait porter les deux montants à la plateforme — arbitrage manuel requis.',

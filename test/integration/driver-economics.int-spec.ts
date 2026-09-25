@@ -6,6 +6,7 @@ import { DeliveryAssignmentLogService } from '../../apps/lilia-app/src/modules/d
 import { DeliveryAssignmentService } from '../../apps/lilia-app/src/modules/deliveries/delivery-assignment.service';
 import { RestaurantPayoutService } from '../../apps/lilia-app/src/modules/payments/services/restaurant-payout.service';
 import { PaymentEventService } from '../../apps/lilia-app/src/modules/payments/services/payment-event.service';
+import { OutboxService } from '../../apps/lilia-app/src/modules/outbox/outbox.service';
 import { PayoutStateMachine } from '../../apps/lilia-app/src/modules/payments/payout-state.machine';
 import { OrderStateMachine } from '../../apps/lilia-app/src/modules/orders/order-state.machine';
 import { OrderTransitionService } from '../../apps/lilia-app/src/modules/orders/order-transition.service';
@@ -89,7 +90,7 @@ describeIfDb('Économie de la course — gel, effacement, réassignation', () =>
       { currentMode: 'MANUAL', forPayout: () => null } as never,
       new PaymentEventService(prisma as never),
       new PayoutStateMachine(),
-      new EventEmitter2(),
+      new OutboxService(prisma as never),
     );
 
     await prisma.$executeRawUnsafe(`

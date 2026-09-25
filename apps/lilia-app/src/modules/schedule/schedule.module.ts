@@ -8,6 +8,7 @@ import { OrderAcceptanceTimeoutService } from './order-acceptance-timeout.servic
 import { PaymentReconciliationService } from './payment-reconciliation.service';
 import { WebhookSilenceService } from './webhook-silence.service';
 import { TrackingRetentionService } from './tracking-retention.service';
+import { VendorPayoutAutoService } from './vendor-payout-auto.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { VendorOpeningService } from '../vendors/vendor-opening.service';
 import { OpsQueueService } from '../ops/ops-queue.service';
@@ -47,6 +48,8 @@ import { RefundsCoreModule } from '../refunds/refunds-core.module';
         // F3-04 : alerting métier du cockpit ops.
         OpsQueueService,
         OpsSlaScanService,
+        // F3-07 : versement automatique au vendeur (interrupteur éteint).
+        VendorPayoutAutoService,
         PrismaService,
     ],
 })
