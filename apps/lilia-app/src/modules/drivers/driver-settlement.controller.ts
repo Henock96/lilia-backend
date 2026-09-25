@@ -1,3 +1,5 @@
+import { RequireCapability } from '../auth/decorators/require-capability.decorator';
+import { AdminCapability } from '@prisma/client';
 import {
   Body,
   Controller,
@@ -76,6 +78,7 @@ export class AdminDriverSettlementsController {
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Enregistrer un règlement livreur déjà versé' })
+  @RequireCapability(AdminCapability.FINANCE_EXECUTE)
   async record(@Body() dto: RecordSettlementDto, @CurrentUser() admin: User) {
     const settlement = await this.settlements.record({
       driverId: dto.driverId,
@@ -110,6 +113,7 @@ export class AdminDriverSettlementsController {
   @Post(':settlementId/cancel')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Annuler un règlement saisi par erreur' })
+  @RequireCapability(AdminCapability.FINANCE_EXECUTE)
   async cancel(
     @Param('settlementId') settlementId: string,
     @Body() dto: CancelSettlementDto,

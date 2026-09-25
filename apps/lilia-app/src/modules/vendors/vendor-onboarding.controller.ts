@@ -1,3 +1,5 @@
+import { RequireCapability } from '../auth/decorators/require-capability.decorator';
+import { AdminCapability } from '@prisma/client';
 import {
   Body,
   Controller,
@@ -266,6 +268,7 @@ export class AdminVendorOnboardingController {
   @ApiOperation({
     summary: 'Commission et paramètres commerciaux (ADMIN uniquement)',
   })
+  @RequireCapability(AdminCapability.FINANCE_EXECUTE)
   updateCommerce(
     @Param('id') id: string,
     @Body() dto: UpdateVendorCommerceDto,

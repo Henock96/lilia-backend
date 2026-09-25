@@ -1,5 +1,4 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { PaymentEventSource, PayoutStatus, Prisma } from '@prisma/client';
 
@@ -9,6 +8,7 @@ import { PaymentProviderRegistry } from './payment-provider.registry';
 import { PayoutStateMachine } from './payout-state.machine';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { OutboxService } from '../outbox/outbox.service';
 
 /**
  * Reversement vendeur — éligibilité, calcul, idempotence, concurrence.
@@ -34,6 +34,12 @@ describe('RestaurantPayoutService', () => {
     },
     incident: { create: jest.fn() },
     refund: { findMany: jest.fn() },
+    // F3-07 — dette du vendeur, lue et retenue sous verrou.
+    vendorBalanceEntry: {
+      aggregate: jest.fn(),
+      create: jest.fn(),
+      createMany: jest.fn(),
+    },
     // Compte de reversement relu sous verrou (fix F-08).
     restaurant: { findUniqueOrThrow: jest.fn() },
     // Verrou de la ligne `Order` sous lequel naît le reversement (fix F-04).
@@ -47,7 +53,9 @@ describe('RestaurantPayoutService', () => {
     record: jest.fn().mockResolvedValue('evt-1'),
     setOutcome: jest.fn(),
   };
-  const eventEmitter = { emit: jest.fn() };
+  // F3-07 — les notifications de versement passent par l'outbox, écrites avec
+  // la transition (le worker n'a pas d'écouteur).
+  const outbox = { enqueueInTransaction: jest.fn() };
 
   const payoutProvider = {
     name: 'PAWAPAY',
@@ -73,10 +81,10 @@ describe('RestaurantPayoutService', () => {
       .mockResolvedValue({ restaurantCommissionPercent: 10 }),
   };
 
-  /** Commande nominale : payée, PRET, vendeur configuré. */
+  /** Commande nominale : payée, remise (LIVRER, F3-07), vendeur configuré. */
   const readyOrder = (overrides: Record<string, unknown> = {}) => ({
     id: 'o1',
-    status: 'PRET',
+    status: 'LIVRER',
     subTotal: 5000,
     /**
      * Taux FIGÉ à la commande. C'est lui — et lui seul — qui décide de ce que
@@ -104,7 +112,10 @@ describe('RestaurantPayoutService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
-    prisma.$queryRaw.mockResolvedValue([{ status: 'PRET' }]);
+    prisma.$queryRaw.mockResolvedValue([{ status: 'LIVRER' }]);
+    prisma.vendorBalanceEntry.aggregate.mockResolvedValue({
+      _sum: { amountXaf: null },
+    });
     prisma.refund.findMany.mockResolvedValue([]);
     // Par défaut, le compte relu est celui de la commande, hors délai de carence.
     prisma.restaurant.findUniqueOrThrow.mockImplementation(async () => {
@@ -133,7 +144,7 @@ describe('RestaurantPayoutService', () => {
         { provide: PaymentProviderRegistry, useValue: registry },
         { provide: PlatformSettingsService, useValue: settings },
         { provide: PaymentEventService, useValue: events },
-        { provide: EventEmitter2, useValue: eventEmitter },
+        { provide: OutboxService, useValue: outbox },
       ],
     }).compile();
 
@@ -142,7 +153,7 @@ describe('RestaurantPayoutService', () => {
 
   // ══════════════════════════════════════════════════════════════════════════
   describe('éligibilité', () => {
-    it('commande PRET, payée, vendeur configuré → éligible', async () => {
+    it('commande remise, payée, vendeur configuré → éligible', async () => {
       prisma.order.findUnique.mockResolvedValue(readyOrder());
 
       const result = await service.checkEligibility('o1');
@@ -179,8 +190,8 @@ describe('RestaurantPayoutService', () => {
       });
     });
 
-    it.each(['EN_ATTENTE', 'PAYER', 'EN_PREPARATION'])(
-      'commande %s → ORDER_NOT_READY (le seuil est PRET)',
+    it.each(['EN_ATTENTE', 'PAYER', 'EN_PREPARATION', 'PRET', 'EN_ROUTE'])(
+      'commande %s → ORDER_NOT_READY (F3-07 / D5 : le seuil est LIVRER)',
       async (status) => {
         prisma.order.findUnique.mockResolvedValue(readyOrder({ status }));
         const result = await service.checkEligibility('o1');
@@ -191,7 +202,7 @@ describe('RestaurantPayoutService', () => {
       },
     );
 
-    it.each(['PRET', 'EN_ROUTE', 'LIVRER'])(
+    it.each(['LIVRER'])(
       'commande %s → éligible (un reversement oublié doit rester possible)',
       async (status) => {
         prisma.order.findUnique.mockResolvedValue(readyOrder({ status }));
@@ -475,8 +486,8 @@ describe('RestaurantPayoutService', () => {
       prisma.restaurantPayout.create.mockImplementation(
         async (args: { data: Record<string, unknown> }) => ({
           ...createdPayout,
-          phoneNumber: args.data.phoneNumber,
-          providerCode: args.data.providerCode,
+          ...args.data,
+          id: 'pay-1',
         }),
       );
       payoutProvider.createPayout.mockResolvedValue({
@@ -870,9 +881,15 @@ describe('RestaurantPayoutService', () => {
       });
 
       expect(outcome).toBe('APPLIED');
-      expect(eventEmitter.emit).toHaveBeenCalledWith(
-        'payout.succeeded',
-        expect.objectContaining({ ownerId: 'owner-1', amount: 4500 }),
+      expect(outbox.enqueueInTransaction).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          type: 'payout.succeeded',
+          payload: expect.objectContaining({
+            ownerId: 'owner-1',
+            amount: 4500,
+          }),
+        }),
       );
     });
 
@@ -893,7 +910,7 @@ describe('RestaurantPayoutService', () => {
       });
 
       expect(outcome).toBe('DUPLICATE');
-      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(outbox.enqueueInTransaction).not.toHaveBeenCalled();
     });
 
     it('FAILED arrivé APRÈS un COMPLETED → DUPLICATE, le succès tient', async () => {
@@ -918,7 +935,7 @@ describe('RestaurantPayoutService', () => {
       });
 
       expect(outcome).toBe('DUPLICATE');
-      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(outbox.enqueueInTransaction).not.toHaveBeenCalled();
     });
 
     it('statut non terminal → IGNORED, rien ne bouge', async () => {
@@ -956,7 +973,7 @@ describe('RestaurantPayoutService', () => {
       expect(outcome).toBe('MISMATCH');
       expect(prisma.restaurantPayout.updateMany).not.toHaveBeenCalled();
       expect(prisma.incident.create).toHaveBeenCalled();
-      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(outbox.enqueueInTransaction).not.toHaveBeenCalled();
     });
 
     it('devise incohérente → MISMATCH', async () => {

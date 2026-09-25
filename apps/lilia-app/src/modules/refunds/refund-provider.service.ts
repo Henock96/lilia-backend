@@ -10,6 +10,7 @@ import * as Sentry from '@sentry/nestjs';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaymentEventService } from '../payments/services/payment-event.service';
 import { ProviderTransactionStatus } from '../payments/providers/payment-provider.interface';
+import { recordClawbackIfDue } from '../payments/vendor-balance';
 
 /** Issue d'un signal prestataire appliqué à un remboursement. */
 export type RefundApplyOutcome =
@@ -111,24 +112,34 @@ export class RefundProviderService {
         ? RefundStatus.COMPLETED
         : RefundStatus.PENDING;
 
-    const claimed = await this.prisma.refund.updateMany({
-      where: { id: refund.id, status: RefundStatus.PROCESSING },
-      data: {
-        status: target,
-        processedAt: target === RefundStatus.COMPLETED ? new Date() : null,
-        providerTransactionId: input.status.providerTransactionId ?? null,
-        failureCode:
-          target === RefundStatus.PENDING
-            ? (input.status.failureCode ?? null)
-            : null,
-        failureMessage:
-          target === RefundStatus.PENDING
-            ? (input.status.failureMessage ?? null)
-            : null,
-        // Un échec libère l'identifiant : la reprise en génère un neuf, et
-        // l'index unique ne bloque pas une seconde tentative légitime.
-        ...(target === RefundStatus.PENDING ? { providerRefundId: null } : {}),
-      },
+    // F3-07 — l'aboutissement et la dette qu'il fait naître (remboursement à
+    // la charge du vendeur, déjà payé) sont écrits ensemble.
+    const claimed = await this.prisma.$transaction(async (tx) => {
+      const moved = await tx.refund.updateMany({
+        where: { id: refund.id, status: RefundStatus.PROCESSING },
+        data: {
+          status: target,
+          processedAt: target === RefundStatus.COMPLETED ? new Date() : null,
+          providerTransactionId: input.status.providerTransactionId ?? null,
+          failureCode:
+            target === RefundStatus.PENDING
+              ? (input.status.failureCode ?? null)
+              : null,
+          failureMessage:
+            target === RefundStatus.PENDING
+              ? (input.status.failureMessage ?? null)
+              : null,
+          // Un échec libère l'identifiant : la reprise en génère un neuf, et
+          // l'index unique ne bloque pas une seconde tentative légitime.
+          ...(target === RefundStatus.PENDING
+            ? { providerRefundId: null }
+            : {}),
+        },
+      });
+      if (moved.count > 0 && target === RefundStatus.COMPLETED) {
+        await recordClawbackIfDue(tx, refund);
+      }
+      return moved;
     });
 
     if (claimed.count === 0) {

@@ -8,6 +8,7 @@ import { AdminAuditService } from '../../admin-audit/admin-audit.service';
 import { RestaurantPayoutService } from '../services/restaurant-payout.service';
 import { PaymentEventService } from '../services/payment-event.service';
 import { PawaPaySignatureService } from '../providers/pawapay/pawapay-signature.service';
+import { ApprovalsService } from '../../approvals/approvals.service';
 import { WebhookReceptionMonitor } from '../services/webhook-reception.monitor';
 import { PlatformSettingsService } from '../../platform-settings/platform-settings.service';
 
@@ -88,6 +89,8 @@ describe('AdminPayoutController — webhookHealth', () => {
         { provide: ConfigService, useValue: config },
         { provide: WebhookReceptionMonitor, useValue: reception },
         { provide: PlatformSettingsService, useValue: settingsService },
+        // F3-08 — le changement de numéro de versement ouvre une demande.
+        { provide: ApprovalsService, useValue: {} },
       ],
     }).compile();
 

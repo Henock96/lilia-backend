@@ -67,6 +67,10 @@ model User {
   phone             String?
   imageUrl          String?
   role              Role               @default(CLIENT)
+  /// F3-08 — ce qu'un ADMIN a le droit de faire. Le rôle `ADMIN` reste la
+  /// porte d'entrée ; la capacité autorise le geste (`@RequireCapability`).
+  /// Vide pour tout autre rôle. S'attribue à deux administrateurs.
+  adminCapabilities AdminCapability[]  @default([])
   /// Disponibilité **du moment**, changée plusieurs fois par jour par le livreur
   /// lui-même. À ne pas confondre avec `DriverProfile.isActive` (le livreur
   /// est-il en service sur la plateforme ?) ni avec `statusUser` (son compte
@@ -541,6 +545,8 @@ model Restaurant {
   payoutVerifiedById String? // User.id (pas de FK, comme adminApprovedById)
 
   payouts RestaurantPayout[]
+  /// F3-07 — dette du vendeur envers Lilia (remboursements après versement).
+  balanceEntries VendorBalanceEntry[]
 
   // Multi-vendeurs (Sprint A — LIL-111)
   vendorType        VendorType     @default(RESTAURANT)
@@ -1744,6 +1750,110 @@ enum PaymentStatus {
 /// cliquant simultanément incapables de créer deux reversements. Une ligne
 /// `FAILED` est supprimée avant de réessayer (cf. RestaurantPayoutService), ce
 /// qui garde la contrainte intacte tout en autorisant une nouvelle tentative.
+/// F3-08 — capacités d'un administrateur (R-08.1). Plutôt qu'un rôle
+/// SUPER_ADMIN : pas d'`ALTER TYPE Role`, pas de 5ᵉ rôle dans trois apps.
+enum AdminCapability {
+  /// Faire partir de l'argent : versements, remboursements, avoirs, points.
+  FINANCE_EXECUTE
+  /// Être le second administrateur d'un geste financier.
+  FINANCE_APPROVE
+  /// Rôles, bannissements, capacités.
+  USER_ROLES
+  /// Paramètres plateforme et grille de livraison.
+  SETTINGS
+  /// Opérations courantes (lecture, cockpit, commandes, vendeurs).
+  SUPPORT
+}
+
+/// Geste soumis à deux administrateurs (D7).
+enum ApprovalKind {
+  /// Changement d'un numéro de versement existant (la première saisie est directe).
+  PAYOUT_ACCOUNT_CHANGE
+  /// Exécution d'un remboursement ≥ 50 000 XAF.
+  REFUND_EXECUTION
+  /// Attribution ou retrait de capacités.
+  CAPABILITY_GRANT
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  /// Le geste a été exécuté : une approbation ne sert qu'une fois.
+  CONSUMED
+}
+
+/// F3-08 — demande d'approbation d'un geste financier (4 yeux).
+///
+/// `payloadHash` lie l'approbation au geste EXACT (ce compte, ce montant) :
+/// approuver « changer le numéro en 06 111 » n'autorise pas « 06 222 ».
+/// `approvedBy <> requestedBy` est une CHECK en base, pas un `if`.
+model FinancialApproval {
+  id          String         @id @default(cuid())
+  kind        ApprovalKind
+  /// Objet visé : `Restaurant.id`, `Refund.id`, `User.id`.
+  refId       String
+  /// Le geste lui-même, rejoué à l'approbation (numéro, capacités…).
+  payload     Json
+  payloadHash String
+  amountXaf   Int?
+  /// `User.id` — sans clé étrangère, comme les autres colonnes d'audit.
+  requestedBy String
+  approvedBy  String?
+  status      ApprovalStatus @default(PENDING)
+  reason      String?
+  expiresAt   DateTime
+  createdAt   DateTime       @default(now())
+  decidedAt   DateTime?
+  consumedAt  DateTime?
+
+  @@index([status, createdAt])
+  // + index unique partiel SQL : une seule demande PENDING par (kind, refId).
+}
+
+/// F3-07 — mouvements de la dette d'un vendeur envers Lilia Food.
+///
+/// Un versement par commande (D6) ne laisse aucun endroit où retenir un
+/// remboursement survenu APRÈS le versement : la réclamation vient jusqu'à 24 h
+/// après la livraison (D4), le versement 1 h après (D5). Cette table porte
+/// cette dette, et elle seulement — ce n'est pas une comptabilité : le montant
+/// dû sur une commande reste calculé et figé par `RestaurantPayout`.
+///
+/// Dette = −Σ amountXaf. Jamais de suppression : on compense (`DEBT_RESTORED`).
+enum VendorBalanceKind {
+  /// Remboursement à la charge du vendeur, exécuté après son versement (−).
+  REFUND_CLAWBACK
+  /// Dette retenue sur un versement (+).
+  DEBT_SETTLED
+  /// Versement retenant de la dette, finalement en échec : la retenue est rendue (−).
+  DEBT_RESTORED
+  /// Correction manuelle, motif obligatoire (±).
+  ADJUSTMENT
+}
+
+model VendorBalanceEntry {
+  id           String            @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant        @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  kind         VendorBalanceKind
+  /// Signé, en XAF. Le signe est imposé par un CHECK selon `kind`.
+  amountXaf    Int
+  orderId      String?
+  /// Un seul clawback par remboursement : un rejeu du webhook ne compte pas deux fois.
+  refundId     String?           @unique
+  /// Versement qui a absorbé (ou rendu) la dette. Sans clé étrangère : une
+  /// relance supprime la ligne `FAILED`, l'écriture doit lui survivre.
+  payoutId     String?
+  note         String?
+  /// `User.id` de l'auteur ; `null` = système.
+  createdBy    String?
+  createdAt    DateTime          @default(now())
+
+  @@unique([kind, payoutId])
+  @@index([restaurantId, createdAt])
+}
+
 model RestaurantPayout {
   id           String     @id @default(cuid())
   orderId      String     @unique
@@ -1766,6 +1876,10 @@ model RestaurantPayout {
   deliverySubsidyAmount Int @default(0)
   /// F3-06 — remboursements à la charge du vendeur, retenus sur ce reversement.
   refundDeductionAmount Int @default(0)
+  /// F3-07 — dette du vendeur (remboursements survenus APRÈS le versement
+  /// d'une commande précédente) retenue sur ce versement. Écriture
+  /// `DEBT_SETTLED` correspondante dans `VendorBalanceEntry`.
+  debtDeductionAmount   Int @default(0)
   /// `grossAmount - commissionAmount - deliverySubsidyAmount` — c'est CE
   /// montant qui part au prestataire.
   amount            Int
@@ -1798,7 +1912,8 @@ model RestaurantPayout {
   payoutFeeXaf Int?
 
   /// `User.id` de l'administrateur qui a déclenché le reversement.
-  requestedBy String
+  /// `null` = versement automatique (F3-07) ; `metadata.trigger` le dit.
+  requestedBy String?
   requestedAt DateTime  @default(now())
   completedAt DateTime?
 
@@ -2628,6 +2743,12 @@ enum AdminAuditAction {
   CLAIM_VOUCHER_ISSUED
   /// F3-06 — réclamation refusée (motif communiqué au client).
   CLAIM_REJECTED
+  /// F3-08 — un geste financier attend un second administrateur.
+  APPROVAL_REQUESTED
+  /// F3-08 — approbation accordée ou refusée par le second administrateur.
+  APPROVAL_DECIDED
+  /// F3-08 — capacités d'un administrateur modifiées (toujours à deux).
+  CAPABILITY_CHANGED
 }
 
 model Incident {
@@ -2774,6 +2895,9 @@ model PlatformSettings {
   /// F3-07 / D5 — délai entre la preuve de remise et le versement automatique
   /// au vendeur, en minutes. Borné 0–1440 par un CHECK.
   vendorPayoutDelayMinutes       Int @default(60)
+  /// F3-07 / D6 — interrupteur du versement automatique. Éteint par défaut :
+  /// l'allumer suppose le code client exigé (L0-4), F3-08 et les apps publiées.
+  vendorPayoutAutoEnabled        Boolean @default(false)
 
   /// Rappel SMS au vendeur, en minutes AVANT l'échéance.
   vendorAcceptanceReminderLeadMinutes Int @default(3)

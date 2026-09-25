@@ -27,6 +27,8 @@ describe('RefundsService', () => {
       count: jest.Mock;
     };
     restaurantPayout: { findUnique: jest.Mock };
+    vendorBalanceEntry: { createMany: jest.Mock };
+    $transaction: jest.Mock;
   };
   let service: RefundsService;
 
@@ -45,7 +47,16 @@ describe('RefundsService', () => {
       },
       // Aucun reversement vendeur par défaut (fix F-04).
       restaurantPayout: { findUnique: jest.fn().mockResolvedValue(null) },
+      // F3-07 — dette du vendeur écrite avec la clôture.
+      vendorBalanceEntry: {
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      $transaction: jest.fn(),
     };
+    // La transaction reçoit le client lui-même.
+    prisma.$transaction.mockImplementation((fn: (tx: unknown) => unknown) =>
+      fn(prisma),
+    );
     service = new RefundsService(prisma as never);
     // Les avertissements de log polluent la sortie sans rien apprendre.
     jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
@@ -320,6 +331,33 @@ describe('RefundsService', () => {
       prisma.refund.updateMany.mockResolvedValue({ count: 1 });
       await service.updateStatus('r1', RefundStatus.COMPLETED, 'admin-1');
       expect(prisma.restaurantPayout.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('F3-07 — remboursement à la charge du vendeur déjà payé : clôturé, et sa dette écrite', async () => {
+      prisma.refund.findUnique.mockResolvedValue({
+        ...open,
+        amount: 1500,
+        reasonCode: 'MISSING_ITEM',
+        bearer: 'VENDOR',
+      });
+      prisma.restaurantPayout.findUnique.mockResolvedValue({
+        id: 'pay-1',
+        status: 'SUCCESS',
+        restaurantId: 'r1',
+      });
+      prisma.refund.updateMany.mockResolvedValue({ count: 1 });
+      await service.updateStatus('r1', RefundStatus.COMPLETED, 'admin-1');
+      expect(prisma.vendorBalanceEntry.createMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            restaurantId: 'r1',
+            kind: 'REFUND_CLAWBACK',
+            amountXaf: -1500,
+            refundId: 'r1',
+          }),
+          skipDuplicates: true,
+        }),
+      );
     });
 
     it('un refus (REJECTED) ne consulte pas le reversement', async () => {

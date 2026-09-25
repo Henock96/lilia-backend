@@ -24,6 +24,10 @@ import { PawaPayWebhookController } from './controllers/pawapay-webhook.controll
  * n'est appelé que depuis `AdminPayoutController`, sur une action humaine
  * explicite.
  */
+import { VendorEarningsController } from './controllers/vendor-earnings.controller';
+import { VendorEarningsService } from './services/vendor-earnings.service';
+
+import { ApprovalsModule } from '../approvals/approvals.module';
 @Module({
   // ⚠️ `RefundsCoreModule` est ici parce que `PawaPayWebhookController` aiguille
   // les callbacks de virement sortant vers DEUX tables : reversement vendeur et
@@ -47,13 +51,18 @@ import { PawaPayWebhookController } from './controllers/pawapay-webhook.controll
     RefundsCoreModule,
     AdminAuditModule,
     PlatformSettingsCoreModule,
+    // F3-08 — le changement de numéro de versement ouvre une demande.
+    ApprovalsModule,
   ],
   controllers: [
     PaymentController,
     AdminPayoutController,
     WebhookController,
     PawaPayWebhookController,
+    // F3-07 — « Mes gains » du vendeur.
+    VendorEarningsController,
   ],
+  providers: [VendorEarningsService],
   exports: [PaymentCoreModule],
 })
 export class PaymentModule {}

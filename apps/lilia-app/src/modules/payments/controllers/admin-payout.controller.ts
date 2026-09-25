@@ -1,3 +1,5 @@
+import { RequireCapability } from '../../auth/decorators/require-capability.decorator';
+import { AdminCapability } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   Body,
@@ -14,7 +16,12 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
-import { AdminAuditAction, PayoutStatus, User } from '@prisma/client';
+import {
+  AdminAuditAction,
+  ApprovalKind,
+  PayoutStatus,
+  User,
+} from '@prisma/client';
 
 import { PrismaService } from '../../../prisma/prisma.service';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
@@ -35,6 +42,8 @@ import { toMsisdn } from '../providers/pawapay/pawapay.mapper';
 import { PawaPaySignatureService } from '../providers/pawapay/pawapay-signature.service';
 import { WebhookReceptionMonitor } from '../services/webhook-reception.monitor';
 import { PlatformSettingsService } from '../../platform-settings/platform-settings.service';
+import { ApprovalsService } from '../../approvals/approvals.service';
+import { applyPayoutAccount } from '../payout-account';
 
 /**
  * Reversement des vendeurs — **réservé à l'ADMIN**.
@@ -63,6 +72,8 @@ export class AdminPayoutController {
     private readonly reception: WebhookReceptionMonitor,
     private readonly settingsService: PlatformSettingsService,
     private readonly eventEmitter: EventEmitter2,
+    // F3-08 — un CHANGEMENT de numéro de versement passe par deux admins.
+    private readonly approvals: ApprovalsService,
   ) {}
 
   /**
@@ -92,6 +103,7 @@ export class AdminPayoutController {
   @Post('orders/:orderId/payout')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Payer le restaurant pour cette commande' })
+  @RequireCapability(AdminCapability.FINANCE_EXECUTE)
   async requestPayout(
     @Param('orderId') orderId: string,
     @Body() dto: RequestPayoutDto,
@@ -134,6 +146,7 @@ export class AdminPayoutController {
   @Post('orders/:orderId/payout/retry')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Réessayer un reversement échoué' })
+  @RequireCapability(AdminCapability.FINANCE_EXECUTE)
   async retryPayout(
     @Param('orderId') orderId: string,
     @Body() dto: RequestPayoutDto,
@@ -197,6 +210,7 @@ export class AdminPayoutController {
    */
   @Patch('vendors/:restaurantId/payout-account')
   @ApiOperation({ summary: 'Configurer le compte de reversement d’un vendeur' })
+  @RequireCapability(AdminCapability.FINANCE_EXECUTE)
   async updatePayoutAccount(
     @Param('restaurantId') restaurantId: string,
     @Body() dto: UpdatePayoutAccountDto,
@@ -209,25 +223,39 @@ export class AdminPayoutController {
     if (!restaurant) throw new NotFoundException('Vendeur introuvable.');
 
     const normalized = toMsisdn(dto.payoutPhoneNumber);
+    const payload = {
+      payoutPhoneNumber: normalized,
+      payoutProvider: dto.payoutProvider,
+      payoutAccountName: dto.payoutAccountName ?? null,
+    };
 
-    const updated = await this.prisma.restaurant.update({
-      where: { id: restaurantId },
-      data: {
-        payoutPhoneNumber: normalized,
-        payoutProvider: dto.payoutProvider,
-        payoutAccountName: dto.payoutAccountName ?? null,
-        payoutVerifiedAt: new Date(),
-        payoutVerifiedById: admin.id,
-      },
-      select: {
-        id: true,
-        nom: true,
-        payoutPhoneNumber: true,
-        payoutProvider: true,
-        payoutAccountName: true,
-        payoutVerifiedAt: true,
-      },
-    });
+    // F3-08 / D7 — REMPLACER un numéro existant est le geste qu'un compte
+    // volé chercherait : tous les versements suivants partiraient chez lui.
+    // Il faut un second administrateur ; rien ne change avant son accord.
+    // La PREMIÈRE saisie (onboarding) reste directe (décision P1) : aucun
+    // versement n'a encore eu lieu, et la carence de 24 h s'applique.
+    if (restaurant.payoutPhoneNumber) {
+      const approval = await this.approvals.request({
+        kind: ApprovalKind.PAYOUT_ACCOUNT_CHANGE,
+        refId: restaurantId,
+        payload,
+        requestedBy: admin.id,
+        summary: `Numéro de versement de ${restaurant.nom} : ${maskPhone(restaurant.payoutPhoneNumber)} → ${maskPhone(normalized)}`,
+      });
+      return {
+        data: { approvalRequired: true, approval },
+        message:
+          'Demande envoyée : un second administrateur doit approuver ce changement de numéro. Rien ne change d’ici là.',
+      };
+    }
+
+    const updated = await this.prisma.$transaction((tx) =>
+      applyPayoutAccount(tx, {
+        restaurantId,
+        ...payload,
+        verifiedById: admin.id,
+      }),
+    );
 
     await this.audit.record({
       actorId: admin.id,

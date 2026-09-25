@@ -39,79 +39,10 @@ export class PayoutListener {
     private readonly prisma: PrismaService,
   ) {}
 
-  @OnEvent('payout.succeeded')
-  async handlePayoutSucceeded(event: PayoutSucceededEvent) {
-    try {
-      const ref = event.orderId.slice(-6).toUpperCase();
-      await this.notifications.sendPushNotification(
-        event.ownerId,
-        '💰 Paiement reçu',
-        `Votre paiement de ${Math.round(event.amount)} FCFA pour la commande #${ref} a été effectué.`,
-        {
-          orderId: event.orderId,
-          payoutId: event.payoutId,
-          type: 'payout_succeeded',
-          amount: String(Math.round(event.amount)),
-        },
-      );
-      this.logger.log(
-        `📱 Vendeur ${event.ownerId} notifié du reversement ${event.payoutId}`,
-      );
-    } catch (error) {
-      this.logger.error(
-        `Notification de reversement échouée (${event.payoutId}) : ${(error as Error).message}`,
-      );
-    }
-  }
-
-  /**
-   * Échec de reversement.
-   *
-   * Le vendeur est prévenu **sans le motif technique** : « PAYER_LIMIT_REACHED »
-   * ou « PAWAPAY_WALLET_OUT_OF_FUNDS » ne lui apprennent rien d'actionnable, et
-   * le second est un problème de trésorerie de Lilia Food qui ne le concerne
-   * pas. Le motif complet reste dans `RestaurantPayout.failureCode` et dans le
-   * journal, à destination de l'administration.
-   *
-   * Un incident est ouvert : un vendeur non payé qui n'apparaîtrait nulle part
-   * en supervision finirait par appeler le support, ce qui est le signal le plus
-   * cher qui soit.
-   */
-  @OnEvent('payout.failed')
-  async handlePayoutFailed(event: PayoutFailedEvent) {
-    try {
-      const ref = event.orderId.slice(-6).toUpperCase();
-      await this.notifications.sendPushNotification(
-        event.ownerId,
-        '⚠️ Paiement en attente',
-        `Le versement de ${Math.round(event.amount)} FCFA pour la commande #${ref} n'a pas abouti. Lilia Food le relance ; aucune action de votre part.`,
-        {
-          orderId: event.orderId,
-          payoutId: event.payoutId,
-          type: 'payout_failed',
-        },
-      );
-
-      await this.prisma.incident.create({
-        data: {
-          type: 'OTHER',
-          severity: 'HIGH',
-          title: 'Reversement vendeur en échec',
-          description:
-            `Le reversement de ${Math.round(event.amount)} FCFA pour la commande ${event.orderId} ` +
-            `a échoué${event.reason ? ` : ${event.reason}` : ''}. ` +
-            `Vérifier le compte Mobile Money du vendeur, puis réessayer depuis l'administration.`,
-          orderId: event.orderId,
-          restaurantId: event.restaurantId,
-          metadata: { payoutId: event.payoutId, reason: event.reason ?? null },
-        },
-      });
-    } catch (error) {
-      this.logger.error(
-        `Traitement de payout.failed échoué (${event.payoutId}) : ${(error as Error).message}`,
-      );
-    }
-  }
+  // ⚠️ `payout.succeeded` / `payout.failed` ne sont PLUS écoutés ici (F3-07) :
+  // ils sont écrits dans l'outbox avec la transition du versement et dépilés
+  // par `PayoutOutboxEffectsService` — c'est le plus souvent le worker qui
+  // conclut un versement, et il n'a aucun écouteur.
 
   /**
    * Encaissement abouti sur une commande qui n'attend plus de paiement.

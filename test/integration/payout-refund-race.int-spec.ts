@@ -70,7 +70,7 @@ describeIfDb(
         registry as never,
         events,
         new PayoutStateMachine(),
-        new EventEmitter2(),
+        new OutboxService(prisma as never),
       );
       const refunds = new RefundsService(prisma as never);
       lifecycle = new OrderLifecycleService(
@@ -160,7 +160,38 @@ describeIfDb(
       });
     });
 
+    /** F3-07 / D5 — un versement n'est plus éligible qu'une fois la commande remise. */
+    const markDelivered = () =>
+      prisma.order.update({
+        where: { id: ORDER },
+        data: { status: OrderStatus.LIVRER },
+      });
+
+    /**
+     * Versement créé à `PRET`, AVANT F3-07 : il en existe en production, et les
+     * gardes F-04 qui les concernent restent du code vivant. `requestPayout` ne
+     * sait plus les produire (éligibilité à `LIVRER`) : on les pose en base.
+     */
+    const legacyPayout = (status: 'PENDING' | 'SUCCESS') =>
+      prisma.restaurantPayout.create({
+        data: {
+          orderId: ORDER,
+          restaurantId: VENDOR,
+          grossAmount: 5000,
+          commissionPercent: 10,
+          commissionAmount: 500,
+          amount: 4500,
+          phoneNumber: '242060000030',
+          providerCode: 'MTN_MOMO',
+          status,
+          provider: 'PAWAPAY',
+          providerPayoutId: `legacy-${status}`,
+          requestedBy: ADMIN,
+        },
+      });
+
     it('F-08 — numéro de reversement changé il y a une heure : aucun virement', async () => {
+      await markDelivered();
       await prisma.restaurant.update({
         where: { id: VENDOR },
         data: { payoutVerifiedAt: new Date(Date.now() - 3_600_000) },
@@ -173,6 +204,7 @@ describeIfDb(
     });
 
     it('scénario 5 — deux admins lancent le même reversement : une ligne, UN virement', async () => {
+      await markDelivered();
       const results = await Promise.allSettled([
         payouts.requestPayout({ orderId: ORDER, adminUserId: ADMIN }),
         payouts.requestPayout({ orderId: ORDER, adminUserId: ADMIN }),
@@ -183,44 +215,23 @@ describeIfDb(
       expect(providerCalls).toHaveLength(1);
     });
 
-    it('scénario 6 — le vendeur annule pendant que le reversement part : jamais « payé ET annulé »', async () => {
-      for (let round = 0; round < 8; round++) {
-        if (round > 0) {
-          await prisma.restaurantPayout.deleteMany();
-          await prisma.refund.deleteMany();
-          await prisma.orderHistory.deleteMany();
-          await prisma.order.update({
-            where: { id: ORDER },
-            data: { status: OrderStatus.PRET },
-          });
-        }
-        await Promise.allSettled([
-          payouts.requestPayout({ orderId: ORDER, adminUserId: ADMIN }),
-          lifecycle.updateOrderStatusByRestaurateur(
-            ORDER,
-            'fb-pr-o',
-            OrderStatus.ANNULER,
-          ),
-        ]);
-
-        const order = await prisma.order.findUniqueOrThrow({
-          where: { id: ORDER },
-        });
-        const payout = await prisma.restaurantPayout.findUnique({
-          where: { orderId: ORDER },
-        });
-        // L'un OU l'autre, jamais les deux.
-        if (payout) {
-          expect(order.status).toBe(OrderStatus.PRET);
-          expect(await prisma.refund.count()).toBe(0);
-        } else {
-          expect(order.status).toBe(OrderStatus.ANNULER);
-        }
-      }
+    it('scénario 6 — F3-07 : à PRET, plus aucun reversement ; l’annulation ne croise plus un versement', async () => {
+      const [payout, cancel] = await Promise.allSettled([
+        payouts.requestPayout({ orderId: ORDER, adminUserId: ADMIN }),
+        lifecycle.updateOrderStatusByRestaurateur(
+          ORDER,
+          'fb-pr-o',
+          OrderStatus.ANNULER,
+        ),
+      ]);
+      expect(payout.status).toBe('rejected');
+      expect(cancel.status).toBe('fulfilled');
+      expect(await prisma.restaurantPayout.count()).toBe(0);
+      expect(providerCalls).toHaveLength(0);
     });
 
-    it('après un reversement, le vendeur ne peut plus annuler (409)', async () => {
-      await payouts.requestPayout({ orderId: ORDER, adminUserId: ADMIN });
+    it('après un reversement (historique, versé à PRET), le vendeur ne peut plus annuler (409)', async () => {
+      await legacyPayout('SUCCESS');
       await expect(
         lifecycle.updateOrderStatusByRestaurateur(
           ORDER,
@@ -235,7 +246,7 @@ describeIfDb(
     });
 
     it('annulation ADMIN pendant un reversement PENDING : le remboursement s’ouvre mais ne part PAS', async () => {
-      await payouts.requestPayout({ orderId: ORDER, adminUserId: ADMIN });
+      await legacyPayout('PENDING');
       await lifecycle.updateOrderStatusByRestaurateur(
         ORDER,
         'fb-pr-a',
@@ -257,21 +268,18 @@ describeIfDb(
     });
 
     it('reversement confirmé sur une commande annulée entre-temps : incident CRITICAL ouvert', async () => {
-      const res = await payouts.requestPayout({
-        orderId: ORDER,
-        adminUserId: ADMIN,
-      });
+      const legacy = await legacyPayout('PENDING');
       await lifecycle.updateOrderStatusByRestaurateur(
         ORDER,
         'fb-pr-a',
         OrderStatus.ANNULER,
       );
       await payouts.applyPayoutProviderStatus({
-        payoutId: res.payout.id,
+        payoutId: legacy.id,
         status: {
           state: 'SUCCESS',
           rawStatus: 'COMPLETED',
-          amountXaf: res.payout.amount,
+          amountXaf: legacy.amount,
           currency: 'XAF',
           raw: {},
         },

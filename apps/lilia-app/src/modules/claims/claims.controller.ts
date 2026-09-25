@@ -1,3 +1,5 @@
+import { RequireCapability } from '../auth/decorators/require-capability.decorator';
+import { AdminCapability } from '@prisma/client';
 import {
   Body,
   Controller,
@@ -91,6 +93,7 @@ export class ClaimsController {
   @Roles('ADMIN')
   @Throttle({ short: { limit: 1, ttl: 2000 }, long: { limit: 30, ttl: 60000 } })
   @ApiOperation({ summary: 'Clore par un avoir nominatif (code promo)' })
+  @RequireCapability(AdminCapability.FINANCE_EXECUTE)
   async voucher(
     @Param('id') id: string,
     @Body() dto: IssueVoucherDto,

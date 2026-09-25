@@ -5,7 +5,6 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
 import { randomUUID } from 'node:crypto';
 import {
   OrderStatus,
@@ -39,6 +38,26 @@ import {
   IN_FLIGHT_REFUND_STATUSES,
   refundConflictsWithPayout,
 } from '../../refunds/refund-lines.policy';
+import { OutboxService } from '../../outbox/outbox.service';
+import {
+  PAYOUT_FAILED_EVENT,
+  PAYOUT_SUCCEEDED_EVENT,
+} from '../../outbox/outbox-events';
+import {
+  lockRestaurantRow,
+  recordDebtSettled,
+  restoreDebtOfFailedPayout,
+  vendorDebtXaf,
+} from '../vendor-balance';
+
+/** Qui a déclenché un versement : un administrateur, ou le worker (F3-07). */
+export type PayoutTrigger = 'MANUAL' | 'AUTO';
+
+/**
+ * Prestataire d'un versement entièrement absorbé par la dette du vendeur :
+ * aucun argent ne part, aucun appel au prestataire (F3-07).
+ */
+export const NETTING_PROVIDER = 'NETTING';
 
 /** Ce qu'un reversement doit savoir des remboursements de sa commande. */
 export interface PayoutRefundView {
@@ -90,18 +109,20 @@ const PAYOUT_REFUND_SELECT = {
 /**
  * Statuts de commande à partir desquels un vendeur peut être reversé.
  *
- * `PRET` est le seuil : le vendeur a fait son travail, la commande attend le
- * livreur ou le client. Les deux états suivants restent éligibles parce qu'un
- * administrateur qui n'a pas payé au moment de `PRET` doit pouvoir le faire
- * ensuite — un reversement oublié ne doit pas devenir impossible.
+ * **`LIVRER` seulement** depuis F3-07 (décision D5, 25/09/2026). Le seuil était
+ * `PRET` : un vendeur payé avant la remise devait être repris dans à peu près
+ * tous les échecs, et c'est ce qui faisait exister toute la classe F-04 (payé
+ * sur une commande ensuite annulée). `LIVRER` est terminal : une commande
+ * payée au vendeur ne peut plus être annulée.
  *
- * ⚠️ `PRET` rend la commande **éligible**, il ne déclenche rien. Le passage à
- * `PRET` reste une transition purement opérationnelle : c'est une action
- * d'administration explicite qui envoie l'argent.
+ * Plus un cas : un échec de livraison conclu dont le vendeur ne répond pas
+ * (F3-05), traité à part dans `checkEligibility`.
+ *
+ * Le versement AUTOMATIQUE exige en plus une preuve de remise fiable et son
+ * échéance (`Order.payoutDueAt`) ; le versement manuel, décision d'un
+ * administrateur, n'attend pas l'échéance.
  */
 export const PAYOUT_ELIGIBLE_ORDER_STATUSES: OrderStatus[] = [
-  OrderStatus.PRET,
-  OrderStatus.EN_ROUTE,
   OrderStatus.LIVRER,
 ];
 
@@ -161,7 +182,11 @@ export class RestaurantPayoutService {
     // réécrit ce que la plateforme prélève sur une commande déjà passée.
     private readonly events: PaymentEventService,
     private readonly stateMachine: PayoutStateMachine,
-    private readonly eventEmitter: EventEmitter2,
+    // F3-07 — les notifications de versement passent par l'outbox, écrites
+    // avec la transition. Un `EventEmitter` ne portait rien quand c'est le
+    // worker (réconciliation, versement automatique) qui concluait : il n'y a
+    // aucun écouteur dans ce processus.
+    private readonly outbox: OutboxService,
   ) {}
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -255,8 +280,8 @@ export class RestaurantPayoutService {
         eligible: false,
         code: 'ORDER_NOT_READY',
         reason:
-          `La commande est au statut ${order.status}. Le vendeur peut être payé ` +
-          `à partir de « PRET ».`,
+          `La commande est au statut ${order.status}. Le vendeur est payé une ` +
+          `fois la commande remise au client (« LIVRER »).`,
       });
     }
 
@@ -378,7 +403,13 @@ export class RestaurantPayoutService {
    * seconde insertion reçoit un `P2002` que l'on traduit en 409. La base
    * arbitre, et elle ne peut pas se tromper.
    */
-  async requestPayout(params: { orderId: string; adminUserId: string }) {
+  async requestPayout(params: {
+    orderId: string;
+    /** `null` = versement automatique (F3-07). */
+    adminUserId: string | null;
+    trigger?: PayoutTrigger;
+  }) {
+    const trigger: PayoutTrigger = params.trigger ?? 'MANUAL';
     const eligibility = await this.checkEligibility(params.orderId);
     if (!eligibility.eligible) {
       throw new ConflictException({
@@ -528,7 +559,20 @@ export class RestaurantPayoutService {
             code: 'VENDOR_PAYOUT_ACCOUNT_COOLING_DOWN',
           });
         }
-        return tx.restaurantPayout.create({
+        // F3-07 — dette du vendeur (remboursements survenus après un
+        // versement précédent), retenue ici. Verrou du vendeur APRÈS celui de
+        // la commande (R3) : deux versements simultanés ne retiennent pas
+        // deux fois la même dette.
+        await lockRestaurantRow(tx, order.restaurantId);
+        const debtDeduction = Math.min(
+          await vendorDebtXaf(tx, order.restaurantId),
+          breakdown.payoutAmount,
+        );
+        const net = breakdown.payoutAmount - debtDeduction;
+        // Tout est absorbé par la dette : rien ne part chez le prestataire.
+        const netting = net === 0;
+
+        const created = await tx.restaurantPayout.create({
           data: {
             orderId: order.id,
             restaurantId: order.restaurantId,
@@ -537,20 +581,40 @@ export class RestaurantPayoutService {
             commissionAmount: breakdown.commissionAmount,
             deliverySubsidyAmount: breakdown.deliverySubsidyAmount,
             refundDeductionAmount: breakdown.refundDeductionAmount,
-            amount: breakdown.payoutAmount,
+            debtDeductionAmount: debtDeduction,
+            amount: net,
             currency: 'XAF',
             phoneNumber: account.payoutPhoneNumber,
             providerCode: account.payoutProvider,
-            status: PayoutStatus.PENDING,
-            provider: provider.name,
-            providerPayoutId,
+            status: netting ? PayoutStatus.SUCCESS : PayoutStatus.PENDING,
+            completedAt: netting ? new Date() : null,
+            provider: netting ? NETTING_PROVIDER : provider.name,
+            providerPayoutId: netting ? null : providerPayoutId,
             requestedBy: params.adminUserId,
             metadata: {
               orderRef: this.orderRef(order.id),
               vendorName: order.restaurant.nom,
+              trigger,
             },
           },
         });
+        await recordDebtSettled(tx, {
+          restaurantId: order.restaurantId,
+          payoutId: created.id,
+          orderId: order.id,
+          amountXaf: debtDeduction,
+        });
+        if (netting) {
+          await this.enqueuePayoutEvent(tx, PAYOUT_SUCCEEDED_EVENT, {
+            payoutId: created.id,
+            orderId: order.id,
+            restaurantId: order.restaurantId,
+            ownerId: order.restaurant.ownerId,
+            amount: 0,
+            debtDeductionAmount: debtDeduction,
+          });
+        }
+        return created;
       });
     } catch (error) {
       if (
@@ -573,10 +637,20 @@ export class RestaurantPayoutService {
         `brut ${breakdown.grossAmount}, commission ${breakdown.commissionPercent}% ` +
         `(${breakdown.commissionAmount}), livraison offerte ${breakdown.deliverySubsidyAmount}, ` +
         `retenue remboursements ${breakdown.refundDeductionAmount}, ` +
-        `net ${breakdown.payoutAmount} XAF, ` +
+        `retenue dette ${payout.debtDeductionAmount}, ` +
+        `net ${payout.amount} XAF, ` +
         `tel ${maskPhone(payout.phoneNumber)}, ` +
-        `ref ${maskRef(providerPayoutId)}, par ${params.adminUserId}`,
+        `ref ${maskRef(providerPayoutId)}, ${trigger === 'AUTO' ? 'automatique' : `par ${params.adminUserId}`}`,
     );
+
+    if (payout.provider === NETTING_PROVIDER) {
+      return {
+        payout: this.toPublic(payout),
+        status: PayoutStatus.SUCCESS,
+        message:
+          'Rien à verser : la somme due au vendeur couvre une dette de remboursement. Aucun virement n’est parti.',
+      };
+    }
 
     // ── Appel au prestataire ──────────────────────────────────────────────────
     let result;
@@ -584,7 +658,7 @@ export class RestaurantPayoutService {
       result = await provider.createPayout({
         payoutId: payout.id,
         providerPayoutId,
-        amountXaf: breakdown.payoutAmount,
+        amountXaf: payout.amount,
         currency: 'XAF',
         // Le compte relu sous verrou, figé sur la ligne — pas la lecture
         // d'avant la transaction.
@@ -630,20 +704,13 @@ export class RestaurantPayoutService {
 
     if (!result.accepted) {
       await this.markFailed(
-        payout.id,
+        payout,
         result.failureCode,
         result.failureMessage,
+        order.restaurant.ownerId,
       );
       const refreshed = await this.prisma.restaurantPayout.findUniqueOrThrow({
         where: { id: payout.id },
-      });
-      this.eventEmitter.emit('payout.failed', {
-        payoutId: payout.id,
-        orderId: order.id,
-        restaurantId: order.restaurantId,
-        ownerId: order.restaurant.ownerId,
-        amount: breakdown.payoutAmount,
-        reason: result.failureMessage ?? result.failureCode,
       });
       return {
         payout: this.toPublic(refreshed),
@@ -779,21 +846,53 @@ export class RestaurantPayoutService {
         : PayoutStatus.FAILED;
     this.stateMachine.assertTransition(PayoutStatus.PENDING, target);
 
-    const claimed = await this.prisma.restaurantPayout.updateMany({
-      where: { id: payout.id, status: PayoutStatus.PENDING },
-      data: {
-        status: target,
-        completedAt: new Date(),
-        providerTransactionId: input.status.providerTransactionId ?? null,
-        failureCode:
-          target === PayoutStatus.FAILED
-            ? (input.status.failureCode ?? null)
-            : null,
-        failureMessage:
-          target === PayoutStatus.FAILED
-            ? (input.status.failureMessage ?? null)
-            : null,
-      },
+    // F3-07 — la transition, la dette rendue d'un échec et la notification
+    // due au vendeur sont écrites ensemble : le worker qui réconcilie n'a pas
+    // d'écouteur, un événement en mémoire s'y perdait.
+    const claimed = await this.prisma.$transaction(async (tx) => {
+      const moved = await tx.restaurantPayout.updateMany({
+        where: { id: payout.id, status: PayoutStatus.PENDING },
+        data: {
+          status: target,
+          completedAt: new Date(),
+          providerTransactionId: input.status.providerTransactionId ?? null,
+          failureCode:
+            target === PayoutStatus.FAILED
+              ? (input.status.failureCode ?? null)
+              : null,
+          failureMessage:
+            target === PayoutStatus.FAILED
+              ? (input.status.failureMessage ?? null)
+              : null,
+        },
+      });
+      if (moved.count === 0) return moved;
+      if (target === PayoutStatus.FAILED) {
+        await restoreDebtOfFailedPayout(tx, payout);
+      }
+      await this.enqueuePayoutEvent(
+        tx,
+        target === PayoutStatus.SUCCESS
+          ? PAYOUT_SUCCEEDED_EVENT
+          : PAYOUT_FAILED_EVENT,
+        {
+          payoutId: payout.id,
+          orderId: payout.orderId,
+          restaurantId: payout.restaurantId,
+          ownerId: payout.restaurant.ownerId,
+          amount: payout.amount,
+          debtDeductionAmount: payout.debtDeductionAmount,
+          ...(target === PayoutStatus.FAILED
+            ? {
+                reason:
+                  input.status.failureMessage ??
+                  input.status.failureCode ??
+                  null,
+              }
+            : {}),
+        },
+      );
+      return moved;
     });
 
     if (claimed.count === 0) {
@@ -809,26 +908,11 @@ export class RestaurantPayoutService {
         `💸 [REVERSEMENT] ✅ ${payout.amount} XAF versés à ${payout.restaurant.nom} ` +
           `(commande ${payout.orderId})`,
       );
-      this.eventEmitter.emit('payout.succeeded', {
-        payoutId: payout.id,
-        orderId: payout.orderId,
-        restaurantId: payout.restaurantId,
-        ownerId: payout.restaurant.ownerId,
-        amount: payout.amount,
-      });
       await this.flagPaidOnCancelledOrder(payout);
     } else {
       this.logger.warn(
         `💸 [REVERSEMENT] ❌ Échec — payout ${payout.id}, code ${input.status.failureCode ?? 'n/a'}`,
       );
-      this.eventEmitter.emit('payout.failed', {
-        payoutId: payout.id,
-        orderId: payout.orderId,
-        restaurantId: payout.restaurantId,
-        ownerId: payout.restaurant.ownerId,
-        amount: payout.amount,
-        reason: input.status.failureMessage ?? input.status.failureCode,
-      });
     }
 
     return 'APPLIED';
@@ -925,21 +1009,62 @@ export class RestaurantPayoutService {
       );
   }
 
+  /** Refus du prestataire à l'émission : échec, dette rendue, vendeur prévenu. */
   private async markFailed(
-    payoutId: string,
-    failureCode?: string,
-    failureMessage?: string,
+    payout: {
+      id: string;
+      orderId: string;
+      restaurantId: string;
+      amount: number;
+      debtDeductionAmount: number;
+    },
+    failureCode: string | undefined,
+    failureMessage: string | undefined,
+    ownerId: string,
   ): Promise<boolean> {
-    const claimed = await this.prisma.restaurantPayout.updateMany({
-      where: { id: payoutId, status: PayoutStatus.PENDING },
-      data: {
-        status: PayoutStatus.FAILED,
-        completedAt: new Date(),
-        failureCode: failureCode ?? null,
-        failureMessage: failureMessage ?? null,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.restaurantPayout.updateMany({
+        where: { id: payout.id, status: PayoutStatus.PENDING },
+        data: {
+          status: PayoutStatus.FAILED,
+          completedAt: new Date(),
+          failureCode: failureCode ?? null,
+          failureMessage: failureMessage ?? null,
+        },
+      });
+      if (claimed.count === 0) return false;
+      await restoreDebtOfFailedPayout(tx, payout);
+      await this.enqueuePayoutEvent(tx, PAYOUT_FAILED_EVENT, {
+        payoutId: payout.id,
+        orderId: payout.orderId,
+        restaurantId: payout.restaurantId,
+        ownerId,
+        amount: payout.amount,
+        debtDeductionAmount: payout.debtDeductionAmount,
+        reason: failureMessage ?? failureCode ?? null,
+      });
+      return true;
     });
-    return claimed.count > 0;
+  }
+
+  private async enqueuePayoutEvent(
+    tx: Prisma.TransactionClient,
+    type: typeof PAYOUT_SUCCEEDED_EVENT | typeof PAYOUT_FAILED_EVENT,
+    payload: {
+      payoutId: string;
+      orderId: string;
+      restaurantId: string;
+      ownerId: string;
+      amount: number;
+      debtDeductionAmount: number;
+      reason?: string | null;
+    },
+  ): Promise<void> {
+    await this.outbox.enqueueInTransaction(tx, {
+      type,
+      aggregateId: payload.payoutId,
+      payload,
+    });
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1076,6 +1201,7 @@ export class RestaurantPayoutService {
           commissionAmount: order.payout.commissionAmount,
           deliverySubsidyAmount: order.payout.deliverySubsidyAmount,
           refundDeductionAmount: order.payout.refundDeductionAmount,
+          debtDeductionAmount: order.payout.debtDeductionAmount,
           payoutAmount: order.payout.amount,
         }
       : this.buildBreakdown(
@@ -1415,9 +1541,10 @@ export class RestaurantPayoutService {
     provider: string;
     failureCode: string | null;
     failureMessage: string | null;
-    requestedBy: string;
+    requestedBy: string | null;
     requestedAt: Date;
     completedAt: Date | null;
+    debtDeductionAmount?: number;
   }) {
     return {
       id: payout.id,
@@ -1435,6 +1562,7 @@ export class RestaurantPayoutService {
       requestedBy: payout.requestedBy,
       requestedAt: payout.requestedAt,
       completedAt: payout.completedAt,
+      debtDeductionAmount: payout.debtDeductionAmount ?? 0,
     };
   }
 
