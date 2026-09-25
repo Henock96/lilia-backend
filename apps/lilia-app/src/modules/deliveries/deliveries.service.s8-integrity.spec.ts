@@ -89,6 +89,8 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
     // `applied`, et une exception les annule toutes — comme le ferait
     // PostgreSQL.
     const tx = {
+      // F3-07 : la transition vers LIVRER lit le délai de versement (aucune ligne = défaut).
+      platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
       delivery: {
         updateMany: jest.fn(
           ({
@@ -292,6 +294,8 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
     /** Transaction dont le claim de commande échoue, l'état ayant changé. */
     async function buildTxForConcurrentChange() {
       return {
+        // F3-07 : la transition vers LIVRER lit le délai de versement (aucune ligne = défaut).
+        platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
         delivery: {
           updateMany: jest.fn(() => {
             applied.push('delivery');

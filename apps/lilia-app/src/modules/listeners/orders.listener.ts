@@ -130,7 +130,19 @@ export class OrdersListener {
     this.logger.log(`order.status.updated : ${event.orderId} → ${event.newStatus}`);
     // Le client voit le changement de statut en temps réel sur sa carte
     this.trackingGateway.broadcastOrderStatus(event.orderId, event.newStatus);
-    const msg = this.getStatusMessage(event.newStatus);
+    // F3-07 — un retrait ne se « livre » pas : prête et remise se disent
+    // autrement au comptoir, et la preuve de remise change ce qu'on demande
+    // au client (confirmer) et ce qu'on annonce au vendeur (versement).
+    const pickup =
+      event.newStatus === 'PRET' || event.newStatus === 'LIVRER'
+        ? await this.prisma.order.findFirst({
+            where: { id: event.orderId, isDelivery: false },
+            select: { deliveryProof: true },
+          })
+        : null;
+    const msg = pickup
+      ? pickupClientMessage(event.newStatus, pickup.deliveryProof)
+      : this.getStatusMessage(event.newStatus);
     const notifs: Promise<any>[] = [
       this.notificationsService.sendPushNotification(
         event.userId,
@@ -156,7 +168,9 @@ export class OrdersListener {
       if (restaurant) {
         const shortId = event.orderId.slice(-6).toUpperCase();
         const restaurantMsg =
-          event.newStatus === 'LIVRER'
+          event.newStatus === 'LIVRER' && pickup
+            ? pickupVendorMessage(shortId, pickup.deliveryProof)
+            : event.newStatus === 'LIVRER'
             ? {
                 title: '🎉 Commande livrée',
                 body: `La commande #${shortId} a été livrée au client.`,
@@ -213,6 +227,31 @@ export class OrdersListener {
     ]);
   }
 
+  /**
+   * F3-07 — le client confirme le retrait d'une commande que le vendeur avait
+   * déclarée remise seul : pas de changement de statut, donc pas de
+   * `order.status.updated`. Le vendeur apprend que son versement est ouvert.
+   */
+  @OnEvent('order.pickup.confirmed')
+  async handlePickupConfirmed(event: { orderId: string; restaurantId: string }) {
+    const restaurant = await this.prisma.restaurant.findUnique({
+      where: { id: event.restaurantId },
+      select: { ownerId: true },
+    });
+    if (!restaurant) return;
+    const shortId = event.orderId.slice(-6).toUpperCase();
+    await this.notificationsService
+      .sendPushNotification(
+        restaurant.ownerId,
+        '🛍️ Retrait confirmé',
+        `Le client a confirmé avoir récupéré la commande #${shortId}. La remise est prouvée : votre paiement peut partir.`,
+        { orderId: event.orderId, type: 'status_update_restaurant' },
+      )
+      .catch((err) =>
+        this.logger.error(`Push « retrait confirmé » échoué : ${err.message}`),
+      );
+  }
+
   private getStatusMessage(status: OrderStatus): { title: string; body: string } {
     const map: Record<OrderStatus, { title: string; body: string }> = {
       EN_ATTENTE:     { title: '⏳ Commande en attente', body: 'Votre commande est en attente de paiement' },
@@ -227,4 +266,43 @@ export class OrdersListener {
     };
     return map[status] ?? { title: 'Mise à jour', body: `Statut : ${status}` };
   }
+}
+
+/** Message client d'un retrait au comptoir (F3-07). */
+export function pickupClientMessage(
+  status: OrderStatus,
+  proof: string | null,
+): { title: string; body: string } {
+  if (status === 'PRET') {
+    return {
+      title: '✅ Commande prête',
+      body: 'Votre commande vous attend au restaurant. Au comptoir, montrez le code de retrait affiché dans l’application.',
+    };
+  }
+  if (proof === 'PICKUP_VENDOR_DECLARED') {
+    return {
+      title: '🛍️ Commande remise',
+      body: 'Le restaurant indique vous avoir remis votre commande. Si c’est bien le cas, confirmez-le dans l’application.',
+    };
+  }
+  return {
+    title: '🛍️ Commande récupérée',
+    body: 'Merci d’avoir confirmé votre retrait. Bon appétit !',
+  };
+}
+
+/** Message vendeur à la remise d'un retrait : dit si le versement est ouvert. */
+export function pickupVendorMessage(
+  shortId: string,
+  proof: string | null,
+): { title: string; body: string } {
+  return proof === 'PICKUP_VENDOR_DECLARED'
+    ? {
+        title: '🛍️ Commande remise',
+        body: `Commande #${shortId} remise. Votre paiement partira dès que le client aura confirmé le retrait.`,
+      }
+    : {
+        title: '🛍️ Commande récupérée',
+        body: `Le client a récupéré la commande #${shortId}. La remise est prouvée : votre paiement peut partir.`,
+      };
 }

@@ -58,7 +58,22 @@ export class OrderQueryService {
     }
 
     const [withActions] = await this.withAllowedActions([order], user.role);
-    return withActions;
+    if (user.role === 'ADMIN') return withActions;
+    if (order.isDelivery) return withoutPayoutSchedule(withActions);
+
+    // F3-07 / D-P5 — le code de retrait n'est lu que pour le CLIENT
+    // propriétaire, tant que sa commande attend au comptoir (I-18). L'admin
+    // passe par la branche ci-dessus : il arbitre, il ne dicte pas le code.
+    const pickupCode =
+      order.status === 'PRET'
+        ? ((
+            await this.prisma.pickupHandover.findUnique({
+              where: { orderId: order.id },
+              select: { code: true },
+            })
+          )?.code ?? null)
+        : null;
+    return { ...withoutPayoutSchedule(withActions), pickupCode };
   }
 
   /**
@@ -94,7 +109,9 @@ export class OrderQueryService {
       }),
     ]);
     return {
-      data: await this.withAllowedActions(orders, user.role),
+      data: (await this.withAllowedActions(orders, user.role)).map(
+        withoutPayoutSchedule,
+      ),
       meta: this.pagination.getPaginationMeta(page, limit, total),
     };
   }
@@ -116,7 +133,11 @@ export class OrderQueryService {
    * L'interrupteur d'acceptation est lu une fois pour la page, pas par ligne.
    */
   private async withAllowedActions<
-    T extends { status: OrderStatus; isDelivery: boolean },
+    T extends {
+      status: OrderStatus;
+      isDelivery: boolean;
+      deliveryProof?: string | null;
+    },
   >(
     orders: T[],
     role: string,
@@ -414,4 +435,15 @@ export class OrderQueryService {
       meta: this.pagination.getPaginationMeta(page, limit, total),
     };
   }
+}
+
+/**
+ * L'échéance de versement au vendeur ne regarde pas le client (F3-07) : elle
+ * reste lisible par le vendeur et l'admin, pas dans les lectures client.
+ */
+function withoutPayoutSchedule<T extends { payoutDueAt?: Date | null }>(
+  order: T,
+): Omit<T, 'payoutDueAt'> {
+  const { payoutDueAt: _payoutDueAt, ...rest } = order;
+  return rest;
 }

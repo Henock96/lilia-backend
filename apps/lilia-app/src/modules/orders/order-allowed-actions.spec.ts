@@ -42,6 +42,13 @@ describe('orderAllowedActions', () => {
       return false;
     }
     if (action === 'CANCEL' && actor === 'CLIENT') return from === 'EN_ATTENTE';
+    // F3-07 — deux routes distinctes vers `LIVRER` pour un retrait : le client
+    // confirme (`/pickup/confirm`, @Roles CLIENT), le personnel remet (route de
+    // statut, @Roles RESTAURATEUR/ADMIN).
+    if (action === 'CONFIRM_PICKUP') {
+      return actor === 'CLIENT' && !isDelivery && from === 'PRET';
+    }
+    if (action === 'HAND_OVER') return actor !== 'CLIENT';
     return true;
   }
 
@@ -162,10 +169,99 @@ describe('orderAllowedActions', () => {
       expect(orderAllowedActions(delivery('PAYER'), 'PIRATE', on)).toEqual([]);
     });
 
+    describe('retrait au comptoir — confirmation du client (F3-07)', () => {
+      const pickup = (status: OrderStatus, deliveryProof?: string) => ({
+        status,
+        isDelivery: false,
+        deliveryProof: deliveryProof ?? null,
+      });
+
+      it('retrait prêt : le client confirme, le vendeur remet', () => {
+        expect(orderAllowedActions(pickup('PRET'), 'CLIENT', on)).toEqual([
+          'CONFIRM_PICKUP',
+        ]);
+        expect(
+          orderAllowedActions(pickup('PRET'), 'RESTAURATEUR', on),
+        ).toContain('HAND_OVER');
+        expect(
+          orderAllowedActions(pickup('PRET'), 'RESTAURATEUR', on),
+        ).not.toContain('CONFIRM_PICKUP');
+      });
+
+      it('I-12 — ni le vendeur, ni l’admin, ni le livreur ne confirment à la place du client', () => {
+        for (const status of STATUSES) {
+          for (const role of ['RESTAURATEUR', 'ADMIN', 'LIVREUR'] as const) {
+            for (const proof of [undefined, 'PICKUP_VENDOR_DECLARED']) {
+              expect(
+                orderAllowedActions(pickup(status, proof), role, on),
+              ).not.toContain('CONFIRM_PICKUP');
+            }
+          }
+        }
+      });
+
+      it('le client ne « remet » jamais une commande', () => {
+        for (const status of STATUSES) {
+          for (const isDelivery of [true, false]) {
+            expect(
+              orderAllowedActions({ status, isDelivery }, 'CLIENT', on),
+            ).not.toContain('HAND_OVER');
+          }
+        }
+      });
+
+      it('une livraison ne se confirme pas par le bouton de retrait', () => {
+        for (const status of STATUSES) {
+          expect(
+            orderAllowedActions(delivery(status), 'CLIENT', on),
+          ).not.toContain('CONFIRM_PICKUP');
+        }
+      });
+
+      it('remise déclarée par le vendeur seul : le client peut encore confirmer', () => {
+        expect(
+          orderAllowedActions(
+            pickup('LIVRER', 'PICKUP_VENDOR_DECLARED'),
+            'CLIENT',
+            on,
+          ),
+        ).toEqual(['CONFIRM_PICKUP']);
+      });
+
+      it('remise déjà prouvée (code, confirmation, admin) : plus rien à confirmer', () => {
+        for (const proof of [
+          'PICKUP_CODE',
+          'PICKUP_CUSTOMER_CONFIRMED',
+          'PICKUP_ADMIN_OVERRIDE',
+          undefined, // commande antérieure à F3-07
+        ]) {
+          expect(
+            orderAllowedActions(pickup('LIVRER', proof), 'CLIENT', on),
+          ).toEqual([]);
+        }
+      });
+
+      it('avant PRET : aucun bouton de retrait', () => {
+        for (const status of [
+          'EN_ATTENTE',
+          'PAYER',
+          'ACCEPTEE',
+          'EN_PREPARATION',
+          'ANNULER',
+          'ECHEC_LIVRAISON',
+        ] as OrderStatus[]) {
+          expect(
+            orderAllowedActions(pickup(status), 'CLIENT', on),
+          ).not.toContain('CONFIRM_PICKUP');
+        }
+      });
+    });
+
     it('le vocabulaire des gestes est fermé', () => {
       expect([...ORDER_ACTIONS].sort()).toEqual([
         'ACCEPT',
         'CANCEL',
+        'CONFIRM_PICKUP',
         'HAND_OVER',
         'MARK_READY',
         'REJECT',

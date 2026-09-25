@@ -3,8 +3,11 @@ import { OrderStatus, Prisma } from '@prisma/client';
 import { acceptanceDeadline } from './order-acceptance-policy';
 
 import {
+  DEFAULT_VENDOR_PAYOUT_DELAY_MINUTES,
+  DeliveryProof,
   OrderTransitionActor,
   OrderTransitionSource,
+  payoutDueAtFor,
 } from './order-transition.types';
 
 /**
@@ -86,6 +89,10 @@ export class OrderTransitionService {
       to === OrderStatus.PAYER
         ? await this.acceptanceDeadlineFor(tx, orderId, data)
         : null;
+    const delivered =
+      to === OrderStatus.LIVRER
+        ? await this.deliveryProofData(tx, params.proof)
+        : null;
 
     const claimed = await tx.order.updateMany({
       where: { id: orderId, status: from },
@@ -93,6 +100,7 @@ export class OrderTransitionService {
         status: to,
         ...(data ?? {}),
         ...(deadline ? { acceptDeadlineAt: deadline } : {}),
+        ...(delivered ?? {}),
       },
     });
 
@@ -116,7 +124,7 @@ export class OrderTransitionService {
    */
   async recordCreation(
     tx: Prisma.TransactionClient,
-    params: Omit<OrderTransitionParams, 'from'>,
+    params: Omit<OrderTransitionBase, 'from'> & { to: OrderStatus },
   ): Promise<void> {
     await this.writeHistory(tx, { ...params, from: null });
   }
@@ -170,9 +178,90 @@ export class OrderTransitionService {
     );
   }
 
+  /**
+   * Retrait : le client confirme après que le vendeur a déclaré la remise seul
+   * (F3-07, D-P1). La commande est déjà `LIVRER` — aucune transition, donc
+   * aucune ligne d'historique (une ligne `LIVRER → LIVRER` fausserait les
+   * durées par étape) : `customerConfirmedAt` date la confirmation.
+   *
+   * La preuve ne fait que **monter** (I-9) et l'échéance ne s'écrit qu'une fois
+   * (I-10) : l'écriture est conditionnée sur `PICKUP_VENDOR_DECLARED`. Deux
+   * confirmations simultanées : la seconde affecte 0 ligne.
+   *
+   * @returns `true` si CET appel a monté la preuve.
+   */
+  async upgradeToCustomerConfirmed(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+  ): Promise<boolean> {
+    const proved = await this.deliveryProofData(
+      tx,
+      'PICKUP_CUSTOMER_CONFIRMED',
+    );
+    const claimed = await tx.order.updateMany({
+      where: {
+        id: orderId,
+        status: OrderStatus.LIVRER,
+        isDelivery: false,
+        deliveryProof: 'PICKUP_VENDOR_DECLARED',
+      },
+      data: {
+        deliveryProof: proved.deliveryProof,
+        customerConfirmedAt: proved.customerConfirmedAt,
+        payoutDueAt: proved.payoutDueAt,
+      },
+    });
+    if (claimed.count === 0) return false;
+    this.logger.log(
+      `📓 [PREUVE] ${orderId} PICKUP_VENDOR_DECLARED → PICKUP_CUSTOMER_CONFIRMED`,
+    );
+    return true;
+  }
+
+  /**
+   * Colonnes écrites avec `LIVRER` (F3-07) : date, preuve, échéance de
+   * versement. Une transition vers `LIVRER` sans preuve est une erreur de
+   * programmation — elle lève avant toute écriture, plutôt que de livrer une
+   * commande dont personne ne saurait dire si le vendeur peut être payé.
+   */
+  private async deliveryProofData(
+    tx: Prisma.TransactionClient,
+    proof: DeliveryProof | undefined,
+  ): Promise<{
+    deliveredAt: Date;
+    deliveryProof: DeliveryProof;
+    customerConfirmedAt: Date | null;
+    payoutDueAt: Date | null;
+  }> {
+    if (!proof) {
+      throw new Error(
+        'Transition vers LIVRER sans preuve de remise : chaque chemin doit dire comment la remise est attestée.',
+      );
+    }
+    const settings = await tx.platformSettings.findUnique({
+      where: { id: 'singleton' },
+      select: { vendorPayoutDelayMinutes: true },
+    });
+    const now = new Date();
+    return {
+      deliveredAt: now,
+      deliveryProof: proof,
+      customerConfirmedAt: proof === 'PICKUP_CUSTOMER_CONFIRMED' ? now : null,
+      payoutDueAt: payoutDueAtFor(
+        proof,
+        now,
+        settings?.vendorPayoutDelayMinutes ??
+          DEFAULT_VENDOR_PAYOUT_DELAY_MINUTES,
+      ),
+    };
+  }
+
   private async writeHistory(
     tx: Prisma.TransactionClient,
-    params: OrderTransitionParams & { from: OrderStatus | null },
+    params: Omit<OrderTransitionBase, 'from'> & {
+      from: OrderStatus | null;
+      to: OrderStatus;
+    },
   ): Promise<void> {
     const { orderId, from, to, actor, actorUserId, source, reason } = params;
 
@@ -197,7 +286,17 @@ export class OrderTransitionService {
   }
 }
 
-export interface OrderTransitionParams {
+/**
+ * Paramètres d'une transition. Vers `LIVRER`, la preuve de remise est
+ * **obligatoire** (F3-07) : un appelant qui l'oublie ne compile pas.
+ */
+export type OrderTransitionParams = OrderTransitionBase &
+  (
+    | { to: typeof OrderStatus.LIVRER; proof: DeliveryProof }
+    | { to: Exclude<OrderStatus, typeof OrderStatus.LIVRER>; proof?: never }
+  );
+
+interface OrderTransitionBase {
   orderId: string;
   /**
    * État attendu. La transition n'est appliquée que si la commande y est
@@ -205,7 +304,6 @@ export interface OrderTransitionParams {
    * deux acteurs qui font avancer la même commande à la même seconde.
    */
   from: OrderStatus;
-  to: OrderStatus;
   actor: OrderTransitionActor;
   /** `User.id` de l'auteur. `null` pour une transition automatique. */
   actorUserId?: string | null;

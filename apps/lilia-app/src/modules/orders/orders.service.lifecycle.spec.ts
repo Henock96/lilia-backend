@@ -47,6 +47,8 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
   };
   const refunds = { openForCancelledOrder: jest.fn().mockResolvedValue(null) };
   const tx = {
+    // F3-07 : la transition vers LIVRER lit le délai de versement (aucune ligne = défaut).
+    platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
     // `updateMany` + `findUniqueOrThrow` : depuis le fix H6, la transition de
     // statut passe par un verrou optimiste (updateMany conditionné sur l'état
     // lu) au lieu d'un `update` inconditionnel.

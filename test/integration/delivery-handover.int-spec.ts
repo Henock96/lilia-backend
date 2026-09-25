@@ -154,6 +154,12 @@ describeIfDb('Preuve de remise — code client (PostgreSQL réel)', () => {
       })
     ).code;
   const wrong = (code: string) => (code === '0000' ? '1111' : '0000');
+  /** F3-07 — la preuve portée par la commande, et ce qu'elle ouvre. */
+  const proofOf = async () =>
+    prisma.order.findUniqueOrThrow({
+      where: { id: ORDER },
+      select: { deliveryProof: true, payoutDueAt: true, deliveredAt: true },
+    });
 
   it('le retrait tire un code à 4 chiffres, que seul le client lit', async () => {
     const code = await codeOf();
@@ -194,6 +200,12 @@ describeIfDb('Preuve de remise — code client (PostgreSQL réel)', () => {
       handoverMethod: 'CODE',
     });
     expect(delivery.handoverVerifiedAt).toBeInstanceOf(Date);
+    // F3-07 — preuve fiable : versement automatique programmé.
+    const proof = await proofOf();
+    expect(proof.deliveryProof).toBe('DELIVERY_CODE');
+    expect(proof.payoutDueAt!.getTime()).toBe(
+      proof.deliveredAt!.getTime() + 60 * 60_000,
+    );
     expect(
       await prisma.outboxEvent.count({
         where: { aggregateId: ORDER, type: 'order.delivered' },
@@ -256,6 +268,10 @@ describeIfDb('Preuve de remise — code client (PostgreSQL réel)', () => {
       where: { id: DELIVERY },
     });
     expect(delivery.handoverMethod).toBe('ADMIN_OVERRIDE');
+    expect(await proofOf()).toMatchObject({
+      deliveryProof: 'DELIVERY_ADMIN_OVERRIDE',
+      payoutDueAt: expect.any(Date),
+    });
     expect(audit.record).toHaveBeenCalledWith(
       expect.objectContaining({
         action: 'ORDER_STATUS_FORCED',
@@ -273,6 +289,11 @@ describeIfDb('Preuve de remise — code client (PostgreSQL réel)', () => {
     expect(delivery).toMatchObject({
       status: 'LIVRER',
       handoverMethod: 'UNVERIFIED',
+    });
+    // F3-07 — sans preuve, pas de versement automatique : manuel seulement.
+    expect(await proofOf()).toMatchObject({
+      deliveryProof: 'DELIVERY_UNVERIFIED',
+      payoutDueAt: null,
     });
   });
 

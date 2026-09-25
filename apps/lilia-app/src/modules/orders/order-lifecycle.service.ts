@@ -22,7 +22,16 @@ import {
 } from '../events/order-events';
 import { OrderStateMachine } from './order-state.machine';
 import { OrderTransitionService } from './order-transition.service';
-import { actorFromRole, sourceFromRole } from './order-transition.types';
+import {
+  actorFromRole,
+  DeliveryProof,
+  sourceFromRole,
+} from './order-transition.types';
+import {
+  generateHandoverCode,
+  HANDOVER_MAX_ATTEMPTS,
+  handoverCodeMatches,
+} from '../deliveries/delivery-handover';
 import { StockService } from './stock.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
 import { ReferralService } from '../users/referral.service';
@@ -471,16 +480,35 @@ export class OrderLifecycleService {
             return updated;
           })
         : await this.prisma.$transaction(async (tx) => {
-            await this.transitions.transition(tx, {
+            const base = {
               orderId,
               from: order.status,
-              to: newStatus,
               actor: historyActor,
               actorUserId: user.id,
               source: historySource,
               reason: historyReason,
               data: transitionData,
-            });
+            };
+            await this.transitions.transition(
+              tx,
+              newStatus === 'LIVRER'
+                ? {
+                    ...base,
+                    to: newStatus,
+                    proof: staffDeliveryProof(order.isDelivery, user.role),
+                  }
+                : { ...base, to: newStatus },
+            );
+            // F3-07 / D-P5 — retrait prêt : le code que le client montrera au
+            // comptoir naît avec `PRET`. Un code déjà tiré ne change pas
+            // (`update: {}`) : le client a pu le noter.
+            if (newStatus === 'PRET' && !order.isDelivery) {
+              await tx.pickupHandover.upsert({
+                where: { orderId },
+                create: { orderId, code: generateHandoverCode() },
+                update: {},
+              });
+            }
             // Lot 4 — retrait au comptoir livré : fidélité et parrainage
             // deviennent une obligation durable, écrite avec la transition.
             if (newStatus === 'LIVRER') {
@@ -522,15 +550,7 @@ export class OrderLifecycleService {
     // l'idempotence est portée par la base : jouer les deux en concurrence
     // produit exactement un crédit.
     if (newStatus === 'LIVRER') {
-      this.loyalty
-        .awardForDeliveredOrder(updatedOrder.userId, orderId)
-        .catch((err) => this.logger.error(`Erreur points fidélité: ${err}`));
-
-      this.referral
-        .rewardForDeliveredOrder(updatedOrder.userId, orderId)
-        .catch((err) =>
-          this.logger.error(`Erreur récompense parrainage: ${err}`),
-        );
+      this.rewardDelivered(updatedOrder.userId, orderId);
     }
 
     // Fix H5 : une annulation vendeur/admin sur une commande déjà encaissée
@@ -550,6 +570,242 @@ export class OrderLifecycleService {
     }
 
     return updatedOrder;
+  }
+
+  // ─── Retrait au comptoir : preuve de remise (F3-07) ────────────────────────
+
+  /**
+   * Le client confirme « J'ai récupéré ma commande » (F3-07, D-P1).
+   *
+   * Action du CLIENT propriétaire, et de lui seul (I-12) : la route est
+   * `@Roles('CLIENT')`, et une commande qui n'est pas la sienne répond comme
+   * une commande inexistante — pas d'oracle sur l'état d'une commande tierce.
+   *
+   *  - `PRET` : la confirmation EST la remise — `PRET → LIVRER`, preuve
+   *    `PICKUP_CUSTOMER_CONFIRMED`, échéance de versement posée ;
+   *  - `LIVRER` déclaré par le vendeur seul : la preuve monte, sans
+   *    transition (`upgradeToCustomerConfirmed`) ;
+   *  - `LIVRER` déjà prouvé (code, confirmation, admin) : rien à écrire, 200.
+   *
+   * Idempotent : un second appel — double tap, reprise après coupure — trouve
+   * la commande déjà prouvée et ne réécrit rien (I-10). Deux appels
+   * simultanés : le verrou optimiste n'en laisse passer qu'un, l'autre relit
+   * et tombe dans le cas « déjà prouvé ».
+   *
+   * Payée : tout état au-delà de `PAYER` suppose un encaissement (fix F-07,
+   * `PAYER` ne s'atteint que par un paiement confirmé) — `PRET` et `LIVRER`
+   * suffisent donc à le garantir (I-13).
+   */
+  async confirmPickupByCustomer(
+    orderId: string,
+    firebaseUid: string,
+  ): Promise<{ outcome: 'CONFIRMED' | 'UPGRADED' | 'ALREADY_PROVED' }> {
+    const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
+    const order = user
+      ? await this.prisma.order.findUnique({
+          where: { id: orderId },
+          include: { restaurant: true },
+        })
+      : null;
+    if (!user || !order || order.userId !== user.id) {
+      throw new NotFoundException('Commande introuvable.');
+    }
+    if (order.isDelivery) {
+      throw new ConflictException({
+        message:
+          'Cette commande est livrée à domicile : la remise se confirme avec le code donné au livreur.',
+        code: 'PICKUP_NOT_APPLICABLE',
+      });
+    }
+
+    if (order.status === 'LIVRER') return this.upgradePickupProof(order);
+    if (order.status !== 'PRET') {
+      throw new ConflictException(
+        order.status === 'ANNULER' || order.status === 'ECHEC_LIVRAISON'
+          ? {
+              message: 'Cette commande est close : il n’y a rien à récupérer.',
+              code: 'ORDER_CLOSED',
+            }
+          : {
+              message:
+                'Votre commande n’est pas encore prête. Vous pourrez confirmer le retrait quand le restaurant l’aura préparée.',
+              code: 'PICKUP_NOT_READY',
+            },
+      );
+    }
+
+    this.stateMachine.assertTransition('PRET', 'LIVRER', 'CLIENT');
+    try {
+      await this.completePickup(order, user, 'PICKUP_CUSTOMER_CONFIRMED');
+    } catch (error) {
+      // Perdu la course : un second appel du même client, ou le vendeur qui
+      // déclarait la remise à la même seconde. On relit et on rejoue le cas
+      // `LIVRER` — la preuve monte si le vendeur l'a déclarée seul.
+      if (!(error instanceof ConflictException)) throw error;
+      const now = await this.prisma.order.findUnique({
+        where: { id: orderId },
+        select: { status: true },
+      });
+      if (now?.status !== 'LIVRER') throw error;
+      return this.upgradePickupProof(order);
+    }
+    return { outcome: 'CONFIRMED' };
+  }
+
+  /** Montée de preuve d'un retrait déjà `LIVRER` ; prévient le vendeur si elle a eu lieu. */
+  private async upgradePickupProof(order: {
+    id: string;
+    restaurantId: string;
+  }): Promise<{ outcome: 'UPGRADED' | 'ALREADY_PROVED' }> {
+    const upgraded = await this.prisma.$transaction((tx) =>
+      this.transitions.upgradeToCustomerConfirmed(tx, order.id),
+    );
+    if (!upgraded) return { outcome: 'ALREADY_PROVED' };
+    this.eventEmitter.emit('order.pickup.confirmed', {
+      orderId: order.id,
+      restaurantId: order.restaurantId,
+    });
+    return { outcome: 'UPGRADED' };
+  }
+
+  /**
+   * Le vendeur saisit le code que le client lui montre au comptoir (F3-07,
+   * D-P5). Même règle que la remise d'une course (F-06) : chaque saisie
+   * consomme un essai AVANT la comparaison (I-19), comparaison en temps
+   * constant, 5 essais au plus.
+   *
+   * Seul chemin vers la preuve `PICKUP_CODE`, et seulement depuis `PRET`
+   * (I-20) : une remise déjà déclarée ne se « rattrape » pas par un code — le
+   * client peut encore la confirmer lui-même.
+   */
+  async handOverPickupWithCode(
+    orderId: string,
+    firebaseUid: string,
+    providedCode: string,
+  ): Promise<void> {
+    const { user, order } = await this.loadStaffOrder(orderId, firebaseUid);
+    // Défense en profondeur : la route est déjà `@Roles('RESTAURATEUR')`.
+    // Un ADMIN qui passerait ici serait inscrit à l'historique comme le
+    // vendeur ; sa clôture à lui est `PICKUP_ADMIN_OVERRIDE`, auditée.
+    if (user.role !== 'RESTAURATEUR') {
+      throw new ForbiddenException(
+        'Seul le restaurant saisit le code de retrait du client.',
+      );
+    }
+    if (order.isDelivery) {
+      throw new ConflictException({
+        message:
+          'Cette commande est livrée à domicile : c’est le livreur qui saisit le code du client.',
+        code: 'PICKUP_NOT_APPLICABLE',
+      });
+    }
+    if (order.status !== 'PRET') {
+      throw new ConflictException({
+        message:
+          order.status === 'LIVRER'
+            ? 'Cette commande est déjà remise.'
+            : 'La commande doit être prête avant d’être remise au client.',
+        code:
+          order.status === 'LIVRER'
+            ? 'ORDER_ALREADY_HANDED_OVER'
+            : 'PICKUP_NOT_READY',
+      });
+    }
+    this.stateMachine.assertTransition('PRET', 'LIVRER', 'RESTAURATEUR');
+
+    const record = await this.prisma.pickupHandover.findUnique({
+      where: { orderId },
+      select: { code: true },
+    });
+    if (!record) {
+      throw new ConflictException({
+        message:
+          'Cette commande n’a pas de code de retrait (elle était prête avant sa mise en service). Utilisez « Remis au client ».',
+        code: 'PICKUP_CODE_UNAVAILABLE',
+      });
+    }
+
+    // Un essai consommé, atomiquement, AVANT de comparer.
+    const consumed = await this.prisma.pickupHandover.updateMany({
+      where: { orderId, attempts: { lt: HANDOVER_MAX_ATTEMPTS } },
+      data: { attempts: { increment: 1 } },
+    });
+    if (consumed.count === 0) {
+      throw new ForbiddenException({
+        message:
+          'Trop de codes erronés. Remettez la commande sans code : le client pourra confirmer le retrait depuis son application.',
+        code: 'HANDOVER_CODE_LOCKED',
+      });
+    }
+    if (!handoverCodeMatches(record.code, providedCode)) {
+      const { attempts } = await this.prisma.pickupHandover.findUniqueOrThrow({
+        where: { orderId },
+        select: { attempts: true },
+      });
+      const left = Math.max(0, HANDOVER_MAX_ATTEMPTS - attempts);
+      throw new BadRequestException({
+        message:
+          left > 0
+            ? `Code incorrect. ${left} essai${left > 1 ? 's' : ''} restant${left > 1 ? 's' : ''}.`
+            : 'Code incorrect. Plus aucun essai : remettez la commande sans code.',
+        code: 'HANDOVER_CODE_INVALID',
+      });
+    }
+
+    await this.completePickup(order, user, 'PICKUP_CODE');
+  }
+
+  /**
+   * `PRET → LIVRER` d'un retrait prouvé, et ses conséquences : fidélité et
+   * parrainage (outbox dans la transaction, puis déclenchement immédiat),
+   * annonce au client et au vendeur. Lève 409 si la commande a bougé.
+   */
+  private async completePickup(
+    order: {
+      id: string;
+      userId: string;
+      restaurantId: string;
+      total: number;
+      restaurant: { nom: string };
+    },
+    user: { id: string; role: string },
+    proof: 'PICKUP_CODE' | 'PICKUP_CUSTOMER_CONFIRMED',
+  ): Promise<void> {
+    const actor = proof === 'PICKUP_CODE' ? 'RESTAURATEUR' : 'CLIENT';
+    await this.prisma.$transaction(async (tx) => {
+      await this.transitions.transition(tx, {
+        orderId: order.id,
+        from: 'PRET',
+        to: 'LIVRER',
+        proof,
+        actor,
+        actorUserId: user.id,
+        source: 'APP',
+      });
+      await this.outbox.enqueueInTransaction(tx, {
+        type: ORDER_DELIVERED_EVENT,
+        aggregateId: order.id,
+        payload: {},
+      });
+    });
+    this.logger.log(`🛍️ [RETRAIT] ${order.id} remis — preuve ${proof}`);
+    await this.announceStatusChange(order, 'PRET', 'LIVRER', user);
+    this.rewardDelivered(order.userId, order.id);
+  }
+
+  /**
+   * Récompenses à la livraison (non bloquantes). L'idempotence est portée par
+   * la base : l'outbox `order.delivered` peut rejouer sans double crédit.
+   */
+  private rewardDelivered(userId: string, orderId: string): void {
+    this.loyalty
+      .awardForDeliveredOrder(userId, orderId)
+      .catch((err) => this.logger.error(`Erreur points fidélité: ${err}`));
+    this.referral
+      .rewardForDeliveredOrder(userId, orderId)
+      .catch((err) =>
+        this.logger.error(`Erreur récompense parrainage: ${err}`),
+      );
   }
 
   /**
@@ -869,4 +1125,20 @@ export class OrderLifecycleService {
     };
     return map[role] ?? null;
   }
+}
+
+/**
+ * Preuve d'une clôture par le personnel via la route de statut (F3-07).
+ *
+ * Le vendeur qui déclare seul la remise d'un retrait ne prouve rien : c'est
+ * `PICKUP_VENDOR_DECLARED`, sans versement automatique (D-P1). Le code saisi
+ * au comptoir et la confirmation du client ont leurs propres routes.
+ * L'ADMIN, lui, arbitre — audité par `announceStatusChange`.
+ */
+export function staffDeliveryProof(
+  isDelivery: boolean,
+  role: string,
+): DeliveryProof {
+  if (isDelivery) return 'DELIVERY_ADMIN_OVERRIDE';
+  return role === 'ADMIN' ? 'PICKUP_ADMIN_OVERRIDE' : 'PICKUP_VENDOR_DECLARED';
 }

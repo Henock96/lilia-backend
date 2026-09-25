@@ -86,3 +86,66 @@ export function actorFromRole(role: string): OrderTransitionActor | null {
 export function sourceFromRole(role: string): OrderTransitionSource {
   return role === 'ADMIN' ? 'ADMIN_APP' : 'APP';
 }
+
+/**
+ * Preuve de remise d'une commande (F3-07). Écrite avec `LIVRER`, dans le même
+ * `updateMany` que le statut, par `OrderTransitionService` — le seul endroit.
+ *
+ * TEXT en base, borné ici et par le CHECK `Order_deliveryProof_valid` : les
+ * deux listes doivent rester identiques (`order-transition.spec.ts` le
+ * vérifie). Même raison que les acteurs : pas d'enum PostgreSQL.
+ *
+ * `LIVRER` seul ne prouve rien : une livraison sans code, ou un retrait que le
+ * vendeur déclare seul, n'attestent pas que le client a reçu son repas. C'est
+ * cette colonne, et non le statut, qui dit si le vendeur peut être payé sans
+ * geste humain.
+ */
+export const DELIVERY_PROOFS = [
+  /** Le livreur a saisi le code montré au client (F-06). */
+  'DELIVERY_CODE',
+  /** Un administrateur a clôturé la course (arbitrage, audité). */
+  'DELIVERY_ADMIN_OVERRIDE',
+  /** Course conclue sans code (code non exigé, ou course antérieure). */
+  'DELIVERY_UNVERIFIED',
+  /** Retrait : le vendeur a saisi le code montré par le client (D-P5). */
+  'PICKUP_CODE',
+  /** Retrait : le client a appuyé « J'ai récupéré ma commande ». */
+  'PICKUP_CUSTOMER_CONFIRMED',
+  /** Retrait : un administrateur a clôturé la commande. */
+  'PICKUP_ADMIN_OVERRIDE',
+  /** Retrait : le vendeur seul a déclaré la remise. Aucun versement. */
+  'PICKUP_VENDOR_DECLARED',
+] as const;
+
+export type DeliveryProof = (typeof DELIVERY_PROOFS)[number];
+
+/**
+ * Preuves qui ouvrent le versement automatique au vendeur (I-6, I-7). Miroir
+ * du CHECK `Order_payoutDueAt_needs_proof`.
+ */
+export const AUTO_PAYOUT_PROOFS: readonly DeliveryProof[] = [
+  'DELIVERY_CODE',
+  'DELIVERY_ADMIN_OVERRIDE',
+  'PICKUP_CODE',
+  'PICKUP_CUSTOMER_CONFIRMED',
+  'PICKUP_ADMIN_OVERRIDE',
+];
+
+/** Délai par défaut entre la preuve et le versement (D5), sans ligne de réglages. */
+export const DEFAULT_VENDOR_PAYOUT_DELAY_MINUTES = 60;
+
+/**
+ * Échéance du versement automatique, ou `null` si la preuve n'y ouvre pas droit.
+ *
+ * C'est le **seul** endroit où livraison et retrait se distinguent pour
+ * l'argent — et encore : par la preuve, pas par le mode. Le worker de
+ * versement lit `payoutDueAt` et n'a pas à savoir qui a cliqué.
+ */
+export function payoutDueAtFor(
+  proof: DeliveryProof,
+  provedAt: Date,
+  delayMinutes: number,
+): Date | null {
+  if (!AUTO_PAYOUT_PROOFS.includes(proof)) return null;
+  return new Date(provedAt.getTime() + delayMinutes * 60_000);
+}

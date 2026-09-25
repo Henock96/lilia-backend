@@ -103,6 +103,21 @@ export class OrdersService {
   }
 
   /** Le vendeur accepte une commande payée (F3-01). */
+  /** Client, retrait : « J'ai récupéré ma commande » (F3-07). Rend la commande à jour. */
+  async confirmPickup(orderId: string, firebaseUid: string) {
+    await this.lifecycleService.confirmPickupByCustomer(orderId, firebaseUid);
+    return this.queryService.findOrderById(orderId, firebaseUid);
+  }
+
+  /** Vendeur, retrait : remise avec le code du client (F3-07, D-P5). */
+  handOverPickupWithCode(orderId: string, firebaseUid: string, code: string) {
+    return this.lifecycleService.handOverPickupWithCode(
+      orderId,
+      firebaseUid,
+      code,
+    );
+  }
+
   acceptOrder(orderId: string, firebaseUid: string, prepMinutes: number) {
     return this.lifecycleService.acceptOrder(orderId, firebaseUid, prepMinutes);
   }

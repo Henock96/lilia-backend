@@ -986,6 +986,24 @@ model Order {
   vendorRejectionReason VendorRejectionReason?
   vendorRejectionNote   String?
 
+  // Preuve de remise et échéance de versement (F3-07, septembre 2026).
+  // Écrites par `OrderTransitionService` au passage à `LIVRER`, et nulle part
+  // ailleurs — sauf la montée `PICKUP_VENDOR_DECLARED → PICKUP_CUSTOMER_CONFIRMED`
+  // (`OrderLifecycleService.confirmPickupByCustomer`). Les invariants I-1…I-8
+  // sont des CHECK en base (migration `…_order_delivery_proof`).
+  /// Instant de la remise, quel qu'en soit le chemin. `null` avant F3-07.
+  deliveredAt         DateTime?
+  /// Comment la remise est prouvée. TEXT borné par `DELIVERY_PROOFS`
+  /// (`order-transition.types.ts`) et par un CHECK — pas un enum Prisma
+  /// (`ALTER TYPE … ADD VALUE` n'est pas transactionnel).
+  deliveryProof       String?
+  /// Retrait : le client a appuyé « J'ai récupéré ma commande ».
+  customerConfirmedAt DateTime?
+  /// Échéance du versement automatique au vendeur. `null` = aucun versement
+  /// automatique : preuve insuffisante, ou commande antérieure à F3-07.
+  payoutDueAt         DateTime?
+  pickupHandover      PickupHandover?
+
   // Tarification plateforme (Phase 3, F3-02) — figée à la commande.
   /// Version de la grille appliquée (`null` : tarif vendeur historique).
   deliveryTariffVersion    Int?
@@ -1019,6 +1037,7 @@ model Order {
   @@index([userId, createdAt(sort: Desc)]) // GET /orders/my — pagination client (fix M19)
   @@index([status, createdAt]) // cron d'expiration des commandes impayées (fix M19)
   @@index([status, acceptDeadlineAt]) // cron d'expiration des commandes non acceptées (F3-01)
+  // + index partiel SQL `Order_payoutDueAt_idx` (WHERE "payoutDueAt" IS NOT NULL) : versements automatiques (F3-07)
 }
 
 model OrderItem {
@@ -1436,6 +1455,21 @@ model DeliveryHandover {
   /// ce qui borne une rafale de requêtes parallèles comme une saisie à la main.
   attempts   Int      @default(0)
   createdAt  DateTime @default(now())
+}
+
+/// Code de retrait au comptoir (F3-07, D-P5) — le pendant de `DeliveryHandover`
+/// pour une commande `isDelivery = false`, qui n'a pas de `Delivery`. Table à
+/// part pour la même raison : le vendeur doit RECEVOIR ce code du client, aucune
+/// lecture de commande ne doit donc l'embarquer. Ne se lit que pour le CLIENT
+/// propriétaire, tant que la commande est `PRET`.
+model PickupHandover {
+  orderId   String   @id
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  /// 4 chiffres, tiré au passage à `PRET`.
+  code      String
+  /// Saisies consommées, la bonne comprise (même règle que la livraison).
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
 }
 
 /// Comment la remise d'une course a été attestée (F-06).
@@ -2737,6 +2771,9 @@ model PlatformSettings {
 
   /// Délai d'acceptation d'une commande payée (décision D1 du 23/09/2026).
   vendorAcceptanceTimeoutMinutes Int @default(8)
+  /// F3-07 / D5 — délai entre la preuve de remise et le versement automatique
+  /// au vendeur, en minutes. Borné 0–1440 par un CHECK.
+  vendorPayoutDelayMinutes       Int @default(60)
 
   /// Rappel SMS au vendeur, en minutes AVANT l'échéance.
   vendorAcceptanceReminderLeadMinutes Int @default(3)

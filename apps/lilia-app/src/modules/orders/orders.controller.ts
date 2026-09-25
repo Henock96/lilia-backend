@@ -27,6 +27,7 @@ import { OrderReceiptService } from './order-receipt.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { AcceptOrderDto, RejectOrderDto } from './dto/order-acceptance.dto';
+import { PickupHandoverDto } from './dto/pickup-handover.dto';
 import { StuckOrdersQueryDto } from './dto/stuck-orders-query.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -294,6 +295,63 @@ export class OrdersController {
       fbUser.uid,
       updateOrderStatusDto.status,
     );
+  }
+
+  /**
+   * Retrait au comptoir : « J'ai récupéré ma commande » (F3-07).
+   *
+   * Action du CLIENT propriétaire seul — ni le vendeur, ni l'admin ne peuvent
+   * confirmer à sa place (la clôture admin est `PICKUP_ADMIN_OVERRIDE`, par la
+   * route de statut). Idempotente : rejouée, elle rend la commande sans rien
+   * réécrire. Rend la commande à jour.
+   */
+  @Post(':id/pickup/confirm')
+  @Roles('CLIENT')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Confirmer le retrait d’une commande (client)' })
+  @ApiParam({ name: 'id', description: 'ID de la commande' })
+  @ApiResponse({
+    status: 200,
+    description: 'Retrait confirmé (ou déjà prouvé)',
+  })
+  @ApiResponse({ status: 404, description: 'Commande introuvable' })
+  @ApiResponse({
+    status: 409,
+    description: 'Livraison, commande pas prête, ou close',
+  })
+  confirmPickup(
+    @Param('id') id: string,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return this.ordersService.confirmPickup(id, fbUser.uid);
+  }
+
+  /**
+   * Retrait au comptoir : le vendeur saisit le code montré par le client
+   * (F3-07, D-P5). Sans code, la remise reste possible par la route de statut
+   * (`HAND_OVER`), mais elle n'ouvre pas le versement automatique.
+   */
+  @Post(':id/pickup/handover')
+  @Roles('RESTAURATEUR')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Remettre un retrait avec le code du client (vendeur)',
+  })
+  @ApiParam({ name: 'id', description: 'ID de la commande' })
+  @ApiResponse({ status: 200, description: 'Commande remise' })
+  @ApiResponse({ status: 400, description: 'Code incorrect' })
+  @ApiResponse({ status: 403, description: 'Hors restaurant, ou code bloqué' })
+  @ApiResponse({
+    status: 409,
+    description: 'Pas un retrait, pas prête, ou sans code',
+  })
+  async handOverPickup(
+    @Param('id') id: string,
+    @FirebaseUser() fbUser: DecodedIdToken,
+    @Body() dto: PickupHandoverDto,
+  ) {
+    await this.ordersService.handOverPickupWithCode(id, fbUser.uid, dto.code);
+    return { handedOver: true };
   }
 
   /**
