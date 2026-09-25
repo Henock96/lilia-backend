@@ -18,6 +18,12 @@ export const OPS_THRESHOLDS = {
   refundPendingMinutes: 120,
   /** Réclamation client sans première réponse du support (F3-06). */
   claimUnansweredMinutes: 120,
+  /**
+   * Retrait remis par le vendeur seul, que le client n'a pas confirmé
+   * (F3-07, D-P2). Escalade **opérationnelle** : elle ne paie rien, ne pose
+   * aucune échéance (I-11) — un humain relance le client ou arbitre.
+   */
+  pickupUnconfirmedMinutes: 60,
 } as const;
 
 export type OpsBucketKey =
@@ -27,6 +33,7 @@ export type OpsBucketKey =
   | 'delivery_failed'
   | 'refunds_pending'
   | 'claims_unanswered'
+  | 'pickup_unconfirmed'
   | 'payouts_failed'
   | 'incidents_open'
   | 'outbox_failed';
@@ -128,6 +135,14 @@ export class OpsQueueService {
       status: 'OPEN' as const,
       createdAt: { lte: minutesAgo(now, t.claimUnansweredMinutes) },
     };
+    // F3-07 / D-P2 — lecture seule, comme toutes les files : rien ici n'écrit
+    // de preuve ni d'échéance de versement.
+    const pickupUnconfirmedWhere: Prisma.OrderWhereInput = {
+      status: 'LIVRER' as const,
+      isDelivery: false,
+      deliveryProof: 'PICKUP_VENDOR_DECLARED',
+      deliveredAt: { lte: minutesAgo(now, t.pickupUnconfirmedMinutes) },
+    };
     const incidentWhere: Prisma.IncidentWhereInput = {
       status: { in: ['OPEN' as const, 'IN_PROGRESS' as const] },
       severity: { in: [IncidentSeverity.HIGH, IncidentSeverity.CRITICAL] },
@@ -144,6 +159,7 @@ export class OpsQueueService {
       failedDeliveries,
       refunds,
       claims,
+      pickupsUnconfirmed,
       payouts,
       incidents,
       outbox,
@@ -213,6 +229,15 @@ export class OpsQueueService {
             description: true,
             createdAt: true,
           },
+          take,
+        }),
+      ),
+      pair(
+        this.prisma.order.count({ where: pickupUnconfirmedWhere }),
+        this.prisma.order.findMany({
+          where: pickupUnconfirmedWhere,
+          orderBy: { deliveredAt: 'asc' },
+          select: { ...orderSelect, deliveredAt: true },
           take,
         }),
       ),
@@ -335,6 +360,20 @@ export class OpsQueueService {
           title: c.title,
           detail: c.description,
           since: iso(c.createdAt),
+        }),
+      ),
+      bucket(
+        'pickup_unconfirmed',
+        'Retraits non confirmés par le client',
+        'MEDIUM',
+        pickupsUnconfirmed,
+        (o) => ({
+          id: o.id,
+          orderId: o.id,
+          title: `Commande ${shortId(o.id)} — ${o.restaurant.nom}`,
+          detail:
+            'Remise déclarée par le vendeur, sans confirmation du client : aucun versement automatique. Relancer le client, ou arbitrer.',
+          since: iso(o.deliveredAt ?? o.updatedAt),
         }),
       ),
       bucket(

@@ -36,6 +36,8 @@ describe('Notifications du flux de livraison', () => {
   const prisma = {
     restaurant: { findUnique: jest.fn() },
     delivery: { findUnique: jest.fn() },
+    // F3-07 : le message dépend du mode ; une livraison n'est pas un retrait.
+    order: { findFirst: jest.fn().mockResolvedValue(null) },
     user: { updateMany: jest.fn() },
   };
   const trackingGateway = { broadcastOrderStatus: jest.fn() };

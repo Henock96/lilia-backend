@@ -42,6 +42,8 @@ describe('OrderLifecycleService — le statut ne ment pas sur le terrain', () =>
     };
 
     const tx = {
+      // F3-07 : la transition vers LIVRER lit le délai de versement (aucune ligne = défaut).
+      platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
       order: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUniqueOrThrow: jest.fn().mockResolvedValue(order),

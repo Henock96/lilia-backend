@@ -40,6 +40,8 @@ export const ORDER_ACTIONS = [
   'MARK_READY',
   'HAND_OVER',
   'CANCEL',
+  /** Client, retrait : « J'ai récupéré ma commande » (F3-07). */
+  'CONFIRM_PICKUP',
 ] as const;
 export type OrderAction = (typeof ORDER_ACTIONS)[number];
 
@@ -53,6 +55,7 @@ export function actionTarget(action: OrderAction): OrderStatus {
     case 'MARK_READY':
       return 'PRET';
     case 'HAND_OVER':
+    case 'CONFIRM_PICKUP':
       return 'LIVRER';
     case 'REJECT':
     case 'CANCEL':
@@ -68,7 +71,11 @@ const ACTORS: readonly OrderActor[] = [
 ];
 
 export function orderAllowedActions(
-  order: { status: OrderStatus; isDelivery: boolean },
+  order: {
+    status: OrderStatus;
+    isDelivery: boolean;
+    deliveryProof?: string | null;
+  },
   role: string,
   opts: { acceptanceRequired: boolean },
 ): OrderAction[] {
@@ -76,6 +83,17 @@ export function orderAllowedActions(
   // Le livreur agit sur la LIVRAISON (accepter, récupérer, remettre avec le
   // code), jamais sur le statut de la commande.
   if (!actor || actor === 'LIVREUR') return [];
+
+  // F3-07 — un retrait remis par le vendeur seul attend encore la
+  // confirmation du client : c'est elle qui ouvre le versement (D-P1). La
+  // commande est `LIVRER`, terminal : la matrice ne le dit pas, d'où ce cas.
+  if (
+    order.status === 'LIVRER' &&
+    !order.isDelivery &&
+    order.deliveryProof === 'PICKUP_VENDOR_DECLARED'
+  ) {
+    return actor === 'CLIENT' ? ['CONFIRM_PICKUP'] : [];
+  }
 
   const from = order.status;
   const targets = Object.entries(ORDER_TRANSITION_MATRIX[from] ?? {})
@@ -107,7 +125,8 @@ function actionFor(
     case 'PRET':
       return 'MARK_READY';
     case 'LIVRER':
-      return from === 'PRET' && !isDelivery ? 'HAND_OVER' : null;
+      if (from !== 'PRET' || isDelivery) return null;
+      return actor === 'CLIENT' ? 'CONFIRM_PICKUP' : 'HAND_OVER';
     case 'ANNULER':
       return actor !== 'CLIENT' && (from === 'PAYER' || from === 'ACCEPTEE')
         ? 'REJECT'
@@ -141,7 +160,11 @@ export async function readActionContext(prisma: {
 
 /** Ajoute à chaque commande les gestes que CE rôle peut y faire. */
 export function withAllowedActions<
-  T extends { status: OrderStatus; isDelivery: boolean },
+  T extends {
+    status: OrderStatus;
+    isDelivery: boolean;
+    deliveryProof?: string | null;
+  },
 >(
   orders: T[],
   role: string,

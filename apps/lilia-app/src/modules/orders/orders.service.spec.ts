@@ -56,6 +56,8 @@ describe('OrdersService (caractérisation — lectures)', () => {
     restaurant: { findFirst: jest.fn() },
     // Aucune ligne de réglages : acceptation vendeur hors service (F3-01).
     platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
+    // F3-07 / D-P5 — code de retrait au comptoir.
+    pickupHandover: { findUnique: jest.fn().mockResolvedValue(null) },
   };
   const pagination = {
     getPaginationMeta: jest.fn(
@@ -161,13 +163,57 @@ describe('OrdersService (caractérisation — lectures)', () => {
     });
 
     it('retourne la commande au propriétaire', async () => {
-      const order = { id: 'o1', userId: 'u1' };
+      const order = { id: 'o1', userId: 'u1', isDelivery: true };
       prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'CLIENT' });
       prisma.order.findUnique.mockResolvedValue(order);
       // La commande, plus les gestes permis à CE rôle (R1).
       await expect(service.findOrderById('o1', 'uid')).resolves.toEqual({
         ...order,
         allowedActions: expect.any(Array),
+      });
+    });
+
+    describe('code de retrait (F3-07, I-18)', () => {
+      const pickupOrder = (status: string) => ({
+        id: 'o1',
+        userId: 'u1',
+        isDelivery: false,
+        status,
+        payoutDueAt: new Date(),
+      });
+
+      beforeEach(() =>
+        prisma.pickupHandover.findUnique.mockResolvedValue({ code: '4821' }),
+      );
+
+      it('le client propriétaire lit son code tant que la commande est PRET', async () => {
+        prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'CLIENT' });
+        prisma.order.findUnique.mockResolvedValue(pickupOrder('PRET'));
+        const result = await service.findOrderById('o1', 'uid');
+        expect(result).toMatchObject({ pickupCode: '4821' });
+      });
+
+      it('plus de code une fois la commande remise', async () => {
+        prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'CLIENT' });
+        prisma.order.findUnique.mockResolvedValue(pickupOrder('LIVRER'));
+        const result = await service.findOrderById('o1', 'uid');
+        expect(result).toMatchObject({ pickupCode: null });
+        expect(prisma.pickupHandover.findUnique).not.toHaveBeenCalled();
+      });
+
+      it('l’admin ne lit pas le code : il arbitre, il ne le dicte pas', async () => {
+        prisma.user.findUnique.mockResolvedValue({ id: 'a1', role: 'ADMIN' });
+        prisma.order.findUnique.mockResolvedValue(pickupOrder('PRET'));
+        const result = await service.findOrderById('o1', 'uid');
+        expect(result).not.toHaveProperty('pickupCode');
+        expect(prisma.pickupHandover.findUnique).not.toHaveBeenCalled();
+      });
+
+      it('le client ne voit pas l’échéance de versement au vendeur', async () => {
+        prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'CLIENT' });
+        prisma.order.findUnique.mockResolvedValue(pickupOrder('LIVRER'));
+        const result = await service.findOrderById('o1', 'uid');
+        expect(result).not.toHaveProperty('payoutDueAt');
       });
     });
 

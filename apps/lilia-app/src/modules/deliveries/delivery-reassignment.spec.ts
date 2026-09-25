@@ -117,6 +117,8 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
   };
 
   const tx = {
+    // F3-07 : la transition vers LIVRER lit le délai de versement (aucune ligne = défaut).
+    platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
     delivery: {
       updateMany: jest.fn(({ where, data }: Row) => {
         if (!matches(delivery, where)) return Promise.resolve({ count: 0 });

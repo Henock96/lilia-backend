@@ -1,4 +1,8 @@
-import { OPS_THRESHOLDS, OpsQueueService } from './ops-queue.service';
+import {
+  OPS_THRESHOLDS,
+  OpsQueueService,
+  SLA_BUCKETS,
+} from './ops-queue.service';
 
 /**
  * Files « À traiter » (F3-04) : les conditions envoyées à la base. Chaque
@@ -32,10 +36,11 @@ describe('OpsQueueService', () => {
       enRouteMinutes: 60,
       refundPendingMinutes: 120,
       claimUnansweredMinutes: 120,
+      pickupUnconfirmedMinutes: 60,
     });
   });
 
-  it('neuf files, dans l’ordre de l’écran', async () => {
+  it('dix files, dans l’ordre de l’écran', async () => {
     const { service } = build();
     const buckets = await service.queue(NOW);
     expect(buckets.map((b) => b.key)).toEqual([
@@ -45,6 +50,7 @@ describe('OpsQueueService', () => {
       'delivery_failed',
       'refunds_pending',
       'claims_unanswered',
+      'pickup_unconfirmed',
       'payouts_failed',
       'incidents_open',
       'outbox_failed',
@@ -83,6 +89,13 @@ describe('OpsQueueService', () => {
       status: 'OPEN',
       createdAt: { lte: ago(120) },
     });
+    // F3-07 / D-P2 — retrait remis par le vendeur seul, non confirmé depuis 1 h.
+    expect(orderWheres[3]).toEqual({
+      status: 'LIVRER',
+      isDelivery: false,
+      deliveryProof: 'PICKUP_VENDOR_DECLARED',
+      deliveredAt: { lte: ago(60) },
+    });
     // Les incidents ouverts par le scan décrivent déjà les cartes : exclus.
     expect(prisma.incident.count.mock.calls[1][0].where.type).toEqual({
       notIn: ['OPS_SLA_BREACH'],
@@ -112,5 +125,22 @@ describe('OpsQueueService', () => {
         },
       ],
     });
+  });
+
+  it('I-11 — l’escalade des retraits non confirmés est une lecture, jamais une écriture', async () => {
+    const { service, prisma } = build();
+    const writes = {
+      update: jest.fn(),
+      updateMany: jest.fn(),
+      create: jest.fn(),
+    };
+    Object.assign(prisma.order, writes);
+    Object.assign(prisma.restaurantPayout, writes);
+    await service.queue(NOW);
+    for (const fn of Object.values(writes)) expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('le retrait non confirmé n’ouvre pas d’incident SLA : c’est une relance, pas une panne', () => {
+    expect(SLA_BUCKETS).not.toContain('pickup_unconfirmed');
   });
 });

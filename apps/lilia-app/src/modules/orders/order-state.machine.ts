@@ -73,7 +73,12 @@ export const ORDER_TRANSITION_MATRIX: Record<
     // avait besoin de ce statut. `OrderLifecycleService` vérifie
     // `isDelivery === false` : une commande à livrer ne peut pas être déclarée
     // livrée sans qu'un livreur l'ait prise.
-    LIVRER: ['RESTAURATEUR', 'ADMIN'],
+    //
+    // F3-07 — le CLIENT aussi, pour un retrait uniquement, et seulement par
+    // `POST /orders/:id/pickup/confirm` (« J'ai récupéré ma commande ») : la
+    // route de statut reste `@Roles('RESTAURATEUR', 'ADMIN')`, comme `ACCEPTEE`
+    // n'est atteignable que par `/accept`. Chaque chemin écrit sa preuve.
+    LIVRER: ['RESTAURATEUR', 'ADMIN', 'CLIENT'],
     ANNULER: ['RESTAURATEUR', 'ADMIN'], // fix M16 : plus aucun livreur
     // F3-05 : échec déclaré avant la récupération, conclu par l'ADMIN.
     ECHEC_LIVRAISON: ['ADMIN'],

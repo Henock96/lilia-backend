@@ -34,7 +34,10 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
 import { OrderTransitionService } from '../orders/order-transition.service';
-import { sourceFromRole } from '../orders/order-transition.types';
+import {
+  DeliveryProof,
+  sourceFromRole,
+} from '../orders/order-transition.types';
 import { OrderStatusUpdatedEvent } from '../events/order-events';
 import { DeliveryFailedEvent } from '../events/delivery-events';
 import { TrackingGateway } from '../tracking/tracking.gateway';
@@ -63,6 +66,16 @@ const DELIVERY_STATUS_TRANSITIONS: Record<string, DeliveryStatus[]> = {
   [DeliveryStatus.EN_TRANSIT]: [DeliveryStatus.LIVRER, DeliveryStatus.ECHEC],
   [DeliveryStatus.LIVRER]: [],
   [DeliveryStatus.ECHEC]: [],
+};
+
+/** Méthode de remise d'une course → preuve portée par la commande (F3-07). */
+const DELIVERY_PROOF_BY_HANDOVER: Record<
+  DeliveryHandoverMethod,
+  DeliveryProof
+> = {
+  [DeliveryHandoverMethod.CODE]: 'DELIVERY_CODE',
+  [DeliveryHandoverMethod.ADMIN_OVERRIDE]: 'DELIVERY_ADMIN_OVERRIDE',
+  [DeliveryHandoverMethod.UNVERIFIED]: 'DELIVERY_UNVERIFIED',
 };
 
 @Injectable()
@@ -383,6 +396,9 @@ export class DeliveriesService {
           orderId: delivery.orderId,
           from: previousOrderStatus,
           to: OrderStatus.LIVRER,
+          // F3-07 — la méthode d'attestation devient la preuve de la
+          // commande : c'est elle, pas `LIVRER`, qui ouvre le versement.
+          proof: DELIVERY_PROOF_BY_HANDOVER[handover!.method],
           actor: actorRole!,
           actorUserId: user.id,
           source: sourceFromRole(user.role),
