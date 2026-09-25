@@ -27,6 +27,11 @@ administrateurs, qui survivaient à la révocation du premier.
    `metadata = {"newRole":"ADMIN","via":"break-glass"}`) et prévenir les autres
    administrateurs.
 5. Le cache utilisateur expire en 5 minutes au plus.
+6. **F3-08** — un administrateur créé ainsi n'a **aucune capacité**
+   (`adminCapabilities = {}`) : il ne peut faire partir aucun argent. Ses
+   capacités s'attribuent par `PATCH /admin/users/:id/capabilities`, qui
+   exige un second administrateur. Ne jamais les poser en SQL hors de la
+   procédure ci-dessous.
 
 **Rétrograder un administrateur compromis** : même chemin SQL
 (`role = 'CLIENT'`), puis `PATCH /admin/users/:id/ban` depuis un autre compte
@@ -34,9 +39,43 @@ ADMIN pour désactiver le compte Firebase et révoquer ses sessions.
 
 ---
 
+## 1 bis. Gestes à deux administrateurs (F3-08) et administrateur seul
+
+**Règle.** Changer un numéro de versement existant, exécuter un remboursement
+≥ 50 000 FCFA et modifier des capacités créent une **demande**
+(`FinancialApproval`). Un autre administrateur porteur de `FINANCE_APPROVE`
+l'approuve depuis l'écran « Approbations », et le geste s'exécute alors. Le
+demandeur ne peut pas approuver : l'API le refuse, et la base aussi (CHECK
+`FinancialApproval_four_eyes`). Une demande non traitée expire au bout de 24 h.
+
+**Un seul administrateur disponible** : il n'existe **aucun contournement dans
+le code**, et c'est voulu. La demande attend, puis expire. Si le geste ne peut
+pas attendre (vendeur dont le numéro a été volé, par exemple), procédure
+*break-glass* à deux personnes, comme au § 1 :
+
+1. Joindre un second administrateur par téléphone. S'il est joignable mais
+   sans application, il se connecte à l'admin web pour approuver : c'est
+   toujours la voie normale.
+2. Sinon, et seulement pour **bloquer** (jamais pour payer) : remettre
+   l'ancien numéro de versement en SQL, depuis la console Neon, sous le
+   regard d'une seconde personne, puis tracer le geste dans `AdminAuditLog`
+   (`VENDOR_PAYOUT_ACCOUNT_UPDATED`, `metadata.via = "break-glass"`).
+3. Aucun remboursement ≥ 50 000 FCFA ne se force en SQL : il attend un
+   second administrateur.
+
+**Double authentification.** `ADMIN_MFA_REQUIRED=true` exige un second facteur
+sur les routes de capacité, et une authentification de moins de 15 minutes pour
+les gestes financiers. Ne l'allumer qu'après l'activation de TOTP dans Firebase
+(Identity Platform) et l'enrôlement de chaque administrateur : sinon, plus
+personne ne peut faire de geste financier.
+
+---
+
 ## 2. Compte de reversement d'un vendeur modifié
 
-**Règle.** Après `PATCH /admin/vendors/:id/payout-account`, aucun virement ne
+**Règle.** Depuis F3-08, **changer** un numéro existant passe par un second
+administrateur (§ 1 bis) ; la première saisie reste directe. Après
+l'application du numéro, aucun virement ne
 part vers ce vendeur avant `PAYOUT_ACCOUNT_COOLDOWN_HOURS` (24 h par défaut).
 Le propriétaire reçoit un push ET un SMS annonçant le changement (F-08).
 

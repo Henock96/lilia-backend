@@ -1,3 +1,5 @@
+import { RequireCapability } from '../auth/decorators/require-capability.decorator';
+import { AdminCapability } from '@prisma/client';
 import {
   Body,
   Controller,
@@ -274,6 +276,7 @@ export class AdminController {
       'double sa trace dans le journal d’audit. Aucun solde ne bouge sans nom.',
   })
   @ApiParam({ name: 'id', description: 'ID Prisma du client' })
+  @RequireCapability(AdminCapability.FINANCE_EXECUTE)
   adjustClientLoyalty(
     @Param('id') id: string,
     @Body() dto: AdjustLoyaltyDto,
@@ -316,6 +319,7 @@ export class AdminController {
       'reviendrait à le contourner, et rejouer une approbation doublerait un ' +
       'crédit déjà passé.',
   })
+  @RequireCapability(AdminCapability.FINANCE_EXECUTE)
   reviewReferralReward(
     @Param('id') id: string,
     @Body() dto: ReviewReferralRewardDto,
@@ -335,6 +339,7 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Changer le rôle d'un utilisateur" })
   @ApiParam({ name: 'id', description: "ID Prisma de l'utilisateur" })
+  @RequireCapability(AdminCapability.USER_ROLES)
   async updateUserRole(
     @Param('id') id: string,
     @Body() dto: UpdateUserRoleDto,
@@ -392,6 +397,7 @@ export class AdminController {
       'Passe statusUser à BLOCKED, désactive le compte Firebase et révoque ' +
       'ses refresh tokens. Effet immédiat sur toutes les routes authentifiées.',
   })
+  @RequireCapability(AdminCapability.USER_ROLES)
   async banUser(
     @Param('id') id: string,
     @Body() dto: BanUserDto,
@@ -431,6 +437,7 @@ export class AdminController {
       'Repasse statusUser à ACTIVE et réactive le compte Firebase. ' +
       "L'utilisateur devra se reconnecter (ses tokens ont été révoqués).",
   })
+  @RequireCapability(AdminCapability.USER_ROLES)
   async unbanUser(@Param('id') id: string, @CurrentUser() admin: User) {
     const { firebaseUid, cacheInvalidated } =
       await this.adminService.unbanUser(id);

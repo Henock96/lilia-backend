@@ -1,3 +1,5 @@
+import { RequireCapability } from '../auth/decorators/require-capability.decorator';
+import { AdminCapability } from '@prisma/client';
 import { Body, Controller, Get, Patch } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AdminAuditAction, Prisma, User } from '@prisma/client';
@@ -113,6 +115,7 @@ export class PlatformSettingsController {
       'configuration a changé depuis son chargement. 400 si le canal de mise à ' +
       'jour résultant est incohérent (voir `app-update-policy.ts`).',
   })
+  @RequireCapability(AdminCapability.SETTINGS)
   async update(
     @Body() dto: UpdatePlatformSettingsDto,
     @CurrentUser() admin: User,

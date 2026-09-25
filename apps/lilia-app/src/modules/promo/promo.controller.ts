@@ -1,4 +1,6 @@
 // promo/promo.controller.ts
+import { RequireCapability } from '../auth/decorators/require-capability.decorator';
+import { AdminCapability } from '@prisma/client';
 import {
   Body,
   Controller,
@@ -52,6 +54,7 @@ export class PromoController {
   @Post()
   @Roles('ADMIN')
   @ApiOperation({ summary: 'Créer un code promo (admin)' })
+  @RequireCapability(AdminCapability.SETTINGS)
   create(@Body() dto: CreatePromoCodeDto) {
     return this.promoService.create(dto);
   }
@@ -67,6 +70,7 @@ export class PromoController {
   @Roles('ADMIN')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Activer / désactiver un code promo' })
+  @RequireCapability(AdminCapability.SETTINGS)
   toggle(@Param('id') id: string) {
     return this.promoService.toggle(id);
   }
@@ -75,6 +79,7 @@ export class PromoController {
   @Roles('ADMIN')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Supprimer un code promo (admin)' })
+  @RequireCapability(AdminCapability.SETTINGS)
   remove(@Param('id') id: string) {
     return this.promoService.remove(id);
   }

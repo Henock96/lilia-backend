@@ -10,6 +10,7 @@ import {
   PaymentEventKind,
   PaymentEventOutcome,
   PaymentEventSource,
+  ApprovalKind,
   PayoutProvider,
   RefundBearer,
   RefundReasonCode,
@@ -23,6 +24,10 @@ import { PaymentEventService } from '../payments/services/payment-event.service'
 import { ProviderUnavailableError } from '../payments/providers/payment-provider.interface';
 import { maskPhone, maskRef } from '../payments/services/payment.service';
 import { refundConflictsWithPayout } from './refund-lines.policy';
+import {
+  consumeApproval,
+  REFUND_APPROVAL_THRESHOLD_XAF,
+} from '../approvals/approval-rules';
 
 /**
  * Exécution du virement de remboursement au client.
@@ -73,7 +78,19 @@ export class RefundExecutionService {
     private readonly events: PaymentEventService,
   ) {}
 
-  async execute(refundId: string, adminUserId: string | null) {
+  /**
+   * @param adminUserId `null` = exécution automatique (D2 : annulation,
+   *   refus ou silence du vendeur, vers le numéro qui a payé) — hors des
+   *   4 yeux, aucun humain ne choisit rien.
+   * @param opts.approvalId F3-08 — approbation d'un second administrateur,
+   *   exigée à partir de `REFUND_APPROVAL_THRESHOLD_XAF` et consommée dans la
+   *   transaction de réservation.
+   */
+  async execute(
+    refundId: string,
+    adminUserId: string | null,
+    opts: { approvalId?: string } = {},
+  ) {
     const refund = await this.prisma.refund.findUnique({
       where: { id: refundId },
       include: {
@@ -84,6 +101,18 @@ export class RefundExecutionService {
     if (!refund) throw new NotFoundException('Remboursement introuvable.');
 
     this.assertExecutable(refund);
+
+    // F3-08 / D7 — au-delà du seuil, un administrateur seul ne fait pas partir
+    // l'argent. Vérifié ici aussi, pas seulement dans le contrôleur : tout
+    // appelant humain passe par cette méthode.
+    const needsApproval =
+      adminUserId !== null && refund.amount >= REFUND_APPROVAL_THRESHOLD_XAF;
+    if (needsApproval && !opts.approvalId) {
+      throw new ConflictException({
+        message: `Un remboursement de ${refund.amount} FCFA exige l’approbation d’un second administrateur.`,
+        code: 'APPROVAL_REQUIRED',
+      });
+    }
 
     const provider = this.registry.forPayout();
     if (!provider) {
@@ -113,6 +142,14 @@ export class RefundExecutionService {
     // (R-06.5, F3-06).
     const claimed = await this.prisma.$transaction(async (tx) => {
       await lockOrderRow(tx, refund.orderId);
+      if (opts.approvalId) {
+        await consumeApproval(tx, {
+          approvalId: opts.approvalId,
+          kind: ApprovalKind.REFUND_EXECUTION,
+          refId: refund.id,
+          payload: refundApprovalPayload(refund),
+        });
+      }
       if (refundConflictsWithPayout(refund)) {
         const payout = await tx.restaurantPayout.findUnique({
           where: { orderId: refund.orderId },
@@ -297,4 +334,9 @@ export function assertNoActivePayout(
         'issue : un échec libérera le remboursement, un succès demandera un arbitrage.',
     );
   }
+}
+
+/** Ce qu'une approbation de remboursement autorise : CE remboursement, CE montant. */
+export function refundApprovalPayload(refund: { id: string; amount: number }) {
+  return { refundId: refund.id, amountXaf: refund.amount };
 }

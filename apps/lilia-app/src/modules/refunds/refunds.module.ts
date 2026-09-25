@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { RefundsCoreModule } from './refunds-core.module';
+import { ApprovalsModule } from '../approvals/approvals.module';
 import { RefundsController } from './refunds.controller';
 import { AdminOrderRefundsController } from './admin-order-refunds.controller';
 
@@ -13,7 +14,7 @@ import { AdminOrderRefundsController } from './admin-order-refunds.controller';
  * `refunds-core.module.ts` pour ce que coûte l'inverse.
  */
 @Module({
-  imports: [RefundsCoreModule],
+  imports: [RefundsCoreModule, ApprovalsModule],
   controllers: [RefundsController, AdminOrderRefundsController],
   exports: [RefundsCoreModule],
 })

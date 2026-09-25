@@ -27,6 +27,7 @@ import { PawaPayWebhookController } from './controllers/pawapay-webhook.controll
 import { VendorEarningsController } from './controllers/vendor-earnings.controller';
 import { VendorEarningsService } from './services/vendor-earnings.service';
 
+import { ApprovalsModule } from '../approvals/approvals.module';
 @Module({
   // ⚠️ `RefundsCoreModule` est ici parce que `PawaPayWebhookController` aiguille
   // les callbacks de virement sortant vers DEUX tables : reversement vendeur et
@@ -50,6 +51,8 @@ import { VendorEarningsService } from './services/vendor-earnings.service';
     RefundsCoreModule,
     AdminAuditModule,
     PlatformSettingsCoreModule,
+    // F3-08 — le changement de numéro de versement ouvre une demande.
+    ApprovalsModule,
   ],
   controllers: [
     PaymentController,

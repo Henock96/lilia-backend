@@ -1,3 +1,5 @@
+import { RequireCapability } from '../auth/decorators/require-capability.decorator';
+import { AdminCapability } from '@prisma/client';
 import {
   Body,
   Controller,
@@ -47,6 +49,7 @@ export class AdminOrderRefundsController {
   @Post(':orderId/refunds')
   @Throttle({ short: { limit: 1, ttl: 2000 }, long: { limit: 30, ttl: 60000 } })
   @ApiOperation({ summary: 'Rembourser des articles, des frais ou un geste' })
+  @RequireCapability(AdminCapability.FINANCE_EXECUTE)
   async create(
     @Param('orderId') orderId: string,
     @Body() dto: ComposeRefundDto,

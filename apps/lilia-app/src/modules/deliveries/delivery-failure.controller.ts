@@ -1,3 +1,5 @@
+import { RequireCapability } from '../auth/decorators/require-capability.decorator';
+import { AdminCapability } from '@prisma/client';
 import {
   Body,
   Controller,
@@ -81,6 +83,7 @@ export class AdminDeliveryFailureController {
   @ApiOperation({
     summary: 'Conclure un échec de livraison avec un responsable',
   })
+  @RequireCapability(AdminCapability.FINANCE_EXECUTE)
   async conclude(
     @Param('id') id: string,
     @Body() dto: ConcludeFailureDto,

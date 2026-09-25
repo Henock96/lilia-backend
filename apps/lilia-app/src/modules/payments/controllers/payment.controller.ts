@@ -1,3 +1,5 @@
+import { RequireCapability } from '../../auth/decorators/require-capability.decorator';
+import { AdminCapability } from '@prisma/client';
 import {
   Body,
   Controller,
@@ -167,6 +169,7 @@ export class PaymentController {
     summary: 'Confirmer un paiement manuellement (admin)',
     description: "Mode MANUAL — l'administrateur valide le virement reçu.",
   })
+  @RequireCapability(AdminCapability.FINANCE_EXECUTE)
   async confirmPayment(
     @Param('paymentId') paymentId: string,
     @CurrentUser() admin: User,
@@ -189,6 +192,7 @@ export class PaymentController {
   @Roles('ADMIN')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Rejeter un paiement manuellement (admin)' })
+  @RequireCapability(AdminCapability.FINANCE_EXECUTE)
   async rejectPayment(
     @Param('paymentId') paymentId: string,
     @Body() dto: RejectPaymentDto,
