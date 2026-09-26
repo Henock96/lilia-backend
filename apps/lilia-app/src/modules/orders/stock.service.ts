@@ -1,161 +1,257 @@
 /* eslint-disable prettier/prettier */
 // orders/stock.service.ts
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { countMenus } from './menu-quantities';
+import {
+  insufficientStockMessage,
+  outOfStockError,
+  requiredStock,
+  stockConsumptionOf,
+  type StockLine,
+} from './stock-units';
+
+/** Ligne réservable : une ligne de panier, avec de quoi nommer le refus. */
+export type ReservableLine = StockLine & {
+  variantId?: string | null;
+  product?: { nom?: string | null; restaurantId?: string } | null;
+  variant?: { stockConsumption?: number | null; label?: string | null } | null;
+};
+
+/** Ligne de commande restituable (figé F3-10, ou `NULL` si antérieure). */
+export interface RestorableItem {
+  productId: string;
+  menuId?: string | null;
+  quantite: number;
+  stockUnitsReserved?: number | null;
+}
+
+/** Compteur touché : alimente l'invalidation du catalogue (après commit). */
+export interface StockMovement {
+  productId: string;
+  before: number;
+  after: number;
+}
+
+export interface ReservationResult {
+  /** Produits limités au moment de la réservation (lus sous verrou). */
+  limitedProductIds: string[];
+  movements: StockMovement[];
+}
 
 @Injectable()
 export class StockService {
+  private readonly logger = new Logger(StockService.name);
 
-  // Utilise UPDATE avec WHERE conditionnel — atomique en SQL, pas de read-then-write
-  async decrementInTransaction<
-    Line extends { productId: string; menuId?: string | null; quantite: number },
-  >(tx: Prisma.TransactionClient, cartItems: readonly Line[]): Promise<void> {
-    // Quantités par produit
-    const qtyByProduct = new Map<string, number>();
-    for (const item of cartItems) {
-      qtyByProduct.set(
-        item.productId,
-        (qtyByProduct.get(item.productId) ?? 0) + item.quantite,
-      );
-    }
-    // Un menu = q unités, pas N × q (N lignes, une par produit) — fix F-01.
-    const qtyByMenu = countMenus(cartItems);
+  /**
+   * Réserve le stock d'un panier — **l'arbitre** du checkout.
+   *
+   * F3-10 : chaque ligne pèse `quantite × stockConsumption` unités (1 carton de
+   * 6 = 6 bouteilles), agrégées par produit. Bouteille et carton puisent dans
+   * **le même** compteur, donc contendent sur la même ligne `Product` : aucune
+   * combinaison ne peut vendre plus que le stock.
+   *
+   * ### Déroulé (allers-retours fixes, contre 1 + N avant)
+   *
+   * 1. `SELECT … ORDER BY id FOR UPDATE` : tous les verrous produits d'un coup,
+   *    dans un ordre total (fix S-7 — deux paniers qui se croisent ne peuvent
+   *    pas s'interbloquer). L'état lu est l'état qu'on écrira ;
+   * 2. contrôle en mémoire, nominatif (on tient les verrous : le nombre lu est
+   *    exact) ;
+   * 3. `UPDATE … FROM unnest(…)` groupé, garde `>= u` conservée en ceinture ;
+   * 4. idem pour les menus — **toujours après** les produits (ordre des tables).
+   *
+   * Corrige au passage un défaut : un produit rendu illimité entre la lecture
+   * des produits limités et l'`UPDATE` faisait échouer la commande en « Stock
+   * épuisé » (0 ligne affectée). Sous verrou, cela ne peut plus arriver.
+   *
+   * Pas de verrou `ProductVariant` : la consommation est immuable (trigger
+   * `ProductVariant_stock_consumption_immutable`), la lire hors transaction est
+   * donc sûr — et un verrou de variante prendrait l'ordre inverse des écritures
+   * vendeur (`Product` puis `ProductVariant`).
+   */
+  async decrementInTransaction(
+    tx: Prisma.TransactionClient,
+    cartItems: readonly ReservableLine[],
+  ): Promise<ReservationResult> {
+    const { byProduct, byMenu } = requiredStock(cartItems);
+    const movements: StockMovement[] = [];
 
-    const [limitedProducts, limitedMenus] = await Promise.all([
-      tx.product.findMany({
-        where: {
-          id: { in: [...qtyByProduct.keys()] },
-          stockRestant: { not: null },
-        },
-        select: { id: true },
-      }),
-      tx.menuDuJour.findMany({
-        where: {
-          id: { in: [...qtyByMenu.keys()] },
-          stockRestant: { not: null },
-        },
-        select: { id: true },
-      }),
-    ]);
+    const productIds = [...byProduct.keys()].sort();
+    const locked = productIds.length
+      ? await tx.$queryRaw<{ id: string; stockRestant: number | null }[]>`
+          SELECT id, "stockRestant" FROM "Product"
+           WHERE id = ANY(${productIds}::text[])
+           ORDER BY id
+             FOR UPDATE`
+      : [];
+    const limited = locked.filter((row) => row.stockRestant !== null);
 
-    // ⚠️ TRI OBLIGATOIRE — fix S-7 (audit du 05/09/2026).
-    //
-    // Ces `UPDATE` posent un verrou de ligne chacun. Deux transactions qui
-    // verrouillent les mêmes lignes dans un ordre différent s'interbloquent :
-    // T1 tient A et attend B, T2 tient B et attend A. PostgreSQL le détecte et
-    // en avorte une — pas de corruption, mais un 500 au client à la place de
-    // sa commande. Reproduit en laboratoire avant correction.
-    //
-    // Or `findMany` **ne garantit aucun ordre** sans `orderBy` : deux paniers
-    // contenant les mêmes deux produits pouvaient parfaitement les recevoir
-    // dans l'ordre inverse. Trier suffit à rendre l'interblocage impossible —
-    // un ordre total commun à toutes les transactions ne peut pas se croiser.
-    //
-    // Le tri est fait ici, sur le résultat, et non par `orderBy` dans la
-    // requête : ce qui compte est l'ordre des `UPDATE`, pas celui du `SELECT`.
-    const productIds = limitedProducts.map((product) => product.id).sort();
-    const menuIds = limitedMenus.map((menu) => menu.id).sort();
-
-    // UPDATE atomique avec vérification du stock dans la même requête.
-    // WHERE stockRestant >= qty garantit qu'on ne vend pas ce qu'on n'a pas.
-    // Si 0 lignes mises à jour → le stock a été épuisé entre la validation et la transaction.
-    //
-    // ⚠️ SÉQUENTIEL, et pas `Promise.all` — suite du fix S-7.
-    //
-    // Trier les identifiants ne suffit pas : les deux lots (produits, menus)
-    // étaient dépêchés **en parallèle**, si bien que l'entrelacement entre un
-    // `UPDATE "Product"` et un `UPDATE "MenuDuJour"` restait indéterminé. Une
-    // transaction pouvait tenir un produit en attendant un menu pendant que
-    // l'autre tenait ce menu en attendant ce produit — un cycle, donc un
-    // interblocage, malgré des identifiants triés de chaque côté.
-    //
-    // Un ordre déterministe **par table** ne ferme le cycle que si les tables
-    // elles-mêmes sont prises dans un ordre fixe : produits d'abord, menus
-    // ensuite, toujours. C'est ce que garantit la séquence.
-    //
-    // Le coût est nul : Prisma sérialise déjà ces requêtes sur l'unique
-    // connexion de la transaction. `Promise.all` n'y apportait aucun
-    // parallélisme réel — seulement l'indétermination.
-    for (const id of productIds) {
-      const qty = qtyByProduct.get(id) ?? 0;
-      const affected = await tx.$executeRaw`
-        UPDATE "Product"
-        SET "stockRestant" = "stockRestant" - ${qty}
-        WHERE id = ${id}
-          AND "stockRestant" IS NOT NULL
-          AND "stockRestant" >= ${qty}
-      `;
-      if (affected === 0) {
-        throw new BadRequestException(
-          'Stock épuisé pour un ou plusieurs produits. Veuillez mettre à jour votre panier.',
-        );
+    for (const row of limited) {
+      if (row.stockRestant! < byProduct.get(row.id)!) {
+        throw this.productShortage(cartItems, row.id, row.stockRestant!);
       }
     }
 
-    for (const id of menuIds) {
-      const qty = qtyByMenu.get(id) ?? 0;
-      const affected = await tx.$executeRaw`
-        UPDATE "MenuDuJour"
-        SET "stockRestant" = "stockRestant" - ${qty}
-        WHERE id = ${id}
-          AND "stockRestant" IS NOT NULL
-          AND "stockRestant" >= ${qty}
-      `;
-      if (affected === 0) {
-        throw new BadRequestException(
-          'Stock épuisé pour un ou plusieurs menus. Veuillez mettre à jour votre panier.',
-        );
+    if (limited.length > 0) {
+      const ids = limited.map((row) => row.id);
+      const units = limited.map((row) => byProduct.get(row.id)!);
+      const updated = await tx.$queryRaw<{ id: string; stockRestant: number }[]>`
+        UPDATE "Product" p
+           SET "stockRestant" = p."stockRestant" - x.u
+          FROM unnest(${ids}::text[], ${units}::int[]) AS x(id, u)
+         WHERE p.id = x.id
+           AND p."stockRestant" IS NOT NULL
+           AND p."stockRestant" >= x.u
+        RETURNING p.id, p."stockRestant"`;
+      if (updated.length !== limited.length) {
+        // Impossible sous verrou : si cela arrive, un invariant est rompu.
+        this.logger.error(`[STOCK] invariant rompu : ${updated.length}/${limited.length} lignes décrémentées`);
+        throw new BadRequestException({
+          message: 'Stock épuisé pour un ou plusieurs produits. Veuillez mettre à jour votre panier.',
+          code: 'OUT_OF_STOCK',
+        });
+      }
+      for (const row of updated) {
+        movements.push({
+          productId: row.id,
+          before: row.stockRestant + byProduct.get(row.id)!,
+          after: row.stockRestant,
+        });
       }
     }
+
+    const menuIds = [...byMenu.keys()].sort();
+    if (menuIds.length > 0) {
+      const menus = await tx.$queryRaw<{ id: string; nom: string; stockRestant: number | null }[]>`
+        SELECT id, nom, "stockRestant" FROM "MenuDuJour"
+         WHERE id = ANY(${menuIds}::text[])
+         ORDER BY id
+           FOR UPDATE`;
+      const limitedMenus = menus.filter((m) => m.stockRestant !== null);
+      for (const menu of limitedMenus) {
+        if (menu.stockRestant! < byMenu.get(menu.id)!) {
+          throw new BadRequestException({
+            message:
+              menu.stockRestant === 0
+                ? `Menu « ${menu.nom} » épuisé.`
+                : `Menu « ${menu.nom} » : il n'en reste que ${menu.stockRestant}.`,
+            code: 'OUT_OF_STOCK',
+            menuId: menu.id,
+            availableQuantity: menu.stockRestant,
+          });
+        }
+      }
+      if (limitedMenus.length > 0) {
+        await tx.$executeRaw`
+          UPDATE "MenuDuJour" m
+             SET "stockRestant" = m."stockRestant" - x.q
+            FROM unnest(${limitedMenus.map((m) => m.id)}::text[],
+                        ${limitedMenus.map((m) => byMenu.get(m.id)!)}::int[]) AS x(id, q)
+           WHERE m.id = x.id AND m."stockRestant" >= x.q`;
+      }
+    }
+
+    return { limitedProductIds: limited.map((row) => row.id), movements };
   }
 
-  // Restaure le stock réservé au checkout (annulation de commande).
-  // Symétrique de decrementInTransaction : ré-incrémente Product ET MenuDuJour
-  // pour les lignes à stock limité (stockRestant non null).
+  /**
+   * Fige, ligne par ligne, ce que la réservation a réellement pris :
+   * `quantite × stockUnitsPerItem` pour un produit limité, `0` sinon. Un seul
+   * aller-retour, dans la transaction du checkout.
+   *
+   * C'est ce nombre — et lui seul — que la restitution rendra. Un produit
+   * illimité au checkout puis limité ensuite ne se voit rien « rendre » qu'il
+   * n'a pas donné (défaut d'avant F3-10 : `+q` fabriqué).
+   */
+  async recordReservation(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    limitedProductIds: readonly string[],
+  ): Promise<void> {
+    await tx.$executeRaw`
+      UPDATE "OrderItem"
+         SET "stockUnitsReserved" = CASE
+               WHEN "productId" = ANY(${[...limitedProductIds]}::text[])
+               THEN "quantite" * COALESCE("stockUnitsPerItem", 1)
+               ELSE 0 END
+       WHERE "orderId" = ${orderId}`;
+  }
+
+  /**
+   * Restitue le stock réservé par une commande annulée.
+   *
+   * F3-10 — on rend **le figé** (`stockUnitsReserved`), jamais un recalcul
+   * depuis le catalogue : 1 carton de 6 annulé = +6, 3 bouteilles = +3, une
+   * ligne d'un produit illimité au checkout = +0. Une commande antérieure à
+   * F3-10 (`NULL`) garde l'ancienne règle : `quantite` si le produit est limité
+   * (toutes les consommations valaient 1 — c'est exact).
+   *
+   * Selon la politique du produit :
+   * - `DAILY_QUOTA` : rien si la commande précède le dernier reset (le reset a
+   *   déjà effacé sa réservation — la rendre fabriquerait des unités dans le
+   *   quota du jour). Plafond au quota conservé en ceinture (fix L8) ;
+   * - `INVENTORY` : restitution exacte, **sans** plafond : « dernier niveau
+   *   déclaré » n'a pas de sens pour un stock réel, et le plafond perdait des
+   *   unités après un réapprovisionnement ;
+   * - `UNLIMITED` : rien (`stockRestant IS NULL`).
+   *
+   * `zeroProductIds` : produits que le vendeur déclare en rupture en refusant
+   * la commande — non restitués (voir `markOutOfStock`).
+   *
+   * Idempotence : inchangée, portée par la transition verrouillée vers
+   * `ANNULER` — une seule transaction peut la gagner. Même discipline de
+   * verrous que la réservation : produits triés, puis menus.
+   */
   async restoreInTransaction(
     tx: Prisma.TransactionClient,
-    items: { productId: string; menuId?: string | null; quantite: number }[],
-  ): Promise<void> {
-    const qtyByProduct = new Map<string, number>();
+    items: readonly RestorableItem[],
+    context: { orderCreatedAt?: Date; zeroProductIds?: readonly string[] } = {},
+  ): Promise<StockMovement[]> {
+    const movements: StockMovement[] = [];
+    const skip = new Set(context.zeroProductIds ?? []);
+    const units = new Map<string, number>();
     for (const item of items) {
-      if (item.productId) {
-        qtyByProduct.set(
-          item.productId,
-          (qtyByProduct.get(item.productId) ?? 0) + item.quantite,
-        );
+      if (!item.productId || skip.has(item.productId)) continue;
+      const u =
+        item.stockUnitsReserved === null || item.stockUnitsReserved === undefined
+          ? item.quantite
+          : item.stockUnitsReserved;
+      if (u <= 0) continue;
+      units.set(item.productId, (units.get(item.productId) ?? 0) + u);
+    }
+    // Colonnes `timestamp(3)` sans fuseau, écrites en UTC par Prisma : on
+    // compare en UTC explicite, indépendamment du fuseau de la session.
+    const since = context.orderCreatedAt?.toISOString() ?? null;
+
+    // Un `UPDATE` par produit, ids triés : l'ordre des verrous est celui de la
+    // réservation (un `UPDATE … FROM unnest` ne garantit pas l'ordre dans
+    // lequel PostgreSQL verrouille les lignes).
+    for (const id of [...units.keys()].sort()) {
+      const u = units.get(id)!;
+      const rows = await tx.$queryRaw<{ stockRestant: number; before: number }[]>`
+        UPDATE "Product"
+           SET "stockRestant" = CASE
+                 WHEN "stockPolicy" = 'DAILY_QUOTA'
+                 THEN LEAST("stockRestant" + ${u}, COALESCE("stockQuotidien", "stockRestant" + ${u}))
+                 ELSE "stockRestant" + ${u} END
+         WHERE id = ${id}
+           AND "stockRestant" IS NOT NULL
+           AND ("stockPolicy" <> 'DAILY_QUOTA'
+                OR ${since}::text IS NULL
+                OR "stockResetAt" IS NULL
+                OR "stockResetAt" <= (${since}::timestamptz AT TIME ZONE 'UTC'))
+        RETURNING "stockRestant", ${u}::int AS before`;
+      for (const row of rows) {
+        movements.push({ productId: id, before: row.stockRestant - row.before, after: row.stockRestant });
       }
     }
-    // Symétrique de la décrémentation : on rend q menus, pas N × q (F-01).
-    const qtyByMenu = countMenus(items);
-
-    // Même discipline de verrouillage que `decrementInTransaction` (fix S-7) :
-    // identifiants triés, produits avant menus, écritures séquentielles.
-    //
-    // La restauration prend exactement les mêmes verrous que la
-    // décrémentation. Deux annulations concurrentes portant sur les mêmes
-    // produits — ou une annulation concurrente d'un checkout, cas bien plus
-    // fréquent — pouvaient donc s'interbloquer par le même mécanisme. Un ordre
-    // total ne vaut que s'il est le **même** partout : le poser d'un seul côté
-    // laisserait le cycle ouvert.
-    //
-    // Fix L8 (audit du 28/08/2026) : la ré-incrémentation n'avait aucun
-    // plafond. Des cycles commande/annulation pouvaient gonfler `stockRestant`
-    // au-delà de `stockQuotidien` — le vendeur se retrouvait à vendre plus que
-    // ce qu'il avait déclaré, jusqu'au reset de 5 h. On borne au stock
-    // déclaré ; `LEAST` ignore le cas `stockQuotidien IS NULL` grâce au
-    // COALESCE.
-    for (const id of [...qtyByProduct.keys()].sort()) {
-      const qty = qtyByProduct.get(id)!;
-      await tx.$executeRaw`
-        UPDATE "Product"
-        SET "stockRestant" = LEAST(
-              "stockRestant" + ${qty},
-              COALESCE("stockQuotidien", "stockRestant" + ${qty})
-            )
-        WHERE id = ${id} AND "stockRestant" IS NOT NULL
-      `;
+    if (units.size > 0) {
+      this.logger.log(
+        `[STOCK] restitution ${[...units].map(([id, u]) => `${id}+${u}`).join(', ')}`,
+      );
     }
+
+    const qtyByMenu = requiredStock(items).byMenu;
     for (const id of [...qtyByMenu.keys()].sort()) {
       const qty = qtyByMenu.get(id)!;
       await tx.$executeRaw`
@@ -167,25 +263,67 @@ export class StockService {
         WHERE id = ${id} AND "stockRestant" IS NOT NULL
       `;
     }
+    return movements;
+  }
+
+  /**
+   * Refus vendeur « rupture » : les produits désignés passent à 0 ; un produit
+   * sans compteur passe indisponible. Dans la transaction du refus, bornée au
+   * vendeur de la commande (un identifiant étranger n'a aucun effet).
+   */
+  async markOutOfStock(
+    tx: Prisma.TransactionClient,
+    restaurantId: string,
+    productIds: readonly string[],
+  ): Promise<void> {
+    for (const id of [...productIds].sort()) {
+      await tx.$executeRaw`
+        UPDATE "Product"
+           SET "isAvailable"  = CASE WHEN "stockRestant" IS NULL THEN false ELSE "isAvailable" END,
+               "stockRestant" = CASE WHEN "stockRestant" IS NULL THEN NULL ELSE 0 END
+         WHERE id = ${id} AND "restaurantId" = ${restaurantId}`;
+    }
+    if (productIds.length > 0) {
+      this.logger.warn(`[STOCK] rupture déclarée au refus : ${[...productIds].join(', ')}`);
+    }
+  }
+
+  /** Refus nominatif, dans l'unité du format demandé. */
+  private productShortage(
+    lines: readonly ReservableLine[],
+    productId: string,
+    stockRestant: number,
+  ): BadRequestException {
+    const productLines = lines.filter((l) => l.productId === productId);
+    // Le format le plus « gros » est celui qui manque : on nomme celui-là.
+    const line = productLines.reduce((a, b) =>
+      stockConsumptionOf(b) > stockConsumptionOf(a) ? b : a,
+    );
+    const consumption = stockConsumptionOf(line);
+    const others = productLines
+      .filter((l) => l !== line)
+      .reduce((sum, l) => sum + l.quantite * stockConsumptionOf(l), 0);
+    const available = Math.max(0, Math.floor((stockRestant - others) / consumption));
+    this.logger.warn(
+      `[STOCK] réservation refusée produit=${productId} restant=${stockRestant}`,
+    );
+    return outOfStockError({
+      message: insufficientStockMessage({
+        productName: line.product?.nom ?? 'Ce produit',
+        variantLabel: line.variant?.label,
+        stockConsumption: consumption,
+        available,
+      }),
+      productId,
+      variantId: line.variantId,
+      availableQuantity: available,
+    });
   }
 
   // ─── Où est passé `resetDailyStock` ? ────────────────────────────────────
   //
-  // Supprimé (fix S-5, audit du 05/09/2026). Il ne s'agissait pas seulement de
-  // code mort — il était **faux**, et d'une façon coûteuse.
-  //
-  // Son commentaire annonçait « appelé par le scheduler à minuit ». Aucun
-  // appelant n'existait (grep exhaustif) : le vrai reset vit dans
-  // `RestaurantScheduleService.handleDailyStockReset`, à 4 h UTC. Et surtout,
-  // cette version-ci omettait `AND "stockMode" = 'DAILY'` : elle aurait
-  // rechargé chaque nuit le stock **réel** des épiceries et des vendeurs de
-  // boissons, c'est-à-dire fabriqué du stock qui n'existe pas.
-  //
-  // Un code mort qui contredit la règle en vigueur est pire qu'un code mort :
-  // il a l'air d'être la référence. Le prochain qui aurait cherché « le reset
-  // de stock » l'aurait trouvé ici, dans le service de stock, à l'endroit
-  // exact où on l'attend.
-  //
-  // ⚠️ Le reset n'a **qu'une** implémentation, et elle est dans
+  // Supprimé (fix S-5, audit du 05/09/2026) : il omettait `stockMode = DAILY`
+  // et aurait rechargé chaque nuit le stock réel des épiceries. Le reset n'a
+  // **qu'une** implémentation, dans
   // `modules/schedule/restaurant-schedule.service.ts`.
 }

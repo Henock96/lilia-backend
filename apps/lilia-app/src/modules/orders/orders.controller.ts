@@ -408,6 +408,7 @@ export class OrdersController {
     return this.ordersService.rejectOrder(id, fbUser.uid, {
       reason: dto.reason,
       note: dto.note,
+      outOfStockProductIds: dto.outOfStockProductIds,
     });
   }
 

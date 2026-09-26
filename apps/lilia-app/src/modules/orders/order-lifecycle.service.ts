@@ -32,7 +32,8 @@ import {
   HANDOVER_MAX_ATTEMPTS,
   handoverCodeMatches,
 } from '../deliveries/delivery-handover';
-import { StockService } from './stock.service';
+import { StockService, type StockMovement } from './stock.service';
+import { StockSignalService } from './stock-signal.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
 import { ReferralService } from '../users/referral.service';
 import { RefundsService } from '../refunds/refunds.service';
@@ -54,6 +55,21 @@ import {
 export interface VendorRejection {
   reason: VendorRejectionReason;
   note?: string;
+  /** F3-10 — produits déclarés en rupture (motif `OUT_OF_STOCK`). */
+  outOfStockProductIds?: string[];
+}
+
+/**
+ * F3-10 — la marchandise est-elle encore chez le vendeur quand la commande
+ * est annulée depuis ce statut ?
+ *
+ * Depuis `EN_ROUTE`, le livreur l'a récupérée : la remettre en stock
+ * fabriquait des unités qui n'existent plus sur l'étagère (seul l'ADMIN peut
+ * annuler depuis ce statut, arbitrage après incident). `ECHEC_LIVRAISON` et
+ * les remboursements ne restituent pas non plus — ils ne passent pas par ici.
+ */
+export function goodsStillAtVendor(from: OrderStatus): boolean {
+  return from !== 'EN_ROUTE';
 }
 
 @Injectable()
@@ -71,6 +87,9 @@ export class OrderLifecycleService {
     private readonly refunds: RefundsService,
     private readonly audit: AdminAuditService,
     private readonly outbox: OutboxService,
+    // F3-10 — invalidation du catalogue quand une restitution change le
+    // statut d'un format. En dernier : ajout sans décaler les autres.
+    private readonly stockSignal: StockSignalService,
   ) {}
 
   async cancelOrder(orderId: string, firebaseUid: string) {
@@ -108,6 +127,7 @@ export class OrderLifecycleService {
 
     // Annulation + restauration du stock réservé au checkout, en une transaction
     // (sinon le stock décrémenté à la commande est perdu = stock fantôme).
+    let restored: StockMovement[] = [];
     const updatedOrder = await this.prisma.$transaction(async (tx) => {
       // Verrou optimiste (fix H6) : sans lui, une annulation client concurrente
       // d'un passage en préparation appliquait les compensations à une
@@ -128,10 +148,13 @@ export class OrderLifecycleService {
           items: true, // Correction: Toujours inclure les items
         },
       });
-      await this.stockService.restoreInTransaction(tx, order.items);
+      restored = await this.stockService.restoreInTransaction(tx, order.items, {
+        orderCreatedAt: order.createdAt,
+      });
       await this.restoreCheckoutCompensations(tx, orderId, order.userId);
       return updated;
     });
+    void this.stockSignal.announce(restored, 'restored');
     // Fix H5 : le montant remboursable n'est plus une heuristique
     // (`total >= 1000 ? total : 0`, règle écrite nulle part) mais le montant
     // réellement encaissé. `openForCancelledOrder` ne crée rien si aucun
@@ -413,6 +436,7 @@ export class OrderLifecycleService {
     const historyActor = actorFromRole(user.role) ?? 'SYSTEM';
     const historySource = sourceFromRole(user.role);
 
+    let restored: StockMovement[] = [];
     const updatedOrder =
       newStatus === 'ANNULER'
         ? await this.prisma.$transaction(async (tx) => {
@@ -453,7 +477,36 @@ export class OrderLifecycleService {
               where: { id: orderId },
               include: { restaurant: true, items: true },
             });
-            await this.stockService.restoreInTransaction(tx, updated.items);
+            // F3-10 — restitution du figé, sauf si la marchandise est partie
+            // (EN_ROUTE) ; un refus « rupture » met à 0 les produits désignés
+            // au lieu de les rendre.
+            const outOfStock =
+              options.rejection?.reason === 'OUT_OF_STOCK'
+                ? (options.rejection.outOfStockProductIds ?? []).filter((id) =>
+                    updated.items.some((item) => item.productId === id),
+                  )
+                : [];
+            if (goodsStillAtVendor(order.status)) {
+              restored = await this.stockService.restoreInTransaction(
+                tx,
+                updated.items,
+                {
+                  orderCreatedAt: updated.createdAt,
+                  zeroProductIds: outOfStock,
+                },
+              );
+            } else {
+              this.logger.warn(
+                `[STOCK] annulation ${orderId} depuis ${order.status} : marchandise partie, rien restitué`,
+              );
+            }
+            if (outOfStock.length > 0) {
+              await this.stockService.markOutOfStock(
+                tx,
+                updated.restaurantId,
+                outOfStock,
+              );
+            }
             await this.restoreCheckoutCompensations(
               tx,
               orderId,
@@ -527,6 +580,7 @@ export class OrderLifecycleService {
             });
           });
 
+    void this.stockSignal.announce(restored, 'restored');
     await this.announceStatusChange(
       updatedOrder,
       order.status,
@@ -863,7 +917,9 @@ export class OrderLifecycleService {
       });
       if (!moved) return false;
 
-      await this.stockService.restoreInTransaction(tx, order.items);
+      await this.stockService.restoreInTransaction(tx, order.items, {
+        orderCreatedAt: order.createdAt,
+      });
       await this.restoreCheckoutCompensations(tx, orderId, order.userId);
       await this.outbox.enqueueInTransaction(tx, {
         type: ORDER_REFUND_DUE_EVENT,
@@ -914,7 +970,9 @@ export class OrderLifecycleService {
       });
       if (!moved) return false;
 
-      await this.stockService.restoreInTransaction(tx, order.items);
+      await this.stockService.restoreInTransaction(tx, order.items, {
+        orderCreatedAt: order.createdAt,
+      });
       await this.restoreCheckoutCompensations(tx, orderId, order.userId);
 
       // Fix H2 : un `Payment` PENDING survivait à l'annulation et restait

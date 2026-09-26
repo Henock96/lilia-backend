@@ -94,7 +94,11 @@ export class ProductsService {
     return this.command.setAvailability(productId, isAvailable, firebaseUid);
   }
 
-  updateStock(productId: string, stockQuotidien: number | null, firebaseUid: string) {
-    return this.command.updateStock(productId, stockQuotidien, firebaseUid);
+  updateStock(
+    productId: string,
+    gesture: { stockQuotidien?: number | null; action?: 'RESTOCK' | 'COUNT'; units?: number },
+    firebaseUid: string,
+  ) {
+    return this.command.updateStock(productId, gesture, firebaseUid);
   }
 }

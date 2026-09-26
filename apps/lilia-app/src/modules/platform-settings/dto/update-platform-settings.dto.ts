@@ -269,6 +269,17 @@ export class UpdatePlatformSettingsDto {
   modifiersManagementEnabled?: boolean;
 
   /**
+   * F3-10 — un vendeur peut-il déclarer un format qui consomme plusieurs
+   * unités de stock (carton de 6) ? À allumer **après** publication de l'app
+   * vendeurs qui envoie l'identifiant et la consommation des formats.
+   * L'éteindre n'efface rien : les formats existants restent vendables, seule
+   * la création d'un nouveau format multi-unités est refusée.
+   */
+  @IsOptional()
+  @IsBoolean()
+  multiUnitVariantsEnabled?: boolean;
+
+  /**
    * F3-07 / D5 — délai entre la preuve de remise et le versement, en minutes.
    * Ne réécrit pas les échéances déjà posées : il s'applique aux remises
    * suivantes. Bornes identiques au CHECK en base.

@@ -491,15 +491,16 @@ describeIfDb('MENU-01 — produit fantôme d’un PLAT_SPECIAL', () => {
     ).id;
 
     // Produit fantôme + son menu, comme le fait MenuCommandService.
-    phantomId = (
-      await prisma.product.create({
-        data: {
-          nom: 'Plat spécial du jour',
-          prixOriginal: 2500,
-          restaurantId: V.resto,
-        },
-      })
-    ).id;
+    const phantom = await prisma.product.create({
+      data: {
+        nom: 'Plat spécial du jour',
+        prixOriginal: 2500,
+        restaurantId: V.resto,
+        variants: { create: { label: 'Standard', prix: 2500 } },
+      },
+      include: { variants: true },
+    });
+    phantomId = phantom.id;
     await prisma.menuDuJour.create({
       data: {
         nom: 'Plat spécial du jour',
@@ -508,7 +509,13 @@ describeIfDb('MENU-01 — produit fantôme d’un PLAT_SPECIAL', () => {
         restaurantId: V.resto,
         dateDebut: new Date(Date.now() - 3600_000),
         dateFin: new Date(Date.now() + 86_400_000),
-        products: { create: { productId: phantomId, ordre: 0 } },
+        products: {
+          create: {
+            productId: phantomId,
+            variantId: phantom.variants[0].id,
+            ordre: 0,
+          },
+        },
       },
     });
   });

@@ -1,5 +1,4 @@
 import { countMenus } from './menu-quantities';
-import { StockService } from './stock.service';
 import {
   OrderValidatorService,
   menuUnavailabilityReason,
@@ -45,101 +44,11 @@ describe('countMenus', () => {
   });
 });
 
-/** Rejoue les `UPDATE` de stock contre un état en mémoire. */
-function fakeStockTx(state: {
-  products: Record<string, number | null>;
-  menus: Record<string, number | null>;
-}) {
-  const updates: { table: string; id: string; qty: number }[] = [];
-  const run = (strings: TemplateStringsArray, ...values: unknown[]) => {
-    const sql = strings.join('?');
-    const table = sql.includes('"MenuDuJour"') ? 'menus' : 'products';
-    // Seul paramètre textuel : l'identifiant ; `qty` est toujours le premier.
-    const qty = values[0] as number;
-    const id = values.find((v) => typeof v === 'string') as string;
-    const current = state[table][id];
-    updates.push({ table, id, qty });
-    if (current === null || current === undefined) return 0;
-    if (sql.includes('LEAST')) {
-      state[table][id] = current + qty;
-      return 1;
-    }
-    if (current < qty) return 0;
-    state[table][id] = current - qty;
-    return 1;
-  };
-  const limited = (table: 'products' | 'menus') => ({
-    findMany: jest.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
-      where.id.in
-        .filter(
-          (id) => state[table][id] !== null && state[table][id] !== undefined,
-        )
-        .map((id) => ({ id })),
-    ),
-  });
-  return {
-    tx: {
-      $executeRaw: jest.fn(run),
-      product: limited('products'),
-      menuDuJour: limited('menus'),
-    } as never,
-    updates,
-  };
-}
-
-describe('StockService — menus (F-01)', () => {
-  const stock = new StockService();
-
-  it('commander 1 menu de 3 plats décrémente le menu de 1 et chaque plat de 1', async () => {
-    const state = {
-      products: { a: 10, b: 10, c: 10 },
-      menus: { m1: 10 } as Record<string, number | null>,
-    };
-    const { tx } = fakeStockTx(state);
-    await stock.decrementInTransaction(tx, menuLines('m1', 1, ['a', 'b', 'c']));
-    expect(state.menus.m1).toBe(9);
-    expect(state.products).toEqual({ a: 9, b: 9, c: 9 });
-  });
-
-  it('un stock menu de 2 permet encore d’en commander 1 (refusé avant le fix)', async () => {
-    const state = {
-      products: { a: null, b: null, c: null } as Record<string, number | null>,
-      menus: { m1: 2 } as Record<string, number | null>,
-    };
-    const { tx } = fakeStockTx(state);
-    await expect(
-      stock.decrementInTransaction(tx, menuLines('m1', 1, ['a', 'b', 'c'])),
-    ).resolves.toBeUndefined();
-    expect(state.menus.m1).toBe(1);
-  });
-
-  it('menu + le même plat à la carte : le plat est compté deux fois, le menu une', async () => {
-    const state = {
-      products: { a: 10, b: 10 },
-      menus: { m1: 5 } as Record<string, number | null>,
-    };
-    const { tx } = fakeStockTx(state);
-    await stock.decrementInTransaction(tx, [
-      ...menuLines('m1', 2, ['a', 'b']),
-      { id: 'solo', menuId: null, productId: 'a', quantite: 1 },
-    ]);
-    expect(state.menus.m1).toBe(3);
-    expect(state.products).toEqual({ a: 7, b: 8 });
-  });
-
-  it('l’annulation rend exactement ce que le checkout a pris', async () => {
-    const state = {
-      products: { a: 10, b: 10, c: 10 },
-      menus: { m1: 10 } as Record<string, number | null>,
-    };
-    const { tx } = fakeStockTx(state);
-    const lines = menuLines('m1', 2, ['a', 'b', 'c']);
-    await stock.decrementInTransaction(tx, lines);
-    await stock.restoreInTransaction(tx, lines);
-    expect(state.menus.m1).toBe(10);
-    expect(state.products).toEqual({ a: 10, b: 10, c: 10 });
-  });
-});
+// Les scénarios `StockService` de ce fichier (décrément et restitution d'un
+// menu, F-01) vivent désormais dans `test/integration/stock-multi-units.int-spec.ts` :
+// depuis F3-10 la réservation verrouille (`FOR UPDATE`) puis décrémente par lot
+// (`unnest`), ce qu'une simulation en mémoire du SQL ne décrit plus fidèlement.
+// Ils y tournent contre un vrai PostgreSQL.
 
 describe('OrderValidatorService.validateStock — menus (F-01, F-02)', () => {
   const now = new Date();
@@ -235,7 +144,7 @@ describe('OrderValidatorService.validateStock — menus (F-01, F-02)', () => {
     expect(
       menuUnavailabilityReason(
         { ...menu(), prix: 9_999 } as never,
-        ['a', 'b', 'c'],
+        [{ productId: 'a' }, { productId: 'b' }, { productId: 'c' }],
         'resto-1',
         now,
       ),

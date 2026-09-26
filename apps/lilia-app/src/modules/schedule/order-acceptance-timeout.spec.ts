@@ -63,6 +63,7 @@ describe('Expiration des commandes non acceptées (F3-01)', () => {
         {} as never,
         {} as never,
         outbox as never,
+        { announce: async () => undefined } as never, // StockSignalService (F3-10)
       );
       return { service, tx, stock, outbox };
     }
@@ -80,9 +81,13 @@ describe('Expiration des commandes non acceptées (F3-01)', () => {
         actionId: 'SYSTEM',
         source: 'CRON',
       });
-      expect(stock.restoreInTransaction).toHaveBeenCalledWith(tx, [
-        { productId: 'p-1', quantite: 1 },
-      ]);
+      expect(stock.restoreInTransaction).toHaveBeenCalledWith(
+        tx,
+        [{ productId: 'p-1', quantite: 1 }],
+        // F3-10 — la date de la commande décide de la restitution d'un
+        // quota du jour (réservation antérieure au reset : rien à rendre).
+        expect.objectContaining({ orderCreatedAt: undefined }),
+      );
       const types = outbox.enqueueInTransaction.mock.calls.map(
         (c) => c[1].type,
       );

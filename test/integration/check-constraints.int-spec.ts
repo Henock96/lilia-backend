@@ -39,6 +39,7 @@ describeIfDb('Contraintes CHECK — argent et stock (PostgreSQL réel)', () => {
         nom: 'Beignets',
         prixOriginal: 500,
         restaurantId: 'ck-vendor',
+        stockPolicy: 'INVENTORY', // F3-10 : un compteur exige une politique limitée
         stockRestant: 1,
       },
     });
@@ -70,7 +71,8 @@ describeIfDb('Contraintes CHECK — argent et stock (PostgreSQL réel)', () => {
   it('un stock illimité (NULL) reste autorisé', async () => {
     await prisma.product.update({
       where: { id: 'ck-prod' },
-      data: { stockRestant: null },
+      // F3-10 : « illimité » est une politique, pas seulement un NULL.
+      data: { stockPolicy: 'UNLIMITED', stockRestant: null },
     });
   });
 });

@@ -6,6 +6,7 @@ import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 import { ProductCommandService } from './product-command.service';
 import { ProductValidatorService } from './product-validator.service';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 
 /**
  * **Modifier un produit ne doit pas vider le panier des clients.**
@@ -47,6 +48,7 @@ describe('ProductCommandService.update — réconciliation des variantes', () =>
       createMany: jest.fn(),
     },
     cartItem: { deleteMany: jest.fn() },
+    menuProduct: { findFirst: jest.fn() },
   };
 
   const PRODUIT = {
@@ -82,12 +84,22 @@ describe('ProductCommandService.update — réconciliation des variantes', () =>
     tx.product.update.mockResolvedValue({ ...PRODUIT });
     tx.product.findUnique.mockResolvedValue({ ...PRODUIT, variants: [] });
     // Deux variantes en base : « Petite » (v1) et « Grande » (v2).
-    tx.productVariant.findMany.mockResolvedValue([{ id: 'v1' }, { id: 'v2' }]);
+    tx.productVariant.findMany.mockResolvedValue([
+      { id: 'v1', label: 'Petite', stockConsumption: 1 },
+      { id: 'v2', label: 'Grande', stockConsumption: 1 },
+    ]);
+    tx.menuProduct.findFirst.mockResolvedValue(null);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ProductCommandService,
         { provide: PrismaService, useValue: prisma },
+        {
+          provide: PlatformSettingsService,
+          useValue: {
+            getSettings: async () => ({ multiUnitVariantsEnabled: false }),
+          },
+        },
         {
           provide: ProductValidatorService,
           useValue: {
@@ -179,7 +191,12 @@ describe('ProductCommandService.update — réconciliation des variantes', () =>
     );
 
     expect(tx.productVariant.create).toHaveBeenCalledWith({
-      data: { label: 'Familiale', prix: 2500, productId: 'p1' },
+      data: {
+        label: 'Familiale',
+        prix: 2500,
+        stockConsumption: 1,
+        productId: 'p1',
+      },
     });
     expect(tx.cartItem.deleteMany).not.toHaveBeenCalled();
   });
@@ -203,7 +220,7 @@ describe('ProductCommandService.update — réconciliation des variantes', () =>
       expect.objectContaining({ where: { id: 'variante-du-concurrent' } }),
     );
     expect(tx.productVariant.create).toHaveBeenCalledWith({
-      data: { label: 'Piratée', prix: 1, productId: 'p1' },
+      data: { label: 'Piratée', prix: 1, stockConsumption: 1, productId: 'p1' },
     });
   });
 
@@ -231,7 +248,12 @@ describe('ProductCommandService.update — réconciliation des variantes', () =>
     await service.update('p1', { variants: [] }, 'uid-vendeur');
 
     expect(tx.productVariant.create).toHaveBeenCalledWith({
-      data: { label: 'Standard', prix: 2500, productId: 'p1' },
+      data: {
+        label: 'Standard',
+        prix: 2500,
+        stockConsumption: 1,
+        productId: 'p1',
+      },
     });
     expect(tx.cartItem.deleteMany).toHaveBeenCalledWith({
       where: { variantId: { in: ['v1', 'v2'] } },
@@ -244,5 +266,114 @@ describe('ProductCommandService.update — réconciliation des variantes', () =>
     expect(tx.productVariant.findMany).not.toHaveBeenCalled();
     expect(tx.productVariant.deleteMany).not.toHaveBeenCalled();
     expect(tx.cartItem.deleteMany).not.toHaveBeenCalled();
+  });
+
+  // ─── F3-10 ───────────────────────────────────────────────────────────────
+
+  describe('F3-10 — application vendeurs qui n’envoie pas les identifiants', () => {
+    it('retrouve chaque format par son libellé : aucun panier vidé, aucun identifiant changé', async () => {
+      // `lilia-food-admin` : `ProductVariant.toJson()` = `{ label, prix }`.
+      await service.update(
+        'p1',
+        {
+          variants: [
+            { label: 'Petite', prix: 1100 },
+            { label: ' grande ', prix: 1500 },
+          ],
+        },
+        'uid-vendeur',
+      );
+
+      expect(tx.cartItem.deleteMany).not.toHaveBeenCalled();
+      expect(tx.productVariant.create).not.toHaveBeenCalled();
+      expect(tx.productVariant.update).toHaveBeenCalledWith({
+        where: { id: 'v1' },
+        data: { label: 'Petite', prix: 1100 },
+      });
+    });
+
+    it('refuse un renommage qui transformerait un carton de 6 en format à 1 unité', async () => {
+      tx.productVariant.findMany.mockResolvedValue([
+        { id: 'v1', label: 'Bouteille', stockConsumption: 1 },
+        { id: 'v2', label: 'Carton de 6', stockConsumption: 6 },
+      ]);
+
+      await expect(
+        service.update(
+          'p1',
+          {
+            variants: [
+              { label: 'Bouteille', prix: 13000 },
+              { label: 'Carton 6 btl', prix: 70000 },
+            ],
+          },
+          'uid-vendeur',
+        ),
+      ).rejects.toMatchObject({
+        response: { code: 'VARIANTS_REQUIRE_APP_UPDATE' },
+      });
+      expect(tx.productVariant.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('garde la consommation d’un format retrouvé par libellé (champ absent = inchangé)', async () => {
+      tx.productVariant.findMany.mockResolvedValue([
+        { id: 'v2', label: 'Carton de 6', stockConsumption: 6 },
+      ]);
+
+      await service.update(
+        'p1',
+        { variants: [{ label: 'Carton de 6', prix: 72000 }] },
+        'uid-vendeur',
+      );
+
+      expect(tx.productVariant.update).toHaveBeenCalledWith({
+        where: { id: 'v2' },
+        data: { label: 'Carton de 6', prix: 72000 },
+      });
+    });
+  });
+
+  it('F3-10 — la consommation d’un format existant ne se modifie pas (409)', async () => {
+    await expect(
+      service.update(
+        'p1',
+        {
+          variants: [
+            { id: 'v1', label: 'Petite', prix: 1000, stockConsumption: 6 },
+          ],
+        },
+        'uid-vendeur',
+      ),
+    ).rejects.toMatchObject({
+      response: { code: 'STOCK_CONSUMPTION_IMMUTABLE' },
+    });
+  });
+
+  it('F3-10 — un format multi-unités est refusé tant que l’interrupteur est éteint', async () => {
+    await expect(
+      service.update(
+        'p1',
+        {
+          variants: [
+            { id: 'v1', label: 'Petite', prix: 1000 },
+            { label: 'Carton de 6', prix: 5500, stockConsumption: 6 },
+          ],
+        },
+        'uid-vendeur',
+      ),
+    ).rejects.toMatchObject({ response: { code: 'MULTI_UNIT_DISABLED' } });
+  });
+
+  it('F3-10 — un format servi par un menu ne se retire pas en silence', async () => {
+    tx.menuProduct.findFirst.mockResolvedValue({ menu: { nom: 'Menu midi' } });
+
+    await expect(
+      service.update(
+        'p1',
+        { variants: [{ id: 'v1', label: 'Petite', prix: 1000 }] },
+        'uid-vendeur',
+      ),
+    ).rejects.toMatchObject({ response: { code: 'VARIANT_USED_BY_MENU' } });
+    expect(tx.productVariant.deleteMany).not.toHaveBeenCalled();
   });
 });

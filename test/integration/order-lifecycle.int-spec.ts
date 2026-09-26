@@ -80,6 +80,7 @@ describeIfDb('Cycle de vie complet — du panier à la note du livreur', () => {
         nom: 'Poulet braisé',
         prixOriginal: 3000,
         restaurantId: 'resto-1',
+        stockPolicy: 'DAILY_QUOTA', // F3-10
         stockQuotidien: 10,
         stockRestant: 10,
       },

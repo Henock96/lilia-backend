@@ -13,8 +13,12 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
-import { ProductType, StockMode } from '@prisma/client';
-import { MAX_PRIX_XAF, MAX_STOCK_UNITS } from './create-product.dto';
+import { ProductType, StockMode, StockPolicy, StockUnit } from '@prisma/client';
+import {
+  MAX_PRIX_XAF,
+  MAX_STOCK_CONSUMPTION,
+  MAX_STOCK_UNITS,
+} from './create-product.dto';
 
 const TIME_HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -37,6 +41,19 @@ class UpdateProductVariantDto {
   @Min(0, { message: 'Le prix ne peut pas être négatif.' })
   @Max(MAX_PRIX_XAF, { message: 'Prix hors limites.' })
   prix?: number;
+
+  /**
+   * F3-10 — unités de stock consommées par UNE unité vendue de ce format
+   * (bouteille = 1, carton de 6 = 6). Indépendant du prix. Absent = 1 à la
+   * création, **inchangé** en édition. Immuable une fois le format créé.
+   */
+  @IsInt({ message: 'Le nombre d’unités par format est un entier.' })
+  @IsOptional()
+  @Min(1, { message: 'Un format consomme au moins une unité.' })
+  @Max(MAX_STOCK_CONSUMPTION, {
+    message: 'Nombre d’unités par format hors limites.',
+  })
+  stockConsumption?: number;
 }
 
 export class UpdateProductDto {
@@ -79,6 +96,19 @@ export class UpdateProductDto {
   @IsEnum(StockMode)
   @IsOptional()
   stockMode?: StockMode;
+
+  /**
+   * F3-10 — « Toujours disponible » / « Quantité du jour » / « Stock réel ».
+   * Remplace `stockMode` (encore accepté pour les applications installées).
+   */
+  @IsEnum(StockPolicy)
+  @IsOptional()
+  stockPolicy?: StockPolicy;
+
+  /** F3-10 — ce que compte le stock (bouteilles, portions…). */
+  @IsEnum(StockUnit)
+  @IsOptional()
+  stockUnit?: StockUnit;
 
   /**
    * Capacité déclarée. `null` = stock illimité.

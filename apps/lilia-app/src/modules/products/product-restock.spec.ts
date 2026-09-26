@@ -20,6 +20,7 @@ import { ProductCommandService } from './product-command.service';
 describe('ProductCommandService.update — réalignement du stock', () => {
   function build(product: Record<string, unknown>) {
     const txUpdate = jest.fn().mockResolvedValue({ id: 'p1' });
+    const txExecuteRaw = jest.fn().mockResolvedValue(1);
     const prisma = {
       product: {
         findUnique: jest.fn().mockResolvedValue({
@@ -42,6 +43,7 @@ describe('ProductCommandService.update — réalignement du stock', () => {
       },
       $transaction: jest.fn(async (fn: (tx: unknown) => unknown) =>
         fn({
+          $executeRaw: txExecuteRaw,
           product: {
             update: txUpdate,
             findUnique: jest.fn().mockResolvedValue({ id: 'p1', variants: [] }),
@@ -65,18 +67,73 @@ describe('ProductCommandService.update — réalignement du stock', () => {
       { resolveTargetRestaurant: jest.fn() } as never,
       { record: jest.fn() } as never,
       { emit: jest.fn() } as never,
+      {
+        getSettings: async () => ({ multiUnitVariantsEnabled: true }),
+      } as never, // PlatformSettingsService (F3-10)
     );
-    return { service, txUpdate };
+    return { service, txUpdate, txExecuteRaw };
   }
 
   /** Ce que la transaction a réellement écrit sur la ligne `Product`. */
   const written = (txUpdate: jest.Mock) =>
     (txUpdate.mock.calls[0][0] as { data: Record<string, unknown> }).data;
 
-  it('remet stockRestant à niveau quand la capacité augmente', async () => {
+  const quota = (stockQuotidien: number, stockRestant: number) => ({
+    stockPolicy: 'DAILY_QUOTA',
+    stockMode: 'DAILY',
+    stockQuotidien,
+    stockRestant,
+  });
+
+  it('quota du jour modifié : le reste suit l’écart, en SQL — les ventes du jour restent vendues', async () => {
+    // F3-10 : avant, « reste = nouveau quota » ressuscitait ce qui avait été
+    // vendu dans la journée (20 → 25 à midi avec 15 vendues donnait 25).
+    const { service, txUpdate, txExecuteRaw } = build(quota(20, 5));
+
+    await service.update('p1', { stockQuotidien: 25 }, 'fb-owner');
+
+    expect(written(txUpdate)).not.toHaveProperty('stockRestant');
+    const [strings, ...values] = txExecuteRaw.mock.calls[0];
+    expect(strings.join('?')).toMatch(/GREATEST\(0, "stockRestant" \+/);
+    expect(values).toContain(25);
+  });
+
+  it('repasse en « Toujours disponible » quand la capacité passe à null', async () => {
+    const { service, txUpdate } = build(quota(10, 3));
+
+    await service.update('p1', { stockQuotidien: null }, 'fb-owner');
+
+    expect(written(txUpdate)).toMatchObject({
+      stockPolicy: 'UNLIMITED',
+      stockQuotidien: null,
+      stockRestant: null,
+    });
+  });
+
+  it('un produit illimité qui reçoit une quantité (ancien contrat, DAILY) devient « Quantité du jour »', async () => {
     const { service, txUpdate } = build({
+      stockPolicy: 'UNLIMITED',
+      stockMode: 'DAILY',
+      stockQuotidien: null,
+      stockRestant: null,
+    });
+
+    await service.update('p1', { stockQuotidien: 12 }, 'fb-owner');
+
+    expect(written(txUpdate)).toMatchObject({
+      stockPolicy: 'DAILY_QUOTA',
+      stockMode: 'DAILY',
+      stockQuotidien: 12,
+      stockRestant: 12,
+    });
+  });
+
+  it('stock réel : un nouveau niveau déclaré devient le restant (ancien contrat PERMANENT)', async () => {
+    const { service, txUpdate } = build({
+      stockPolicy: 'INVENTORY',
+      stockMode: 'PERMANENT',
       stockQuotidien: 10,
-      stockRestant: 0, // épuisé
+      stockRestant: 0,
     });
 
     await service.update('p1', { stockQuotidien: 30 }, 'fb-owner');
@@ -87,45 +144,19 @@ describe('ProductCommandService.update — réalignement du stock', () => {
     });
   });
 
-  it('remet stockRestant à niveau quand la capacité baisse (invariant restant ≤ déclaré)', async () => {
-    const { service, txUpdate } = build({
-      stockQuotidien: 30,
-      stockRestant: 25,
-    });
+  it('changement de politique explicite : compteurs posés sur la nouvelle politique', async () => {
+    const { service, txUpdate } = build(quota(10, 4));
 
-    await service.update('p1', { stockQuotidien: 10 }, 'fb-owner');
-
-    expect(written(txUpdate)).toMatchObject({
-      stockQuotidien: 10,
-      stockRestant: 10,
-    });
-  });
-
-  it('repasse en illimité quand la capacité passe à null', async () => {
-    const { service, txUpdate } = build({
-      stockQuotidien: 10,
-      stockRestant: 3,
-    });
-
-    await service.update('p1', { stockQuotidien: null }, 'fb-owner');
+    await service.update(
+      'p1',
+      { stockPolicy: 'INVENTORY', stockQuotidien: 60 },
+      'fb-owner',
+    );
 
     expect(written(txUpdate)).toMatchObject({
-      stockQuotidien: null,
-      stockRestant: null,
-    });
-  });
-
-  it('borne un produit illimité qu’on passe à stock fini', async () => {
-    const { service, txUpdate } = build({
-      stockQuotidien: null,
-      stockRestant: null,
-    });
-
-    await service.update('p1', { stockQuotidien: 12 }, 'fb-owner');
-
-    expect(written(txUpdate)).toMatchObject({
-      stockQuotidien: 12,
-      stockRestant: 12,
+      stockPolicy: 'INVENTORY',
+      stockMode: 'PERMANENT',
+      stockRestant: 60,
     });
   });
 
@@ -133,28 +164,36 @@ describe('ProductCommandService.update — réalignement du stock', () => {
     // Le cas de la ré-émission : le formulaire renvoie toujours le champ. Six
     // unités ont été vendues dans la journée ; corriger la description ne doit
     // pas les rendre.
-    const { service, txUpdate } = build({
-      stockQuotidien: 10,
-      stockRestant: 4,
-    });
+    const { service, txUpdate, txExecuteRaw } = build(quota(10, 4));
 
     await service.update(
       'p1',
-      { nom: 'Poulet braisé (grand)', stockQuotidien: 10 },
+      { nom: 'Poulet braisé (grand)', stockQuotidien: 10, stockMode: 'DAILY' },
       'fb-owner',
     );
 
     expect(written(txUpdate)).not.toHaveProperty('stockRestant');
+    expect(txExecuteRaw).not.toHaveBeenCalled();
   });
 
   it('NE touche PAS stockRestant quand le champ est absent du corps', async () => {
-    const { service, txUpdate } = build({
-      stockQuotidien: 10,
-      stockRestant: 4,
-    });
+    const { service, txUpdate } = build(quota(10, 4));
 
     await service.update('p1', { nom: 'Nouveau nom' }, 'fb-owner');
 
     expect(written(txUpdate)).not.toHaveProperty('stockRestant');
+  });
+
+  it('refuse une « Quantité du jour » sans quantité', async () => {
+    const { service } = build({
+      stockPolicy: 'UNLIMITED',
+      stockMode: 'DAILY',
+      stockQuotidien: null,
+      stockRestant: null,
+    });
+
+    await expect(
+      service.update('p1', { stockPolicy: 'DAILY_QUOTA' }, 'fb-owner'),
+    ).rejects.toMatchObject({ response: { code: 'STOCK_UNITS_REQUIRED' } });
   });
 });

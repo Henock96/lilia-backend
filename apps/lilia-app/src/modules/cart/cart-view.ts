@@ -8,6 +8,11 @@ import {
   type CartLine,
   type CartLineIssue,
 } from '../modifiers/cart-line-pricing';
+import {
+  lineStockUnits,
+  requiredStock,
+  stockShortage,
+} from '../orders/stock-units';
 
 /**
  * F3-09 — la réponse de `GET /cart` (et de toutes les écritures du panier).
@@ -70,7 +75,8 @@ export interface CartLineView {
     madeToOrder: boolean;
     stockRestant: number | null;
   };
-  variant: { label: string | null; prix: number };
+  /** F3-10 — `stockConsumption` : unités de stock par unité vendue. */
+  variant: { label: string | null; prix: number; stockConsumption: number };
   menu: {
     id: string;
     nom: string;
@@ -106,8 +112,17 @@ export function toCartView(
     ...quoteCartLine(line, modifiersEnabled),
   }));
   const totals = lineTotalsXaf(quotes);
+  // F3-10 — une ligne que le stock ne peut plus servir est annoncée ici, et
+  // pas seulement au checkout. Chaque ligne est jugée avec les AUTRES lignes
+  // du même produit (formats et composants de menu puisent au même stock).
+  const unitsByProduct = requiredStock(cart.items).byProduct;
   const items = quotes.map(({ line, selection, issue }, i) =>
-    toLineView(line, selection, issue, totals[i]),
+    toLineView(
+      line,
+      selection,
+      issue ?? stockIssue(line, unitsByProduct),
+      totals[i],
+    ),
   );
   return {
     id: cart.id,
@@ -142,7 +157,11 @@ function toLineView(
       madeToOrder: line.product.madeToOrder,
       stockRestant: line.product.stockRestant,
     },
-    variant: { label: line.variant.label, prix: line.variant.prix },
+    variant: {
+      label: line.variant.label,
+      prix: line.variant.prix,
+      stockConsumption: line.variant.stockConsumption,
+    },
     menu: menu
       ? {
           id: menu.id,
@@ -166,5 +185,29 @@ function toLineView(
     optionsTotalXaf: menu ? 0 : selection.optionsTotalXaf,
     lineTotalXaf,
     issue,
+  };
+}
+
+function stockIssue(
+  line: CartLine,
+  unitsByProduct: ReadonlyMap<string, number>,
+): CartLineIssue | null {
+  const shortage = stockShortage({
+    product: line.product,
+    variant: line.variant,
+    quantite: line.quantite,
+    otherUnits:
+      (unitsByProduct.get(line.productId) ?? 0) - lineStockUnits(line),
+    cartItemId: line.id,
+  });
+  if (!shortage) return null;
+  const body = shortage.getResponse() as {
+    message: string;
+    availableQuantity: number;
+  };
+  return {
+    code: 'OUT_OF_STOCK',
+    message: body.message,
+    availableQuantity: body.availableQuantity,
   };
 }

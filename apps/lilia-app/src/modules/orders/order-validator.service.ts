@@ -12,16 +12,24 @@ import {
 } from '@nestjs/common';
 import { OnboardingStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { unavailabilityReason } from '../products/product-availability';
+import { productStateReason } from '../products/product-availability';
 import { PromoService } from '../promo/promo.service';
-import { countMenus } from './menu-quantities';
+import {
+  availableForLine,
+  insufficientStockMessage,
+  requiredStock,
+  stockConsumptionOf,
+} from './stock-units';
 import { CART_LINE_INCLUDE, type CartLine } from '../modifiers/cart-line-pricing';
 
 /** Ce que les contrôles de restaurant lisent d'une ligne. */
 type LineWithVendor = { product: { restaurantId: string } };
 /** Ce que le contrôle de stock lit d'une ligne (sous-ensemble de `CartLine`). */
 type StockLine = Pick<CartLine, 'productId' | 'menuId' | 'quantite'> &
-  LineWithVendor;
+  LineWithVendor & {
+    variantId?: string;
+    variant?: { stockConsumption?: number | null; label?: string | null } | null;
+  };
 
 @Injectable()
 export class OrderValidatorService {
@@ -123,7 +131,7 @@ export class OrderValidatorService {
       menuIds.length
         ? this.prisma.menuDuJour.findMany({
             where: { id: { in: menuIds } },
-            include: { products: { select: { productId: true } } },
+            include: { products: { select: { productId: true, variantId: true } } },
           })
         : Promise.resolve([]),
     ]);
@@ -145,33 +153,43 @@ export class OrderValidatorService {
     //
     // Le validateur doit compter comme la décrémentation compte, sinon les
     // deux ne parlent pas du même panier.
-    const qtyByProduct = new Map<string, number>();
-    for (const item of cartItems) {
-      qtyByProduct.set(
-        item.productId,
-        (qtyByProduct.get(item.productId) ?? 0) + item.quantite,
-      );
-    }
-    // Un menu = q unités, pas N × q — même comptage que le prix et la
-    // décrémentation (fix F-01, `menu-quantities.ts`).
-    const qtyByMenu = countMenus(cartItems);
+    // F3-10 : en unités de STOCK — `quantite × stockConsumption` (1 carton
+    // de 6 = 6 bouteilles), même fonction que la réservation. Un menu = q, pas
+    // N × q (fix F-01).
+    const { byProduct, byMenu: qtyByMenu } = requiredStock(cartItems);
+    let stockShort = false;
 
-    for (const [productId, quantite] of qtyByProduct) {
+    for (const [productId, units] of byProduct) {
       const product = productMap.get(productId);
       if (!product) continue;
 
-      // Fixes M1 + M2 (+ S-2) : produit retiré du catalogue, marqué
-      // indisponible, hors de sa fenêtre horaire, ou en stock insuffisant. Le
-      // catalogue masque déjà les trois premiers, mais un panier peut avoir
-      // été rempli avant — et `availableFrom/Until` n'était relu nulle part,
-      // donc une viennoiserie du matin passait commande à 3 h.
-      //
-      // Les quatre raisons vivent dans `unavailabilityReason` : le panier et
-      // le checkout posent ainsi exactement la même question, avec les mêmes
-      // mots. Elles étaient auparavant réparties entre cette méthode et cette
-      // fonction, ce qui donnait deux messages différents pour « épuisé ».
-      const reason = unavailabilityReason(product, new Date(), quantite);
-      if (reason) errors.push(reason);
+      // Fixes M1 + M2 : produit retiré du catalogue, marqué indisponible, ou
+      // hors de sa fenêtre horaire. Un panier peut avoir été rempli avant.
+      const reason = productStateReason(product, new Date());
+      if (reason) {
+        errors.push(reason);
+        continue;
+      }
+      // Fix S-2 + F3-10 : stock insuffisant, dit dans l'unité du format le
+      // plus « gros » de la commande (c'est lui qui manque).
+      const stock = product.stockRestant;
+      if (stock !== null && stock !== undefined && units > stock) {
+        stockShort = true;
+        const lines = cartItems.filter((l) => l.productId === productId);
+        const line = lines.reduce((a, b) =>
+          stockConsumptionOf(b) > stockConsumptionOf(a) ? b : a,
+        );
+        const consumption = stockConsumptionOf(line);
+        const others = units - line.quantite * consumption;
+        errors.push(
+          insufficientStockMessage({
+            productName: product.nom,
+            variantLabel: line.variant?.label,
+            stockConsumption: consumption,
+            available: availableForLine(stock, consumption, others) ?? 0,
+          }),
+        );
+      }
     }
 
     const now = new Date();
@@ -188,7 +206,9 @@ export class OrderValidatorService {
       // prix du menu, alors que la cuisine ne le préparait plus.
       const reason = menuUnavailabilityReason(
         menu,
-        cartItems.filter((i) => i.menuId === menuId).map((i) => i.productId),
+        cartItems
+          .filter((i) => i.menuId === menuId)
+          .map((i) => ({ productId: i.productId, variantId: i.variantId })),
         cartRestaurantId(cartItems),
         now,
       );
@@ -198,6 +218,7 @@ export class OrderValidatorService {
       }
       if (menu.stockRestant !== null && menu.stockRestant !== undefined) {
         if (menu.stockRestant < quantite) {
+          stockShort = true;
           errors.push(
             menu.stockRestant === 0
               ? `Menu « ${menu.nom} » épuisé.`
@@ -208,7 +229,12 @@ export class OrderValidatorService {
     }
 
     if (errors.length > 0)
-      throw new BadRequestException(`Ruptures de stock : ${errors.join(' ')}`);
+      throw new BadRequestException({
+        message: `Ruptures de stock : ${errors.join(' ')}`,
+        // Code seulement quand il s'agit bien de stock : un produit retiré ou
+        // hors créneau n'est pas une rupture.
+        ...(stockShort ? { code: 'OUT_OF_STOCK' } : {}),
+      });
   }
 
   validateMinimumOrderAmount(subTotal: number, minimum: number, restaurantName: string) {
@@ -255,9 +281,9 @@ export function menuUnavailabilityReason(
     dateDebut: Date;
     dateFin: Date;
     restaurantId: string;
-    products: { productId: string }[];
+    products: { productId: string; variantId?: string }[];
   },
-  cartProductIds: string[],
+  cartLines: { productId: string; variantId?: string }[],
   restaurantId: string | undefined,
   now: Date,
 ): string | null {
@@ -268,8 +294,13 @@ export function menuUnavailabilityReason(
   if (restaurantId && menu.restaurantId !== restaurantId) {
     return `Menu « ${menu.nom} » n'appartient pas à ce vendeur.`;
   }
-  const expected = new Set(menu.products.map((p) => p.productId));
-  const actual = new Set(cartProductIds);
+  // F3-10 — le format de chaque composant fait partie de la composition : un
+  // menu passé de « Bouteille » à « Carton de 6 » ne consomme plus la même
+  // chose, la ligne de panier doit être reconstituée.
+  const key = (p: { productId: string; variantId?: string }) =>
+    p.variantId ? `${p.productId}:${p.variantId}` : p.productId;
+  const expected = new Set(menu.products.map(key));
+  const actual = new Set(cartLines.map(key));
   const sameComposition =
     expected.size === actual.size && [...expected].every((id) => actual.has(id));
   if (!sameComposition) {

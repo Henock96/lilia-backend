@@ -52,7 +52,8 @@ describeIfDb(
         unused, // quartiers
         unused, // destination
         unused, // deliveryPricing
-        unused, // transitions
+        unused, // transitions,
+        { announce: async () => undefined } as never, // StockSignalService (F3-10)
       );
     });
 

@@ -1,19 +1,21 @@
-import { IsInt, IsOptional, Max, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, Max, Min, ValidateIf } from 'class-validator';
 import { MAX_STOCK_UNITS } from './create-product.dto';
 
 /**
- * Corps de `PATCH /products/:id/stock` — réapprovisionnement explicite.
+ * F3-10 — gestes de stock du vendeur.
  *
- * La route lisait `@Body('stockQuotidien')` **brut**, sans DTO : aucune
- * validation à l'exécution. `"abc"` arrivait jusqu'à Prisma (500), `-5`
- * s'écrivait tel quel, et un entier hors bornes aussi. C'est le même défaut que
- * `POST /payments` (fix H1) et le webhook MTN (fix M13) : une route typée
- * seulement par TypeScript n'est pas une route validée.
+ * | `action`   | Politique       | Effet                                                    |
+ * |------------|-----------------|----------------------------------------------------------|
+ * | absent     | toutes          | ancien contrat : `stockQuotidien` = niveau déclaré (et restant) ; `null` = illimité |
+ * | `RESTOCK`  | limitée         | « Réapprovisionner +N » : `stockRestant += N`, atomique  |
+ * | `COUNT`    | `INVENTORY`     | « Faire l'inventaire = N » : N unités comptées sur place, moins celles déjà réservées par des commandes pas encore parties |
  *
- * `null` est une valeur **significative** ici : elle repasse le produit en
- * stock illimité. `@IsOptional()` laisse passer `null` comme `undefined` ; la
- * distinction entre les deux est faite par le service, qui traite `undefined`
- * comme « champ absent » et `null` comme « illimité ».
+ * `RESTOCK` et `COUNT` remplacent l'écrasement `restant = N`, qui perdait
+ * en silence les ventes faites entre la lecture du vendeur et son écriture,
+ * et comptait deux fois les unités réservées encore en rayon.
+ *
+ * `null` sur `stockQuotidien` (sans `action`) est une valeur **significative** :
+ * elle repasse le produit en « Toujours disponible ».
  */
 export class UpdateProductStockDto {
   @IsInt({ message: 'Le stock est un nombre entier d’unités.' })
@@ -21,4 +23,14 @@ export class UpdateProductStockDto {
   @Min(0, { message: 'Le stock ne peut pas être négatif.' })
   @Max(MAX_STOCK_UNITS, { message: 'Stock hors limites.' })
   stockQuotidien?: number | null;
+
+  @IsOptional()
+  @IsIn(['RESTOCK', 'COUNT'], { message: 'Geste de stock inconnu.' })
+  action?: 'RESTOCK' | 'COUNT';
+
+  @ValidateIf((dto: UpdateProductStockDto) => dto.action !== undefined)
+  @IsInt({ message: 'Le nombre d’unités est un entier.' })
+  @Min(0, { message: 'Le nombre d’unités ne peut pas être négatif.' })
+  @Max(MAX_STOCK_UNITS, { message: 'Stock hors limites.' })
+  units?: number;
 }

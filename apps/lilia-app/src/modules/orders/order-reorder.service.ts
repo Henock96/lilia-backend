@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ForbiddenException,
+  HttpException,
   Injectable,
   Logger,
   NotFoundException,
@@ -16,6 +17,44 @@ import {
   resolveSelection,
 } from '../modifiers/modifier-selection';
 import { mergeCartLine } from '../modifiers/cart-line-merge';
+import { productStateReason } from '../products/product-availability';
+import { CartService } from '../cart/cart.service';
+import { countMenus } from './menu-quantities';
+import { lineStockUnits, stockShortage } from './stock-units';
+
+/** Format retrouvé par son libellé figé — seulement s'il est unique. */
+function uniqueByLabel<V extends { label: string | null }>(
+  variants: readonly V[],
+  label: string | null | undefined,
+): V | undefined {
+  const key = (label ?? '').trim().toLowerCase();
+  const matches = variants.filter(
+    (v) => (v.label ?? '').trim().toLowerCase() === key,
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function httpBody(error: unknown): Record<string, unknown> | undefined {
+  if (error instanceof HttpException) {
+    const body = error.getResponse();
+    return typeof body === 'object'
+      ? (body as Record<string, unknown>)
+      : { message: body };
+  }
+  return undefined;
+}
+function httpMessage(error: unknown, fallback: string): string {
+  const message = httpBody(error)?.message;
+  return typeof message === 'string' ? message : fallback;
+}
+function httpCode(error: unknown): string | undefined {
+  const code = httpBody(error)?.code;
+  return typeof code === 'string' ? code : undefined;
+}
+function httpAvailable(error: unknown): number | undefined {
+  const n = httpBody(error)?.availableQuantity;
+  return typeof n === 'number' ? n : undefined;
+}
 
 /**
  * Recommande (reorder) une commande précédente (LIL-134).
@@ -32,6 +71,8 @@ export class OrderReorderService {
     private readonly prisma: PrismaService,
     // F3-09 — l'interrupteur des options décide de la résolution.
     private readonly platformSettings: PlatformSettingsService,
+    // F3-10 — un menu se rachète par le même chemin que `POST /cart/menus`.
+    private readonly cartService: CartService,
   ) {}
 
   async reorderFromPreviousOrder(orderId: string, firebaseUid: string) {
@@ -57,6 +98,7 @@ export class OrderReorderService {
                 modifierGroups: PRODUCT_MODIFIER_GROUPS_ARGS,
               },
             },
+            menu: { select: { nom: true } },
             // Options figées de la commande : ce que le client avait choisi.
             options: {
               orderBy: { position: 'asc' },
@@ -110,7 +152,11 @@ export class OrderReorderService {
     const { modifiersEnabled } = await this.platformSettings.getSettings();
 
     // 5. Ajouter les items de la commande au panier
-    const results = {
+    const results: {
+      added: Record<string, unknown>[];
+      unavailable: Record<string, unknown>[];
+      errors: Record<string, unknown>[];
+    } = {
       added: [],
       unavailable: [],
       errors: [],
@@ -120,59 +166,86 @@ export class OrderReorderService {
       `🔄 [REORDER] Commande ${orderId}: ${order.items.length} items à ajouter au panier`,
     );
 
-    for (const orderItem of order.items) {
+    // F3-10 — les lignes de menu se rachètent comme **menu** (même chemin et
+    // mêmes contrôles que `POST /cart/menus`), plus comme articles isolés au
+    // prix de la variante : l'ancien reorder recréait trois plats à la carte
+    // à la place d'un menu.
+    const menus = countMenus(order.items);
+    for (const [menuId, quantite] of menus) {
+      const menuName =
+        order.items.find((item) => item.menuId === menuId)?.menu?.nom ?? 'Menu';
       try {
-        // Vérifier que le produit existe toujours
+        await this.cartService.addMenu(firebaseUid, { menuId, quantite });
+        results.added.push({
+          productName: menuName,
+          menuId,
+          quantity: quantite,
+        });
+      } catch (error) {
+        results.unavailable.push({
+          productName: menuName,
+          menuId,
+          reason: httpMessage(error, 'Ce menu n’est plus proposé.'),
+          code: httpCode(error) ?? 'MENU_UNAVAILABLE',
+          ...(httpAvailable(error) !== undefined
+            ? { availableQuantity: httpAvailable(error) }
+            : {}),
+        });
+      }
+    }
+
+    for (const orderItem of order.items) {
+      if (orderItem.menuId) continue;
+      try {
         const product = orderItem.product;
-        this.logger.log(
-          `🔄 [REORDER] Item: productId=${orderItem.productId}, variant="${orderItem.variant}", product exists=${!!product}, variants count=${product?.variants?.length ?? 0}`,
-        );
         if (!product) {
           results.unavailable.push({
             productId: orderItem.productId,
             reason: 'Produit introuvable',
+            code: 'VARIANT_UNAVAILABLE',
           });
           continue;
         }
 
-        // Trouver la variante correspondante
-        // 1. Chercher par label exact
-        let variant = product.variants.find(
-          (v) => v.label === orderItem.variant,
-        );
+        // F3-10 / D12 — le format **exact** acheté, par son identifiant. Une
+        // commande antérieure au 04/04/2026 n'en a pas : son libellé figé, à
+        // condition qu'il désigne un seul format. **Jamais `variants[0]`** :
+        // l'ancien repli ajoutait en silence un autre format, à un autre prix
+        // (et, depuis F3-10, avec une autre consommation de stock).
+        //
+        // La conversion ne peut pas avoir changé depuis la commande : elle est
+        // immuable. « Carton de 12 » qui remplace « Carton de 6 » est un autre
+        // format, donc un autre identifiant — il n'est pas retrouvé ici.
+        const variant = orderItem.variantId
+          ? product.variants.find((v) => v.id === orderItem.variantId)
+          : uniqueByLabel(product.variants, orderItem.variant);
 
-        // 2. Chercher par label case-insensitive / trimmed
         if (!variant) {
-          const orderVariantLower = (orderItem.variant || '')
-            .trim()
-            .toLowerCase();
-          variant = product.variants.find(
-            (v) => (v.label || '').trim().toLowerCase() === orderVariantLower,
-          );
-        }
-
-        // 3. Si la variante n'existe plus, prendre la première disponible
-        if (!variant && product.variants.length > 0) {
-          variant = product.variants[0];
           this.logger.warn(
-            `Variant "${orderItem.variant}" not found for product ${product.id}, using default variant "${variant.label}"`,
+            `[REORDER] format introuvable produit=${product.id} variantId=${orderItem.variantId ?? '∅'} libellé="${orderItem.variant}"`,
           );
-        }
-
-        if (!variant) {
           results.unavailable.push({
             productName: product.nom,
-            reason: 'Aucune variante disponible',
+            variant: orderItem.variantLabel ?? orderItem.variant,
+            reason: `Le format « ${orderItem.variantLabel ?? orderItem.variant} » n'est plus proposé.`,
+            code: 'VARIANT_UNAVAILABLE',
           });
           continue;
         }
 
-        // F3-09 — la sélection d'options d'origine, résolue par LE moteur
-        // contre la carte d'aujourd'hui (décision Q7). Une option disparue,
-        // en rupture, ou un groupe devenu obligatoire : la ligne est IGNORÉE
-        // et signalée. Jamais « Poulet + Alloco » recréé en « Poulet » seul —
-        // ce serait un autre plat, à un autre prix, que le client n'a pas
-        // demandé.
+        const state = productStateReason(product, new Date());
+        if (state) {
+          results.unavailable.push({
+            productName: product.nom,
+            reason: state,
+            code: 'PRODUCT_UNAVAILABLE',
+          });
+          continue;
+        }
+
+        // F3-09 — une option supprimée du catalogue a laissé une copie figée
+        // sans lien (`optionId = null`) : on ne la remplace jamais par une
+        // autre. La ligne est signalée, pas recomposée.
         const gone = orderItem.options.find(
           (option) => option.optionId === null,
         );
@@ -200,6 +273,42 @@ export class OrderReorderService {
             productName: product.nom,
             reason: err.message,
             code: err.code,
+          });
+          continue;
+        }
+
+        // F3-10 — stock, contre le panier **tel qu'il est maintenant** (lignes
+        // déjà présentes et celles que ce reorder vient d'ajouter). Quantité
+        // insuffisante : la ligne est ignorée et signalée avec ce qu'il reste,
+        // jamais réduite en silence.
+        const inCart = await this.prisma.cartItem.findMany({
+          where: { cartId: cart.id, productId: product.id },
+          select: {
+            productId: true,
+            quantite: true,
+            variant: { select: { stockConsumption: true } },
+          },
+        });
+        const shortage = stockShortage({
+          product,
+          variant,
+          quantite: orderItem.quantite,
+          otherUnits: inCart.reduce(
+            (sum, line) => sum + lineStockUnits(line),
+            0,
+          ),
+        });
+        if (shortage) {
+          const body = shortage.getResponse() as {
+            message: string;
+            availableQuantity: number;
+          };
+          results.unavailable.push({
+            productName: product.nom,
+            variant: variant.label,
+            reason: body.message,
+            code: 'OUT_OF_STOCK',
+            availableQuantity: body.availableQuantity,
           });
           continue;
         }

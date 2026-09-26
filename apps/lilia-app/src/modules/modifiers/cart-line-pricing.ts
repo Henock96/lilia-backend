@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { Prisma, type StockUnit } from '@prisma/client';
 
 import {
   PRODUCT_MODIFIER_GROUPS_ARGS,
@@ -111,8 +111,11 @@ export function resolveCartLine(
 
 /** Problème d'une ligne, tel que l'annonce `GET /cart`. */
 export interface CartLineIssue {
-  code: ModifierErrorCode;
+  /** F3-10 — `OUT_OF_STOCK` s'ajoute aux codes du moteur d'options. */
+  code: ModifierErrorCode | 'OUT_OF_STOCK';
   message: string;
+  /** F3-10 — `OUT_OF_STOCK` : ce qu'il reste de CE format (unités de vente). */
+  availableQuantity?: number;
 }
 
 /**
@@ -208,6 +211,10 @@ export interface OrderItemSnapshot {
   /** Part des options dans `prix` (ventilation, jamais à rajouter). */
   optionsTotalXaf: number;
   options: ResolvedOptionLine[];
+  /** F3-10 — consommation du format au checkout (immuable, donc sûre à lire ici). */
+  stockUnitsPerItem: number;
+  /** F3-10 — unité de stock du produit, figée pour l'historique. */
+  stockUnit: StockUnit;
 }
 
 /**
@@ -240,6 +247,8 @@ export function orderItemSnapshots(
       snapshotPrice: selection.unitPriceXaf,
       optionsTotalXaf: selection.optionsTotalXaf,
       options: selection.lines,
+      stockUnitsPerItem: line.variant.stockConsumption,
+      stockUnit: line.product.stockUnit,
     });
   }
 
@@ -257,6 +266,8 @@ export function orderItemSnapshots(
         snapshotPrice: idx === 0 ? menuPrix : 0,
         optionsTotalXaf: 0,
         options: [],
+        stockUnitsPerItem: line.variant.stockConsumption,
+        stockUnit: line.product.stockUnit,
       });
     });
   }

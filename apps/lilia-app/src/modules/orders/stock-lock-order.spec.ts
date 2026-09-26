@@ -1,179 +1,139 @@
 import { StockService } from './stock.service';
 
 /**
- * Ordre de verrouillage déterministe (fix S-7, audit du 05/09/2026).
+ * Ordre de verrouillage déterministe (fix S-7, audit du 05/09/2026), tel que
+ * F3-10 le réalise.
  *
- * ### Le défaut
+ * ### Le défaut d'origine
  *
- * Chaque `UPDATE` de stock pose un verrou de ligne. Deux transactions qui
- * verrouillent les mêmes lignes **dans un ordre différent** s'interbloquent :
- * T1 tient A et attend B pendant que T2 tient B et attend A. PostgreSQL le
- * détecte et en avorte une — aucune corruption, mais un 500 au client à la
- * place de sa commande. Reproduit en laboratoire avant correction, avec deux
- * transactions psql verrouillant deux produits en sens inverse.
+ * Chaque écriture de stock pose un verrou de ligne. Deux transactions qui
+ * verrouillent les mêmes lignes **dans un ordre différent** s'interbloquent.
+ * Deux causes se cumulaient : des identifiants non triés, et produits/menus
+ * dépêchés en parallèle.
  *
- * Deux causes se cumulaient :
+ * ### Ce que F3-10 change, et ce que ce test vérifie
  *
- * 1. les identifiants venaient d'un `findMany` **sans `orderBy`** — PostgreSQL
- *    ne garantit alors aucun ordre, deux paniers identiques pouvaient les
- *    recevoir inversés ;
- * 2. produits et menus étaient dépêchés en **parallèle** (`Promise.all`), si
- *    bien que l'entrelacement entre les deux tables restait indéterminé même
- *    avec des identifiants triés de chaque côté.
- *
- * ### Ce que ce test vérifie
- *
- * Que les écritures sortent dans un ordre **total** et **stable** : produits
- * triés d'abord, menus triés ensuite, quel que soit l'ordre d'entrée. C'est la
- * seule propriété qui ferme le cycle — un ordre commun à toutes les
- * transactions ne peut pas se croiser.
+ * La réservation prend désormais tous les verrous produits **d'un seul
+ * `SELECT … ORDER BY id FOR UPDATE`**, sur des identifiants triés, puis ceux
+ * des menus — toujours après. La restitution écrit produit par produit, ids
+ * triés, puis les menus. Ce test capture la séquence réelle des requêtes et
+ * vérifie cet ordre total. La preuve sous concurrence réelle (aucun
+ * interblocage entre paniers croisés) est dans
+ * `test/integration/stock-multi-units.int-spec.ts`.
  */
-describe('StockService — ordre de verrouillage', () => {
-  /**
-   * `$executeRaw` est appelé en tag de gabarit : les fragments SQL arrivent en
-   * premier argument, les valeurs interpolées en variadiques.
-   *
-   * L'identifiant n'est pas au même rang selon la requête — 2ᵉ valeur à la
-   * décrémentation (`qty, id, qty`), 3ᵉ à la restauration (`qty, qty, id`). On
-   * le reconnaît donc à son **type** plutôt qu'à sa position : les quantités
-   * sont des nombres, les identifiants des chaînes. Se fier au rang rendrait
-   * ce test faux à la première ligne de SQL ajoutée.
-   */
-  const idOf = (values: unknown[]) =>
-    String(values.find((v) => typeof v === 'string'));
+describe('StockService — ordre de verrouillage (S-7, F3-10)', () => {
+  type Call = { sql: string; values: unknown[] };
 
-  const tableOf = (strings: TemplateStringsArray) =>
-    strings.join('').includes('"MenuDuJour"') ? 'menu' : 'product';
-
-  /** Capture la séquence réelle des `UPDATE`, table et identifiant. */
-  function buildTx(rows: string[]) {
-    const issued: string[] = [];
+  function buildTx(stock: Record<string, number | null>) {
+    const calls: Call[] = [];
+    const record = (strings: TemplateStringsArray, values: unknown[]) => {
+      const sql = strings.join('?');
+      calls.push({ sql, values });
+      return sql;
+    };
     const tx = {
-      product: {
-        findMany: jest
-          .fn()
-          .mockResolvedValue(
-            rows.filter((r) => r.startsWith('p')).map((id) => ({ id })),
-          ),
-      },
-      menuDuJour: {
-        findMany: jest
-          .fn()
-          .mockResolvedValue(
-            rows.filter((r) => r.startsWith('m')).map((id) => ({ id })),
-          ),
-      },
+      $queryRaw: jest.fn(
+        async (strings: TemplateStringsArray, ...values: unknown[]) => {
+          const sql = record(strings, values);
+          const ids = values[0] as string[];
+          if (sql.includes('FOR UPDATE')) {
+            return ids.map((id) => ({
+              id,
+              nom: id,
+              stockRestant: stock[id] ?? null,
+            }));
+          }
+          if (sql.includes('RETURNING p.id')) {
+            const units = values[1] as number[];
+            return ids.map((id, i) => ({
+              id,
+              stockRestant: (stock[id] ?? 0) - units[i],
+            }));
+          }
+          return [{ stockRestant: 1, before: 1 }];
+        },
+      ),
       $executeRaw: jest.fn(
-        (strings: TemplateStringsArray, ...values: unknown[]) => {
-          issued.push(`${tableOf(strings)}:${idOf(values)}`);
-          return Promise.resolve(1);
+        async (strings: TemplateStringsArray, ...values: unknown[]) => {
+          record(strings, values);
+          return 1;
         },
       ),
     };
-    return { tx, issued };
+    return { tx, calls };
   }
 
   const service = new StockService();
-
-  const cartItems = (ids: string[]) =>
-    ids.map((id) => ({
-      productId: id.startsWith('p') ? id : 'p-carrier',
-      menuId: id.startsWith('m') ? id : undefined,
-      quantite: 1,
-    }));
-
-  it('verrouille les produits par identifiant croissant', async () => {
-    // L'ordre d'ENTRÉE est volontairement inverse de l'ordre attendu.
-    const { tx, issued } = buildTx(['p-c', 'p-a', 'p-b']);
-
-    await service.decrementInTransaction(
-      tx as never,
-      cartItems(['p-c', 'p-a', 'p-b']),
-    );
-
-    expect(issued).toEqual(['product:p-a', 'product:p-b', 'product:p-c']);
+  const line = (productId: string, menuId: string | null = null) => ({
+    productId,
+    menuId,
+    quantite: 1,
   });
 
-  it('verrouille toujours les produits AVANT les menus', async () => {
-    // Le point que le seul tri ne réglait pas : sans ordre fixe entre les deux
-    // tables, une transaction pouvait tenir un produit en attendant un menu
-    // pendant que l'autre faisait l'inverse.
-    const { tx, issued } = buildTx(['m-z', 'p-b', 'm-a', 'p-a']);
-
+  it('réservation : verrous produits triés en une requête, puis menus', async () => {
+    const { tx, calls } = buildTx({
+      'p-c': 10,
+      'p-a': 10,
+      'p-b': 10,
+      'm-z': 5,
+      'm-y': 5,
+    });
     await service.decrementInTransaction(tx as never, [
-      { productId: 'p-b', menuId: 'm-z', quantite: 1 },
-      { productId: 'p-a', menuId: 'm-a', quantite: 1 },
+      line('p-c'),
+      line('p-a', 'm-z'),
+      line('p-b', 'm-y'),
     ]);
 
-    expect(issued).toEqual([
-      'product:p-a',
-      'product:p-b',
-      'menu:m-a',
-      'menu:m-z',
+    const locks = calls.filter((c) => c.sql.includes('FOR UPDATE'));
+    expect(locks).toHaveLength(2);
+    expect(locks[0].sql).toContain('"Product"');
+    expect(locks[0].sql).toMatch(/ORDER BY id/);
+    expect(locks[0].values[0]).toEqual(['p-a', 'p-b', 'p-c']);
+    expect(locks[1].sql).toContain('"MenuDuJour"');
+    expect(locks[1].values[0]).toEqual(['m-y', 'm-z']);
+
+    // Toute écriture produit précède toute requête menu.
+    const firstMenu = calls.findIndex((c) => c.sql.includes('"MenuDuJour"'));
+    const lastProduct = calls
+      .map((c) => c.sql.includes('"Product"'))
+      .lastIndexOf(true);
+    expect(lastProduct).toBeLessThan(firstMenu);
+  });
+
+  it('ordre d’entrée indifférent : même séquence de verrous', async () => {
+    const a = buildTx({ p1: 5, p2: 5, p3: 5 });
+    const b = buildTx({ p1: 5, p2: 5, p3: 5 });
+    await service.decrementInTransaction(a.tx as never, [
+      line('p3'),
+      line('p1'),
+      line('p2'),
     ]);
+    await service.decrementInTransaction(b.tx as never, [
+      line('p2'),
+      line('p3'),
+      line('p1'),
+    ]);
+    expect(a.calls[0].values[0]).toEqual(b.calls[0].values[0]);
   });
 
-  it('rend le même ordre quelle que soit la permutation d’entrée', async () => {
-    const permutations = [
-      ['p-1', 'p-2', 'p-3'],
-      ['p-3', 'p-2', 'p-1'],
-      ['p-2', 'p-3', 'p-1'],
-    ];
-    const results: string[][] = [];
-
-    for (const ids of permutations) {
-      const { tx, issued } = buildTx(ids);
-      await service.decrementInTransaction(tx as never, cartItems(ids));
-      results.push(issued);
-    }
-
-    // C'est *l'invariance* qui ferme le cycle, pas l'ordre choisi.
-    expect(results[0]).toEqual(results[1]);
-    expect(results[1]).toEqual(results[2]);
-  });
-
-  it('interrompt la séquence dès qu’une ligne manque de stock', async () => {
-    const { tx, issued } = buildTx(['p-a', 'p-b', 'p-c']);
-    // `p-b` n'a plus assez de stock : 0 ligne affectée.
-    (tx.$executeRaw as jest.Mock).mockImplementation(
-      (strings: TemplateStringsArray, ...values: unknown[]) => {
-        const id = idOf(values);
-        issued.push(`${tableOf(strings)}:${id}`);
-        return Promise.resolve(id === 'p-b' ? 0 : 1);
-      },
-    );
-
-    await expect(
-      service.decrementInTransaction(
-        tx as never,
-        cartItems(['p-a', 'p-b', 'p-c']),
-      ),
-    ).rejects.toThrow(/stock épuisé/i);
-
-    // On s'arrête à la ligne fautive : la transaction est de toute façon
-    // annulée, continuer ne ferait que prendre des verrous pour rien.
-    expect(issued).toEqual(['product:p-a', 'product:p-b']);
-  });
-
-  it('applique la même discipline à la restauration', async () => {
-    // La restauration prend exactement les mêmes verrous que la
-    // décrémentation. Un ordre total ne vaut que s'il est le MÊME partout :
-    // le poser d'un seul côté laisserait le cycle ouvert entre une annulation
-    // et un checkout concurrents — le cas le plus fréquent.
-    const { tx, issued } = buildTx([]);
-
+  it('restitution : produits triés un par un, puis menus', async () => {
+    const { tx, calls } = buildTx({});
     await service.restoreInTransaction(tx as never, [
-      { productId: 'p-c', quantite: 1 },
-      { productId: 'p-a', menuId: 'm-b', quantite: 1 },
-      { productId: 'p-b', menuId: 'm-a', quantite: 1 },
+      { productId: 'p-c', menuId: 'm-z', quantite: 1, stockUnitsReserved: 1 },
+      { productId: 'p-a', menuId: null, quantite: 2, stockUnitsReserved: 12 },
+      { productId: 'p-b', menuId: 'm-y', quantite: 1, stockUnitsReserved: 1 },
     ]);
-
-    expect(issued).toEqual([
+    const order = calls.map((c) =>
+      c.sql.includes('"MenuDuJour"')
+        ? `menu:${c.values.find((v) => typeof v === 'string' && v.startsWith('m'))}`
+        : `product:${c.values.find((v) => typeof v === 'string' && v.startsWith('p'))}`,
+    );
+    expect(order).toEqual([
       'product:p-a',
       'product:p-b',
       'product:p-c',
-      'menu:m-a',
-      'menu:m-b',
+      'menu:m-y',
+      'menu:m-z',
     ]);
   });
 });

@@ -13,6 +13,8 @@ import { PaginationService } from '../../common/pagination/pagination.service';
 import { OrderStateMachine } from './order-state.machine';
 import { OrderTransitionService } from './order-transition.service';
 import { StockService } from './stock.service';
+import { StockSignalService } from './stock-signal.service';
+import { CartService } from '../cart/cart.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
 import { PromoService } from '../promo/promo.service';
@@ -117,6 +119,8 @@ describe('OrdersService (caractérisation — lectures)', () => {
         { provide: OrderStateMachine, useValue: {} },
         OrderTransitionService,
         { provide: StockService, useValue: {} },
+        { provide: StockSignalService, useValue: { announce: jest.fn() } },
+        { provide: CartService, useValue: { addMenu: jest.fn() } },
         { provide: OrderValidatorService, useValue: {} },
         { provide: OrderCalculatorService, useValue: {} },
         { provide: PromoService, useValue: {} },

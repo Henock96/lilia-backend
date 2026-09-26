@@ -70,6 +70,7 @@ describeIfDb('Acceptation vendeur (PostgreSQL réel)', () => {
       refunds,
       { record: async () => undefined } as never,
       outbox,
+      { announce: async () => undefined } as never, // StockSignalService (F3-10)
     );
     effects = new OrderOutboxEffectsService(
       prisma as never,

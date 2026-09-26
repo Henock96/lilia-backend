@@ -12,6 +12,7 @@ import {
   CatalogChangedEvent,
 } from '../events/catalog-events';
 import { PrismaService } from '../../prisma/prisma.service';
+import { MENU_VARIANTS_ORDER_BY } from '../products/vendor-menu.include';
 import { CreateMenuDto, UpdateMenuDto } from './dto';
 import { MenuCreatedEvent } from '../events/menu-events';
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
@@ -43,6 +44,66 @@ export class MenuCommandService {
       CATALOG_CHANGED,
       new CatalogChangedEvent(restaurantId, reason),
     );
+  }
+
+  /**
+   * F3-10 — composants d'un menu COMBO, chacun avec **son** format.
+   *
+   * Le panier prenait `variants[0]` d'une lecture non triée : tant que tous
+   * les formats consommaient 1 unité, c'était sans effet sur le stock ; avec
+   * un « carton de 6 », un menu aurait pu consommer 6 bouteilles au lieu
+   * d'une. Le vendeur désigne donc le format ; à défaut (application
+   * installée), on prend le premier format **à 1 unité** dans l'ordre des
+   * catalogues (prix croissant) — jamais un carton par hasard.
+   *
+   * Propriété vérifiée ici (produit du vendeur) et en base (clé étrangère
+   * composite `MenuProduct(variantId, productId)`).
+   */
+  private async resolveComponents(
+    products: { productId: string; variantId?: string; ordre?: number }[],
+    restaurantId: string,
+    /** Formats actuels du menu : une application installée qui renvoie la
+     *  composition sans `variantId` ne doit pas défaire le choix du vendeur. */
+    previous: ReadonlyMap<string, string> = new Map(),
+  ): Promise<{ productId: string; variantId: string; ordre: number }[]> {
+    const productIds = products.map((p) => p.productId);
+    const found = await this.prisma.product.findMany({
+      where: { id: { in: productIds }, restaurantId },
+      select: {
+        id: true,
+        nom: true,
+        variants: {
+          orderBy: [...MENU_VARIANTS_ORDER_BY],
+          select: { id: true, stockConsumption: true },
+        },
+      },
+    });
+    if (found.length !== new Set(productIds).size) {
+      throw new BadRequestException(
+        'Certains produits n\'existent pas ou n\'appartiennent pas à votre restaurant.',
+      );
+    }
+    const byId = new Map(found.map((p) => [p.id, p]));
+    return products.map((component) => {
+      const product = byId.get(component.productId)!;
+      const wanted = component.variantId ?? previous.get(component.productId);
+      const variant = wanted
+        ? product.variants.find((v) => v.id === wanted)
+        : (product.variants.find((v) => v.stockConsumption === 1) ??
+          product.variants[0]);
+      if (!variant) {
+        throw new BadRequestException(
+          component.variantId
+            ? `Le format choisi n'appartient pas à « ${product.nom} ».`
+            : `Le produit « ${product.nom} » n'a pas de format disponible.`,
+        );
+      }
+      return {
+        productId: component.productId,
+        variantId: variant.id,
+        ordre: component.ordre ?? 0,
+      };
+    });
   }
 
   /**
@@ -112,7 +173,7 @@ export class MenuCommandService {
         });
 
         // 3b. Creer la variante Standard
-        await tx.productVariant.create({
+        const standard = await tx.productVariant.create({
           data: {
             label: 'Standard',
             prix: dto.prix,
@@ -136,6 +197,7 @@ export class MenuCommandService {
             products: {
               create: {
                 productId: phantomProduct.id,
+                variantId: standard.id,
                 ordre: 0,
               },
             },
@@ -156,19 +218,7 @@ export class MenuCommandService {
         );
       }
 
-      const productIds = dto.products.map((p) => p.productId);
-      const products = await this.prisma.product.findMany({
-        where: {
-          id: { in: productIds },
-          restaurantId: restaurant.id,
-        },
-      });
-
-      if (products.length !== productIds.length) {
-        throw new BadRequestException(
-          'Certains produits n\'existent pas ou n\'appartiennent pas à votre restaurant.',
-        );
-      }
+      const components = await this.resolveComponents(dto.products, restaurant.id);
 
       // 4. Créer le menu avec ses produits
       menu = await this.prisma.menuDuJour.create({
@@ -182,12 +232,7 @@ export class MenuCommandService {
           dateFin: dateFin,
           isActive: dto.isActive ?? true,
           restaurantId: restaurant.id,
-          products: {
-            create: dto.products.map((p) => ({
-              productId: p.productId,
-              ordre: p.ordre ?? 0,
-            })),
-          },
+          products: { create: components },
         },
         include: menuInclude,
       });
@@ -310,20 +355,13 @@ export class MenuCommandService {
     }
 
     // 5. Vérifier les produits si fournis (COMBO uniquement)
+    let components: { productId: string; variantId: string; ordre: number }[] = [];
     if (existingMenu.type !== 'PLAT_SPECIAL' && dto.products && dto.products.length > 0) {
-      const productIds = dto.products.map((p) => p.productId);
-      const products = await this.prisma.product.findMany({
-        where: {
-          id: { in: productIds },
-          restaurantId: existingMenu.restaurantId,
-        },
-      });
-
-      if (products.length !== productIds.length) {
-        throw new BadRequestException(
-          'Certains produits n\'existent pas ou n\'appartiennent pas à votre restaurant.',
-        );
-      }
+      components = await this.resolveComponents(
+        dto.products,
+        existingMenu.restaurantId,
+        new Map(existingMenu.products.map((mp) => [mp.productId, mp.variantId])),
+      );
 
       // Supprimer les anciennes relations et créer les nouvelles
       await this.prisma.menuProduct.deleteMany({
@@ -344,12 +382,7 @@ export class MenuCommandService {
     if (dto.ingredients !== undefined) updateData.ingredients = dto.ingredients;
 
     if (existingMenu.type !== 'PLAT_SPECIAL' && dto.products && dto.products.length > 0) {
-      updateData.products = {
-        create: dto.products.map((p) => ({
-          productId: p.productId,
-          ordre: p.ordre ?? 0,
-        })),
-      };
+      updateData.products = { create: components };
     }
 
     const menu = await this.prisma.menuDuJour.update({

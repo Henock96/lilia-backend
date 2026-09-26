@@ -17,6 +17,8 @@ import { PaginationService } from '../../common/pagination/pagination.service';
 import { OrderStateMachine } from './order-state.machine';
 import { OrderTransitionService } from './order-transition.service';
 import { StockService } from './stock.service';
+import { StockSignalService } from './stock-signal.service';
+import { CartService } from '../cart/cart.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
 import { PromoService } from '../promo/promo.service';
@@ -140,6 +142,8 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
         // le statut ET sa ligne d'historique dans la même transaction.
         OrderTransitionService,
         { provide: StockService, useValue: stockService },
+        { provide: StockSignalService, useValue: { announce: jest.fn() } },
+        { provide: CartService, useValue: { addMenu: jest.fn() } },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: PlatformSettingsService, useValue: platformSettings },
         { provide: ConfigService, useValue: { get: () => undefined } },
@@ -200,6 +204,7 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
       expect(stockService.restoreInTransaction).toHaveBeenCalledWith(
         tx,
         order.items,
+        expect.objectContaining({}),
       );
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         'order.cancelled',
@@ -578,6 +583,7 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
       expect(stockService.restoreInTransaction).toHaveBeenCalledWith(
         tx,
         cancelled.items,
+        expect.objectContaining({ zeroProductIds: [] }),
       );
       expect(tx.user.update).toHaveBeenCalledWith({
         where: { id: 'c1' },

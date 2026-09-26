@@ -84,7 +84,8 @@ describe('Acteur et provenance des transitions', () => {
         { rewardForDeliveredOrder: jest.fn() } as never,
         { openForCancelledOrder: jest.fn().mockResolvedValue(null) } as never,
         { record: jest.fn() } as never, // AdminAuditService (F-07)
-        { enqueueInTransaction: jest.fn() } as never, // OutboxService (lot 4)
+        { enqueueInTransaction: jest.fn() } as never, // OutboxService (lot 4),
+        { announce: async () => undefined } as never, // StockSignalService (F3-10)
       );
 
       await service.updateOrderStatusByRestaurateur(
@@ -152,7 +153,8 @@ describe('Acteur et provenance des transitions', () => {
         { rewardForDeliveredOrder: jest.fn() } as never,
         { openForCancelledOrder: jest.fn().mockResolvedValue(null) } as never,
         { record: jest.fn() } as never, // AdminAuditService (F-07)
-        { enqueueInTransaction: jest.fn() } as never, // OutboxService (lot 4)
+        { enqueueInTransaction: jest.fn() } as never, // OutboxService (lot 4),
+        { announce: async () => undefined } as never, // StockSignalService (F3-10)
       );
 
       await service.updateOrderStatusByRestaurateur(
@@ -209,7 +211,8 @@ describe('Acteur et provenance des transitions', () => {
         { rewardForDeliveredOrder: jest.fn() } as never,
         { openForCancelledOrder: jest.fn() } as never,
         { record: jest.fn() } as never, // AdminAuditService (F-07)
-        { enqueueInTransaction: jest.fn() } as never, // OutboxService (lot 4)
+        { enqueueInTransaction: jest.fn() } as never, // OutboxService (lot 4),
+        { announce: async () => undefined } as never, // StockSignalService (F3-10)
       );
 
       await service.expireUnpaidOrder('o1');

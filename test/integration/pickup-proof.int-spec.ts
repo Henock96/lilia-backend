@@ -48,6 +48,7 @@ describeIfDb('Retrait au comptoir — preuve de remise (PostgreSQL réel)', () =
       { openForCancelledOrder: async () => null } as never,
       { record: async () => undefined } as never,
       new OutboxService(prisma as never),
+      { announce: async () => undefined } as never, // StockSignalService (F3-10)
     );
     events.onAny((name) => emitted.push(String(name)));
   });

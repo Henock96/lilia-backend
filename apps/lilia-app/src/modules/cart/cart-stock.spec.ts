@@ -117,9 +117,14 @@ describe('Panier — contrôle de stock', () => {
         cartItems: [{ productId: 'p1', quantite: 3 }],
       });
 
+      // F3-10 : le refus dit ce que le client peut ENCORE ajouter (ici : rien),
+      // avec un code stable et la quantité restante.
       await expect(
         service.addItem('fb', { variantId: 'v1', quantite: 1 } as never),
-      ).rejects.toThrow(/il ne reste que 3/i);
+      ).rejects.toMatchObject({
+        message: '« Poulet braisé » est épuisé.',
+        response: { code: 'OUT_OF_STOCK', availableQuantity: 0 },
+      });
     });
 
     it('agrège les variantes du même produit', async () => {
@@ -208,9 +213,14 @@ describe('Panier — contrôle de stock', () => {
         siblings: [{ quantite: 3 }],
       });
 
+      // 4 en stock, 3 déjà pris par une autre ligne : il en reste 1 pour
+      // celle-ci (F3-10 — ce que la ligne peut encore prendre).
       await expect(
         service.updateItemQuantity('fb', 'ci1', { quantite: 2 } as never),
-      ).rejects.toThrow(/il ne reste que 4/i);
+      ).rejects.toMatchObject({
+        message: '« Poulet braisé » : il ne reste que 1 unité.',
+        response: { code: 'OUT_OF_STOCK', availableQuantity: 1 },
+      });
     });
 
     it('refuse un produit devenu indisponible depuis l’ajout', async () => {
