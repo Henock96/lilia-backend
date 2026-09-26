@@ -95,6 +95,15 @@ export class CreatePromoCodeDto {
   @IsString()
   restaurantId?: string; // null = toute la plateforme
 
+  /**
+   * F3-11 (Q4) — le code peut-il s'ajouter à l'offre boutique d'un vendeur ?
+   * Non par défaut : Lilia ne paie pas une remise en plus de celle que le
+   * vendeur offre déjà.
+   */
+  @IsOptional()
+  @IsBoolean()
+  stackableWithVendorOffer?: boolean;
+
   @IsOptional()
   @IsDateString()
   startsAt?: string;

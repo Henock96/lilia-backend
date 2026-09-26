@@ -32,6 +32,11 @@ import { PlatformSettingsService } from '../platform-settings/platform-settings.
 import { modifiersEnabled } from '../modifiers/modifiers-switch';
 import { withPublicModifiers } from '../modifiers/modifier-views';
 import { withVariantStock } from '../orders/stock-units';
+import {
+  activeOfferRelationSelect,
+  withActiveOffer,
+} from '../vendor-offers/vendor-offer-projection';
+import { vendorOffersEnabled } from '../vendor-offers/vendor-offers-switch';
 
 /**
  * Relations servies avec une fiche vendeur.
@@ -83,6 +88,8 @@ function vendorDetailSelect(fields: ProductTimeFields, now = new Date()) {
     ...PUBLIC_VENDOR_SELECT,
     ...VENDOR_RELATIONS,
     ...vendorMenuInclude(fields, now),
+    // F3-11 — offre boutique en cours, sans budget ni consommation.
+    ...activeOfferRelationSelect(now),
   } satisfies Prisma.RestaurantSelect;
 }
 
@@ -176,11 +183,16 @@ export class VendorsService {
     };
 
     const { page, limit } = dto;
+    const now = new Date();
 
     const [vendors, total] = await this.prisma.$transaction([
       this.prisma.restaurant.findMany({
         where,
-        select: { ...PUBLIC_VENDOR_SELECT, ...VENDOR_RELATIONS },
+        select: {
+          ...PUBLIC_VENDOR_SELECT,
+          ...VENDOR_RELATIONS,
+          ...activeOfferRelationSelect(now),
+        },
         orderBy: [...PUBLIC_VENDOR_ORDER_BY],
         skip: (page - 1) * limit,
         take: limit,
@@ -188,8 +200,9 @@ export class VendorsService {
       this.prisma.restaurant.count({ where }),
     ]);
 
+    const offersOn = await vendorOffersEnabled(this.platformSettings);
     return {
-      data: vendors,
+      data: vendors.map((v) => withActiveOffer(v, offersOn)),
       meta: {
         page,
         limit,
@@ -228,7 +241,7 @@ export class VendorsService {
 
     return {
       data: {
-        ...rest,
+        ...withActiveOffer(rest, await vendorOffersEnabled(this.platformSettings)),
         products: withPublicModifiers(
           withVariantStock(withAvailableNow(products, now)),
           await modifiersEnabled(this.platformSettings),

@@ -18,6 +18,7 @@ import { OrderStateMachine } from './order-state.machine';
 import { OrderTransitionService } from './order-transition.service';
 import { StockService } from './stock.service';
 import { StockSignalService } from './stock-signal.service';
+import { VendorOffersService } from '../vendor-offers/vendor-offers.service';
 import { CartService } from '../cart/cart.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
@@ -62,6 +63,8 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
     user: { update: jest.fn() },
     loyaltyTransaction: { aggregate: jest.fn(), create: jest.fn() },
     promoUsage: { deleteMany: jest.fn() },
+    // F3-11 — aucune offre boutique consommée.
+    vendorOfferRedemption: { findUnique: jest.fn().mockResolvedValue(null) },
     payment: { updateMany: jest.fn() },
     // Reversement vendeur relu sous le verrou de la commande (fix F-04).
     restaurantPayout: { findUnique: jest.fn().mockResolvedValue(null) },
@@ -143,6 +146,15 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
         OrderTransitionService,
         { provide: StockService, useValue: stockService },
         { provide: StockSignalService, useValue: { announce: jest.fn() } },
+        // F3-11 — aucune offre boutique active dans ces tests.
+        {
+          provide: VendorOffersService,
+          useValue: {
+            resolveForCart: jest.fn().mockResolvedValue(null),
+            reserveInTransaction: jest.fn(),
+            releaseForOrder: jest.fn().mockResolvedValue(0),
+          },
+        },
         { provide: CartService, useValue: { addMenu: jest.fn() } },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: PlatformSettingsService, useValue: platformSettings },
@@ -238,6 +250,10 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
         }),
       );
       expect(tx.promoUsage.deleteMany).toHaveBeenCalledWith({
+        where: { orderId: 'o1' },
+      });
+      // F3-11 — et le budget d'offre boutique consommé, dans la même transaction.
+      expect(tx.vendorOfferRedemption.findUnique).toHaveBeenCalledWith({
         where: { orderId: 'o1' },
       });
     });

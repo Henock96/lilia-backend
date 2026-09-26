@@ -24,7 +24,7 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import { OrdersService } from './orders.service';
 import { OrderReceiptService } from './order-receipt.service';
-import { CreateOrderDto } from './dto/create-order.dto';
+import { CreateOrderDto, QuoteOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { AcceptOrderDto, RejectOrderDto } from './dto/order-acceptance.dto';
 import { PickupHandoverDto } from './dto/pickup-handover.dto';
@@ -89,6 +89,27 @@ export class OrdersController {
       idempotencyKey,
     );
   }
+
+  /**
+   * F3-11 — devis du panier : ce que le checkout encaisserait maintenant, offre
+   * boutique, code et points compris. Aucune écriture. Les apps affichent ce
+   * total au lieu de le recalculer ; le checkout refuse (409) un total changé.
+   *
+   * POST et non GET : mêmes entrées que le checkout (adresse, code, points),
+   * dans un corps validé par le même DTO.
+   */
+  @Throttle({ short: { limit: 5, ttl: 1000 }, long: { limit: 60, ttl: 60000 } })
+  @Post('quote')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(MaintenanceGuard)
+  @ApiOperation({ summary: 'Devis du panier (total exact avant paiement)' })
+  quote(
+    @FirebaseUser() firebaseUser: DecodedIdToken,
+    @Body() dto: QuoteOrderDto,
+  ) {
+    return this.ordersService.quote(firebaseUser.uid, dto);
+  }
+
   // ─── LECTURE ───────────────────────────────────────────────────────────────
 
   /**

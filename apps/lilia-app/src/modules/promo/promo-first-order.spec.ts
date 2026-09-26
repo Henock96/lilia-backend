@@ -48,7 +48,12 @@ describe('PromoService.validateCode — firstOrderOnly', () => {
         ),
       },
     };
-    return new PromoService(prisma as never, {} as never, {} as never);
+    return new PromoService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never, // offres boutique (F3-11) — non lues par validateCode
+    );
   }
 
   const validate = (service: PromoService) =>

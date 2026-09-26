@@ -9,6 +9,7 @@ import { PaymentReconciliationService } from './payment-reconciliation.service';
 import { WebhookSilenceService } from './webhook-silence.service';
 import { TrackingRetentionService } from './tracking-retention.service';
 import { VendorPayoutAutoService } from './vendor-payout-auto.service';
+import { VendorOfferExpiryService } from './vendor-offer-expiry.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { VendorOpeningService } from '../vendors/vendor-opening.service';
 import { OpsQueueService } from '../ops/ops-queue.service';
@@ -17,6 +18,7 @@ import { NotificationsCoreModule } from '../notifications/notifications-core.mod
 import { OrdersCoreModule } from '../orders/orders-core.module';
 import { PaymentCoreModule } from '../payments/payment-core.module';
 import { RefundsCoreModule } from '../refunds/refunds-core.module';
+import { VendorOffersCoreModule } from '../vendor-offers/vendor-offers-core.module';
 
 @Module({
     imports: [
@@ -29,6 +31,7 @@ import { RefundsCoreModule } from '../refunds/refunds-core.module';
         PaymentCoreModule,
         // Le cron réconcilie aussi les remboursements client restés PROCESSING.
         RefundsCoreModule,
+        VendorOffersCoreModule, // F3-11 : échéance des offres
     ],
     providers: [
         // Les 5 crons sont toujours enregistrés. Le choix « ce processus
@@ -50,6 +53,7 @@ import { RefundsCoreModule } from '../refunds/refunds-core.module';
         OpsSlaScanService,
         // F3-07 : versement automatique au vendeur (interrupteur éteint).
         VendorPayoutAutoService,
+        VendorOfferExpiryService,
         PrismaService,
     ],
 })

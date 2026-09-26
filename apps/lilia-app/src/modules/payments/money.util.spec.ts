@@ -26,6 +26,7 @@ describe('money.util — arithmétique du reversement', () => {
         commissionPercent: 10,
         commissionAmount: 500,
         deliverySubsidyAmount: 0,
+        vendorOfferAmount: 0,
         refundDeductionAmount: 0,
         payoutAmount: 4500,
       });
@@ -187,6 +188,83 @@ describe('money.util — arithmétique du reversement', () => {
           subTotalXaf: 5000,
           commissionPercent: 10,
           deliverySubsidyXaf: 12.5,
+        }),
+      ).toThrow();
+    });
+  });
+
+  describe('computePayoutBreakdown — offre boutique du vendeur (F3-11)', () => {
+    it('5 000 F à 10 %, offre −500 → commission 500 (D8 : avant remise), net 4 000', () => {
+      const r = computePayoutBreakdown({
+        subTotalXaf: 5000,
+        commissionPercent: 10,
+        vendorOfferDiscountXaf: 500,
+      });
+      expect(r).toMatchObject({
+        grossAmount: 5000,
+        commissionAmount: 500,
+        vendorOfferAmount: 500,
+        payoutAmount: 4000,
+      });
+    });
+
+    it('D8 — la commission est identique avec et sans offre', () => {
+      const without = computePayoutBreakdown({
+        subTotalXaf: 7300,
+        commissionPercent: 12.5,
+      });
+      for (const offer of [0, 1, 730, 3650]) {
+        const withOffer = computePayoutBreakdown({
+          subTotalXaf: 7300,
+          commissionPercent: 12.5,
+          vendorOfferDiscountXaf: offer,
+        });
+        expect(withOffer.commissionAmount).toBe(without.commissionAmount);
+        expect(withOffer.grossAmount).toBe(without.grossAmount);
+      }
+    });
+
+    it('retenue après la subvention de livraison, avant les remboursements, plancher à 0', () => {
+      const r = computePayoutBreakdown({
+        subTotalXaf: 5000,
+        commissionPercent: 10,
+        deliverySubsidyXaf: 300,
+        vendorOfferDiscountXaf: 5000,
+        refundDeductionXaf: 100,
+      });
+      expect(r).toMatchObject({
+        deliverySubsidyAmount: 300,
+        vendorOfferAmount: 4200,
+        refundDeductionAmount: 0,
+        payoutAmount: 0,
+      });
+    });
+
+    it('invariant : brut = commission + subvention + offre + remboursement + net', () => {
+      for (const offer of [0, 1, 499, 2500]) {
+        const r = computePayoutBreakdown({
+          subTotalXaf: 7300,
+          commissionPercent: 12.5,
+          deliverySubsidyXaf: 250,
+          vendorOfferDiscountXaf: offer,
+          refundDeductionXaf: 300,
+        });
+        expect(
+          r.commissionAmount +
+            r.deliverySubsidyAmount +
+            r.vendorOfferAmount +
+            r.refundDeductionAmount +
+            r.payoutAmount,
+        ).toBe(r.grossAmount);
+      }
+    });
+
+    it('une offre non entière est refusée, pas arrondie en silence', () => {
+      expect(() =>
+        computePayoutBreakdown({
+          subTotalXaf: 5000,
+          commissionPercent: 10,
+          vendorOfferDiscountXaf: 12.5,
         }),
       ).toThrow();
     });

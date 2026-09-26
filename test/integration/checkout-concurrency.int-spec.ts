@@ -54,6 +54,7 @@ describeIfDb(
         unused, // deliveryPricing
         unused, // transitions,
         { announce: async () => undefined } as never, // StockSignalService (F3-10)
+        unused, // vendorOffers (F3-11)
       );
     });
 

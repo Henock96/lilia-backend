@@ -280,6 +280,17 @@ export class UpdatePlatformSettingsDto {
   multiUnitVariantsEnabled?: boolean;
 
   /**
+   * F3-11 — offres boutique financées par le vendeur. À allumer **après**
+   * publication de l'app vendeurs (« Mes offres ») et des applications
+   * clientes qui affichent le devis serveur. L'éteindre retire toute offre
+   * des vitrines et du checkout ; les commandes déjà remisées gardent leur
+   * retenue au reversement.
+   */
+  @IsOptional()
+  @IsBoolean()
+  vendorOffersEnabled?: boolean;
+
+  /**
    * F3-07 / D5 — délai entre la preuve de remise et le versement, en minutes.
    * Ne réécrit pas les échéances déjà posées : il s'applique aux remises
    * suivantes. Bornes identiques au CHECK en base.

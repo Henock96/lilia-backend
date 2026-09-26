@@ -13,7 +13,9 @@ export interface AdminAuditEntry {
     | 'PublicHoliday'
     | 'Incident'
     // F3-08 — demande de geste financier à deux administrateurs.
-    | 'FinancialApproval';
+    | 'FinancialApproval'
+    // F3-11 — offre boutique arrêtée d'urgence.
+    | 'VendorOffer';
   targetId: string;
   reason?: string | null;
   metadata?: Prisma.InputJsonValue;

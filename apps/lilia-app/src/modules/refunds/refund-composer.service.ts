@@ -301,6 +301,8 @@ export class RefundComposerService {
         total: true,
         deliveryFee: true,
         serviceFee: true,
+        subTotal: true,
+        vendorFundedDiscountXaf: true,
         failureLiability: true,
         items: {
           orderBy: { createdAt: 'asc' },
@@ -370,6 +372,13 @@ export class RefundComposerService {
         quantite: it.quantite,
         unitPriceXaf: Math.round(it.snapshotPrice ?? it.prix),
       })),
+      vendorOffer:
+        order.vendorFundedDiscountXaf > 0
+          ? {
+              subTotalXaf: Math.round(order.subTotal),
+              discountXaf: order.vendorFundedDiscountXaf,
+            }
+          : null,
     };
 
     return {

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { OrderStatus } from '@prisma/client';
-import { CreateOrderDto } from './dto/create-order.dto';
+import { CreateOrderDto, QuoteOrderDto } from './dto/create-order.dto';
 import { OrderQueryService } from './order-query.service';
 import { OrderCheckoutService } from './order-checkout.service';
 import {
@@ -36,6 +36,11 @@ export class OrdersService {
       dto,
       idempotencyKey,
     );
+  }
+
+  /** F3-11 — devis du panier : le calcul du checkout, sans écriture. */
+  async quote(firebaseUid: string, dto: QuoteOrderDto) {
+    return this.checkoutService.quote(firebaseUid, dto);
   }
 
   /**

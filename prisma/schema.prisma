@@ -492,6 +492,8 @@ model Restaurant {
   closedOnHolidays Boolean          @default(true)
   closures         VendorClosure[]
   promoCodes     PromoCode[]      @relation("RestaurantPromoCodes")
+  /// F3-11 — offres boutique financées par le vendeur.
+  vendorOffers   VendorOffer[]
 
   // Configuration de la livraison
   deliveryPriceMode        DeliveryPriceMode @default(FIXED)
@@ -1078,6 +1080,17 @@ model Order {
   /// Part du prix offerte par le vendeur, déduite de SON reversement.
   vendorDeliverySubsidyXaf Int     @default(0)
 
+  // Offre boutique (Phase 3, F3-11) — figée à la commande.
+  /// Offre appliquée. Sans clé étrangère dure sur la suppression : une offre
+  /// n'est jamais supprimée (elle se termine), la relation reste lisible.
+  vendorOfferId           String?
+  vendorOffer             VendorOffer?           @relation(fields: [vendorOfferId], references: [id], onDelete: Restrict)
+  /// Part de `discountAmount` financée par le vendeur, retenue sur SON
+  /// reversement. La part plateforme d'une remise se déduit :
+  /// `discountAmount − loyaltyDiscount − vendorFundedDiscountXaf`.
+  vendorFundedDiscountXaf Int                    @default(0)
+  vendorOfferRedemption   VendorOfferRedemption?
+
   // Vérification d'âge (alcool — Sprint A — LIL-111)
   ageVerified   Boolean   @default(false)
   ageVerifiedAt DateTime?
@@ -1094,6 +1107,7 @@ model Order {
 
   @@index([restaurantId, status, createdAt(sort: Desc)]) // dashboard resto: commandes par statut, plus recentes (LFD-9)
   @@index([promoCodeId])
+  @@index([vendorOfferId])
   @@index([restaurantId])
   @@index([userId])
   @@index([status]) // ← manquait
@@ -1959,6 +1973,10 @@ model RestaurantPayout {
   /// d'une commande précédente) retenue sur ce versement. Écriture
   /// `DEBT_SETTLED` correspondante dans `VendorBalanceEntry`.
   debtDeductionAmount   Int @default(0)
+  /// F3-11 — offre boutique consentie par le vendeur sur cette commande,
+  /// retenue ici (snapshot de `Order.vendorFundedDiscountXaf`, éventuellement
+  /// plafonné par le plancher à 0 du reversement).
+  vendorOfferAmount     Int @default(0)
   /// `grossAmount - commissionAmount - deliverySubsidyAmount` — c'est CE
   /// montant qui part au prestataire.
   amount            Int
@@ -2466,6 +2484,10 @@ model PromoCode {
   /// Qui finance la remise. Les avoirs sont à la charge de la plateforme ;
   /// `VENDOR` servira aux campagnes vendeur (F3-11).
   fundingSource  PromoFunding @default(PLATFORM)
+  /// F3-11 (Q4) — ce code peut-il s'ajouter à l'offre boutique d'un vendeur ?
+  /// `false` par défaut : Lilia ne paie pas une remise en plus de celle que
+  /// le vendeur offre déjà, sauf décision explicite de l'administration.
+  stackableWithVendorOffer Boolean @default(false)
 
   usages    PromoUsage[]
   orders    Order[]
@@ -2846,6 +2868,8 @@ enum AdminAuditAction {
   APPROVAL_DECIDED
   /// F3-08 — capacités d'un administrateur modifiées (toujours à deux).
   CAPABILITY_CHANGED
+  /// F3-11 — offre boutique d'un vendeur arrêtée d'urgence (motif obligatoire).
+  VENDOR_OFFER_STOPPED
 }
 
 model Incident {
@@ -3030,6 +3054,13 @@ model PlatformSettings {
   /// l'identifiant et la consommation des formats publiées. La lecture, elle,
   /// n'est jamais éteinte (une consommation de 1 = comportement d'avant).
   multiUnitVariantsEnabled   Boolean @default(false)
+
+  // ── Offres boutique (Phase 3, F3-11) ─────────────────────────────────────
+
+  /// Les vendeurs peuvent-ils créer une offre, et les offres actives
+  /// s'appliquent-elles ? Éteint : création refusée, aucune offre affichée ni
+  /// appliquée. Les commandes déjà passées gardent leur retenue.
+  vendorOffersEnabled Boolean @default(false)
 
   updatedAt DateTime @updatedAt
 }
@@ -3270,4 +3301,85 @@ model OrderItemOption {
 
   @@index([orderItemId])
   @@index([optionId])
+}
+
+// ─── Offres boutique financées par le vendeur (Phase 3, F3-11) ──────────────
+
+/// Forme de l'offre.
+enum VendorOfferKind {
+  /// −`value` % sur le sous-total, plafonné par `maxDiscountXaf` s'il est posé.
+  PERCENT
+  /// −`value` XAF dès que le sous-total atteint `minSubTotalXaf`.
+  FIXED_THRESHOLD
+}
+
+enum VendorOfferStatus {
+  ACTIVE
+  PAUSED
+  /// Budget consommé : plus assez pour couvrir une remise.
+  EXHAUSTED
+  /// Terminée : échéance passée ou fin anticipée par le vendeur.
+  ENDED
+  /// Arrêt d'urgence par l'administration (motif obligatoire).
+  STOPPED_BY_ADMIN
+}
+
+/// Offre boutique décidée et **payée par le vendeur** (F3-11).
+///
+/// Table distincte de `PromoCode`, et c'est délibéré : une offre n'a pas de
+/// code, se cumule (ou non) avec un code sur la même commande, et vit un cycle
+/// de vie (budget, pause, arrêt d'urgence) qu'un code n'a pas. L'étendre aurait
+/// imposé un code fictif et cassé `PromoUsage.orderId @unique`.
+///
+/// Invariants tenus en base (migration `vendor_offers`) : budget, bornes de
+/// valeur et de durée, une seule offre `ACTIVE` par vendeur, et termes
+/// immuables dès la première commande.
+model VendorOffer {
+  id             String            @id @default(cuid())
+  restaurantId   String
+  restaurant     Restaurant        @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  kind           VendorOfferKind
+  /// Pourcentage entier (PERCENT) ou montant XAF (FIXED_THRESHOLD).
+  value          Int
+  /// Sous-total minimal pour que l'offre s'applique (0 = dès le premier franc).
+  minSubTotalXaf Int               @default(0)
+  /// Plafond de remise par commande (PERCENT), en XAF.
+  maxDiscountXaf Int?
+  startsAt       DateTime          @default(now())
+  endsAt         DateTime
+  /// Budget total que le vendeur accepte de financer (Q5 : obligatoire).
+  budgetXaf      Int
+  /// Consommé par les commandes, décrémenté atomiquement au checkout et
+  /// restitué à l'annulation.
+  spentXaf       Int               @default(0)
+  status         VendorOfferStatus @default(ACTIVE)
+  /// Seuil d'alerte « budget à 80 % » déjà envoyé.
+  budgetWarnedAt DateTime?
+  stoppedReason  String?
+  stoppedBy      String?
+  createdBy      String
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  orders      Order[]
+  redemptions VendorOfferRedemption[]
+
+  @@index([restaurantId, status])
+  @@index([status, endsAt])
+  // + index unique partiel SQL : une seule offre ACTIVE par vendeur.
+}
+
+/// Ce qu'une commande a consommé du budget d'une offre. Supprimée à
+/// l'annulation (le budget est rendu) ; conservée après une livraison, même
+/// remboursée.
+model VendorOfferRedemption {
+  id          String      @id @default(cuid())
+  offerId     String
+  offer       VendorOffer @relation(fields: [offerId], references: [id], onDelete: Restrict)
+  orderId     String      @unique
+  order       Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  discountXaf Int
+  createdAt   DateTime    @default(now())
+
+  @@index([offerId])
 }

@@ -57,6 +57,41 @@ describe('composeRefund', () => {
     expect(r.remainingAfterXaf).toBe(5250);
   });
 
+  it('F3-11 (Q3) — offre boutique : article remboursé net de l’offre, au prorata', () => {
+    // Sous-total 5 000, offre −500 (10 %) : le client a payé 900 pour 1 000.
+    const withOffer: RefundableOrder = {
+      ...ORDER,
+      paidXaf: 6250,
+      vendorOffer: { subTotalXaf: 5000, discountXaf: 500 },
+    };
+    const r = composeRefund(
+      withOffer,
+      [],
+      [
+        { kind: 'ITEM', orderItemId: 'alloco', quantity: 2 },
+        { kind: 'ITEM', orderItemId: 'poulet', quantity: 1 },
+      ],
+    );
+    expect(r.lines.map((l) => l.amountXaf)).toEqual([2 * 1350, 1800]);
+    // Tous les articles : exactement le sous-total net de l'offre.
+    expect(r.totalXaf).toBe(5000 - 500);
+    expect(r.refundable.items[0].unitPriceXaf).toBe(1350);
+  });
+
+  it('F3-11 — arrondi à l’inférieur : jamais plus que payé', () => {
+    const odd: RefundableOrder = {
+      ...ORDER,
+      vendorOffer: { subTotalXaf: 3000, discountXaf: 1 },
+    };
+    const r = composeRefund(
+      odd,
+      [],
+      [{ kind: 'ITEM', orderItemId: 'alloco', quantity: 1 }],
+    );
+    // 1 500 × 2 999 / 3 000 = 1 499,5 → 1 499
+    expect(r.totalXaf).toBe(1499);
+  });
+
   it('frais sans montant : tout le reliquat', () => {
     const r = composeRefund(ORDER, [], [{ kind: 'DELIVERY_FEE' }]);
     expect(r.totalXaf).toBe(1000);
