@@ -128,6 +128,8 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
       findUniqueOrThrow: jest.fn(() =>
         Promise.resolve(deliveryWithRelations()),
       ),
+      // F3-12.0 — `INSERT … ON CONFLICT DO NOTHING` : la course existe déjà.
+      createMany: jest.fn(() => Promise.resolve({ count: 0 })),
     },
     order: {
       updateMany: jest.fn(({ where, data }: Row) => {
@@ -152,6 +154,16 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
         Object.assign(row, data);
         return Promise.resolve({ count: 1 });
       }),
+      // F3-12.0 — relectures sous verrou (assignation, acceptation).
+      findUnique: jest.fn(({ where }: Row) =>
+        Promise.resolve(users[where.id] ?? null),
+      ),
+    },
+    // F3-12.0 — le profil (R5) est relu dans la transaction d'acceptation.
+    driverProfile: {
+      findUnique: jest.fn(({ where }: Row) =>
+        Promise.resolve(users[where.userId]?.driverProfile ?? null),
+      ),
     },
     // Code de remise tiré au retrait (F-06).
     deliveryHandover: {
@@ -160,8 +172,26 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
         return Promise.resolve(handovers[where.deliveryId]);
       }),
     },
-    // `SELECT status FROM "Order" … FOR SHARE` à l'acceptation (fix F-03).
-    $queryRaw: jest.fn(() => Promise.resolve([{ status: order.status }])),
+    // Deux verrous en SQL brut : la commande (`SELECT status FROM "Order" …
+    // FOR SHARE|UPDATE`, R1) et, depuis F3-12.0, le livreur (`… FROM "User"
+    // … FOR UPDATE`, R4). Le double répond selon la table visée.
+    $queryRaw: jest.fn((sql: TemplateStringsArray, ...values: unknown[]) => {
+      if (sql.join('?').includes('FROM "User"')) {
+        const row = users[values[0] as string];
+        return Promise.resolve(
+          row
+            ? [
+                {
+                  role: row.role,
+                  statusUser: row.statusUser,
+                  driverStatus: row.driverStatus ?? null,
+                },
+              ]
+            : [],
+        );
+      }
+      return Promise.resolve([{ status: order.status }]);
+    }),
     deliveryAssignment: {
       create: jest.fn(({ data }: Row) => {
         assignments.push({ ...data, releasedAt: null, outcome: null });

@@ -89,10 +89,17 @@ export class UserDeletionService {
       // Les écritures conservées ne portent aucune donnée personnelle : un
       // identifiant interne, un nombre de points, un motif. L'identité, elle,
       // est anonymisée sur la ligne `User` juste en dessous.
-      const balance = await tx.user.findUniqueOrThrow({
-        where: { id: userId },
-        select: { loyaltyPoints: true },
-      });
+      //
+      // F3-12.0 — lecture VERROUILLÉE (`FOR UPDATE`) : la ligne `User` est le
+      // verrou du livreur (R4) et doit être prise AVANT son `DriverProfile`
+      // (R5), supprimé plus bas. `deactivate` suit désormais cet ordre ; le
+      // chemin inverse (profil, puis `User`) s'interbloquait avec lui. Le
+      // solde lu sous verrou ne peut plus non plus bouger entre sa lecture et
+      // l'écriture de clôture.
+      const [balance] = await tx.$queryRaw<{ loyaltyPoints: number }[]>`
+        SELECT "loyaltyPoints" FROM "User" WHERE id = ${userId} FOR UPDATE
+      `;
+      if (!balance) throw new NotFoundException('Utilisateur non trouvé.');
       if (balance.loyaltyPoints !== 0) {
         await tx.loyaltyTransaction.create({
           data: {

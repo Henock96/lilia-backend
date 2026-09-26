@@ -191,7 +191,12 @@ export class TrackingGateway
     const { orderId, lat, lng, accuracy } = payload;
 
     await this.assertSessionStillValid(client);
-    await this.tracking.assertCanUpdatePosition(orderId, client.data.uid);
+    const { live } = await this.tracking.assertCanUpdatePosition(
+      orderId,
+      client.data.uid,
+    );
+    // F3-12.0 — hors `EN_TRANSIT`, la position ne circule pas (cf. service).
+    if (!live) return;
     await this.tracking.updatePosition({
       orderId,
       driverId: client.data.uid,

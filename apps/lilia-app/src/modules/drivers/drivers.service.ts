@@ -8,6 +8,7 @@ import {
 import {
   AdminAuditAction,
   DeliveryStatus,
+  DriverStatus,
   Prisma,
   Role,
   StatusUser,
@@ -20,6 +21,7 @@ import { FirebaseService } from '../firebase/firebase.service';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import { PaginationService } from '../../common/pagination/pagination.service';
+import { lockDriverRow } from './driver-row-lock';
 import {
   CreateDriverDto,
   DeactivateDriverDto,
@@ -477,30 +479,56 @@ export class DriversService {
       throw new ConflictException("Ce livreur n'est pas actif.");
     }
 
-    const busy = await this.prisma.delivery.findFirst({
-      where: { delivererId: userId, status: { in: ACTIVE_DELIVERY_STATUSES } },
-      select: { id: true, orderId: true, status: true },
-    });
-    if (busy) {
-      throw new ConflictException(
-        `Ce livreur a une course en cours (${busy.status}, commande ${busy.orderId}). ` +
-          'Réassignez-la ou attendez sa clôture avant de le désactiver.',
-      );
-    }
+    // F3-12.0 — tout se décide sous le verrou du livreur (R4), puis le profil
+    // (R5), dans cet ordre et dans une seule transaction.
+    //
+    // Avant : le contrôle « occupé » était lu HORS transaction, puis le profil
+    // ÉTAIT écrit avant la ligne `User`. Deux défauts :
+    //  - une acceptation commise entre la lecture et l'écriture produisait un
+    //    livreur inactif, `OFFLINE`, titulaire d'une course `ACCEPTER` ;
+    //  - `DriverProfile` puis `User` est l'ordre inverse de tout le reste
+    //    (acceptation, disponibilité) : interblocage possible.
+    await this.prisma.$transaction(async (tx) => {
+      const locked = await lockDriverRow(tx, userId);
+      if (!locked) throw new NotFoundException('Livreur non trouvé.');
 
-    await this.prisma.$transaction([
-      this.prisma.driverProfile.update({
-        where: { userId },
-        data: { isActive: false, deactivationReason: dto.reason ?? null },
-      }),
+      const busy = await tx.delivery.findFirst({
+        where: {
+          delivererId: userId,
+          status: { in: ACTIVE_DELIVERY_STATUSES },
+        },
+        select: { id: true, orderId: true, status: true },
+      });
+      if (busy) {
+        throw new ConflictException(
+          `Ce livreur a une course en cours (${busy.status}, commande ${busy.orderId}). ` +
+            'Réassignez-la ou attendez sa clôture avant de le désactiver.',
+        );
+      }
+
       // Il ne doit plus apparaître comme disponible : la liste d'assignation
       // lit `driverStatus`, et un livreur désactivé mais « AVAILABLE » y
       // resterait affiché jusqu'à ce qu'il ouvre l'application.
-      this.prisma.user.update({
-        where: { id: userId },
-        data: { driverStatus: 'OFFLINE' },
-      }),
-    ]);
+      const offline = await tx.user.updateMany({
+        where: { id: userId, driverStatus: locked.driverStatus },
+        data: { driverStatus: DriverStatus.OFFLINE },
+      });
+      if (offline.count === 0) {
+        throw new ConflictException(
+          'Le statut de ce livreur a changé entre-temps. Rechargez sa fiche.',
+        );
+      }
+
+      // Revendiqué, et non écrit : une désactivation concurrente a pu passer
+      // pendant qu'on attendait le verrou.
+      const deactivated = await tx.driverProfile.updateMany({
+        where: { userId, isActive: true },
+        data: { isActive: false, deactivationReason: dto.reason ?? null },
+      });
+      if (deactivated.count === 0) {
+        throw new ConflictException("Ce livreur n'est pas actif.");
+      }
+    });
 
     await this.audit.record({
       actorId: adminId,

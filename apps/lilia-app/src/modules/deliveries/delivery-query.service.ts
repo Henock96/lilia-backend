@@ -6,6 +6,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { DeliveryStatus } from './dto/update-delivery.dto';
 import { ACTIVE_DELIVERY_STATUSES } from './delivery-statuses';
+import { projectDeliveryForClient } from './delivery-client-projection';
 import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
 
 /**
@@ -319,19 +320,24 @@ export class DeliveryQueryService {
     }
 
     // Anti-IDOR : seuls les acteurs liés à cette livraison peuvent la consulter
-    await this.assertCanViewDelivery({
+    const viewer = await this.assertCanViewDelivery({
       orderUserId: delivery.order.userId,
       ownerFirebaseUid: delivery.order.restaurant.owner?.firebaseUid ?? null,
       delivererId: delivery.delivererId,
       requesterFirebaseUid: firebaseUid,
     });
 
+    // F3-12.0 — même projection que `by-order` : cette route est ouverte au
+    // client propriétaire, elle ne doit pas servir ce que l'autre lui retire.
+    const visible =
+      viewer === 'CLIENT' ? projectDeliveryForClient(delivery) : delivery;
+
     // On retire le firebaseUid du propriétaire avant de répondre (champ interne)
-    const { owner: _owner, ...restaurant } = delivery.order.restaurant;
+    const { owner: _owner, ...restaurant } = visible.order.restaurant;
     return {
       data: {
-        ...delivery,
-        order: { ...delivery.order, restaurant },
+        ...visible,
+        order: { ...visible.order, restaurant },
       },
     };
   }
@@ -514,8 +520,13 @@ export class DeliveryQueryService {
           )?.code ?? null)
         : null;
 
+    // F3-12.0 — le client ne voit le téléphone, la photo et la position du
+    // livreur que pendant que son repas roule vers lui (`EN_TRANSIT`).
+    const visible =
+      viewer === 'CLIENT' ? projectDeliveryForClient(delivery) : delivery;
+
     // Retire les champs internes (delivererId, userId, owner.firebaseUid)
-    const { delivererId: _delivererId, order, ...rest } = delivery;
+    const { delivererId: _delivererId, order, ...rest } = visible;
     const { userId: _userId, restaurant, ...orderRest } = order;
     const { owner: _owner, ...publicRestaurant } = restaurant;
 

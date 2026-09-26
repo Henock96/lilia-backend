@@ -21,6 +21,8 @@ import { CLEARED_DRIVER_ECONOMICS } from './delivery-assignment.service';
 import { DeliveryStatus } from './dto/update-delivery.dto';
 import { DeliveryQueryService } from './delivery-query.service';
 import { ACTIVE_DELIVERY_STATUSES } from './delivery-statuses';
+import { lockDriverRow } from '../drivers/driver-row-lock';
+import { lockOrderRow } from '../orders/order-row-lock';
 import { DeliveryAssignmentService } from './delivery-assignment.service';
 import {
   AdminAuditAction,
@@ -351,6 +353,14 @@ export class DeliveriesService {
     // pas bougé, tout est annulé, y compris la livraison — et les effets de bord
     // (événements, fidélité, parrainage) ne sont déclenchés qu'après le succès.
     await this.prisma.$transaction(async (tx) => {
+      // F3-12.0 — ordre global des verrous : `Order` (R1) AVANT `Delivery`
+      // (R2). Ce chemin prenait la livraison puis la commande (transition
+      // `LIVRER`), à l'inverse de l'acceptation et de l'assignation, qui
+      // tiennent la commande en `FOR SHARE` puis revendiquent la livraison.
+      // « Livré ∥ réassignation » devenait un interblocage (40P01) au lieu
+      // d'un 409 propre.
+      await lockOrderRow(tx, delivery.orderId);
+
       // Verrou optimiste sur la LIVRAISON, qu'elle n'avait pas : l'écriture
       // était un `update` inconditionnel. Un double-tap du livreur passait deux
       // fois. `confirmPickup` posait déjà cette garde, pas ce chemin.
@@ -595,31 +605,61 @@ export class DeliveriesService {
    * livraisons `EN_TRANSIT` simultanées pour un seul téléphone : la position
    * publiée ne peut décrire qu'une des deux courses, et l'autre client suit un
    * livreur qui ne vient pas chez lui.
+   *
+   * F3-12.0 — la garde elle-même était une course. Elle lisait les missions
+   * HORS transaction, puis écrivait le statut sans condition : une acceptation
+   * commise entre les deux (`ON_DELIVERY` + course `ACCEPTER`) était réécrite
+   * `AVAILABLE`, et le livreur redevenait candidat à une seconde course. La
+   * décision se prend maintenant sous le verrou du livreur (`lockDriverRow`,
+   * R4), que l'acceptation prend aussi : l'une attend l'autre, et la seconde
+   * relit un état à jour.
+   *
+   * `ON_DELIVERY` sans course active reste réparable ici (un listener de
+   * libération best-effort a pu échouer) : c'est l'absence de course, lue
+   * sous verrou, qui décide — pas l'étiquette.
    */
   async setDriverStatus(firebaseUid: string, status: DriverStatus) {
     const user = await this.getUserOrThrow(firebaseUid); // 404 si introuvable (plus de TypeError 500)
     if (user.role !== 'LIVREUR') throw new ForbiddenException();
 
-    if (status === DriverStatus.AVAILABLE || status === DriverStatus.OFFLINE) {
-      const activeDelivery = await this.prisma.delivery.findFirst({
-        where: {
-          delivererId: user.id,
-          status: { in: ACTIVE_DELIVERY_STATUSES },
-        },
-        select: { id: true, orderId: true, status: true },
-      });
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await lockDriverRow(tx, user.id);
+      if (!locked) throw new NotFoundException('Utilisateur non trouvé.');
+      if (locked.role !== 'LIVREUR') throw new ForbiddenException();
 
-      if (activeDelivery) {
-        throw new BadRequestException(
-          `Vous avez une livraison en cours (${activeDelivery.status}). ` +
-            'Terminez-la ou signalez un échec avant de changer votre statut.',
+      if (
+        status === DriverStatus.AVAILABLE ||
+        status === DriverStatus.OFFLINE
+      ) {
+        const activeDelivery = await tx.delivery.findFirst({
+          where: {
+            delivererId: user.id,
+            status: { in: ACTIVE_DELIVERY_STATUSES },
+          },
+          select: { id: true, orderId: true, status: true },
+        });
+
+        if (activeDelivery) {
+          throw new BadRequestException(
+            `Vous avez une livraison en cours (${activeDelivery.status}). ` +
+              'Terminez-la ou signalez un échec avant de changer votre statut.',
+          );
+        }
+      }
+
+      // CAS sur l'état lu sous verrou : redondant tant que le verrou tient,
+      // c'est la ceinture si quelqu'un retire un jour la ligne du dessus.
+      const claimed = await tx.user.updateMany({
+        where: { id: user.id, driverStatus: locked.driverStatus },
+        data: { driverStatus: status },
+      });
+      if (claimed.count === 0) {
+        throw new ConflictException(
+          'Votre statut a changé entre-temps. Rechargez puis réessayez.',
         );
       }
-    }
 
-    return this.prisma.user.update({
-      where: { id: user.id },
-      data: { driverStatus: status },
+      return tx.user.findUniqueOrThrow({ where: { id: user.id } });
     });
   }
 

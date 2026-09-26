@@ -31,6 +31,14 @@ describe('DeliveryAssignmentService — assertAssignable', () => {
   const tx = {
     delivery: { updateMany: jest.fn(), findUniqueOrThrow: jest.fn() },
     deliveryAssignment: { create: jest.fn(), updateMany: jest.fn() },
+    // F3-12.0 — verrous en SQL brut : `Order FOR SHARE` (R1) puis le
+    // livreur désigné (`User FOR UPDATE`, R4). La commande reste assignable.
+    $queryRaw: jest.fn(() => Promise.resolve([{ status: 'PRET' }])),
+    // F3-12.0 — `assertAssignable` est rejouée sous le verrou du livreur,
+    // sur le client de transaction : même source que hors transaction.
+    user: {
+      findUnique: jest.fn((args: unknown) => prisma.user.findUnique(args)),
+    },
   };
   const prisma = {
     delivery: { findUnique: jest.fn(), update: jest.fn() },

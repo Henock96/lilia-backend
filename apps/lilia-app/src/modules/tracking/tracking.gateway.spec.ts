@@ -41,6 +41,8 @@ describe('TrackingGateway', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    // Par défaut, la course roule (`EN_TRANSIT`) : la position circule.
+    tracking.assertCanUpdatePosition.mockResolvedValue({ live: true });
     userCache.getByFirebaseUid.mockResolvedValue({
       id: 'u1',
       statusUser: 'ACTIVE',
@@ -150,6 +152,28 @@ describe('TrackingGateway', () => {
           timestamp: expect.any(Number),
         }),
       );
+    });
+
+    /**
+     * F3-12.0 (I16) — avant `EN_TRANSIT` (ou après `LIVRER`), la position du
+     * livreur ne doit atteindre ni Redis ni la room que le client écoute. Et
+     * sans exception : l'app livreur publie en boucle, une erreur par
+     * message serait du bruit sans effet.
+     */
+    it('F3-12.0 — hors EN_TRANSIT : ni stockée, ni diffusée, et sans erreur', async () => {
+      tracking.assertCanUpdatePosition.mockResolvedValueOnce({ live: false });
+      const client = makeClient({ uid: 'fb1', tokenExp: inOneHour });
+
+      await expect(
+        gateway.onDriverPosition(client as any, {
+          orderId: 'o1',
+          lat: -4.2634,
+          lng: 15.2429,
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(tracking.updatePosition).not.toHaveBeenCalled();
+      expect(roomEmit).not.toHaveBeenCalled();
     });
 
     it('order:status broadcast porte orderId et status', () => {
