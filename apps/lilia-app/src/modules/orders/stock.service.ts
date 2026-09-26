@@ -52,9 +52,19 @@ export class StockService {
    *
    * ### Déroulé (allers-retours fixes, contre 1 + N avant)
    *
-   * 1. `SELECT … ORDER BY id FOR UPDATE` : tous les verrous produits d'un coup,
-   *    dans un ordre total (fix S-7 — deux paniers qui se croisent ne peuvent
-   *    pas s'interbloquer). L'état lu est l'état qu'on écrira ;
+   * 1. `SELECT … ORDER BY id FOR NO KEY UPDATE` : tous les verrous produits
+   *    d'un coup, dans un ordre total (fix S-7 — deux paniers qui se croisent
+   *    ne peuvent pas s'interbloquer). L'état lu est l'état qu'on écrira ;
+   *
+   *    ⚠️ **`NO KEY UPDATE`, jamais `FOR UPDATE`.** Le checkout insère les
+   *    `OrderItem` AVANT de réserver le stock, et chaque insertion pose, par
+   *    sa clé étrangère, un verrou `KEY SHARE` sur le produit (et le menu).
+   *    `FOR UPDATE` entre en conflit avec `KEY SHARE` : deux checkouts du même
+   *    produit attendaient chacun le verrou de clé de l'autre — interblocage
+   *    PostgreSQL, un client sur deux en échec dès deux commandes simultanées
+   *    (mesuré le 26/09/2026 : 1 commande sur 20). `NO KEY UPDATE` sérialise
+   *    toujours les checkouts entre eux, mais laisse passer les verrous de clé.
+   *    Test : `checkout-same-product.int-spec.ts` ;
    * 2. contrôle en mémoire, nominatif (on tient les verrous : le nombre lu est
    *    exact) ;
    * 3. `UPDATE … FROM unnest(…)` groupé, garde `>= u` conservée en ceinture ;
@@ -82,7 +92,7 @@ export class StockService {
           SELECT id, "stockRestant" FROM "Product"
            WHERE id = ANY(${productIds}::text[])
            ORDER BY id
-             FOR UPDATE`
+             FOR NO KEY UPDATE`
       : [];
     const limited = locked.filter((row) => row.stockRestant !== null);
 
@@ -126,7 +136,7 @@ export class StockService {
         SELECT id, nom, "stockRestant" FROM "MenuDuJour"
          WHERE id = ANY(${menuIds}::text[])
          ORDER BY id
-           FOR UPDATE`;
+           FOR NO KEY UPDATE`;
       const limitedMenus = menus.filter((m) => m.stockRestant !== null);
       for (const menu of limitedMenus) {
         if (menu.stockRestant! < byMenu.get(menu.id)!) {

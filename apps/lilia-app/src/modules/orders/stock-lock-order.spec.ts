@@ -14,7 +14,7 @@ import { StockService } from './stock.service';
  * ### Ce que F3-10 change, et ce que ce test vérifie
  *
  * La réservation prend désormais tous les verrous produits **d'un seul
- * `SELECT … ORDER BY id FOR UPDATE`**, sur des identifiants triés, puis ceux
+ * `SELECT … ORDER BY id FOR NO KEY UPDATE`**, sur des identifiants triés, puis ceux
  * des menus — toujours après. La restitution écrit produit par produit, ids
  * triés, puis les menus. Ce test capture la séquence réelle des requêtes et
  * vérifie cet ordre total. La preuve sous concurrence réelle (aucun
@@ -36,7 +36,7 @@ describe('StockService — ordre de verrouillage (S-7, F3-10)', () => {
         async (strings: TemplateStringsArray, ...values: unknown[]) => {
           const sql = record(strings, values);
           const ids = values[0] as string[];
-          if (sql.includes('FOR UPDATE')) {
+          if (sql.includes('FOR NO KEY UPDATE')) {
             return ids.map((id) => ({
               id,
               nom: id,
@@ -84,7 +84,7 @@ describe('StockService — ordre de verrouillage (S-7, F3-10)', () => {
       line('p-b', 'm-y'),
     ]);
 
-    const locks = calls.filter((c) => c.sql.includes('FOR UPDATE'));
+    const locks = calls.filter((c) => c.sql.includes('FOR NO KEY UPDATE'));
     expect(locks).toHaveLength(2);
     expect(locks[0].sql).toContain('"Product"');
     expect(locks[0].sql).toMatch(/ORDER BY id/);
