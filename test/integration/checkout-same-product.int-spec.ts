@@ -67,6 +67,7 @@ describeIfDb(
         {} as never, // tarification — mode historique
         { recordCreation: async () => undefined } as never,
         { announce: async () => undefined } as never,
+        { resolveForCart: async () => null } as never, // offres (F3-11)
       );
     });
 

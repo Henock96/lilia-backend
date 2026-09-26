@@ -58,6 +58,10 @@ describe('Acteur et provenance des transitions', () => {
           create: jest.fn(),
         },
         promoUsage: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+        // F3-11 — aucune offre boutique consommée.
+        vendorOfferRedemption: {
+          findUnique: jest.fn().mockResolvedValue(null),
+        },
         restaurantPayout: { findUnique: jest.fn().mockResolvedValue(null) },
         user: { update: jest.fn() },
       };
@@ -128,6 +132,10 @@ describe('Acteur et provenance des transitions', () => {
           create: jest.fn(),
         },
         promoUsage: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+        // F3-11 — aucune offre boutique consommée.
+        vendorOfferRedemption: {
+          findUnique: jest.fn().mockResolvedValue(null),
+        },
         restaurantPayout: { findUnique: jest.fn().mockResolvedValue(null) },
         user: { update: jest.fn() },
       };
@@ -191,6 +199,10 @@ describe('Acteur et provenance des transitions', () => {
           create: jest.fn(),
         },
         promoUsage: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+        // F3-11 — aucune offre boutique consommée.
+        vendorOfferRedemption: {
+          findUnique: jest.fn().mockResolvedValue(null),
+        },
         restaurantPayout: { findUnique: jest.fn().mockResolvedValue(null) },
         payment: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
         user: { update: jest.fn() },

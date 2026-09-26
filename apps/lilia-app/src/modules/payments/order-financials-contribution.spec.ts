@@ -102,6 +102,35 @@ describe('getOrderFinancials — contribution', () => {
     });
   });
 
+  /**
+   * F3-11 — l'offre boutique fait partie de `discountAmount`, mais le vendeur
+   * la paie (retenue sur son reversement). La compter comme un coût de Lilia
+   * afficherait une marge fausse, du montant exact de l'offre.
+   */
+  describe('offre boutique du vendeur (F3-11)', () => {
+    it('la part retenue au vendeur ne coûte rien à Lilia', () => {
+      const result = contribution(
+        { ...TYPICAL, isDelivery: false, deliveryFee: 0, discountAmount: 500 },
+        { commissionAmount: 400, vendorOfferAmount: 500 } as never,
+        FEES,
+      );
+      // Seuls les frais prestataire : 120 + 75.
+      expect(result.variableCosts).toBe(195);
+      expect(result.discountGranted).toBe(0);
+      expect(result.vendorOfferDiscount).toBe(500);
+    });
+
+    it('offre + code Lilia : seul le code est un coût', () => {
+      const result = contribution(
+        { ...TYPICAL, isDelivery: false, deliveryFee: 0, discountAmount: 800 },
+        { commissionAmount: 400, vendorOfferAmount: 500 } as never,
+        FEES,
+      );
+      expect(result.discountGranted).toBe(300);
+      expect(result.variableCosts).toBe(300 + 120 + 75);
+    });
+  });
+
   describe('remises — coût omis, jamais compté deux fois', () => {
     it('déduit `discountAmount` du revenu', () => {
       const result = contribution(

@@ -114,6 +114,7 @@ describeIfDb('F3-09 — options & suppléments (PostgreSQL réel)', () => {
       {} as never, // tarification plateforme — mode historique
       { recordCreation: async () => insideCheckout() } as never,
       { announce: async () => undefined } as never, // StockSignalService (F3-10)
+      { resolveForCart: async () => null } as never, // offres boutique (F3-11)
     );
     reorder = new OrderReorderService(
       prisma as never,

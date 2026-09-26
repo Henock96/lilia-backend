@@ -22,6 +22,11 @@ import { PlatformSettingsService } from '../platform-settings/platform-settings.
 import { modifiersEnabled } from '../modifiers/modifiers-switch';
 import { withPublicModifiers } from '../modifiers/modifier-views';
 import { withVariantStock } from '../orders/stock-units';
+import {
+  activeOfferRelationSelect,
+  withActiveOffer,
+} from '../vendor-offers/vendor-offer-projection';
+import { vendorOffersEnabled } from '../vendor-offers/vendor-offers-switch';
 
 /**
  * Lectures, scoring et analytics restaurants (extrait de RestaurantsService —
@@ -56,13 +61,19 @@ export class RestaurantQueryService {
    * client de savoir s'il doit continuer.
    */
   async findAll(page = 1, limit = RestaurantQueryService.LIST_DEFAULT_LIMIT) {
+    const now = new Date();
     const [restaurants, total] = await Promise.all([
       this.prisma.restaurant.findMany({
         where: PUBLIC_VENDOR_WHERE,
         // `select` et non `include` : cf. PUBLIC_VENDOR_SELECT. Un `include`
         // laisse partir tous les scalaires du modèle, `payoutPhoneNumber`
         // compris, sur une route que personne n'authentifie.
-        select: { ...PUBLIC_VENDOR_SELECT, ...RESTAURANT_LIST_INCLUDE },
+        select: {
+          ...PUBLIC_VENDOR_SELECT,
+          ...RESTAURANT_LIST_INCLUDE,
+          // F3-11 — offre boutique en cours (badge « −10 % »).
+          ...activeOfferRelationSelect(now),
+        },
         // Ordre partagé avec `GET /vendors` (cf. PUBLIC_VENDOR_ORDER_BY) : les
         // deux routes listent la même entité et divergeaient jusqu'ici.
         orderBy: [...PUBLIC_VENDOR_ORDER_BY],
@@ -74,8 +85,9 @@ export class RestaurantQueryService {
       }),
     ]);
 
+    const offersOn = await vendorOffersEnabled(this.platformSettings);
     return {
-      data: restaurants,
+      data: restaurants.map((r) => withActiveOffer(r, offersOn)),
       meta: {
         page,
         limit,
@@ -111,6 +123,7 @@ export class RestaurantQueryService {
         ...PUBLIC_VENDOR_SELECT,
         ...vendorMenuInclude(this.prisma.product.fields, now),
         ...RESTAURANT_INCLUDE,
+        ...activeOfferRelationSelect(now),
       },
     });
 
@@ -123,7 +136,7 @@ export class RestaurantQueryService {
 
     return {
       data: {
-        ...rest,
+        ...withActiveOffer(rest, await vendorOffersEnabled(this.platformSettings)),
         products: withPublicModifiers(
           withVariantStock(withAvailableNow(products, now)),
           await modifiersEnabled(this.platformSettings),
@@ -174,8 +187,13 @@ export class RestaurantQueryService {
 
     const restaurants = await this.prisma.restaurant.findMany({
       where: { id: { in: ids }, ...PUBLIC_VENDOR_WHERE },
-      select: { ...PUBLIC_VENDOR_SELECT, ...RESTAURANT_LIST_INCLUDE },
+      select: {
+        ...PUBLIC_VENDOR_SELECT,
+        ...RESTAURANT_LIST_INCLUDE,
+        ...activeOfferRelationSelect(new Date()),
+      },
     });
+    const offersOn = await vendorOffersEnabled(this.platformSettings);
 
     const ratings = await aggregateRatings(this.prisma, restaurants.map((r) => r.id));
 
@@ -184,7 +202,7 @@ export class RestaurantQueryService {
       .map((id) => restaurants.find((r) => r.id === id))
       .filter(Boolean)
       .map((r) => ({
-        ...r,
+        ...withActiveOffer(r, offersOn),
         ...(ratings.get(r.id) ?? { averageRating: null, totalReviews: 0 }),
         orderCount: countMap.get(r.id) ?? 0,
       }));

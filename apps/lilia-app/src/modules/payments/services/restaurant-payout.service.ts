@@ -230,12 +230,7 @@ export class RestaurantPayoutService {
     }
 
     const refundGate = refundGateForPayout(order.refunds);
-    const breakdown = this.buildBreakdown(
-      order.subTotal,
-      order.commissionPercent,
-      order.vendorDeliverySubsidyXaf,
-      refundGate.deductionXaf,
-    );
+    const breakdown = this.buildBreakdown(order, refundGate.deductionXaf);
     const withBreakdown = (result: PayoutEligibility): PayoutEligibility => ({
       ...result,
       breakdown: { ...breakdown, currency: 'XAF' },
@@ -374,18 +369,23 @@ export class RestaurantPayoutService {
    * ce service : le taux d'un vendeur décrit ses commandes **futures**.
    */
   private buildBreakdown(
-    subTotal: number,
-    orderCommissionPercent: number,
-    // F3-02 : part de la course offerte par le vendeur, figée à la commande.
-    // Absente des lignes antérieures (défaut 0 en base).
-    vendorDeliverySubsidyXaf: number | null | undefined,
+    order: {
+      subTotal: number;
+      commissionPercent: number;
+      // F3-02 : part de la course offerte par le vendeur, figée à la commande.
+      // Absente des lignes antérieures (défaut 0 en base).
+      vendorDeliverySubsidyXaf: number | null;
+      // F3-11 : offre boutique consentie par le vendeur, figée à la commande.
+      vendorFundedDiscountXaf: number | null;
+    },
     // F3-06 : remboursements versés à la charge du vendeur.
     refundDeductionXaf = 0,
   ) {
     return computePayoutBreakdown({
-      subTotalXaf: toXaf(subTotal, 'sous-total'),
-      commissionPercent: orderCommissionPercent,
-      deliverySubsidyXaf: vendorDeliverySubsidyXaf ?? 0,
+      subTotalXaf: toXaf(order.subTotal, 'sous-total'),
+      commissionPercent: order.commissionPercent,
+      deliverySubsidyXaf: order.vendorDeliverySubsidyXaf ?? 0,
+      vendorOfferDiscountXaf: order.vendorFundedDiscountXaf ?? 0,
       refundDeductionXaf,
     });
   }
@@ -439,15 +439,13 @@ export class RestaurantPayoutService {
     // du taux figés sur la commande — jamais repris d'un corps de requête, et
     // jamais relu sur la fiche du vendeur (qui décrit ses commandes futures).
     const breakdown = this.buildBreakdown(
-      order.subTotal,
-      order.commissionPercent,
-      order.vendorDeliverySubsidyXaf,
+      order,
       refundGateForPayout(order.refunds).deductionXaf,
     );
 
     if (breakdown.payoutAmount <= 0) {
       throw new BadRequestException(
-        'Le montant à reverser est nul. Vérifiez le sous-total de la commande, le taux de commission et la part de livraison offerte par le vendeur.',
+        'Le montant à reverser est nul. Vérifiez le sous-total de la commande, le taux de commission, la part de livraison et l’offre boutique consenties par le vendeur.',
       );
     }
 
@@ -580,6 +578,7 @@ export class RestaurantPayoutService {
             commissionPercent: breakdown.commissionPercent,
             commissionAmount: breakdown.commissionAmount,
             deliverySubsidyAmount: breakdown.deliverySubsidyAmount,
+            vendorOfferAmount: breakdown.vendorOfferAmount,
             refundDeductionAmount: breakdown.refundDeductionAmount,
             debtDeductionAmount: debtDeduction,
             amount: net,
@@ -636,6 +635,7 @@ export class RestaurantPayoutService {
       `💸 Reversement demandé — commande ${order.id}, vendeur ${order.restaurant.nom}, ` +
         `brut ${breakdown.grossAmount}, commission ${breakdown.commissionPercent}% ` +
         `(${breakdown.commissionAmount}), livraison offerte ${breakdown.deliverySubsidyAmount}, ` +
+        `offre boutique ${breakdown.vendorOfferAmount}, ` +
         `retenue remboursements ${breakdown.refundDeductionAmount}, ` +
         `retenue dette ${payout.debtDeductionAmount}, ` +
         `net ${payout.amount} XAF, ` +
@@ -1200,14 +1200,13 @@ export class RestaurantPayoutService {
           commissionPercent: order.payout.commissionPercent,
           commissionAmount: order.payout.commissionAmount,
           deliverySubsidyAmount: order.payout.deliverySubsidyAmount,
+          vendorOfferAmount: order.payout.vendorOfferAmount,
           refundDeductionAmount: order.payout.refundDeductionAmount,
           debtDeductionAmount: order.payout.debtDeductionAmount,
           payoutAmount: order.payout.amount,
         }
       : this.buildBreakdown(
-          order.subTotal,
-          order.commissionPercent,
-          order.vendorDeliverySubsidyXaf,
+          order,
           refundGateForPayout(order.refunds).deductionXaf,
         );
 
@@ -1372,6 +1371,7 @@ export class RestaurantPayoutService {
     breakdown: {
       commissionAmount: number;
       deliverySubsidyAmount?: number;
+      vendorOfferAmount?: number;
       refundDeductionAmount?: number;
     },
     fees: { collectionFee: number | null; payoutFee: number | null },
@@ -1399,7 +1399,13 @@ export class RestaurantPayoutService {
     // `loyaltyDiscount` en est une sous-partie (cf. `schema.prisma`). Les
     // additionner compterait la fidélité deux fois. On expose les deux pour la
     // lecture, on n'en déduit qu'un.
-    const discount = order.discountAmount;
+    //
+    // F3-11 : l'offre boutique en fait aussi partie, mais c'est le vendeur qui
+    // la paie — retenue sur son reversement. Seule la part effectivement
+    // retenue sort du coût de Lilia : si le plancher à 0 du reversement en a
+    // absorbé une partie, c'est Lilia qui l'a payée.
+    const vendorOfferRetained = breakdown.vendorOfferAmount ?? 0;
+    const discount = order.discountAmount - vendorOfferRetained;
 
     // Un remboursement n'est un coût que lorsqu'il a réellement été versé.
     // `PENDING` ou `PROCESSING` = une dette, pas encore une sortie d'argent :
@@ -1485,8 +1491,10 @@ export class RestaurantPayoutService {
       collectionFee,
       payoutFee,
       // Remises offertes par Lilia. `discountAmount` inclut `loyaltyDiscount` :
-      // ne jamais les additionner.
+      // ne jamais les additionner. L'offre boutique en est exclue (F3-11) :
+      // elle est exposée à part, payée par le vendeur.
       discountGranted: discount,
+      vendorOfferDiscount: vendorOfferRetained,
       loyaltyDiscount: order.loyaltyDiscount,
       refundPaid,
 

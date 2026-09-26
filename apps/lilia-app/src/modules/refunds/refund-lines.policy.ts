@@ -123,6 +123,34 @@ export interface RefundableOrder {
     /** Prix unitaire figé (`snapshotPrice ?? prix`). */
     unitPriceXaf: number;
   }[];
+  /**
+   * F3-11 (Q3) — offre boutique appliquée à la commande. Le client n'a payé
+   * ses articles que net de l'offre : les lui rembourser au prix brut lui
+   * rendrait plus qu'il n'a payé, aux frais du vendeur (payeur par défaut
+   * d'un article manquant), qui n'a lui-même touché que le net.
+   */
+  vendorOffer?: { subTotalXaf: number; discountXaf: number } | null;
+}
+
+/**
+ * Prix unitaire remboursable d'un article : le prix figé, net de l'offre
+ * boutique au prorata du sous-total. Arrondi à l'inférieur — le client ne
+ * récupère jamais plus qu'il n'a payé ; l'écart est inférieur à 1 FCFA par
+ * article.
+ */
+export function refundableUnitPriceXaf(
+  unitPriceXaf: number,
+  vendorOffer: RefundableOrder['vendorOffer'],
+): number {
+  if (
+    !vendorOffer ||
+    vendorOffer.discountXaf <= 0 ||
+    vendorOffer.subTotalXaf <= 0
+  ) {
+    return unitPriceXaf;
+  }
+  const net = vendorOffer.subTotalXaf - vendorOffer.discountXaf;
+  return Math.floor((unitPriceXaf * net) / vendorOffer.subTotalXaf);
 }
 
 /** Remboursements déjà comptés (hors `REJECTED`), avec leurs lignes. */
@@ -199,8 +227,9 @@ const fmt = (n: number) => `${n.toLocaleString('fr-FR')} FCFA`;
 /**
  * Compose un remboursement à partir de lignes demandées (R-06.2, R-06.3).
  *
- * - `ITEM` : quantité ≤ commandée − déjà remboursée ; montant = prix figé ×
- *   quantité, **jamais** fourni par l'appelant ;
+ * - `ITEM` : quantité ≤ commandée − déjà remboursée ; montant = prix figé
+ *   (net de l'offre boutique, F3-11) × quantité, **jamais** fourni par
+ *   l'appelant ;
  * - `DELIVERY_FEE` / `SERVICE_FEE` : au plus le reliquat du frais ; sans
  *   montant, tout le reliquat ;
  * - `GOODWILL` : montant libre, strictement positif ;
@@ -239,7 +268,7 @@ export function composeRefund(
     label: it.label,
     orderedQty: it.quantite,
     refundedQty: refundedQty.get(it.id) ?? 0,
-    unitPriceXaf: it.unitPriceXaf,
+    unitPriceXaf: refundableUnitPriceXaf(it.unitPriceXaf, order.vendorOffer),
   }));
   const remainingXaf = Math.max(0, order.paidXaf - alreadyRefundedXaf);
   const refundable = {

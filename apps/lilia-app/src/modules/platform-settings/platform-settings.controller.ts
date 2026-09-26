@@ -64,6 +64,9 @@ export class PublicPlatformSettingsController {
         // F3-10 — l'éditeur vendeur n'affiche le champ « unités par format »
         // que si le serveur l'accepte.
         multiUnitVariantsEnabled: settings.multiUnitVariantsEnabled,
+        // F3-11 — badges d'offre et écran « Mes offres ». Le serveur, lui,
+        // ne s'y fie pas : il relit l'interrupteur à chaque devis et checkout.
+        vendorOffersEnabled: settings.vendorOffersEnabled,
         maintenanceMode: settings.maintenanceMode,
         // `""` et `null` voulaient tous deux dire « pas de message », mais les
         // clients ne les traitent pas pareil (`??` laisse passer `""`). Les

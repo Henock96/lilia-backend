@@ -3,6 +3,7 @@ import { PrismaModule } from '../../prisma/prisma.module';
 import { NotificationsCoreModule } from '../notifications/notifications-core.module';
 import { PayoutOutboxEffectsService } from './payout-outbox-effects.service';
 import { ApprovalOutboxEffectsService } from './approval-outbox-effects.service';
+import { VendorOfferOutboxEffectsService } from '../vendor-offers/vendor-offer-outbox-effects.service';
 
 /**
  * Notifications de versement dépilées par l'outbox (F3-07).
@@ -13,6 +14,11 @@ import { ApprovalOutboxEffectsService } from './approval-outbox-effects.service'
 @Module({
   imports: [PrismaModule, NotificationsCoreModule],
   // F3-08 — les demandes d'approbation, même mécanique.
-  providers: [PayoutOutboxEffectsService, ApprovalOutboxEffectsService],
+  // F3-11 — les avis d'offre boutique au vendeur, même mécanique.
+  providers: [
+    PayoutOutboxEffectsService,
+    ApprovalOutboxEffectsService,
+    VendorOfferOutboxEffectsService,
+  ],
 })
 export class PayoutOutboxEffectsModule {}

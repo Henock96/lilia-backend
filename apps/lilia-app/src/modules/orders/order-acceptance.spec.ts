@@ -62,6 +62,8 @@ describe('OrderLifecycleService — acceptation et refus vendeur (F3-01)', () =>
         aggregate: jest.fn().mockResolvedValue({ _sum: { points: 0 } }),
       },
       promoUsage: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      // F3-11 — aucune offre boutique consommée.
+      vendorOfferRedemption: { findUnique: jest.fn().mockResolvedValue(null) },
       $executeRaw: jest.fn(),
       $queryRaw: jest.fn().mockResolvedValue([]),
     };

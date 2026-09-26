@@ -56,6 +56,8 @@ export class VendorEarningsService {
           subTotal: true,
           commissionPercent: true,
           vendorDeliverySubsidyXaf: true,
+          // F3-11 — offre boutique consentie, retenue au versement.
+          vendorFundedDiscountXaf: true,
           payoutDueAt: true,
           deliveryProof: true,
         },
@@ -80,6 +82,7 @@ export class VendorEarningsService {
           grossAmount: true,
           commissionAmount: true,
           deliverySubsidyAmount: true,
+          vendorOfferAmount: true,
           refundDeductionAmount: true,
           debtDeductionAmount: true,
           amount: true,
@@ -130,6 +133,7 @@ export class VendorEarningsService {
         subTotalXaf: toXaf(o.subTotal, 'sous-total'),
         commissionPercent: o.commissionPercent,
         deliverySubsidyXaf: o.vendorDeliverySubsidyXaf ?? 0,
+        vendorOfferDiscountXaf: o.vendorFundedDiscountXaf ?? 0,
       }).payoutAmount,
     }));
 

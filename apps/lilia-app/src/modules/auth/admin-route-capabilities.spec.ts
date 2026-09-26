@@ -80,6 +80,10 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'AdminPublicHolidaysController.create': 'NONE',
   'AdminPublicHolidaysController.list': 'NONE',
   'AdminPublicHolidaysController.remove': 'NONE',
+  // F3-11 — l'arrêt d'une offre vendeur est un réglage commercial, comme
+  // activer ou désactiver un code promo : aucun argent ne part.
+  'AdminVendorOffersController.list': 'NONE',
+  'AdminVendorOffersController.stop': 'SETTINGS',
   'AdminVendorOnboardingController.activate': 'NONE',
   'AdminVendorOnboardingController.create': 'NONE',
   'AdminVendorOnboardingController.resendInvitation': 'NONE',

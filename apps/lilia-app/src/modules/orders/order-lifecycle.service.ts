@@ -14,6 +14,7 @@ import {
   VendorRejectionReason,
 } from '@prisma/client';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { releaseVendorOfferForOrder } from '../vendor-offers/vendor-offers.service';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import {
@@ -1056,7 +1057,8 @@ export class OrderLifecycleService {
 
   /**
    * Rend au client ce que le checkout lui avait prélevé, hors stock :
-   * les points de fidélité consommés et l'usage du code promo.
+   * les points de fidélité consommés et l'usage du code promo — et au vendeur
+   * le budget d'offre boutique que la commande avait consommé (F3-11).
    *
    * Sans ça, un client qui annule perd définitivement ses points ET son code
    * promo (qui reste compté contre `maxUsagePerUser` / `maxUsageTotal`).
@@ -1108,6 +1110,14 @@ export class OrderLifecycleService {
     if (removedUsages.count > 0) {
       this.logger.log(
         `↩️ Usage du code promo libéré (commande ${orderId} annulée)`,
+      );
+    }
+
+    // 3. Offre boutique (F3-11) — le budget consommé revient au vendeur.
+    const releasedXaf = await releaseVendorOfferForOrder(tx, orderId);
+    if (releasedXaf > 0) {
+      this.logger.log(
+        `↩️ ${releasedXaf} FCFA rendus au budget de l'offre (commande ${orderId} annulée)`,
       );
     }
   }

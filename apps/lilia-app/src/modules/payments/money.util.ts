@@ -112,6 +112,11 @@ export interface PayoutBreakdown {
    */
   deliverySubsidyAmount: number;
   /**
+   * Offre boutique consentie par le vendeur sur cette commande (F3-11),
+   * retenue sur son reversement. `0` sans offre.
+   */
+  vendorOfferAmount: number;
+  /**
    * Remboursements clients à la charge du vendeur (F3-06, R-06.4), retenus
    * sur ce reversement. `0` sans réclamation.
    */
@@ -127,7 +132,7 @@ export interface PayoutBreakdown {
  * grossAmount    = montant des produits (Order.subTotal)
  * commission     = grossAmount × commissionPercent
  * payoutAmount   = grossAmount − commission − deliverySubsidy
- *                  − refundDeduction                              (≥ 0)
+ *                  − vendorOffer − refundDeduction                (≥ 0)
  * ```
  *
  * `deliverySubsidy` (F3-02) est la part de la course que le vendeur a choisi
@@ -146,9 +151,15 @@ export interface PayoutBreakdown {
  *  · `serviceFee` — frais payés en plus par le client, ils appartiennent à
  *    Lilia Food et ne sont pas de l'argent du vendeur, donc rien à en déduire ;
  *  · `deliveryFee` — rémunère la livraison, pas le vendeur ;
- *  · `discountAmount` — code promo et points de fidélité sont une remise
- *    consentie par Lilia Food. Les déduire ferait payer au vendeur une campagne
- *    marketing qu'il n'a pas décidée ;
+ *  · `discountAmount` **hors offre vendeur** — code promo et points de
+ *    fidélité sont une remise consentie par Lilia Food. Les déduire ferait
+ *    payer au vendeur une campagne marketing qu'il n'a pas décidée. L'offre
+ *    boutique (F3-11), elle, est décidée ET financée par le vendeur : elle est
+ *    retenue (`vendorOffer`), exactement comme la livraison qu'il offre.
+ *
+ * D8 (26/09/2026) : la commission se calcule sur `grossAmount` AVANT l'offre
+ * vendeur. Sinon Lilia co-financerait, par une commission réduite, une
+ * promotion qu'elle n'a pas décidée.
  *  · les frais du prestataire de paiement — charge de Lilia Food, jamais
  *    répercutée sur le reversement.
  *
@@ -159,6 +170,8 @@ export function computePayoutBreakdown(params: {
   subTotalXaf: number;
   commissionPercent: number;
   deliverySubsidyXaf?: number;
+  /** F3-11 — `Order.vendorFundedDiscountXaf`. */
+  vendorOfferDiscountXaf?: number;
   refundDeductionXaf?: number;
 }): PayoutBreakdown {
   const grossAmount = toXaf(params.subTotalXaf, 'sous-total de la commande');
@@ -174,18 +187,29 @@ export function computePayoutBreakdown(params: {
     toXaf(subsidy, 'subvention de livraison'),
     grossAmount - commissionAmount,
   );
+  const offer = params.vendorOfferDiscountXaf ?? 0;
+  if (!Number.isInteger(offer)) {
+    throw new Error(`offre vendeur invalide : ${offer}`);
+  }
+  // Le checkout plafonne déjà l'offre au net vendeur ; ce plancher-ci
+  // protège d'une donnée corrompue, il ne fixe pas la règle.
+  const vendorOfferAmount = Math.min(
+    toXaf(offer, 'offre vendeur'),
+    grossAmount - commissionAmount - deliverySubsidyAmount,
+  );
   const deduction = params.refundDeductionXaf ?? 0;
   if (!Number.isInteger(deduction)) {
     throw new Error(`retenue de remboursement invalide : ${deduction}`);
   }
   const refundDeductionAmount = Math.min(
     toXaf(deduction, 'retenue de remboursement'),
-    grossAmount - commissionAmount - deliverySubsidyAmount,
+    grossAmount - commissionAmount - deliverySubsidyAmount - vendorOfferAmount,
   );
   const payoutAmount =
     grossAmount -
     commissionAmount -
     deliverySubsidyAmount -
+    vendorOfferAmount -
     refundDeductionAmount;
 
   return {
@@ -195,6 +219,7 @@ export function computePayoutBreakdown(params: {
     commissionPercent: bps / 100,
     commissionAmount,
     deliverySubsidyAmount,
+    vendorOfferAmount,
     refundDeductionAmount,
     payoutAmount,
   };

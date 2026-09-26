@@ -15,6 +15,7 @@ import {
 } from '../modifiers/cart-line-pricing';
 import { PAID_ORDER_STATUSES } from '../orders/order-status-groups';
 import { CreatePromoCodeDto } from './dto/create-promo-code.dto';
+import { VendorOffersService } from '../vendor-offers/vendor-offers.service';
 
 export interface PromoValidationResult {
   valid: boolean;
@@ -25,6 +26,17 @@ export interface PromoValidationResult {
   description: string;
   newTotal: number;
   newDeliveryFee: number;
+  /** F3-11 (Q4) — ce code peut-il s'ajouter à l'offre boutique du vendeur ? */
+  stackableWithVendorOffer: boolean;
+}
+
+/** F3-11 (Q4) — code non cumulable avec l'offre boutique en cours. */
+export function promoNotStackable(): BadRequestException {
+  return new BadRequestException({
+    message:
+      'Ce code ne se cumule pas avec l’offre en cours chez ce vendeur : l’offre est déjà appliquée à votre panier.',
+    code: 'PROMO_NOT_STACKABLE',
+  });
 }
 
 @Injectable()
@@ -36,6 +48,9 @@ export class PromoService {
     private readonly deliveryPricing: DeliveryPricingService,
     // F3-09 — l'interrupteur des options décide du prix d'une ligne.
     private readonly platformSettings: PlatformSettingsService,
+    // F3-11 — l'aperçu d'un code se calcule après l'offre boutique, comme au
+    // checkout.
+    private readonly vendorOffers: VendorOffersService,
   ) {}
 
   // ─── Validation ─────────────────────────────────────────────────────────────
@@ -79,7 +94,8 @@ export class PromoService {
     // un menu porte son propre prix, une ligne individuelle celui de sa
     // variante PLUS ses options (F3-09). Chiffrage d'affichage : une ligne
     // devenue invalide garde son prix courant, le checkout la refusera.
-    const { modifiersEnabled } = await this.platformSettings.getSettings();
+    const settings = await this.platformSettings.getSettings();
+    const { modifiersEnabled } = settings;
     const subTotal = cartSubtotalXaf(
       items.map((line) => ({
         line,
@@ -98,6 +114,7 @@ export class PromoService {
         deliverySubsidyMode: true,
         deliverySubsidyXaf: true,
         freeDeliveryThresholdXaf: true,
+        commissionPercent: true,
       },
     });
 
@@ -119,15 +136,33 @@ export class PromoService {
         })
       : null;
 
-    return this.validateCode(
+    // F3-11 — même assiette que le checkout : le code s'applique sur ce qui
+    // reste une fois l'offre boutique passée, et un code non cumulable est
+    // refusé dès la saisie plutôt qu'au paiement. Commission résolue comme au
+    // checkout (taux du vendeur, sinon taux plateforme) pour le même plafond.
+    const roundedSubTotal = Math.round(subTotal);
+    const commissionPercent =
+      restaurant?.commissionPercent ?? settings.restaurantCommissionPercent;
+    const offer = await this.vendorOffers.resolveForCart({
+      restaurantId,
+      subTotalXaf: roundedSubTotal,
+      commissionAmountXaf: Math.round(
+        (roundedSubTotal * Math.min(Math.max(commissionPercent, 0), 50)) / 100,
+      ),
+      vendorDeliverySubsidyXaf: quote?.subsidyXaf ?? 0,
+    });
+
+    const result = await this.validateCode(
       code,
       userId,
       restaurantId,
-      Math.round(subTotal),
+      roundedSubTotal - (offer?.discountXaf ?? 0),
       // Aperçu : en mode ZONE_BASED, l'adresse n'est pas encore choisie. Le
       // checkout recalculera le vrai montant.
       quote?.customerFeeXaf ?? restaurant?.fixedDeliveryFee ?? 0,
     );
+    if (offer && !result.stackableWithVendorOffer) throw promoNotStackable();
+    return result;
   }
 
   async validateCode(
@@ -235,6 +270,7 @@ export class PromoService {
       description: promo.description ?? '',
       newTotal,
       newDeliveryFee,
+      stackableWithVendorOffer: promo.stackableWithVendorOffer,
     };
   }
 

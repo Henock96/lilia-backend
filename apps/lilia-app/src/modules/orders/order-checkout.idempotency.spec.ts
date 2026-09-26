@@ -8,6 +8,7 @@ import { OrderCheckoutService } from './order-checkout.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StockService } from './stock.service';
 import { StockSignalService } from './stock-signal.service';
+import { VendorOffersService } from '../vendor-offers/vendor-offers.service';
 import { CartService } from '../cart/cart.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
@@ -186,6 +187,15 @@ describe('OrderCheckoutService — idempotence', () => {
         { provide: PromoService, useValue: promoService },
         { provide: StockService, useValue: stockService },
         { provide: StockSignalService, useValue: { announce: jest.fn() } },
+        // F3-11 — aucune offre boutique active dans ces tests.
+        {
+          provide: VendorOffersService,
+          useValue: {
+            resolveForCart: jest.fn().mockResolvedValue(null),
+            reserveInTransaction: jest.fn(),
+            releaseForOrder: jest.fn().mockResolvedValue(0),
+          },
+        },
         { provide: CartService, useValue: { addMenu: jest.fn() } },
         { provide: PlatformSettingsService, useValue: platformSettings },
         { provide: EventEmitter2, useValue: eventEmitter },

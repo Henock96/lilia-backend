@@ -17,9 +17,18 @@ import * as Sentry from '@sentry/nestjs';
 import Redis from 'ioredis';
 
 import { PrismaService } from '../../prisma/prisma.service';
-import { CreateOrderDto } from './dto/create-order.dto';
+import { CreateOrderDto, QuoteOrderDto } from './dto/create-order.dto';
 import { OrderCreatedEvent } from '../events/order-events';
-import { PromoService, PromoValidationResult } from '../promo/promo.service';
+import {
+  PromoService,
+  PromoValidationResult,
+  promoNotStackable,
+} from '../promo/promo.service';
+import {
+  AppliedVendorOffer,
+  VendorOffersService,
+  vendorOfferChanged,
+} from '../vendor-offers/vendor-offers.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
 import { StockService, type StockMovement } from './stock.service';
@@ -47,6 +56,40 @@ import {
 } from '../modifiers/modifier-selection';
 import { modifierErrorForCheckout } from '../modifiers/modifier-http';
 import { ORDER_ITEM_OPTIONS_ARGS } from '../modifiers/order-item-options';
+
+/** Commande renvoyée par le checkout (même `include` que la création). */
+type CreatedOrder = Prisma.OrderGetPayload<{
+  include: {
+    items: { include: { options: typeof ORDER_ITEM_OPTIONS_ARGS } };
+    restaurant: { select: { nom: true } };
+  };
+}>;
+
+export interface CheckoutResult {
+  message: string;
+  data: CreatedOrder;
+}
+
+/**
+ * Devis du panier (F3-11) : ce que le checkout encaisserait maintenant.
+ * `total = subTotal + deliveryFee + serviceFee − offre − code − fidélité`.
+ */
+export interface CheckoutQuote {
+  restaurantId: string;
+  subTotal: number;
+  /** Après un éventuel code « livraison offerte ». */
+  deliveryFee: number;
+  deliveryFeeBeforePromo: number;
+  serviceFee: number;
+  vendorOffer: (AppliedVendorOffer['offer'] & { discountXaf: number }) | null;
+  promo: {
+    code: string;
+    discountXaf: number;
+    deliveryDiscountXaf: number;
+  } | null;
+  loyalty: { pointsUsed: number; discountXaf: number };
+  total: number;
+}
 
 /**
  * Checkout : création d'une commande à partir du panier (LIL-134).
@@ -87,6 +130,8 @@ export class OrderCheckoutService {
     private readonly transitions: OrderTransitionService,
     // F3-10 — invalidation du catalogue quand un format change de statut.
     private readonly stockSignal: StockSignalService,
+    // F3-11 — offre boutique : résolue, puis budget réservé sous transaction.
+    private readonly vendorOffers: VendorOffersService,
     // Client partagé fourni par `RedisModule.forRootAsync` (app.module). On
     // n'ouvre plus une seconde connexion ici : Render plafonne les connexions
     // Redis et `UserCacheService` utilise déjà ce même pool.
@@ -171,7 +216,40 @@ export class OrderCheckoutService {
     }
   }
 
-  private async performCheckout(firebaseUid: string, dto: CreateOrderDto) {
+  /**
+   * Devis du panier (F3-11) — exactement le calcul du checkout, arrêté avant
+   * la transaction : aucune écriture, aucun stock, aucun code consommé.
+   *
+   * Les deux clients recalculaient le total chacun de leur côté (frais de
+   * service, livraison, promo, fidélité) ; une offre boutique appliquée sans
+   * code n'aurait eu aucun canal pour arriver dans leur récapitulatif. Ils
+   * affichent désormais ce devis ; le checkout reste l'autorité et refuse
+   * (409) un total qui a changé depuis.
+   */
+  async quote(firebaseUid: string, dto: QuoteOrderDto) {
+    const quote = await this.performCheckout(
+      firebaseUid,
+      dto as CreateOrderDto,
+      { dryRun: true },
+    );
+    return { data: quote };
+  }
+
+  private async performCheckout(
+    firebaseUid: string,
+    dto: CreateOrderDto,
+    options: { dryRun: true },
+  ): Promise<CheckoutQuote>;
+  private async performCheckout(
+    firebaseUid: string,
+    dto: CreateOrderDto,
+    options?: { dryRun?: false },
+  ): Promise<CheckoutResult>;
+  private async performCheckout(
+    firebaseUid: string,
+    dto: CreateOrderDto,
+    options: { dryRun?: boolean } = {},
+  ): Promise<CheckoutQuote | CheckoutResult> {
     const {
       adresseId,
       paymentMethod,
@@ -214,7 +292,22 @@ export class OrderCheckoutService {
     // l'écart, pour l'observabilité.
     let destination: ResolvedDestination | null = null;
 
-    if (isDelivery) {
+    const quoteQuartierId = options.dryRun
+      ? (dto as QuoteOrderDto).quartierId
+      : undefined;
+    if (isDelivery && !adresseId && quoteQuartierId) {
+      // Devis seulement : adresse pas encore enregistrée, le quartier chiffre
+      // la course. Le checkout, lui, exige toujours une adresse.
+      destination = {
+        address: '',
+        latitude: null,
+        longitude: null,
+        precision: LocationPrecision.UNKNOWN,
+        quartierId: quoteQuartierId,
+        quartierNom: null,
+        landmark: null,
+      };
+    } else if (isDelivery) {
       if (!adresseId) {
         this.logger.warn(
           `📦 [COMMANDE] Échec: adresse manquante pour livraison - user: ${user.id}`,
@@ -337,16 +430,50 @@ export class OrderCheckoutService {
       restaurant.nom,
     );
     const itemSnapshots = this.calculator.buildOrderItemSnapshots(priced);
-    // Validation et calcul promo AVANT la transaction
+
+    // F3-11 — offre boutique financée par le vendeur. D8 : la commission et
+    // les frais de service restent calculés sur le sous-total AVANT l'offre
+    // (`amounts` ci-dessus n'en tient pas compte, et c'est voulu). L'offre est
+    // plafonnée au net vendeur et au budget restant.
+    const vendorDeliverySubsidyXaf = deliveryQuote?.subsidyXaf ?? 0;
+    const appliedOffer: AppliedVendorOffer | null =
+      await this.vendorOffers.resolveForCart({
+        restaurantId,
+        subTotalXaf: amounts.subTotal,
+        commissionAmountXaf: amounts.commissionAmount,
+        vendorDeliverySubsidyXaf,
+      });
+    // Le client a validé un récapitulatif : s'il n'y voyait pas cette offre
+    // (ou en voyait une autre), le total qu'il a accepté n'existe plus.
+    if (
+      !options.dryRun &&
+      dto.vendorOfferId !== undefined &&
+      (appliedOffer?.offer.id ?? null) !== dto.vendorOfferId
+    ) {
+      this.logger.warn(
+        `📦 [COMMANDE] Offre changée depuis le devis — attendue ${dto.vendorOfferId ?? 'aucune'}, trouvée ${appliedOffer?.offer.id ?? 'aucune'}`,
+      );
+      throw vendorOfferChanged();
+    }
+    const offerDiscount = appliedOffer?.discountXaf ?? 0;
+
+    // Validation et calcul promo AVANT la transaction. Assiette : ce qui reste
+    // une fois l'offre passée — un code ne remise pas une seconde fois ce que
+    // le vendeur a déjà offert.
     let promoResult: PromoValidationResult | null = null;
     if (promoCode) {
       promoResult = await this.promoService.validateCode(
         promoCode,
         user.id,
         restaurantId,
-        amounts.subTotal,
+        amounts.subTotal - offerDiscount,
         amounts.deliveryFee,
       );
+      // Q4 — non cumulable par défaut : Lilia ne finance pas une remise en
+      // plus de celle du vendeur, sauf si l'administration l'a permis.
+      if (appliedOffer && !promoResult.stackableWithVendorOffer) {
+        throw promoNotStackable();
+      }
     }
 
     // Montants finaux après promo
@@ -381,7 +508,10 @@ export class OrderCheckoutService {
         // `discountAmount` d'un code FREE_DELIVERY vaut 0 (sa remise porte sur
         // `finalDeliveryFee`), il ne rogne donc pas cette assiette — ce qui est
         // exact : il n'a rien offert sur la nourriture.
-        const redeemableBase = Math.max(0, amounts.subTotal - discountAmount);
+        const redeemableBase = Math.max(
+          0,
+          amounts.subTotal - offerDiscount - discountAmount,
+        );
         // Nombre de points effectivement utilisables (entier, plafonné au solde
         // ET à l'assiette)
         loyaltyPointsUsed = Math.min(
@@ -397,9 +527,39 @@ export class OrderCheckoutService {
       amounts.subTotal +
         finalDeliveryFee +
         amounts.serviceFee -
+        offerDiscount -
         discountAmount -
         loyaltyDiscount,
     );
+
+    if (options.dryRun) {
+      return {
+        restaurantId,
+        subTotal: amounts.subTotal,
+        deliveryFee: finalDeliveryFee,
+        // Avant code promo : sert à afficher la livraison barrée.
+        deliveryFeeBeforePromo: isDelivery ? amounts.deliveryFee : 0,
+        serviceFee: amounts.serviceFee,
+        vendorOffer: appliedOffer
+          ? { ...appliedOffer.offer, discountXaf: offerDiscount }
+          : null,
+        promo: promoResult
+          ? {
+              code: promoResult.code,
+              discountXaf: discountAmount,
+              deliveryDiscountXaf: Math.max(
+                0,
+                amounts.deliveryFee - finalDeliveryFee,
+              ),
+            }
+          : null,
+        loyalty: {
+          pointsUsed: loyaltyPointsUsed,
+          discountXaf: loyaltyDiscount,
+        },
+        total: finalTotal,
+      };
+    }
     // 5. Exécuter la création de la commande et la suppression du panier dans une transaction
     let stockMovements: StockMovement[] = [];
     const { order } = await this.prisma.$transaction(async (tx) => {
@@ -455,7 +615,13 @@ export class OrderCheckoutService {
           serviceFee: amounts.serviceFee,
           commissionPercent: amounts.commissionPercent,
           commissionAmount: amounts.commissionAmount,
-          discountAmount: discountAmount + loyaltyDiscount,
+          // Remise TOTALE : offre vendeur + code + fidélité. Chacune de ses
+          // parts est isolée à côté (`vendorFundedDiscountXaf`,
+          // `loyaltyDiscount`) ; la part plateforme s'en déduit.
+          discountAmount: discountAmount + loyaltyDiscount + offerDiscount,
+          // F3-11 — figé : retenu sur le reversement de CE vendeur.
+          vendorOfferId: appliedOffer?.offer.id ?? null,
+          vendorFundedDiscountXaf: offerDiscount,
           // Part « fidélité » isolée, figée à la commande. `discountAmount`
           // reste la remise totale (promo + fidélité) : c'est lui qui entre
           // dans `total`, et le reversement vendeur comme les remboursements
@@ -532,6 +698,17 @@ export class OrderCheckoutService {
         actorUserId: user.id,
         source: 'APP',
       });
+
+      // F3-11 — budget de l'offre réservé sous condition : deux checkouts
+      // simultanés ne le dépassent jamais, le perdant reçoit 409 et relance
+      // son devis. Une offre mise en pause ou arrêtée depuis est refusée ici.
+      if (appliedOffer) {
+        await this.vendorOffers.reserveInTransaction(tx, {
+          offerId: appliedOffer.offer.id,
+          orderId: newOrder.id,
+          discountXaf: offerDiscount,
+        });
+      }
 
       // Consomme le code promo dans la transaction
       if (promoResult) {

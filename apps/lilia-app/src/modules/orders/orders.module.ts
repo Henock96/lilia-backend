@@ -20,6 +20,7 @@ import { QuartiersModule } from '../quartiers/quartiers.module';
 import { OrdersCoreModule } from './orders-core.module';
 import { DeliveryPricingCoreModule } from '../delivery-pricing/delivery-pricing-core.module';
 import { VendorOpeningService } from '../vendors/vendor-opening.service';
+import { VendorOffersCoreModule } from '../vendor-offers/vendor-offers-core.module';
 
 @Module({
   imports: [
@@ -33,6 +34,8 @@ import { VendorOpeningService } from '../vendors/vendor-opening.service';
     DeliveryPricingCoreModule,
     // F3-10 — le reorder rachète un menu par le chemin de `POST /cart/menus`.
     CartModule,
+    // F3-11 — offre boutique au checkout et au devis.
+    VendorOffersCoreModule,
   ],
   controllers: [OrdersController],
   providers: [

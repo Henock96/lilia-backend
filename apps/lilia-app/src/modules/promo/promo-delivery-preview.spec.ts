@@ -44,6 +44,8 @@ describe('PromoService.validateCodeForCart — frais de livraison de l’aperçu
       {
         getSettings: async () => ({ modifiersEnabled: false }),
       } as never,
+      // F3-11 — aucune offre boutique dans ces tests.
+      { resolveForCart: async () => null } as never,
     );
     const validateCode = jest
       .spyOn(service, 'validateCode')

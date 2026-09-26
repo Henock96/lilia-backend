@@ -14,6 +14,7 @@ import { OrderStateMachine } from './order-state.machine';
 import { OrderTransitionService } from './order-transition.service';
 import { StockService } from './stock.service';
 import { StockSignalService } from './stock-signal.service';
+import { VendorOffersService } from '../vendor-offers/vendor-offers.service';
 import { CartService } from '../cart/cart.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
@@ -120,6 +121,15 @@ describe('OrdersService (caractérisation — lectures)', () => {
         OrderTransitionService,
         { provide: StockService, useValue: {} },
         { provide: StockSignalService, useValue: { announce: jest.fn() } },
+        // F3-11 — aucune offre boutique active dans ces tests.
+        {
+          provide: VendorOffersService,
+          useValue: {
+            resolveForCart: jest.fn().mockResolvedValue(null),
+            reserveInTransaction: jest.fn(),
+            releaseForOrder: jest.fn().mockResolvedValue(0),
+          },
+        },
         { provide: CartService, useValue: { addMenu: jest.fn() } },
         { provide: OrderValidatorService, useValue: {} },
         { provide: OrderCalculatorService, useValue: {} },

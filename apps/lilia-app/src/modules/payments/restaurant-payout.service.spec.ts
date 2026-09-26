@@ -164,6 +164,7 @@ describe('RestaurantPayoutService', () => {
         commissionPercent: 10,
         commissionAmount: 500,
         deliverySubsidyAmount: 0,
+        vendorOfferAmount: 0,
         refundDeductionAmount: 0,
         payoutAmount: 4500,
         currency: 'XAF',

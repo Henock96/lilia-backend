@@ -52,3 +52,11 @@ export const PAYOUT_FAILED_EVENT = 'payout.failed';
  * autres administrateurs porteurs de `FINANCE_APPROVE`.
  */
 export const APPROVAL_REQUESTED_EVENT = 'approval.requested';
+
+/**
+ * F3-11 — une offre boutique change d'état sans geste du vendeur (budget à
+ * 80 %, épuisé, échéance, arrêt par l'administration). Écrit dans la
+ * transaction qui constate le changement — checkout, cron du worker — et
+ * dépilé par `VendorOfferOutboxEffectsService`.
+ */
+export const VENDOR_OFFER_NOTICE_EVENT = 'vendor.offer.notice';
