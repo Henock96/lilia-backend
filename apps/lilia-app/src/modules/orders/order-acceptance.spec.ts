@@ -89,6 +89,7 @@ describe('OrderLifecycleService — acceptation et refus vendeur (F3-01)', () =>
       { openForCancelledOrder: jest.fn().mockResolvedValue(null) } as never,
       audit as never,
       outbox as never,
+      { announce: async () => undefined } as never, // StockSignalService (F3-10)
     );
     return { service, tx, eventEmitter, audit, outbox };
   }

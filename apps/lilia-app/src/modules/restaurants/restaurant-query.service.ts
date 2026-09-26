@@ -21,6 +21,7 @@ import { ORDER_ITEM_OPTIONS_ARGS } from '../modifiers/order-item-options';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { modifiersEnabled } from '../modifiers/modifiers-switch';
 import { withPublicModifiers } from '../modifiers/modifier-views';
+import { withVariantStock } from '../orders/stock-units';
 
 /**
  * Lectures, scoring et analytics restaurants (extrait de RestaurantsService —
@@ -124,7 +125,7 @@ export class RestaurantQueryService {
       data: {
         ...rest,
         products: withPublicModifiers(
-          withAvailableNow(products, now),
+          withVariantStock(withAvailableNow(products, now)),
           await modifiersEnabled(this.platformSettings),
         ),
         ...(ratings.get(id) ?? NO_RATING),

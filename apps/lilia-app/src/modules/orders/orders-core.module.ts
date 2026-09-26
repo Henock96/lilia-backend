@@ -9,6 +9,7 @@ import { OrderLifecycleService } from './order-lifecycle.service';
 import { OrderStateMachine } from './order-state.machine';
 import { OrderTransitionService } from './order-transition.service';
 import { StockService } from './stock.service';
+import { StockSignalService } from './stock-signal.service';
 
 /**
  * Cycle de vie d'une commande, **sans controller ni dépendance HTTP**.
@@ -45,6 +46,7 @@ import { StockService } from './stock.service';
     // processus, et cette transition doit être historisée comme les autres.
     OrderTransitionService,
     StockService,
+    StockSignalService,
     OrderLifecycleService,
   ],
   exports: [
@@ -52,6 +54,7 @@ import { StockService } from './stock.service';
     OrderStateMachine,
     OrderTransitionService,
     StockService,
+    StockSignalService,
     LoyaltyModule,
     RefundsCoreModule,
     ReferralCoreModule,

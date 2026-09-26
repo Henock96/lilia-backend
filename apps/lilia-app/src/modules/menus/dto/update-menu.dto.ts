@@ -53,5 +53,5 @@ export class UpdateMenuDto extends PartialType(CreateMenuDto) {
     description: 'Liste des produits à inclure dans le menu',
     required: false,
   })
-  products?: Array<{ productId: string; ordre?: number }>;
+  products?: Array<{ productId: string; variantId?: string; ordre?: number }>;
 }

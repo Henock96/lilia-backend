@@ -111,12 +111,19 @@ export class RestaurantScheduleService {
 
         // LIL-112 : ne pas reset les produits stockMode=PERMANENT (cavistes,
         // épiceries — ils gèrent un stock réel, pas une capacité quotidienne).
+        // F3-10 — la politique (`DAILY_QUOTA`) remplace `stockMode = 'DAILY'` ;
+        // le CHECK `Product_stock_policy_consistent` garantit que le quota est
+        // renseigné. `stockResetAt` date ce renouvellement : une commande
+        // réservée avant lui ne sera pas restituée dans le quota du jour (le
+        // reset a déjà effacé sa réservation). Les formats n'y changent rien :
+        // le quota est en unités de stock (« 20 bouteilles par jour »).
         const productResult = await this.prisma.$executeRaw`
-            UPDATE "Product" SET "stockRestant" = "stockQuotidien"
-            WHERE "stockQuotidien" IS NOT NULL
-              AND "stockMode" = 'DAILY'
+            UPDATE "Product"
+               SET "stockRestant" = "stockQuotidien",
+                   "stockResetAt" = timezone('UTC', now())
+             WHERE "stockPolicy" = 'DAILY_QUOTA'
         `;
-        this.logger.log(`Stock reset for ${productResult} products (DAILY only)`);
+        this.logger.log(`Stock reset for ${productResult} products (DAILY_QUOTA only)`);
 
         const menuResult = await this.prisma.$executeRaw`
             UPDATE "MenuDuJour" SET "stockRestant" = "stockQuotidien"

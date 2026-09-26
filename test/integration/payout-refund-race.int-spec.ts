@@ -84,6 +84,7 @@ describeIfDb(
         refunds,
         { record: async () => undefined } as never,
         new OutboxService(prisma as never),
+        { announce: async () => undefined } as never, // StockSignalService (F3-10)
       );
       refundExec = new RefundExecutionService(
         prisma as never,

@@ -113,10 +113,12 @@ describeIfDb('F3-09 — options & suppléments (PostgreSQL réel)', () => {
       {} as never, // destination — retrait au comptoir
       {} as never, // tarification plateforme — mode historique
       { recordCreation: async () => insideCheckout() } as never,
+      { announce: async () => undefined } as never, // StockSignalService (F3-10)
     );
     reorder = new OrderReorderService(
       prisma as never,
       settingsService as never,
+      { addMenu: async () => undefined } as never, // CartService (F3-10)
     );
     composer = new RefundComposerService(prisma as never, {} as never, events);
   });

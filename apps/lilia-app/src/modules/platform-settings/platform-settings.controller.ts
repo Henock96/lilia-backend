@@ -61,6 +61,9 @@ export class PublicPlatformSettingsController {
         // pas : il applique `modifiersEnabled` à chaque ajout et checkout.
         modifiersEnabled: settings.modifiersEnabled,
         modifiersManagementEnabled: settings.modifiersManagementEnabled,
+        // F3-10 — l'éditeur vendeur n'affiche le champ « unités par format »
+        // que si le serveur l'accepte.
+        multiUnitVariantsEnabled: settings.multiUnitVariantsEnabled,
         maintenanceMode: settings.maintenanceMode,
         // `""` et `null` voulaient tous deux dire « pas de message », mais les
         // clients ne les traitent pas pareil (`??` laisse passer `""`). Les

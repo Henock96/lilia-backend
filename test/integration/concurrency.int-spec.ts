@@ -72,6 +72,7 @@ describeIfDb('Concurrence — garanties portées par PostgreSQL', () => {
         nom: 'Poulet braisé',
         prixOriginal: 3000,
         restaurantId: 'resto-1',
+        stockPolicy: 'DAILY_QUOTA', // F3-10
         stockQuotidien: stock,
         stockRestant: stock,
       },

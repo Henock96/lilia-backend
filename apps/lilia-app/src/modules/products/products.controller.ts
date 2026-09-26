@@ -238,7 +238,11 @@ export class ProductsController {
   ) {
     return this.productsService.updateStock(
       id,
-      dto.stockQuotidien ?? null,
+      {
+        stockQuotidien: dto.stockQuotidien ?? null,
+        action: dto.action,
+        units: dto.units,
+      },
       fbUser.uid,
     );
   }

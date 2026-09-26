@@ -194,6 +194,42 @@ export function unavailabilityReason(
   now: Date = new Date(),
   quantite = 0,
 ): string | null {
+  const state = productStateReason(product, now);
+  if (state) return state;
+  const label = product.nom ? `« ${product.nom} »` : 'Ce produit';
+
+  // `null` = stock illimité, `0` = épuisé. Deux états distincts, à ne jamais
+  // confondre : `?? 0` transformerait « illimité » en « épuisé ».
+  //
+  // F3-10 : `quantite` est un nombre d'**unités de stock** (un carton de 6
+  // pèse 6). Le panier et le checkout, qui connaissent le format, passent par
+  // `stockShortage` pour un refus codé et dit dans l'unité de vente.
+  const stock = product.stockRestant;
+  if (stock !== null && stock !== undefined) {
+    if (stock === 0) return `${label} est épuisé.`;
+    if (quantite > stock) {
+      return `${label} : il ne reste que ${stock} unité${stock > 1 ? 's' : ''}.`;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Les trois raisons qui ne dépendent pas du stock : retiré, indisponible,
+ * hors créneau. Séparées pour que le panier et le checkout puissent dire le
+ * refus de stock avec un `code` (`OUT_OF_STOCK`) et dans l'unité du format.
+ */
+export function productStateReason(
+  product: {
+    nom?: string | null;
+    isAvailable?: boolean;
+    deletedAt?: Date | null;
+    availableFrom?: string | null;
+    availableUntil?: string | null;
+  },
+  now: Date = new Date(),
+): string | null {
   const label = product.nom ? `« ${product.nom} »` : 'Ce produit';
 
   if (product.deletedAt) return `${label} n'est plus proposé à la vente.`;
@@ -206,16 +242,5 @@ export function unavailabilityReason(
         : '';
     return `${label} n'est pas disponible à cette heure${window}.`;
   }
-
-  // `null` = stock illimité, `0` = épuisé. Deux états distincts, à ne jamais
-  // confondre : `?? 0` transformerait « illimité » en « épuisé ».
-  const stock = product.stockRestant;
-  if (stock !== null && stock !== undefined) {
-    if (stock === 0) return `${label} est épuisé.`;
-    if (quantite > stock) {
-      return `${label} : il ne reste que ${stock} unité${stock > 1 ? 's' : ''}.`;
-    }
-  }
-
   return null;
 }

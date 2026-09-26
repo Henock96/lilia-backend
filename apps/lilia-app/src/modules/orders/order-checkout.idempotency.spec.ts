@@ -7,6 +7,8 @@ import { getRedisConnectionToken } from '@nestjs-modules/ioredis';
 import { OrderCheckoutService } from './order-checkout.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StockService } from './stock.service';
+import { StockSignalService } from './stock-signal.service';
+import { CartService } from '../cart/cart.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
 import { PromoService } from '../promo/promo.service';
@@ -76,7 +78,12 @@ describe('OrderCheckoutService — idempotence', () => {
     buildOrderItemSnapshots: jest.fn(),
   };
   const promoService = { validateCode: jest.fn(), applyCode: jest.fn() };
-  const stockService = { decrementInTransaction: jest.fn() };
+  const stockService = {
+    decrementInTransaction: jest
+      .fn()
+      .mockResolvedValue({ limitedProductIds: [], movements: [] }),
+    recordReservation: jest.fn(),
+  };
   const platformSettings = { getSettings: jest.fn() };
   const eventEmitter = { emit: jest.fn() };
   // Destination résolue côté serveur : les specs de checkout n'ont pas à
@@ -178,6 +185,8 @@ describe('OrderCheckoutService — idempotence', () => {
         { provide: OrderCalculatorService, useValue: calculator },
         { provide: PromoService, useValue: promoService },
         { provide: StockService, useValue: stockService },
+        { provide: StockSignalService, useValue: { announce: jest.fn() } },
+        { provide: CartService, useValue: { addMenu: jest.fn() } },
         { provide: PlatformSettingsService, useValue: platformSettings },
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: QuartiersService, useValue: {} },

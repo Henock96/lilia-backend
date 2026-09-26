@@ -56,6 +56,9 @@ describe('ProductCommandService — produit ↔ section', () => {
       access as never,
       audit as never,
       { emit: jest.fn() } as never,
+      {
+        getSettings: async () => ({ multiUnitVariantsEnabled: true }),
+      } as never, // PlatformSettingsService (F3-10)
     );
     return { service, prisma, access };
   }

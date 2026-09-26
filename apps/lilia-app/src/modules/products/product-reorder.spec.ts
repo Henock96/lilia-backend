@@ -7,6 +7,7 @@ import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 import { ProductCommandService } from './product-command.service';
 import { ProductValidatorService } from './product-validator.service';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 
 /**
  * `PATCH /products/reorder`.
@@ -49,6 +50,12 @@ describe('ProductCommandService.reorder', () => {
       providers: [
         ProductCommandService,
         { provide: PrismaService, useValue: prisma },
+        {
+          provide: PlatformSettingsService,
+          useValue: {
+            getSettings: async () => ({ multiUnitVariantsEnabled: false }),
+          },
+        },
         { provide: ProductValidatorService, useValue: {} },
         { provide: RestaurantAccessService, useValue: access },
         { provide: AdminAuditService, useValue: audit },

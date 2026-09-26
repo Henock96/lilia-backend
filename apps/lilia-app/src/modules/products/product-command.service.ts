@@ -1,5 +1,12 @@
 /* eslint-disable prettier/prettier */
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { AdminAuditAction, Prisma, ProductType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -14,6 +21,24 @@ import {
 } from '../events/catalog-events';
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import {
+  legacyPolicy,
+  planStockUpdate,
+  stockColumnsForCreate,
+  stockModeFor,
+} from './stock-policy';
+
+/** Statuts où la marchandise réservée est encore chez le vendeur. */
+const RESERVED_AT_VENDOR = ['EN_ATTENTE', 'PAYER', 'ACCEPTEE', 'EN_PREPARATION', 'PRET'] as const;
+
+/** Format soumis par un formulaire vendeur. */
+type SubmittedVariant = {
+  id?: string;
+  label?: string;
+  prix?: number;
+  stockConsumption?: number;
+};
 
 /**
  * Écritures du catalogue produits (extrait de ProductsService — LIL-143).
@@ -22,12 +47,15 @@ import { AdminAuditService } from '../admin-audit/admin-audit.service';
  */
 @Injectable()
 export class ProductCommandService {
+  private readonly logger = new Logger(ProductCommandService.name);
+
   constructor(
     private prisma: PrismaService,
     private readonly productValidator: ProductValidatorService,
     private readonly access: RestaurantAccessService,
     private readonly audit: AdminAuditService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly platformSettings: PlatformSettingsService,
   ) {}
 
   /**
@@ -67,6 +95,18 @@ export class ProductCommandService {
       dto.availableUntil,
     );
 
+    // F3-10 — politique de stock explicite (ou traduite de l'ancien contrat).
+    const stock = stockColumnsForCreate(dto);
+    const variantsToCreate =
+      dto.variants && dto.variants.length > 0
+        ? dto.variants.map((v) => ({
+            label: v.label,
+            prix: v.prix,
+            stockConsumption: v.stockConsumption ?? 1,
+          }))
+        : [{ label: 'Standard', prix: dto.prixOriginal, stockConsumption: 1 }];
+    await this.assertMultiUnitAllowed(variantsToCreate);
+
     const produit = await this.prisma.$transaction(async (tx) => {
       // 1. Créer le produit de base
       const product = await tx.product.create({
@@ -78,9 +118,8 @@ export class ProductCommandService {
           restaurantId: restaurant.id,
           categoryId: dto.categoryId,
           productType,
-          stockMode: dto.stockMode,
-          stockQuotidien: dto.stockQuotidien,
-          stockRestant: dto.stockQuotidien,
+          ...stock,
+          stockUnit: dto.stockUnit,
           ingredients: dto.ingredients,
           shelfLifeDays: dto.shelfLifeDays,
           madeToOrder: dto.madeToOrder ?? false,
@@ -90,19 +129,8 @@ export class ProductCommandService {
       });
 
       // 2. Gérer les variantes
-      const variantsToCreate =
-        dto.variants && dto.variants.length > 0
-          ? dto.variants.map((v) => ({ ...v, productId: product.id }))
-          : [
-              {
-                label: 'Standard',
-                prix: dto.prixOriginal,
-                productId: product.id,
-              },
-            ];
-
       await tx.productVariant.createMany({
-        data: variantsToCreate,
+        data: variantsToCreate.map((v) => ({ ...v, productId: product.id })),
       });
 
       // 3. Retourner le produit complet avec ses variantes
@@ -224,42 +252,48 @@ export class ProductCommandService {
       );
     }
 
-    const { variants, ...productData } = dto;
-
-    // ─── Stock : `stockQuotidien` seul ne suffit pas (fix S-1) ────────────────
+    // ─── Stock (fix S-1, puis F3-10) ─────────────────────────────────────────
     //
-    // `stockRestant` est ce qui décide de la vente ; `stockQuotidien` n'est que
-    // la capacité déclarée. Écrire l'une sans l'autre laissait un produit
-    // épuisé (`stockRestant = 0`) invendable après un réassort — définitivement
-    // pour un `stockMode = PERMANENT`, que le cron de 5 h ne touche jamais.
-    //
-    // On ne réaligne QUE si la capacité déclarée change réellement. Les deux
-    // formulaires produit renvoient le champ à chaque enregistrement : sans
-    // cette garde, corriger une faute de frappe dans une description à 15 h
-    // ressusciterait le stock déjà vendu dans la journée.
-    //
-    // Le geste « j'ai réassorti sans changer ma capacité » a sa propre route,
-    // `PATCH /products/:id/stock` → `updateStock()`, qui réaligne
-    // inconditionnellement. Deux intentions différentes, deux points d'entrée.
-    const stockData: { stockRestant?: number | null } = {};
-    if (
-      dto.stockQuotidien !== undefined &&
-      dto.stockQuotidien !== product.stockQuotidien
-    ) {
-      // `null` = illimité, et se propage tel quel.
-      stockData.stockRestant = dto.stockQuotidien;
-    }
+    // Les colonnes de stock ne sont plus recopiées telles quelles :
+    // `planStockUpdate` traduit l'intention (politique explicite, ou ancien
+    // contrat `stockMode` + `stockQuotidien`) et garde la règle S-1 — les deux
+    // formulaires renvoient le champ à chaque enregistrement, et renvoyer la
+    // même valeur ne réaligne rien (corriger une description à 15 h ne doit
+    // pas ressusciter le stock vendu dans la journée).
+    const { variants, stockPolicy, stockMode, stockQuotidien, ...productData } = dto;
+    const stockPlan = planStockUpdate(product, { stockPolicy, stockMode, stockQuotidien });
+    const multiUnitEnabled = variants
+      ? (await this.platformSettings.getSettings()).multiUnitVariantsEnabled
+      : false;
 
     const updatedProduct = await this.prisma.$transaction(async (tx) => {
       // 1. Mettre à jour le produit
       const updated = await tx.product.update({
         where: { id },
-        data: { ...productData, ...stockData },
+        data: { ...productData, ...(stockPlan?.data ?? {}) },
       });
+
+      if (stockPlan?.quotaChange !== undefined) {
+        // Quota du jour modifié : ce qui a été vendu aujourd'hui le reste. Le
+        // reste suit l'écart (20 → 25 à midi avec 15 vendues : 5 → 10), borné
+        // à 0 — jamais « reste = nouveau quota », qui ressusciterait les
+        // ventes. En SQL : une vente concurrente n'est pas perdue.
+        await tx.$executeRaw`
+          UPDATE "Product"
+             SET "stockRestant" = GREATEST(0, "stockRestant" + (${stockPlan.quotaChange}::int - "stockQuotidien")),
+                 "stockQuotidien" = ${stockPlan.quotaChange}::int
+           WHERE id = ${id}`;
+      }
 
       // 2. Réconcilier les variantes si fournies
       if (variants !== undefined) {
-        await this.reconcileVariants(tx, id, variants, updated.prixOriginal);
+        await this.reconcileVariants(
+          tx,
+          id,
+          variants,
+          updated.prixOriginal,
+          multiUnitEnabled,
+        );
       }
 
       // 3. Retourner le produit complet avec ses variantes
@@ -325,49 +359,100 @@ export class ProductCommandService {
   private async reconcileVariants(
     tx: Prisma.TransactionClient,
     productId: string,
-    variants: { id?: string; label?: string; prix?: number }[],
+    variants: SubmittedVariant[],
     prixOriginal: number,
+    multiUnitEnabled: boolean,
   ): Promise<void> {
     const existing = await tx.productVariant.findMany({
       where: { productId },
-      select: { id: true },
+      select: { id: true, label: true, stockConsumption: true },
+      orderBy: [{ prix: 'asc' }, { id: 'asc' }],
     });
-    const existingIds = new Set(existing.map((v) => v.id));
+    const existingById = new Map(existing.map((v) => [v.id, v]));
 
-    // Liste vide = « remets-moi une variante par défaut », comportement
-    // historique conservé. On la traite comme une soumission normale pour ne
-    // pas avoir deux chemins d'écriture.
-    const submitted =
+    const submitted: SubmittedVariant[] =
       variants.length > 0
-        ? variants
+        ? variants.map((v) => ({ ...v }))
         : [{ id: undefined, label: 'Standard', prix: prixOriginal }];
+
+    // F3-10 / lot 0 — l'app vendeurs Flutter n'envoyait **jamais** l'`id` des
+    // formats : chaque enregistrement supprimait et recréait tous les formats
+    // du produit (et vidait les paniers qui les contenaient). Pour une
+    // requête sans aucun `id`, on retrouve donc chaque format existant par son
+    // libellé : son identifiant, ses paniers — et sa consommation — survivent.
+    if (submitted.every((v) => !v.id)) {
+      const unmatched = [...existing];
+      for (const variant of submitted) {
+        const key = normalizeLabel(variant.label);
+        const index = unmatched.findIndex((v) => normalizeLabel(v.label) === key);
+        if (index >= 0) variant.id = unmatched.splice(index, 1)[0].id;
+      }
+      // Un format multi-unités qui disparaît pendant qu'un format sans
+      // identifiant apparaît : c'est un renommage fait par une application
+      // qui ne sait pas dire la consommation. Le nouveau format consommerait
+      // 1 au lieu de 6 — survente silencieuse. On refuse.
+      const created = submitted.some((v) => !v.id);
+      if (created && unmatched.some((v) => v.stockConsumption > 1)) {
+        throw new ConflictException({
+          message:
+            'Ce produit a des formats de plusieurs unités (carton, pack…). Mettez à jour l’application pour les modifier.',
+          code: 'VARIANTS_REQUIRE_APP_UPDATE',
+        });
+      }
+    }
 
     const keptIds = new Set(
       submitted
         .map((v) => v.id)
-        .filter((id): id is string => !!id && existingIds.has(id)),
+        .filter((id): id is string => !!id && existingById.has(id)),
     );
 
-    const removedIds = [...existingIds].filter((id) => !keptIds.has(id));
+    for (const variant of submitted) {
+      const current = variant.id ? existingById.get(variant.id) : undefined;
+      if (
+        current &&
+        variant.stockConsumption !== undefined &&
+        variant.stockConsumption !== current.stockConsumption
+      ) {
+        throw new ConflictException({
+          message: `Le nombre d’unités du format « ${current.label ?? 'Standard'} » ne se modifie pas. Créez un nouveau format (et retirez l’ancien).`,
+          code: 'STOCK_CONSUMPTION_IMMUTABLE',
+          variantId: current.id,
+        });
+      }
+    }
+    if (!multiUnitEnabled) {
+      const multi = submitted.find(
+        (v) => !(v.id && keptIds.has(v.id)) && (v.stockConsumption ?? 1) > 1,
+      );
+      if (multi) throw multiUnitDisabled();
+    }
+
+    const removedIds = [...existingById.keys()].filter((id) => !keptIds.has(id));
     if (removedIds.length > 0) {
-      // Seules les variantes qui disparaissent vraiment emportent les lignes de
-      // panier qui les référencent : `CartItem.variantId` est une clé étrangère,
-      // la suppression échouerait sinon. Les variantes conservées gardent leurs
-      // paniers intacts — c'est tout l'objet de ce correctif.
+      // F3-10 — un format servi par un menu ne se supprime pas en silence
+      // (clé étrangère `Restrict`) : le vendeur change d'abord le menu.
+      const usedByMenu = await tx.menuProduct.findFirst({
+        where: { variantId: { in: removedIds } },
+        select: { menu: { select: { nom: true } } },
+      });
+      if (usedByMenu) {
+        throw new ConflictException({
+          message: `Ce format est servi dans le menu « ${usedByMenu.menu.nom} ». Changez le format du menu avant de le retirer.`,
+          code: 'VARIANT_USED_BY_MENU',
+        });
+      }
       await tx.cartItem.deleteMany({ where: { variantId: { in: removedIds } } });
       await tx.productVariant.deleteMany({ where: { id: { in: removedIds } } });
     }
 
     for (const variant of submitted) {
       if (variant.id && keptIds.has(variant.id)) {
+        // La consommation n'est jamais réécrite : immuable (trigger en base).
         await tx.productVariant.update({
           where: { id: variant.id },
           data: {
             label: variant.label ?? null,
-            // `prix` est facultatif au DTO : absent, on **garde celui en base**.
-            // L'ancien code écrivait `prix: undefined` dans un `createMany`, ce
-            // qui faisait échouer toute la requête — modifier le seul libellé
-            // d'une variante était donc impossible.
             ...(variant.prix !== undefined && { prix: variant.prix }),
           },
         });
@@ -375,14 +460,22 @@ export class ProductCommandService {
         await tx.productVariant.create({
           data: {
             label: variant.label,
-            // Une création, elle, doit porter un prix : à défaut, celui du
-            // produit — c'est déjà la convention de `create()`.
             prix: variant.prix ?? prixOriginal,
+            stockConsumption: variant.stockConsumption ?? 1,
             productId,
           },
         });
       }
     }
+  }
+
+  /** F3-10 — un format multi-unités exige l'interrupteur de la plateforme. */
+  private async assertMultiUnitAllowed(
+    variants: readonly { stockConsumption?: number }[],
+  ): Promise<void> {
+    if (!variants.some((v) => (v.stockConsumption ?? 1) > 1)) return;
+    const { multiUnitVariantsEnabled } = await this.platformSettings.getSettings();
+    if (!multiUnitVariantsEnabled) throw multiUnitDisabled();
   }
 
   /**
@@ -586,9 +679,23 @@ export class ProductCommandService {
   }
 
   /**
-   * Met à jour le stock d'un produit
+   * Gestes de stock du vendeur — `PATCH /products/:id/stock` (F3-10).
+   *
+   * - sans `action` (ancien contrat, applications installées) : le niveau
+   *   déclaré devient aussi le restant ; `null` = « Toujours disponible » ;
+   * - `RESTOCK` : « Réapprovisionner +N », atomique (`restant + N`) — une
+   *   vente faite pendant que le vendeur saisissait n'est plus perdue ;
+   * - `COUNT` (stock réel seulement) : « Faire l'inventaire = N ». Le vendeur
+   *   compte ce qu'il a physiquement ; les unités réservées par des commandes
+   *   pas encore parties sont encore en rayon mais déjà vendues : on les
+   *   retire. Le produit est verrouillé **avant** le calcul, si bien qu'un
+   *   checkout concurrent est soit compté, soit bloqué jusqu'à la fin.
    */
-  async updateStock(productId: string, stockQuotidien: number | null, firebaseUid: string) {
+  async updateStock(
+    productId: string,
+    gesture: { stockQuotidien?: number | null; action?: 'RESTOCK' | 'COUNT'; units?: number },
+    firebaseUid: string,
+  ) {
     const product = await this.prisma.product.findUnique({
       where: { id: productId },
       include: { restaurant: { include: { owner: true } } },
@@ -601,23 +708,106 @@ export class ProductCommandService {
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
     if (!user) throw new NotFoundException('Utilisateur non trouvé.');
 
-    if (user.role !== 'ADMIN' && product.restaurant.owner.firebaseUid !== firebaseUid) {
+    const onBehalfOf = product.restaurant.owner.firebaseUid !== firebaseUid;
+    if (user.role !== 'ADMIN' && onBehalfOf) {
       throw new ForbiddenException('Vous n\'êtes pas autorisé à modifier le stock de ce produit.');
     }
 
-    const updated = await this.prisma.product.update({
-      where: { id: productId },
-      data: {
-        stockQuotidien: stockQuotidien,
-        stockRestant: stockQuotidien,
-      },
+    let reservedAtVendor: number | undefined;
+    const updated = await this.prisma.$transaction(async (tx) => {
+      if (gesture.action === 'RESTOCK') {
+        if (product.stockPolicy === 'UNLIMITED') {
+          throw new BadRequestException({
+            message: 'Ce produit est « Toujours disponible » : il n’a pas de stock à réapprovisionner.',
+            code: 'STOCK_NOT_TRACKED',
+          });
+        }
+        // Stock réel : le niveau déclaré suit (affiché « restant / déclaré »
+        // par les applications installées). Quota du jour : c'est une fournée
+        // de plus aujourd'hui, le quota ne change pas.
+        await tx.$executeRaw`
+          UPDATE "Product"
+             SET "stockRestant" = "stockRestant" + ${gesture.units!}::int,
+                 "stockQuotidien" = CASE WHEN "stockPolicy" = 'INVENTORY'
+                                         THEN "stockRestant" + ${gesture.units!}::int
+                                         ELSE "stockQuotidien" END
+           WHERE id = ${productId} AND "stockRestant" IS NOT NULL`;
+      } else if (gesture.action === 'COUNT') {
+        if (product.stockPolicy !== 'INVENTORY') {
+          throw new BadRequestException({
+            message: 'L’inventaire se fait sur un produit en « Stock réel ».',
+            code: 'STOCK_COUNT_REQUIRES_INVENTORY',
+          });
+        }
+        await tx.$queryRaw`SELECT id FROM "Product" WHERE id = ${productId} FOR UPDATE`;
+        const [{ reserved }] = await tx.$queryRaw<{ reserved: number }[]>`
+          SELECT COALESCE(SUM(COALESCE(oi."stockUnitsReserved", oi."quantite")), 0)::int AS reserved
+            FROM "OrderItem" oi
+            JOIN "Order" o ON o.id = oi."orderId"
+           WHERE oi."productId" = ${productId}
+             AND o.status::text = ANY(${[...RESERVED_AT_VENDOR]}::text[])`;
+        reservedAtVendor = reserved;
+        const available = Math.max(0, gesture.units! - reserved);
+        await tx.product.update({
+          where: { id: productId },
+          data: { stockRestant: available, stockQuotidien: available },
+        });
+      } else {
+        const value = gesture.stockQuotidien ?? null;
+        const policy =
+          value === null
+            ? 'UNLIMITED'
+            : product.stockPolicy === 'UNLIMITED'
+              ? legacyPolicy(product.stockMode, value)
+              : product.stockPolicy;
+        await tx.product.update({
+          where: { id: productId },
+          data: {
+            stockPolicy: policy,
+            stockMode: stockModeFor(policy, product.stockMode),
+            stockQuotidien: value,
+            stockRestant: value,
+            ...(policy === 'DAILY_QUOTA' ? { stockResetAt: new Date() } : {}),
+          },
+        });
+      }
+      return tx.product.findUniqueOrThrow({ where: { id: productId } });
     });
+
+    this.logger.log(
+      `[STOCK] geste ${gesture.action ?? 'SET'} produit=${productId} ` +
+        `${product.stockRestant ?? '∞'} → ${updated.stockRestant ?? '∞'}` +
+        (reservedAtVendor !== undefined ? ` (réservées : ${reservedAtVendor})` : ''),
+    );
+    if (user.role === 'ADMIN' && onBehalfOf) {
+      await this.recordAdminCatalogEdit(firebaseUid, product.restaurantId, {
+        entity: 'Product',
+        action: `stock.${gesture.action ?? 'SET'}`,
+        productId,
+        before: product.stockRestant,
+        after: updated.stockRestant,
+      });
+    }
 
     this.touchCatalog(product.restaurantId, 'product.stock');
 
     return {
       message: 'Stock mis à jour avec succès',
       data: updated,
+      ...(reservedAtVendor !== undefined ? { reservedAtVendor } : {}),
     };
   }
+}
+
+/** Libellé comparable : « Carton de 6 » = « carton de 6  ». */
+function normalizeLabel(label: string | null | undefined): string {
+  return (label ?? '').trim().toLowerCase();
+}
+
+function multiUnitDisabled(): BadRequestException {
+  return new BadRequestException({
+    message:
+      'Les formats de plusieurs unités (carton, pack…) ne sont pas encore ouverts sur Lilia Food.',
+    code: 'MULTI_UNIT_DISABLED',
+  });
 }

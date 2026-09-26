@@ -85,7 +85,8 @@ describe('OrderLifecycleService — le statut ne ment pas sur le terrain', () =>
       referral as any,
       refunds as any,
       { record: jest.fn() } as never, // AdminAuditService (F-07)
-      { enqueueInTransaction: jest.fn() } as never, // OutboxService (lot 4)
+      { enqueueInTransaction: jest.fn() } as never, // OutboxService (lot 4),
+      { announce: async () => undefined } as never, // StockSignalService (F3-10)
     );
 
     return { service, prisma, eventEmitter, loyalty, order };

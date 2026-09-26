@@ -708,6 +708,14 @@ model MenuProduct {
   menuId    String
   product   Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
   productId String
+  /// F3-10 — format du produit servi dans le menu, **choisi par le vendeur**.
+  /// Avant, le panier prenait `variants[0]` d'une lecture non triée : avec des
+  /// formats qui consomment plusieurs unités (carton de 6), un menu aurait pu
+  /// consommer un carton au lieu d'une bouteille. Clé étrangère composite :
+  /// PostgreSQL refuse une variante d'un autre produit. `Restrict` : on ne
+  /// supprime pas un format qu'un menu sert (le menu changerait en silence).
+  variant   ProductVariant @relation(fields: [variantId, productId], references: [id, productId], onDelete: Restrict)
+  variantId String
   ordre     Int        @default(0) // Ordre d'affichage dans le menu
   createdAt DateTime   @default(now())
 
@@ -752,7 +760,25 @@ model Product {
 
   // Multi-vendeurs (Sprint A — LIL-111)
   productType ProductType @default(FOOD)
-  stockMode   StockMode   @default(DAILY) // PERMANENT n'est pas reset par le cron
+  /// ⚠️ Déprécié par F3-10 — remplacé par `stockPolicy`. Conservé et tenu à
+  /// jour en double écriture pendant une release : les applications vendeurs
+  /// installées l'envoient et le lisent, et un retour arrière le relit.
+  stockMode   StockMode   @default(DAILY)
+
+  /// F3-10 — comment le stock se renouvelle. Remplace le couple
+  /// `stockMode` + « `stockQuotidien` nul = illimité » (trois états encodés
+  /// dans deux colonnes, dont un implicite). CHECK
+  /// `Product_stock_policy_consistent` : la politique et les compteurs ne
+  /// peuvent pas se contredire. Écrite **uniquement** via `stock-policy.ts`.
+  stockPolicy  StockPolicy @default(UNLIMITED)
+  /// F3-10 — ce que compte `stockRestant` (bouteilles, portions…). Libellé
+  /// seulement : la vérité est le nombre. Les formats en consomment
+  /// `ProductVariant.stockConsumption`.
+  stockUnit    StockUnit   @default(PIECE)
+  /// F3-10 — dernier renouvellement `DAILY_QUOTA` (cron de 5 h). Une commande
+  /// réservée AVANT ce reset n'est pas restituée : le reset a déjà effacé sa
+  /// réservation, la rendre fabriquerait des unités.
+  stockResetAt DateTime?
 
   // Métadonnées alcool (productType = ALCOHOL)
   alcoholContent Float? // % vol, ex: 40.0
@@ -814,6 +840,7 @@ model Product {
   @@index([categoryId])
   @@index([restaurantId, productType]) // catalogue par type
   @@index([productType, stockMode]) // cron reset DAILY uniquement
+  @@index([stockPolicy]) // cron reset DAILY_QUOTA (F3-10)
   @@index([restaurantId, deletedAt, isAvailable]) // catalogue vendeur filtré (fix M2)
   /// Tri du menu : on lit toujours « les produits d'un vendeur, dans l'ordre ».
   @@index([restaurantId, displayOrder])
@@ -839,13 +866,24 @@ model ProductVariant {
   prix      Int
   product   Product    @relation(fields: [productId], references: [id], onDelete: Cascade)
   productId String
-  cartItems CartItem[]
+  /// F3-10 — unités de stock du produit consommées par UNE unité vendue de ce
+  /// format : bouteille = 1, carton de 6 = 6. **Indépendant du prix** (un
+  /// carton de 6 peut coûter moins que 6 bouteilles). **Immuable** (trigger
+  /// `ProductVariant_stock_consumption_immutable`) : « carton de 12 » n'est
+  /// pas une édition de « carton de 6 », c'est un autre format. Grâce à ça, le
+  /// checkout lit la consommation sans verrouiller la variante.
+  stockConsumption Int @default(1)
+  cartItems    CartItem[]
+  menuProducts MenuProduct[]
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 
   @@index([productId])
   /// Sert le tri du menu (`prix asc`) sans passer par un tri en mémoire.
   @@index([productId, prix])
+  /// F3-10 — cible des clés étrangères composites (`CartItem`, `MenuProduct`) :
+  /// une ligne ne peut pas associer le format d'un produit à un autre produit.
+  @@unique([id, productId])
 }
 
 model Cart {
@@ -865,7 +903,8 @@ model CartItem {
   productId String
   menu      MenuDuJour?    @relation(fields: [menuId], references: [id])
   menuId    String?
-  variant   ProductVariant @relation(fields: [variantId], references: [id])
+  /// F3-10 — FK composite : la variante appartient au produit de la ligne.
+  variant   ProductVariant @relation(fields: [variantId, productId], references: [id, productId])
   variantId String
   quantite  Int
   createdAt DateTime       @default(now())
@@ -1082,6 +1121,17 @@ model OrderItem {
   variantId     String? // nullable pour les commandes existantes
   variantLabel  String? // snapshot du label au moment de la commande
   snapshotPrice Int? // snapshot du prix à la commande, en XAF
+
+  /// F3-10 — `ProductVariant.stockConsumption` au checkout. `NULL` = commande
+  /// antérieure à F3-10 (valait 1 par construction).
+  stockUnitsPerItem  Int?
+  /// F3-10 — unités de stock **réellement** décrémentées pour cette ligne :
+  /// `quantite × stockUnitsPerItem` si le produit était limité au checkout,
+  /// `0` sinon. La restitution rend exactement ceci, jamais un recalcul depuis
+  /// le catalogue. `NULL` = commande antérieure → ancienne règle.
+  stockUnitsReserved Int?
+  /// F3-10 — unité figée, pour relire « 12 bouteilles » sans le catalogue.
+  stockUnit          StockUnit?
 
   /// F3-06 — lignes de remboursement partiel portant sur cet article.
   refundLines RefundLine[]
@@ -2138,6 +2188,24 @@ enum StockMode {
   PERMANENT // Stock réel, décrémentation pure, pas de reset
 }
 
+/// F3-10 — comment le stock d'un produit se renouvelle.
+enum StockPolicy {
+  UNLIMITED // « Toujours disponible » : aucun compteur
+  DAILY_QUOTA // « Quantité du jour » : revient au quota chaque matin (cron 5 h)
+  INVENTORY // « Stock réel » : baisse à chaque vente, remonte au réapprovisionnement
+}
+
+/// F3-10 — ce que compte le stock d'un produit. Liste courte et fermée :
+/// ajouter une valeur est une migration additive sans risque.
+enum StockUnit {
+  PIECE
+  PORTION
+  BOTTLE
+  CAN
+  CUP
+  BAG
+}
+
 // Modèle pour les avis et notes des clients
 model Review {
   id           String     @id @default(cuid())
@@ -2956,6 +3024,12 @@ model PlatformSettings {
   /// (vérifié à l'écriture des réglages). Un ADMIN peut préparer une carte
   /// même éteint : sans `modifiersEnabled`, rien n'en est visible ni exigé.
   modifiersManagementEnabled Boolean @default(false)
+  /// F3-10 — un vendeur peut-il déclarer un format qui consomme plusieurs
+  /// unités (`stockConsumption > 1`, carton de 6) ? Éteint par défaut : à
+  /// n'allumer qu'une fois les applications vendeurs capables d'envoyer
+  /// l'identifiant et la consommation des formats publiées. La lecture, elle,
+  /// n'est jamais éteinte (une consommation de 1 = comportement d'avant).
+  multiUnitVariantsEnabled   Boolean @default(false)
 
   updatedAt DateTime @updatedAt
 }

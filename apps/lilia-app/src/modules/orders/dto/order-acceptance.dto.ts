@@ -2,6 +2,8 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { VendorRejectionReason } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsEnum,
   IsInt,
   IsOptional,
@@ -44,4 +46,18 @@ export class RejectOrderDto {
   @IsString()
   @MaxLength(200)
   note?: string;
+
+  /**
+   * F3-10 — produits réellement en rupture (motif `OUT_OF_STOCK` seulement).
+   * Ils ne sont pas remis en stock : ils passent à 0 (ou indisponibles s'ils
+   * n'ont pas de compteur). Les autres lignes de la commande sont restituées
+   * normalement. Absent (applications installées) : tout est restitué, comme
+   * avant.
+   */
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(100)
+  @IsString({ each: true })
+  outOfStockProductIds?: string[];
 }

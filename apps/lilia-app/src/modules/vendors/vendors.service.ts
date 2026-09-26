@@ -31,6 +31,7 @@ import { VendorApprovedEvent, VendorCreatedEvent } from './events/vendor-events'
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { modifiersEnabled } from '../modifiers/modifiers-switch';
 import { withPublicModifiers } from '../modifiers/modifier-views';
+import { withVariantStock } from '../orders/stock-units';
 
 /**
  * Relations servies avec une fiche vendeur.
@@ -229,7 +230,7 @@ export class VendorsService {
       data: {
         ...rest,
         products: withPublicModifiers(
-          withAvailableNow(products, now),
+          withVariantStock(withAvailableNow(products, now)),
           await modifiersEnabled(this.platformSettings),
         ),
         ...(await ratingOf(this.prisma, id)),

@@ -19,7 +19,7 @@ import {
   ApiQuery,
 } from '@nestjs/swagger';
 import { MenusService } from './menus.service';
-import { CreateMenuDto, UpdateMenuDto } from './dto';
+import { CreateMenuDto, UpdateMenuDto, UpdateMenuStockDto } from './dto';
 import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -157,11 +157,10 @@ export class MenusController {
   @ApiResponse({ status: 404, description: 'Menu non trouvé' })
   updateStock(
     @Param('id') id: string,
-    @Body('stockQuotidien') stockQuotidien: number | null,
+    @Body() dto: UpdateMenuStockDto,
     @FirebaseUser() fbUser: DecodedIdToken,
-
   ) {
-    return this.menusService.updateStock(id, stockQuotidien, fbUser.uid);
+    return this.menusService.updateStock(id, dto.stockQuotidien ?? null, fbUser.uid);
   }
 
   @Patch(':id/toggle')

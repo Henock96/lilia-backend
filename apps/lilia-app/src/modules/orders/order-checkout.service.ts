@@ -22,7 +22,8 @@ import { OrderCreatedEvent } from '../events/order-events';
 import { PromoService, PromoValidationResult } from '../promo/promo.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
-import { StockService } from './stock.service';
+import { StockService, type StockMovement } from './stock.service';
+import { StockSignalService } from './stock-signal.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { PreorderValidatorService } from '../vendors/preorder-validator.service';
 import { QuartiersService } from '../quartiers/quartiers.service';
@@ -84,6 +85,8 @@ export class OrderCheckoutService {
     private readonly deliveryPricing: DeliveryPricingService,
     // P0-4 : ouvre l'historique de la commande dans la transaction de création.
     private readonly transitions: OrderTransitionService,
+    // F3-10 — invalidation du catalogue quand un format change de statut.
+    private readonly stockSignal: StockSignalService,
     // Client partagé fourni par `RedisModule.forRootAsync` (app.module). On
     // n'ouvre plus une seconde connexion ici : Render plafonne les connexions
     // Redis et `UserCacheService` utilise déjà ce même pool.
@@ -398,6 +401,7 @@ export class OrderCheckoutService {
         loyaltyDiscount,
     );
     // 5. Exécuter la création de la commande et la suppression du panier dans une transaction
+    let stockMovements: StockMovement[] = [];
     const { order } = await this.prisma.$transaction(async (tx) => {
       // ⚠️ Fix F-11 — un panier ne se paie qu'une fois, et c'est la BASE qui
       // l'arbitre, pas Redis.
@@ -485,7 +489,12 @@ export class OrderCheckoutService {
               prix: snap.prix,
               variant: snap.variant,
               variantId: snap.variantId,
+              // Colonne existante jamais écrite avant F3-10 : le reçu, le
+              // remboursement et les réclamations la lisaient toujours nulle.
+              variantLabel: snap.variant,
               snapshotPrice: snap.snapshotPrice,
+              stockUnitsPerItem: snap.stockUnitsPerItem,
+              stockUnit: snap.stockUnit,
               // F3-09 — `prix` et `snapshotPrice` incluent déjà les options
               // (Q1) ; `optionsTotalXaf` n'en est que la ventilation.
               optionsTotalXaf: snap.optionsTotalXaf,
@@ -578,7 +587,17 @@ export class OrderCheckoutService {
       }
 
       // 6. Décrémenter le stock des produits et menus commandés
-      await this.stockService.decrementInTransaction(tx, cartItems);
+      const reservation = await this.stockService.decrementInTransaction(
+        tx,
+        cartItems,
+      );
+      // F3-10 — ce que la restitution rendra, ligne par ligne.
+      await this.stockService.recordReservation(
+        tx,
+        newOrder.id,
+        reservation.limitedProductIds,
+      );
+      stockMovements = reservation.movements;
 
       // 7. Vider le panier
       // On ne vide QUE les lignes commandées : une ligne ajoutée depuis un
@@ -619,6 +638,9 @@ export class OrderCheckoutService {
     );
 
     this.eventEmitter.emit('order.created', orderCreatedEvent);
+    // F3-10 — un format passé en rupture (ou « Plus que N ») : le site le
+    // saura sans attendre l'expiration de son cache. Après commit, sans lever.
+    void this.stockSignal.announce(stockMovements, 'reserved');
 
     // ⚠️ La récompense de parrainage N'EST PLUS versée ici (fix C3, audit du
     // 28/08/2026) : elle l'était à la création de la commande, donc sans aucun

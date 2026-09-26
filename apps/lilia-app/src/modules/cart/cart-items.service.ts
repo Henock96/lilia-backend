@@ -9,7 +9,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { AddToCartDto } from './dto/add-to-cart.dto';
 import { UpdateCartItemDto } from './dto/update-cart-item.dto';
 import { CartCommonService } from './cart-common.service';
-import { unavailabilityReason } from '../products/product-availability';
+import { productStateReason } from '../products/product-availability';
+import { lineStockUnits, stockShortage } from '../orders/stock-units';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import {
   PRODUCT_MODIFIER_GROUPS_ARGS,
@@ -76,7 +77,7 @@ export class CartItemsService {
 
     const cartItems = await this.prisma.cartItem.findMany({
       where: { cartId: cart.id },
-      include: { product: true },
+      include: { product: true, variant: { select: { stockConsumption: true } } },
     });
 
     this.common.assertSameRestaurant(cartItems, variant.product.restaurantId);
@@ -91,21 +92,25 @@ export class CartItemsService {
     // ordinaire d'un client sur mobile : ne valider que l'incrément laisserait
     // passer n'importe quel total, un ajout à la fois.
     //
-    // Et elle couvre **toutes les lignes du même produit**, variantes
-    // comprises : c'est le produit qui porte le stock, pas la variante
-    // (`ProductVariant` n'a aucune colonne de stock). Deux variantes du même
-    // plat puisent dans le même compteur — la décrémentation du checkout le
-    // sait déjà, le panier l'ignorait.
+    // Et elle couvre **toutes les lignes du même produit**, formats et
+    // composants de menu compris : c'est le produit qui porte le stock.
+    //
+    // F3-10 : en **unités de stock** — une ligne pèse `quantite ×
+    // stockConsumption` (1 carton de 6 = 6 bouteilles). Le refus est codé
+    // `OUT_OF_STOCK` et dit ce qu'il reste de CE format.
+    const reason = productStateReason(variant.product, new Date());
+    if (reason) throw new BadRequestException(reason);
+
     const alreadyInCart = cartItems
       .filter((item) => item.productId === variant.productId)
-      .reduce((sum, item) => sum + item.quantite, 0);
-
-    const reason = unavailabilityReason(
-      variant.product,
-      new Date(),
-      alreadyInCart + dto.quantite,
-    );
-    if (reason) throw new BadRequestException(reason);
+      .reduce((sum, item) => sum + lineStockUnits(item), 0);
+    const shortage = stockShortage({
+      product: variant.product,
+      variant,
+      quantite: dto.quantite,
+      otherUnits: alreadyInCart,
+    });
+    if (shortage) throw shortage;
 
     await mergeCartLine(this.prisma, {
       cartId: cart.id,
@@ -131,7 +136,7 @@ export class CartItemsService {
 
     const cartItem = await this.prisma.cartItem.findFirst({
       where: { id: cartItemId, cart: { userId: user.id } },
-      include: { product: true },
+      include: { product: true, variant: true },
     });
 
     if (!cartItem) {
@@ -157,17 +162,23 @@ export class CartItemsService {
         productId: cartItem.productId,
         id: { not: cartItemId },
       },
-      select: { quantite: true },
+      select: {
+        productId: true,
+        quantite: true,
+        variant: { select: { stockConsumption: true } },
+      },
     });
-    const totalWanted =
-      dto.quantite + siblings.reduce((sum, s) => sum + s.quantite, 0);
 
-    const reason = unavailabilityReason(
-      cartItem.product,
-      new Date(),
-      totalWanted,
-    );
+    const reason = productStateReason(cartItem.product, new Date());
     if (reason) throw new BadRequestException(reason);
+    const shortage = stockShortage({
+      product: cartItem.product,
+      variant: cartItem.variant,
+      quantite: dto.quantite,
+      otherUnits: siblings.reduce((sum, s) => sum + lineStockUnits(s), 0),
+      cartItemId,
+    });
+    if (shortage) throw shortage;
 
     // `UpdateCartItemDto` impose `@Min(1)` : la branche « quantite === 0 =
     // suppression » était du code mort, inatteignable depuis HTTP (fix L1).

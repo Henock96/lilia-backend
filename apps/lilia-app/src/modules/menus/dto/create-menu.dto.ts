@@ -21,6 +21,16 @@ export class MenuProductDto {
   productId: string;
 
   @ApiProperty({
+    description:
+      'F3-10 — format du produit servi dans le menu. Omis (applications ' +
+      'installées) : le premier format à 1 unité, par prix croissant.',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  variantId?: string;
+
+  @ApiProperty({
     description: "Ordre d'affichage du produit dans le menu",
     required: false,
     default: 0,

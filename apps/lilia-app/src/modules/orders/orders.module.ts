@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { CartModule } from '../cart/cart.module';
 import { OrdersService } from './orders.service';
 import { OrderQueryService } from './order-query.service';
 import { OrderCheckoutService } from './order-checkout.service';
@@ -30,6 +31,8 @@ import { VendorOpeningService } from '../vendors/vendor-opening.service';
     QuartiersModule,
     OrdersCoreModule,
     DeliveryPricingCoreModule,
+    // F3-10 — le reorder rachète un menu par le chemin de `POST /cart/menus`.
+    CartModule,
   ],
   controllers: [OrdersController],
   providers: [

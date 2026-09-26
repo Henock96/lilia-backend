@@ -20,6 +20,7 @@ import {
   PUBLIC_PRODUCT_MODIFIER_GROUPS_ARGS,
   withPublicModifiers,
 } from '../modifiers/modifier-views';
+import { withVariantStock } from '../orders/stock-units';
 
 /**
  * Lectures du catalogue produits (extrait de ProductsService — LIL-143).
@@ -102,7 +103,7 @@ export class ProductQueryService {
 
     return {
       data: withPublicModifiers(
-        products,
+        withVariantStock(products),
         await modifiersEnabled(this.platformSettings),
       ),
       meta: {
@@ -255,7 +256,7 @@ export class ProductQueryService {
       throw new NotFoundException(`Produit avec l'ID "${id}" non trouvé.`);
     }
     const [withModifiers] = withPublicModifiers(
-      [product],
+      withVariantStock([product]),
       await modifiersEnabled(this.platformSettings),
     );
 
