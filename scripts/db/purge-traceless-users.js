@@ -19,7 +19,7 @@
 //
 //   Order · Restaurant · driver_settlements · PromoUsage · LoyaltyTransaction
 //   ReferralReward (parrain OU filleul) · DeliveryReview (client OU livreur)
-//   DeliveryAssignment · Delivery · AdminAuditLog
+//   DeliveryAssignment · DeliveryOffer · Delivery · AdminAuditLog
 //
 // ⚠️ Cette condition est **revérifiée DANS la transaction de suppression**, pas
 // seulement à l'affichage. Entre le moment où l'opérateur lit la liste et celui
@@ -127,6 +127,7 @@ const TRACES = `
   AND NOT EXISTS (SELECT 1 FROM "DeliveryReview"     x WHERE x."userId"        = u.id
                                                         OR x."delivererId"    = u.id)
   AND NOT EXISTS (SELECT 1 FROM "DeliveryAssignment" x WHERE x."delivererId"   = u.id)
+  AND NOT EXISTS (SELECT 1 FROM "DeliveryOffer"      x WHERE x."driverId"      = u.id)
   AND NOT EXISTS (SELECT 1 FROM "Delivery"           x WHERE x."delivererId"   = u.id)
   AND NOT EXISTS (SELECT 1 FROM "AdminAuditLog"      x WHERE x."actorId"       = u.id)
 `;

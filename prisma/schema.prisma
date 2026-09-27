@@ -87,6 +87,8 @@ model User {
   /// Toutes les fois où une course lui a été confiée — y compris celles qu'il
   /// n'a pas terminées. `deliveries` ne porte que la main COURANTE.
   deliveryAssignments DeliveryAssignment[] @relation("DelivererAssignments")
+  /// F3-12 — offres de course reçues par ce livreur (dispatch semi-auto).
+  deliveryOffers    DeliveryOffer[]    @relation("DriverOffers")
   /// Règlements de ce que Lilia Food lui doit, s'il est livreur.
   driverSettlements DriverSettlement[] @relation("DriverSettlements")
   cart              Cart?
@@ -494,6 +496,11 @@ model Restaurant {
   promoCodes     PromoCode[]      @relation("RestaurantPromoCodes")
   /// F3-11 — offres boutique financées par le vendeur.
   vendorOffers   VendorOffer[]
+
+  /// F3-12 — le dispatch automatique propose-t-il les courses de ce vendeur ?
+  /// `MANUAL` par défaut : l'assignation reste humaine tant qu'un ADMIN n'a
+  /// pas basculé ce vendeur, même interrupteur global allumé.
+  dispatchMode DispatchMode @default(MANUAL)
 
   // Configuration de la livraison
   deliveryPriceMode        DeliveryPriceMode @default(FIXED)
@@ -1363,6 +1370,16 @@ model DriverProfile {
   /// Motif de la dernière désactivation, pour que la décision reste lisible.
   deactivationReason String?
 
+  // ─── Dispatch semi-auto (F3-12) ──────────────────────────────────────────
+
+  /// Instant où l'app a déclaré savoir recevoir des offres (nouvelle route de
+  /// disponibilité). `null` = app ancienne : jamais candidat, même AVAILABLE.
+  offersEnabledAt          DateTime?
+  /// Offres laissées expirer d'affilée. Au-delà du seuil
+  /// `PlatformSettings.dispatchAutoOfflineAfterExpired`, le livreur passe
+  /// OFFLINE. Remis à 0 à toute réponse.
+  consecutiveExpiredOffers Int       @default(0)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1461,6 +1478,24 @@ model Delivery {
 
   /// Toutes les mains par lesquelles cette course est passée.
   assignments DeliveryAssignment[]
+
+  // ─── Recherche de livreur (F3-12) ────────────────────────────────────────
+  //
+  // État de la recherche, DÉRIVÉ de ces cinq colonnes — aucune valeur n'est
+  // ajoutée à `DeliveryStatus` : les apps vendeurs rabattent toute valeur
+  // inconnue sur `enAttente`. Toutes nulles = aucune recherche.
+
+  /// Échéance à laquelle le tick doit (re)lancer la recherche.
+  dispatchDueAt     DateTime?
+  /// Début de la recherche en cours ; borne la fenêtre des offres comptées.
+  dispatchStartedAt DateTime?
+  /// Fin de la recherche. Non nul ⇔ `dispatchOutcome` non nul (CHECK).
+  dispatchEndedAt   DateTime?
+  dispatchOutcome   DispatchOutcome?
+  /// Seulement quand `dispatchOutcome = EXHAUSTED` (CHECK).
+  dispatchEndReason DispatchEndReason?
+  /// Offres de livreurs pour cette course.
+  offers            DeliveryOffer[]
 
   @@index([driverSettlementId])
   // Sélection des courses réglables : un livreur, ses courses livrées, non
@@ -1622,6 +1657,119 @@ model DeliveryFailureReport {
 
   @@index([orderId])
   @@index([deliveryId, declaredAt])
+}
+
+/// Offre d'une course à UN livreur (F3-12, dispatch semi-auto séquentiel).
+///
+/// ## Invariants portés par la base (migration `20260929100000_dispatch_offers`)
+///
+/// - au plus une offre `OFFERED` par course et par livreur : deux index uniques
+///   PARTIELS, invisibles ici (Prisma ne sait pas les exprimer) ;
+/// - le snapshot économique et l'identité de l'offre sont immuables, un statut
+///   terminal est figé, `seenAt`/`respondedAt` ne s'écrivent qu'une fois :
+///   trigger `DeliveryOffer_immutable` ;
+/// - aucune insertion tant que `PlatformSettings.dispatchEnabled` est faux :
+///   trigger `DeliveryOffer_dispatch_enabled`.
+///
+/// ## Pas de `createdAt` ni d'`updatedAt`
+///
+/// `offeredAt` tient lieu de `createdAt`. `@updatedAt` est posé par Prisma
+/// Client, jamais par PostgreSQL : toutes les transitions d'offre passent en
+/// `$executeRaw` à l'heure de la base, la colonne mentirait à chaque fois.
+///
+/// Le snapshot est copié TEL QUEL sur `Delivery.driver*` à l'acceptation,
+/// jamais recalculé : le gain annoncé est le gain payé.
+model DeliveryOffer {
+  id         String   @id @default(cuid())
+  /// `Cascade` : composition, comme `DeliveryAssignment`. Les scripts
+  /// d'exploitation suppriment des `Delivery`.
+  delivery   Delivery @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  deliveryId String
+  /// `Restrict` : un `User` n'est jamais supprimé en production (anonymisé).
+  driver     User     @relation("DriverOffers", fields: [driverId], references: [id], onDelete: Restrict)
+  driverId   String
+
+  status     DeliveryOfferStatus @default(OFFERED)
+  /// Tour de sollicitation, à partir de 1.
+  round      Int
+  /// Motif du choix, sur la 1ʳᵉ offre d'une recherche seulement (quota).
+  pickReason DispatchPickReason?
+  /// Candidats éligibles au moment du choix — non reconstructible après coup.
+  poolSize   Int
+
+  // ── Snapshot économique — miroir de `Delivery.driver*` ──
+  employmentType    DriverEmploymentType
+  compensationModel DriverCompensationModel
+  /// `Order.deliveryFeeGross`, lu sous le verrou de la commande.
+  baseXaf           Int
+  /// Taux réellement appliqué. `null` ⇔ `SALARY` (CHECK).
+  sharePercent      Float?
+  payXaf            Int
+
+  offeredAt     DateTime            @default(now())
+  /// Heure de la BASE (`now() + make_interval`), jamais celle de Node.
+  expiresAt     DateTime
+  /// 1ʳᵉ lecture par l'app livreur. Nul ⇒ push perdu ou ignoré.
+  seenAt        DateTime?
+  /// Instant de l'issue. Nul ⇔ `OFFERED` (CHECK).
+  respondedAt   DateTime?
+  /// Seulement sur `DECLINED` (CHECK).
+  declineReason OfferDeclineReason?
+
+  @@index([deliveryId, offeredAt])
+  @@index([driverId, offeredAt(sort: Desc)])
+}
+
+enum DeliveryOfferStatus {
+  OFFERED
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  /// Retirée : course confiée ailleurs, commande annulée, livreur devenu
+  /// inéligible.
+  CANCELLED
+}
+
+/// Le dispatch automatique s'applique-t-il aux courses d'un vendeur ?
+enum DispatchMode {
+  MANUAL
+  AUTO
+}
+
+/// Issue d'une recherche de livreur.
+enum DispatchOutcome {
+  ASSIGNED
+  EXHAUSTED
+  /// Un humain a assigné pendant la recherche.
+  MANUAL_OVERRIDE
+  /// La commande est sortie des statuts dispatchables (annulée, livrée…).
+  ORDER_CLOSED
+  /// Arrêtée par un ADMIN ou par l'extinction de l'interrupteur.
+  STOPPED
+}
+
+/// Pourquoi une recherche s'est épuisée (`dispatchOutcome = EXHAUSTED`).
+enum DispatchEndReason {
+  NO_CANDIDATE
+  ROUNDS_EXHAUSTED
+  BUDGET_ELAPSED
+  PAY_UNAVAILABLE
+}
+
+/// Motif du choix de la 1ʳᵉ offre d'une recherche (quota « 1 sur N »).
+enum DispatchPickReason {
+  LILIA_PRIORITY
+  INDEPENDENT_QUOTA
+  ONLY_LILIA
+  ONLY_INDEPENDENT
+}
+
+/// Motif fermé d'un refus d'offre — pas de texte libre (données personnelles).
+enum OfferDeclineReason {
+  TOO_FAR
+  END_OF_SHIFT
+  VEHICLE
+  OTHER
 }
 
 enum DeliveryAssignmentOutcome {
@@ -3061,6 +3209,25 @@ model PlatformSettings {
   /// s'appliquent-elles ? Éteint : création refusée, aucune offre affichée ni
   /// appliquée. Les commandes déjà passées gardent leur retenue.
   vendorOffersEnabled Boolean @default(false)
+
+  // ── Dispatch semi-auto (Phase 3, F3-12) ──────────────────────────────────
+
+  /// Interrupteur global. Éteint : aucune offre n'est créée — un trigger
+  /// `BEFORE INSERT ON "DeliveryOffer"` le vérifie aussi en base. À lire EN
+  /// TRANSACTION, jamais par le cache de 60 s de `getSettings()`.
+  dispatchEnabled                 Boolean @default(false)
+  /// Durée d'acceptabilité d'une offre (D9). CHECK 30–300.
+  dispatchOfferSeconds            Int     @default(90)
+  /// Tours de sollicitation d'un même vivier. CHECK 1–5.
+  dispatchMaxRounds               Int     @default(2)
+  /// Budget total d'une recherche. CHECK 1–30.
+  dispatchMaxSearchMinutes        Int     @default(8)
+  /// Avance sur l'heure prête pour lancer la recherche. CHECK 0–120.
+  dispatchLeadMinutes             Int     @default(15)
+  /// Offres expirées d'affilée avant passage OFFLINE. CHECK ≥ 1.
+  dispatchAutoOfflineAfterExpired Int     @default(2)
+  /// Quota « 1 sur N » de 1ʳᵉˢ offres aux indépendants (Q-B). 0 = jamais.
+  dispatchIndependentEveryN       Int     @default(4)
 
   updatedAt DateTime @updatedAt
 }

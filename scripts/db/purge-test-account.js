@@ -87,6 +87,9 @@ const ETAPES = [
   // — Courses. D'abord celles d'AUTRUI : on ne détruit pas, on détache.
   ['DeliveryReview (autrui)', `DELETE FROM "DeliveryReview" x WHERE x."delivererId" = ANY($1) OR x."userId" = ANY($1)`],
   ['DeliveryAssignment', `DELETE FROM "DeliveryAssignment" x WHERE x."delivererId" = ANY($1) OR x."deliveryId" IN (SELECT d.id FROM "Delivery" d JOIN "Order" o ON o.id=d."orderId" WHERE o."userId" = ANY($1))`],
+  // F3-12 — offres reçues par le compte (FK RESTRICT vers User). Celles des
+  // courses de ses commandes partent en cascade avec `Delivery`.
+  ['DeliveryOffer', `DELETE FROM "DeliveryOffer" x WHERE x."driverId" = ANY($1)`],
   ['DeliveryLocation', `DELETE FROM "DeliveryLocation" x WHERE x."deliveryId" IN (SELECT d.id FROM "Delivery" d JOIN "Order" o ON o.id=d."orderId" WHERE o."userId" = ANY($1))`],
   ['Delivery (ses commandes)', `DELETE FROM "Delivery" x WHERE x."orderId" IN (SELECT id FROM "Order" WHERE "userId" = ANY($1))`],
   // ⚠️ DÉTACHEMENT, pas suppression : ces courses appartiennent aux commandes

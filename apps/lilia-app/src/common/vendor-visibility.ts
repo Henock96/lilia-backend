@@ -219,6 +219,8 @@ export const WITHHELD_VENDOR_FIELDS = {
   manualOverride: 'drapeau d’exploitation',
   /** F3-03 — réglage lu par la règle d'ouverture ; le client en voit l'effet (`isOpen`). */
   closedOnHolidays: 'drapeau d’exploitation',
+  /** F3-12 — interrupteur du dispatch automatique, décidé par un ADMIN. */
+  dispatchMode: 'drapeau d’exploitation',
   /** F3-03 — note du vendeur pour lui-même (« inventaire »), pas une annonce. */
   pauseReason: 'note interne du vendeur',
 
