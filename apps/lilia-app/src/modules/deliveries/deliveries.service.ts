@@ -461,6 +461,16 @@ export class DeliveriesService {
       },
     });
 
+    // F3-12.0 — la course a quitté `EN_TRANSIT` : sa dernière position n'a
+    // plus rien à montrer. `order:watch` ne la rejoue déjà plus (le statut en
+    // base décide) ; la purger évite de la garder 5 min en cache pour rien.
+    // Après la transaction et sans `await`, comme à la réassignation.
+    if (status === DeliveryStatus.LIVRER || status === DeliveryStatus.ECHEC) {
+      this.trackingService
+        .forgetLastPosition(delivery.orderId)
+        .catch(() => undefined);
+    }
+
     // Émet l'event order.status.updated → OrdersListener notifie le client + WS
     if (handover?.method === DeliveryHandoverMethod.ADMIN_OVERRIDE) {
       await this.audit.record({

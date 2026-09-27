@@ -92,4 +92,50 @@ describe('TrackingService.assertCanUpdatePosition — F3-12.0', () => {
       service.assertCanUpdatePosition('o1', 'fb-a1'),
     ).resolves.toEqual({ live: false });
   });
+
+  /**
+   * Pendant côté LECTURE : `order:watch` ne rejoue la dernière position
+   * mémorisée que si la course roule. La clé Redis survit 5 min à `LIVRER`.
+   */
+  describe('assertCanWatchOrder — rejouer la dernière position ?', () => {
+    const client = { id: 'client-1', role: 'CLIENT' };
+
+    it.each([
+      [DeliveryStatus.EN_ATTENTE, false],
+      [DeliveryStatus.ASSIGNER, false],
+      [DeliveryStatus.ACCEPTER, false],
+      [DeliveryStatus.EN_TRANSIT, true],
+      [DeliveryStatus.LIVRER, false],
+      [DeliveryStatus.ECHEC, false],
+    ])('client propriétaire, course %s → live = %s', async (status, live) => {
+      prisma.user.findUnique.mockResolvedValue(client);
+      prisma.order.findUnique.mockResolvedValue(
+        orderWith({ delivererId: 'liv-1', status }),
+      );
+
+      await expect(
+        service.assertCanWatchOrder('o1', 'fb-client-1'),
+      ).resolves.toEqual({ live });
+    });
+
+    it('commande sans livraison : autorisé, rien à rejouer', async () => {
+      prisma.user.findUnique.mockResolvedValue(client);
+      prisma.order.findUnique.mockResolvedValue(orderWith(null));
+
+      await expect(
+        service.assertCanWatchOrder('o1', 'fb-client-1'),
+      ).resolves.toEqual({ live: false });
+    });
+
+    it('un tiers reste refusé (403)', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'x', role: 'CLIENT' });
+      prisma.order.findUnique.mockResolvedValue(
+        orderWith({ delivererId: 'liv-1', status: DeliveryStatus.EN_TRANSIT }),
+      );
+
+      await expect(
+        service.assertCanWatchOrder('o1', 'fb-x'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+  });
 });

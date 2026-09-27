@@ -259,10 +259,21 @@ export class TrackingService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Autorise l'entrée dans la room de la commande, puis dit si la dernière
+   * position mémorisée peut être **rejouée** (`live`).
+   *
+   * F3-12.0 — seule une course `EN_TRANSIT` a une position à montrer. La
+   * clé Redis survit à la course (TTL 5 min) : sans ce contrôle, un
+   * `order:watch` ouvert juste après `LIVRER` (écran de notation) ou un
+   * échec rendait encore la dernière position du livreur. C'est le statut
+   * lu en base qui décide, pas la présence de la clé — une purge manquée
+   * (Redis indisponible, chemin de clôture oublié) ne rouvre donc rien.
+   */
   async assertCanWatchOrder(
     orderId: string,
     firebaseUid: string,
-  ): Promise<void> {
+  ): Promise<{ live: boolean }> {
     const { user, order } = await this.getUserAndOrder(orderId, firebaseUid);
 
     if (
@@ -271,7 +282,7 @@ export class TrackingService implements OnModuleDestroy {
       order.restaurant.ownerId === user.id ||
       order.delivery?.delivererId === user.id
     ) {
-      return;
+      return { live: order.delivery?.status === DeliveryStatus.EN_TRANSIT };
     }
 
     throw new ForbiddenException('Accès tracking refusé pour cette commande');

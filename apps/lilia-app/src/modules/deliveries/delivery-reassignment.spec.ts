@@ -753,6 +753,58 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
     });
   });
 
+  /**
+   * F3-12.0 — à la clôture, la course quitte `EN_TRANSIT` : sa dernière
+   * position ne doit pas rester 5 min en cache. (`order:watch` ne la rejoue
+   * déjà plus, le statut en base décide : la purge est de l'hygiène.)
+   */
+  describe('position live à la clôture de la course', () => {
+    it('LIVRER : la dernière position connue est oubliée', async () => {
+      await assign('liv-A');
+      await accept('liv-A');
+      await pickup('liv-A');
+      trackingService.forgetLastPosition.mockClear();
+
+      await deliver('liv-A');
+
+      expect(trackingService.forgetLastPosition).toHaveBeenCalledWith('o1');
+    });
+
+    it('ECHEC : idem', async () => {
+      await assign('liv-A');
+      await accept('liv-A');
+      await pickup('liv-A');
+      trackingService.forgetLastPosition.mockClear();
+
+      await fail('liv-A', 'panne de moto');
+
+      expect(trackingService.forgetLastPosition).toHaveBeenCalledWith('o1');
+    });
+
+    it('une clôture refusée ne purge rien', async () => {
+      await assign('liv-A');
+      await accept('liv-A');
+      await pickup('liv-A');
+      trackingService.forgetLastPosition.mockClear();
+      order.status = OrderStatus.ANNULER;
+
+      await expect(deliver('liv-A')).rejects.toBeTruthy();
+      expect(trackingService.forgetLastPosition).not.toHaveBeenCalled();
+    });
+
+    it('une purge en échec n’empêche pas la livraison', async () => {
+      await assign('liv-A');
+      await accept('liv-A');
+      await pickup('liv-A');
+      trackingService.forgetLastPosition.mockRejectedValueOnce(
+        new Error('redis down'),
+      );
+
+      await expect(deliver('liv-A')).resolves.toBeDefined();
+      expect(delivery.status).toBe(DeliveryStatus.LIVRER);
+    });
+  });
+
   // ═══════════════════════════════════════════════════════════════════════════
   // Terrain : ce qu'on ne réassigne plus
   // ═══════════════════════════════════════════════════════════════════════════

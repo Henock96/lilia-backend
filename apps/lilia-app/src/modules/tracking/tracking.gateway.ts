@@ -126,9 +126,15 @@ export class TrackingGateway
   @UsePipes(wsValidationPipe)
   async onWatchOrder(client: Socket, @MessageBody() payload: WatchOrderDto) {
     await this.assertSessionStillValid(client);
-    await this.tracking.assertCanWatchOrder(payload.orderId, client.data.uid);
+    const { live } = await this.tracking.assertCanWatchOrder(
+      payload.orderId,
+      client.data.uid,
+    );
     await client.join(`order:${payload.orderId}`);
 
+    // F3-12.0 — hors `EN_TRANSIT`, aucune position n'est rejouée : la clé
+    // Redis peut survivre à la course (cf. `assertCanWatchOrder`).
+    if (!live) return;
     const lastPos = await this.tracking.getLastPosition(payload.orderId);
     // `orderId` explicite : une même socket peut watcher plusieurs commandes
     // (admin), le client ne doit pas déduire la provenance de la room.

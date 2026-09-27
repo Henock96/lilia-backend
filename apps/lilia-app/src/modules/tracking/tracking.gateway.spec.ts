@@ -14,7 +14,7 @@ describe('TrackingGateway', () => {
   let gateway: TrackingGateway;
 
   const tracking = {
-    assertCanWatchOrder: jest.fn(),
+    assertCanWatchOrder: jest.fn().mockResolvedValue({ live: true }),
     assertCanUpdatePosition: jest.fn(),
     updatePosition: jest.fn(),
     calculateETA: jest.fn().mockResolvedValue(7),
@@ -199,6 +199,26 @@ describe('TrackingGateway', () => {
       expect(client.emit).toHaveBeenCalledWith(
         'driver:position',
         expect.objectContaining({ orderId: 'o7', lat: -4.26, lng: 15.24 }),
+      );
+    });
+
+    it('F3-12.0 — course hors EN_TRANSIT (ex. LIVRER) : room rejointe, aucune position rejouée', async () => {
+      tracking.assertCanWatchOrder.mockResolvedValueOnce({ live: false });
+      // La clé Redis survit à la course (TTL 5 min) : elle est bien là.
+      tracking.getLastPosition.mockResolvedValueOnce({
+        lat: -4.26,
+        lng: 15.24,
+        ts: 1716480000000,
+      });
+      const client = makeClient({ uid: 'fb1', tokenExp: inOneHour });
+
+      await gateway.onWatchOrder(client as any, { orderId: 'o8' });
+
+      expect(client.join).toHaveBeenCalledWith('order:o8');
+      expect(tracking.getLastPosition).not.toHaveBeenCalled();
+      expect(client.emit).not.toHaveBeenCalledWith(
+        'driver:position',
+        expect.anything(),
       );
     });
 
