@@ -10,6 +10,7 @@ import {
   DeliveryStatus,
   DriverStatus,
   OrderStatus,
+  Prisma,
   Role,
   StatusUser,
 } from '@prisma/client';
@@ -22,6 +23,8 @@ import { OrderTransitionService } from '../orders/order-transition.service';
 import { OrderStatusUpdatedEvent } from '../events/order-events';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { computeDriverCompensation } from '../drivers/driver-compensation';
+import { lockDriverRow } from '../drivers/driver-row-lock';
+import { lockOrderRow } from '../orders/order-row-lock';
 
 /**
  * Remise à zéro du snapshot économique d'une course.
@@ -162,8 +165,11 @@ export class DeliveryAssignmentService {
    * administrateur qui voit « profil désactivé » sait quoi faire, un
    * « impossible d'assigner » ne dit rien.
    */
-  private async assertAssignable(delivererId: string): Promise<void> {
-    const deliverer = await this.prisma.user.findUnique({
+  private async assertAssignable(
+    delivererId: string,
+    db: Prisma.TransactionClient = this.prisma,
+  ): Promise<void> {
+    const deliverer = await db.user.findUnique({
       where: { id: delivererId },
       select: {
         nom: true,
@@ -260,19 +266,34 @@ export class DeliveryAssignmentService {
     // qu'on va refuser juste après ; `_doAssign` le rejoue, il est l'arbitre.
     this.assertOrderAssignable(order.status);
 
-    // Trouver ou créer l'enregistrement Delivery
-    let delivery = await this.prisma.delivery.findUnique({
-      where: { orderId },
-    });
-    if (!delivery) {
-      delivery = await this.prisma.delivery.create({
-        data: { orderId, status: 'EN_ATTENTE' },
+    // F3-12.0 — création ATOMIQUE de la course.
+    //
+    // C'était `findUnique` puis `create` : deux assignations simultanées (ou,
+    // demain, l'assignation et le déclencheur du dispatch) lisaient toutes deux
+    // « aucune livraison », et la seconde mourait sur la contrainte
+    // `orderId @unique` en P2002 — un 409 incompréhensible pour le vendeur.
+    // `createMany({ skipDuplicates })` est un `INSERT … ON CONFLICT DO NOTHING`
+    // : le perdant ne lève rien, il relit la ligne du gagnant.
+    //
+    // Sous `Order FOR SHARE` (R1) et avec le statut relu : une commande
+    // annulée entre la lecture ci-dessus et cet instant ne reçoit pas de
+    // livraison vide.
+    await this.prisma.$transaction(async (tx) => {
+      const [locked] = await tx.$queryRaw<{ status: OrderStatus }[]>`
+        SELECT status FROM "Order" WHERE id = ${orderId} FOR SHARE
+      `;
+      if (!locked) throw new NotFoundException('Commande non trouvée.');
+      this.assertOrderAssignable(locked.status);
+
+      await tx.delivery.createMany({
+        data: [{ orderId, status: DeliveryStatus.EN_ATTENTE }],
+        skipDuplicates: true,
       });
-    }
+    });
 
     // Recharger avec les relations nécessaires à _doAssign
     const deliveryFull = await this.prisma.delivery.findUnique({
-      where: { id: delivery.id },
+      where: { orderId },
       include: {
         order: { include: { restaurant: { include: { owner: true } } } },
       },
@@ -322,6 +343,20 @@ export class DeliveryAssignmentService {
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      // ── F3-12.0 — R1 : la commande, en lecture partagée ──────────────────
+      //
+      // L'acceptation d'une mission tenait déjà ce verrou (fix F-03) ;
+      // l'assignation, non. Les deux portes d'entrée d'un livreur sur une
+      // course doivent dire la même chose : une annulation concurrente attend
+      // notre commit (puis ferme la course par le chemin normal), ou bien nous
+      // attendons la sienne et relisons `ANNULER` — jamais une commande
+      // annulée à laquelle on vient de confier un livreur.
+      const [order] = await tx.$queryRaw<{ status: OrderStatus }[]>`
+        SELECT status FROM "Order" WHERE id = ${delivery.orderId} FOR SHARE
+      `;
+      if (!order) throw new NotFoundException('Commande non trouvée.');
+      this.assertOrderAssignable(order.status);
+
       // ── Verrou optimiste ───────────────────────────────────────────────
       //
       // L'écriture était un `update` **inconditionnel**, et toutes les gardes
@@ -360,6 +395,15 @@ export class DeliveryAssignmentService {
             'Rechargez la commande avant de réassigner.',
         );
       }
+
+      // ── F3-12.0 — R4 : le livreur désigné, sous son verrou ──────────────
+      //
+      // `assertAssignable` ci-dessus est une LECTURE faite hors transaction.
+      // Entre elle et ce point, le livreur a pu être désactivé, banni ou se
+      // mettre hors ligne : on relit sous le même verrou que ces trois gestes.
+      // Rang R4 après R1/R2 : l'ordre global est respecté.
+      await lockDriverRow(tx, delivererId);
+      await this.assertAssignable(delivererId, tx);
 
       // Le journal suit l'écriture dans la MÊME transaction : une trace qui
       // peut diverger de l'état qu'elle décrit ne vaut pas mieux que pas de
@@ -568,13 +612,52 @@ export class DeliveryAssignmentService {
         );
       }
 
+      // F3-12.0 — le CAS porte aussi le COMPTE, pas seulement la
+      // disponibilité. `RolesGuard` lit un cache de 5 min : un livreur banni
+      // ou dont le rôle vient de changer passe encore la garde HTTP pendant
+      // ce délai. C'est la base, sous le verrou de la ligne `User`, qui
+      // tranche — un bannissement commis avant nous fait échouer ce CAS.
       const driverClaimed = await tx.user.updateMany({
-        where: { id: user.id, driverStatus: DriverStatus.AVAILABLE },
+        where: {
+          id: user.id,
+          driverStatus: DriverStatus.AVAILABLE,
+          statusUser: StatusUser.ACTIVE,
+          role: Role.LIVREUR,
+        },
         data: { driverStatus: DriverStatus.ON_DELIVERY },
       });
       if (driverClaimed.count === 0) {
+        const current = await tx.user.findUnique({
+          where: { id: user.id },
+          select: { statusUser: true, role: true },
+        });
+        if (
+          current?.statusUser !== StatusUser.ACTIVE ||
+          current?.role !== Role.LIVREUR
+        ) {
+          throw new ForbiddenException(
+            'Votre compte ne permet plus d’accepter de course.',
+          );
+        }
         throw new ConflictException(
           "Vous avez déjà une livraison en cours. Terminez-la avant d'en accepter une autre.",
+        );
+      }
+
+      // R5, après R4 : la désactivation écrit `User` (OFFLINE) puis le
+      // profil sous le même verrou, donc elle est déjà exclue par le CAS
+      // ci-dessus. Relire le profil couvre le reste — un profil inactif
+      // resté `AVAILABLE` (le livreur peut se déclarer disponible sans être
+      // en service). Un compte sans profil ne peut plus exister depuis la
+      // migration du 03/09 ; il n'est pas refusé ici pour ne pas changer une
+      // règle que `assertAssignable` porte déjà en amont.
+      const profile = await tx.driverProfile.findUnique({
+        where: { userId: user.id },
+        select: { isActive: true },
+      });
+      if (profile && !profile.isActive) {
+        throw new ForbiddenException(
+          'Votre profil livreur n’est pas en service. Contactez l’administration.',
         );
       }
 
@@ -754,6 +837,14 @@ export class DeliveryAssignmentService {
     const now = new Date();
 
     const updated = await this.prisma.$transaction(async (tx) => {
+      // F3-12.0 — ordre global des verrous : `Order` (R1) avant `Delivery`
+      // (R2). Ce chemin revendiquait la livraison puis faisait avancer la
+      // commande, à l'inverse de l'assignation et de l'acceptation (commande
+      // en `FOR SHARE`, puis livraison) : « récupération ∥ réassignation »
+      // pouvait s'interbloquer (40P01). Pris d'emblée en exclusif, puisque
+      // la transition `PRET → EN_ROUTE` l'écrira de toute façon.
+      await lockOrderRow(tx, delivery.orderId);
+
       const claimed = await tx.delivery.updateMany({
         where: {
           id: deliveryId,

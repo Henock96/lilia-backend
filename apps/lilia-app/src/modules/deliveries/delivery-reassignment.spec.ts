@@ -128,6 +128,8 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
       findUniqueOrThrow: jest.fn(() =>
         Promise.resolve(deliveryWithRelations()),
       ),
+      // F3-12.0 — `INSERT … ON CONFLICT DO NOTHING` : la course existe déjà.
+      createMany: jest.fn(() => Promise.resolve({ count: 0 })),
     },
     order: {
       updateMany: jest.fn(({ where, data }: Row) => {
@@ -152,6 +154,16 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
         Object.assign(row, data);
         return Promise.resolve({ count: 1 });
       }),
+      // F3-12.0 — relectures sous verrou (assignation, acceptation).
+      findUnique: jest.fn(({ where }: Row) =>
+        Promise.resolve(users[where.id] ?? null),
+      ),
+    },
+    // F3-12.0 — le profil (R5) est relu dans la transaction d'acceptation.
+    driverProfile: {
+      findUnique: jest.fn(({ where }: Row) =>
+        Promise.resolve(users[where.userId]?.driverProfile ?? null),
+      ),
     },
     // Code de remise tiré au retrait (F-06).
     deliveryHandover: {
@@ -160,8 +172,26 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
         return Promise.resolve(handovers[where.deliveryId]);
       }),
     },
-    // `SELECT status FROM "Order" … FOR SHARE` à l'acceptation (fix F-03).
-    $queryRaw: jest.fn(() => Promise.resolve([{ status: order.status }])),
+    // Deux verrous en SQL brut : la commande (`SELECT status FROM "Order" …
+    // FOR SHARE|UPDATE`, R1) et, depuis F3-12.0, le livreur (`… FROM "User"
+    // … FOR UPDATE`, R4). Le double répond selon la table visée.
+    $queryRaw: jest.fn((sql: TemplateStringsArray, ...values: unknown[]) => {
+      if (sql.join('?').includes('FROM "User"')) {
+        const row = users[values[0] as string];
+        return Promise.resolve(
+          row
+            ? [
+                {
+                  role: row.role,
+                  statusUser: row.statusUser,
+                  driverStatus: row.driverStatus ?? null,
+                },
+              ]
+            : [],
+        );
+      }
+      return Promise.resolve([{ status: order.status }]);
+    }),
     deliveryAssignment: {
       create: jest.fn(({ data }: Row) => {
         assignments.push({ ...data, releasedAt: null, outcome: null });
@@ -720,6 +750,58 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
 
       await expect(assign('liv-B', ADMIN_UID)).resolves.toBeDefined();
       expect(delivery.delivererId).toBe('liv-B');
+    });
+  });
+
+  /**
+   * F3-12.0 — à la clôture, la course quitte `EN_TRANSIT` : sa dernière
+   * position ne doit pas rester 5 min en cache. (`order:watch` ne la rejoue
+   * déjà plus, le statut en base décide : la purge est de l'hygiène.)
+   */
+  describe('position live à la clôture de la course', () => {
+    it('LIVRER : la dernière position connue est oubliée', async () => {
+      await assign('liv-A');
+      await accept('liv-A');
+      await pickup('liv-A');
+      trackingService.forgetLastPosition.mockClear();
+
+      await deliver('liv-A');
+
+      expect(trackingService.forgetLastPosition).toHaveBeenCalledWith('o1');
+    });
+
+    it('ECHEC : idem', async () => {
+      await assign('liv-A');
+      await accept('liv-A');
+      await pickup('liv-A');
+      trackingService.forgetLastPosition.mockClear();
+
+      await fail('liv-A', 'panne de moto');
+
+      expect(trackingService.forgetLastPosition).toHaveBeenCalledWith('o1');
+    });
+
+    it('une clôture refusée ne purge rien', async () => {
+      await assign('liv-A');
+      await accept('liv-A');
+      await pickup('liv-A');
+      trackingService.forgetLastPosition.mockClear();
+      order.status = OrderStatus.ANNULER;
+
+      await expect(deliver('liv-A')).rejects.toBeTruthy();
+      expect(trackingService.forgetLastPosition).not.toHaveBeenCalled();
+    });
+
+    it('une purge en échec n’empêche pas la livraison', async () => {
+      await assign('liv-A');
+      await accept('liv-A');
+      await pickup('liv-A');
+      trackingService.forgetLastPosition.mockRejectedValueOnce(
+        new Error('redis down'),
+      );
+
+      await expect(deliver('liv-A')).resolves.toBeDefined();
+      expect(delivery.status).toBe(DeliveryStatus.LIVRER);
     });
   });
 

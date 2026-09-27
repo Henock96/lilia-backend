@@ -52,6 +52,8 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
   let deliveryStatus: DeliveryStatus;
   /** Écritures réellement appliquées — vidées si la transaction est annulée. */
   let applied: string[];
+  /** F3-12.0 — ordre réel des verrous et écritures (jamais remis à zéro). */
+  let trace: string[];
 
   const DELIVERY_ID = 'del-1';
   const ORDER_ID = 'o-1';
@@ -82,6 +84,7 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
     orderStatus = 'EN_ROUTE';
     deliveryStatus = DeliveryStatus.EN_TRANSIT;
     applied = [];
+    trace = [];
     deliveryUpdates = [];
     assignmentCloses = [];
 
@@ -91,6 +94,12 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
     const tx = {
       // F3-07 : la transition vers LIVRER lit le délai de versement (aucune ligne = défaut).
       platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
+      // F3-12.0 — `lockOrderRow` : la commande (R1) est verrouillée avant la
+      // livraison (R2). N'écrit rien, donc absent de `applied`.
+      $queryRaw: jest.fn(() => {
+        trace.push('lock:order');
+        return Promise.resolve([{ status: orderStatus }]);
+      }),
       delivery: {
         updateMany: jest.fn(
           ({
@@ -100,6 +109,7 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
             where: { status: DeliveryStatus };
             data: Record<string, unknown>;
           }) => {
+            trace.push('write:delivery');
             if (where.status !== deliveryStatus) {
               return Promise.resolve({ count: 0 });
             }
@@ -259,6 +269,17 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     });
 
+    it('F3-12.0 — verrouille la commande (R1) AVANT de revendiquer la livraison (R2)', async () => {
+      await markDelivered();
+
+      // L'ordre inverse s'interbloquait avec l'assignation et l'acceptation,
+      // qui tiennent la commande en `FOR SHARE` puis revendiquent la course.
+      expect(trace.indexOf('lock:order')).toBeGreaterThanOrEqual(0);
+      expect(trace.indexOf('lock:order')).toBeLessThan(
+        trace.indexOf('write:delivery'),
+      );
+    });
+
     it('émet la notification et crédite les récompenses', async () => {
       await markDelivered();
 
@@ -296,6 +317,8 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
       return {
         // F3-07 : la transition vers LIVRER lit le délai de versement (aucune ligne = défaut).
         platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
+        // F3-12.0 — `lockOrderRow` relit la commande déjà annulée.
+        $queryRaw: jest.fn(() => Promise.resolve([{ status: orderStatus }])),
         delivery: {
           updateMany: jest.fn(() => {
             applied.push('delivery');

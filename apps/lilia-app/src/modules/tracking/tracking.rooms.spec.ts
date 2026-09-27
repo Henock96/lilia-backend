@@ -42,7 +42,7 @@ describe('TrackingGateway — appartenance aux rooms', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
-    tracking.assertCanWatchOrder.mockResolvedValue(undefined);
+    tracking.assertCanWatchOrder.mockResolvedValue({ live: true });
     userCache.getByFirebaseUid.mockResolvedValue({
       id: 'u1',
       statusUser: 'ACTIVE',

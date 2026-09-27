@@ -29,10 +29,12 @@ export class TrackingController {
     @Body() body: PositionDto,
   ) {
     // Sécurité : seul le livreur assigné peut publier sa position
-    await this.trackingService.assertCanUpdatePosition(
+    const { live } = await this.trackingService.assertCanUpdatePosition(
       body.orderId,
       fbUser.uid,
     );
+    // F3-12.0 — hors `EN_TRANSIT`, ignorée sans erreur (pas de relance).
+    if (!live) return { eta: null };
 
     await this.trackingService.updatePosition({
       orderId: body.orderId,
@@ -74,10 +76,13 @@ export class TrackingController {
     // La garde « tableau vide » vit désormais dans le DTO (`@ArrayMinSize(1)`).
     @Body() body: BatchPositionsDto,
   ) {
-    await this.trackingService.assertCanUpdatePosition(
+    const { live } = await this.trackingService.assertCanUpdatePosition(
       body.orderId,
       fbUser.uid,
     );
+    // F3-12.0 — hors `EN_TRANSIT`, le lot est acquitté sans être diffusé :
+    // un 4xx ferait rejouer indéfiniment un lot qui ne passera jamais.
+    if (!live) return { synced: body.positions.length, eta: null };
 
     // Enregistre seulement la dernière position pour le broadcast
     const last = body.positions[body.positions.length - 1];

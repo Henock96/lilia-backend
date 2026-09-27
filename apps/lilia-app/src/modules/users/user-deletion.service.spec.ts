@@ -38,10 +38,10 @@ describe('UserDeletionService', () => {
     // Plaque et permis sont des données personnelles : le profil livreur est
     // purgé au même titre que les adresses.
     driverProfile: { deleteMany: jest.fn() },
-    user: {
-      update: jest.fn(),
-      findUniqueOrThrow: jest.fn().mockResolvedValue({ loyaltyPoints: 0 }),
-    },
+    user: { update: jest.fn() },
+    // F3-12.0 — le solde est lu sous `SELECT … FOR UPDATE` : la ligne `User`
+    // (R4) est verrouillée avant la suppression du profil livreur (R5).
+    $queryRaw: jest.fn().mockResolvedValue([{ loyaltyPoints: 0 }]),
   };
 
   const prisma = {
@@ -105,13 +105,16 @@ describe('UserDeletionService', () => {
     // Et le compte est SOLDÉ, pas simplement mis à zéro : sans cette écriture,
     // `SUM(ledger)` et `loyaltyPoints` divergeraient et la réconciliation
     // quotidienne signalerait chaque compte supprimé comme une dérive.
-    expect(tx.user.findUniqueOrThrow).toHaveBeenCalledWith({
-      where: { id: 'u1' },
-      select: { loyaltyPoints: true },
-    });
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(tx.$queryRaw.mock.calls[0].slice(1)).toEqual(['u1']);
     expect(tx.driverProfile.deleteMany).toHaveBeenCalledWith({
       where: { userId: 'u1' },
     });
+    // F3-12.0 — ordre global des verrous : `User` (R4) AVANT `DriverProfile`
+    // (R5), comme `deactivate`. L'ordre inverse s'interbloquait avec lui.
+    expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.driverProfile.deleteMany.mock.invocationCallOrder[0],
+    );
     // Aucun delegate order/payment n'est même exposé sur le tx mocké :
     // s'il était appelé, le test planterait.
     expect(Object.keys(tx)).not.toContain('order');
@@ -225,7 +228,7 @@ describe('UserDeletionService', () => {
   });
 
   it('solde une clôture de compte par une écriture de ledger, jamais par un effacement', async () => {
-    tx.user.findUniqueOrThrow.mockResolvedValue({ loyaltyPoints: 7 });
+    tx.$queryRaw.mockResolvedValue([{ loyaltyPoints: 7 }]);
 
     await service.deleteOwnAccount('u1');
 
@@ -239,7 +242,7 @@ describe('UserDeletionService', () => {
   });
 
   it('n’écrit aucune clôture quand le solde est déjà nul', async () => {
-    tx.user.findUniqueOrThrow.mockResolvedValue({ loyaltyPoints: 0 });
+    tx.$queryRaw.mockResolvedValue([{ loyaltyPoints: 0 }]);
 
     await service.deleteOwnAccount('u1');
 

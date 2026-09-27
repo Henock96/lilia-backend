@@ -10,6 +10,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import Redis from 'ioredis';
+import { DeliveryStatus } from '@prisma/client';
 import { buildRedisOptions } from '../../common/redis/redis-options';
 
 export interface PositionPayload {
@@ -258,10 +259,21 @@ export class TrackingService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Autorise l'entrée dans la room de la commande, puis dit si la dernière
+   * position mémorisée peut être **rejouée** (`live`).
+   *
+   * F3-12.0 — seule une course `EN_TRANSIT` a une position à montrer. La
+   * clé Redis survit à la course (TTL 5 min) : sans ce contrôle, un
+   * `order:watch` ouvert juste après `LIVRER` (écran de notation) ou un
+   * échec rendait encore la dernière position du livreur. C'est le statut
+   * lu en base qui décide, pas la présence de la clé — une purge manquée
+   * (Redis indisponible, chemin de clôture oublié) ne rouvre donc rien.
+   */
   async assertCanWatchOrder(
     orderId: string,
     firebaseUid: string,
-  ): Promise<void> {
+  ): Promise<{ live: boolean }> {
     const { user, order } = await this.getUserAndOrder(orderId, firebaseUid);
 
     if (
@@ -270,24 +282,43 @@ export class TrackingService implements OnModuleDestroy {
       order.restaurant.ownerId === user.id ||
       order.delivery?.delivererId === user.id
     ) {
-      return;
+      return { live: order.delivery?.status === DeliveryStatus.EN_TRANSIT };
     }
 
     throw new ForbiddenException('Accès tracking refusé pour cette commande');
   }
 
+  /**
+   * Autorise la publication, puis dit si la position doit **circuler**.
+   *
+   * F3-12.0 (I16) — la position du livreur n'est diffusée au client que
+   * pendant `EN_TRANSIT`. Le repli HTTP `PATCH /deliveries/:id/location`
+   * l'exigeait déjà ; la WebSocket et `POST /tracking/position[/batch]`, non :
+   * un livreur `ASSIGNER`/`ACCEPTER` (ou déjà `LIVRER`) qui publiait voyait sa
+   * position stockée et diffusée dans la room `order:<id>`, que le client
+   * écoute.
+   *
+   * Hors `EN_TRANSIT`, la position est ignorée **sans erreur** (`live:
+   * false`) : l'app livreur ne publie qu'en course, mais une dernière salve
+   * juste après « Livré » ou un lot hors ligne rejoué ne doit ni lever une
+   * exception par message, ni déclencher une relance en boucle côté HTTP.
+   * L'autorisation, elle, reste un refus franc (403).
+   */
   async assertCanUpdatePosition(
     orderId: string,
     firebaseUid: string,
-  ): Promise<void> {
+  ): Promise<{ live: boolean }> {
     const { user, order } = await this.getUserAndOrder(orderId, firebaseUid);
 
-    if (user.role === 'ADMIN') return;
-    if (user.role !== 'LIVREUR' || order.delivery?.delivererId !== user.id) {
+    if (
+      user.role !== 'ADMIN' &&
+      (user.role !== 'LIVREUR' || order.delivery?.delivererId !== user.id)
+    ) {
       throw new ForbiddenException(
         'Seul le livreur assigné peut publier sa position',
       );
     }
+    return { live: order.delivery?.status === DeliveryStatus.EN_TRANSIT };
   }
 
   /**
@@ -348,7 +379,7 @@ export class TrackingService implements OnModuleDestroy {
         where: { id: orderId },
         include: {
           restaurant: { select: { ownerId: true } },
-          delivery: { select: { delivererId: true } },
+          delivery: { select: { delivererId: true, status: true } },
         },
       }),
     ]);

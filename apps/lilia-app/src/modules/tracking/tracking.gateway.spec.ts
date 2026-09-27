@@ -14,7 +14,7 @@ describe('TrackingGateway', () => {
   let gateway: TrackingGateway;
 
   const tracking = {
-    assertCanWatchOrder: jest.fn(),
+    assertCanWatchOrder: jest.fn().mockResolvedValue({ live: true }),
     assertCanUpdatePosition: jest.fn(),
     updatePosition: jest.fn(),
     calculateETA: jest.fn().mockResolvedValue(7),
@@ -41,6 +41,8 @@ describe('TrackingGateway', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    // Par défaut, la course roule (`EN_TRANSIT`) : la position circule.
+    tracking.assertCanUpdatePosition.mockResolvedValue({ live: true });
     userCache.getByFirebaseUid.mockResolvedValue({
       id: 'u1',
       statusUser: 'ACTIVE',
@@ -152,6 +154,28 @@ describe('TrackingGateway', () => {
       );
     });
 
+    /**
+     * F3-12.0 (I16) — avant `EN_TRANSIT` (ou après `LIVRER`), la position du
+     * livreur ne doit atteindre ni Redis ni la room que le client écoute. Et
+     * sans exception : l'app livreur publie en boucle, une erreur par
+     * message serait du bruit sans effet.
+     */
+    it('F3-12.0 — hors EN_TRANSIT : ni stockée, ni diffusée, et sans erreur', async () => {
+      tracking.assertCanUpdatePosition.mockResolvedValueOnce({ live: false });
+      const client = makeClient({ uid: 'fb1', tokenExp: inOneHour });
+
+      await expect(
+        gateway.onDriverPosition(client as any, {
+          orderId: 'o1',
+          lat: -4.2634,
+          lng: 15.2429,
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(tracking.updatePosition).not.toHaveBeenCalled();
+      expect(roomEmit).not.toHaveBeenCalled();
+    });
+
     it('order:status broadcast porte orderId et status', () => {
       gateway.broadcastOrderStatus('o42', 'EN_ROUTE');
 
@@ -175,6 +199,26 @@ describe('TrackingGateway', () => {
       expect(client.emit).toHaveBeenCalledWith(
         'driver:position',
         expect.objectContaining({ orderId: 'o7', lat: -4.26, lng: 15.24 }),
+      );
+    });
+
+    it('F3-12.0 — course hors EN_TRANSIT (ex. LIVRER) : room rejointe, aucune position rejouée', async () => {
+      tracking.assertCanWatchOrder.mockResolvedValueOnce({ live: false });
+      // La clé Redis survit à la course (TTL 5 min) : elle est bien là.
+      tracking.getLastPosition.mockResolvedValueOnce({
+        lat: -4.26,
+        lng: 15.24,
+        ts: 1716480000000,
+      });
+      const client = makeClient({ uid: 'fb1', tokenExp: inOneHour });
+
+      await gateway.onWatchOrder(client as any, { orderId: 'o8' });
+
+      expect(client.join).toHaveBeenCalledWith('order:o8');
+      expect(tracking.getLastPosition).not.toHaveBeenCalled();
+      expect(client.emit).not.toHaveBeenCalledWith(
+        'driver:position',
+        expect.anything(),
       );
     });
 

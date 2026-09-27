@@ -32,15 +32,19 @@ describe('DriversService', () => {
       count: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     driverProfile: {
       findUnique: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     delivery: { findFirst: jest.fn(), findMany: jest.fn() },
     deliveryReview: { aggregate: jest.fn() },
     quartier: { count: jest.fn() },
+    // F3-12.0 — `lockDriverRow` : `SELECT … FROM "User" … FOR UPDATE`.
+    $queryRaw: jest.fn(),
     $transaction: jest.fn(),
   };
 
@@ -323,15 +327,62 @@ describe('DriversService', () => {
      * Désactiver un livreur en pleine course laisserait une commande sans
      * porteur. L'arbitrage — réassigner ou annuler — appartient au vendeur.
      */
+    const lockedDriver = (driverStatus = 'AVAILABLE') =>
+      prisma.$queryRaw.mockResolvedValue([
+        { role: 'LIVREUR', statusUser: 'ACTIVE', driverStatus },
+      ]);
+
     it('course en cours → 409 nommant la commande', async () => {
       prisma.driverProfile.findUnique.mockResolvedValue({ isActive: true });
+      lockedDriver('ON_DELIVERY');
       prisma.delivery.findFirst.mockResolvedValue({
         id: 'd1',
         orderId: 'o-42',
         status: 'EN_TRANSIT',
       });
       await expect(service.deactivate('u1', {}, 'a')).rejects.toThrow(/o-42/);
-      expect(prisma.$transaction).not.toHaveBeenCalled();
+      // F3-12.0 — le contrôle vit désormais DANS la transaction, sous le
+      // verrou du livreur ; ce qui compte est que rien ne soit écrit.
+      expect(prisma.user.updateMany).not.toHaveBeenCalled();
+      expect(prisma.driverProfile.updateMany).not.toHaveBeenCalled();
+      expect(prisma.driverProfile.update).not.toHaveBeenCalled();
+    });
+
+    /**
+     * F3-12.0 — la course est cherchée APRÈS le verrou du livreur : une
+     * acceptation commise pendant l'attente est vue, pas manquée.
+     */
+    it('F3-12.0 — la course est lue sous le verrou du livreur, dans la transaction', async () => {
+      prisma.driverProfile.findUnique.mockResolvedValue({ isActive: true });
+      lockedDriver();
+      prisma.delivery.findFirst.mockResolvedValue(null);
+      prisma.user.updateMany.mockResolvedValue({ count: 1 });
+      prisma.driverProfile.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.deactivate('u1', {}, 'a');
+
+      const lock = prisma.$queryRaw.mock.invocationCallOrder[0];
+      expect(lock).toBeLessThan(
+        prisma.delivery.findFirst.mock.invocationCallOrder[0],
+      );
+      // R4 (User) avant R5 (DriverProfile) : l'ordre inverse s'interbloquait.
+      expect(prisma.user.updateMany.mock.invocationCallOrder[0]).toBeLessThan(
+        prisma.driverProfile.updateMany.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('F3-12.0 — désactivé par un autre administrateur pendant l’attente → 409, rien d’écrit', async () => {
+      prisma.driverProfile.findUnique.mockResolvedValue({ isActive: true });
+      lockedDriver();
+      prisma.delivery.findFirst.mockResolvedValue(null);
+      prisma.user.updateMany.mockResolvedValue({ count: 1 });
+      // Le profil n'est plus actif quand on le revendique.
+      prisma.driverProfile.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.deactivate('u1', {}, 'a')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(audit.record).not.toHaveBeenCalled();
     });
 
     /**
@@ -341,20 +392,23 @@ describe('DriversService', () => {
      */
     it('sans course → désactive ET repasse la disponibilité à OFFLINE', async () => {
       prisma.driverProfile.findUnique.mockResolvedValue({ isActive: true });
+      lockedDriver();
       prisma.delivery.findFirst.mockResolvedValue(null);
       prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'LIVREUR' });
-      prisma.$transaction.mockResolvedValue([{}, {}]);
+      prisma.user.updateMany.mockResolvedValue({ count: 1 });
+      prisma.driverProfile.updateMany.mockResolvedValue({ count: 1 });
 
       await service.deactivate('u1', { reason: 'Papiers expirés' }, 'admin-3');
 
-      expect(prisma.driverProfile.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: { isActive: false, deactivationReason: 'Papiers expirés' },
-        }),
-      );
-      expect(prisma.user.update).toHaveBeenCalledWith(
-        expect.objectContaining({ data: { driverStatus: 'OFFLINE' } }),
-      );
+      // Revendiqués (CAS) et non plus écrits sans condition — F3-12.0.
+      expect(prisma.driverProfile.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'u1', isActive: true },
+        data: { isActive: false, deactivationReason: 'Papiers expirés' },
+      });
+      expect(prisma.user.updateMany).toHaveBeenCalledWith({
+        where: { id: 'u1', driverStatus: 'AVAILABLE' },
+        data: { driverStatus: 'OFFLINE' },
+      });
     });
   });
 });

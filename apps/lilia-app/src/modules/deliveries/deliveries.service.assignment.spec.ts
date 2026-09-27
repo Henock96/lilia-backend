@@ -41,9 +41,23 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
   // passent par un `updateMany` conditionné sur le statut lu (verrou optimiste
   // contre le double-tap), puis relisent la ligne.
   const tx = {
-    delivery: { updateMany: jest.fn(), findUniqueOrThrow: jest.fn() },
+    delivery: {
+      updateMany: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
+      // F3-12.0 — création atomique (`INSERT … ON CONFLICT DO NOTHING`).
+      createMany: jest.fn(),
+    },
     order: { updateMany: jest.fn() },
-    user: { update: jest.fn(), updateMany: jest.fn() },
+    // F3-12.0 — `findUnique` : relectures sous verrou (livreur désigné à
+    // l'assignation, compte à l'acceptation). Même source que hors
+    // transaction : le double délègue à `prisma.user.findUnique`.
+    user: {
+      update: jest.fn(),
+      updateMany: jest.fn(),
+      findUnique: jest.fn((args: any) => prisma.user.findUnique(args)),
+    },
+    // F3-12.0 — profil (R5) relu dans la transaction d'acceptation.
+    driverProfile: { findUnique: jest.fn() },
     // Verrou partagé sur la commande à l'acceptation (fix F-03).
     $queryRaw: jest.fn(),
     // Code de remise tiré au retrait (F-06).
@@ -82,6 +96,8 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
     tx.user.update.mockResolvedValue({});
     tx.user.updateMany.mockResolvedValue({ count: 1 });
     tx.$queryRaw.mockResolvedValue([{ status: 'PRET' }]);
+    tx.delivery.createMany.mockResolvedValue({ count: 1 });
+    tx.driverProfile.findUnique.mockResolvedValue({ isActive: true });
     platformSettings.getSettings.mockResolvedValue({
       driverSharePercentLilia: 35,
       driverSharePercentIndependent: 65,
@@ -353,21 +369,20 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
         status: 'PRET',
         restaurant: { nom: 'Resto', owner: { firebaseUid: 'other' } },
       });
-      prisma.delivery.findUnique
-        .mockResolvedValueOnce(null) // pas de delivery existante
-        .mockResolvedValueOnce({
-          // rechargée avec relations pour _doAssign
-          id: 'd1',
-          orderId: 'o1',
-          status: 'EN_ATTENTE',
-          order: {
-            status: 'PRET',
-            isPreorder: false,
-            scheduledFor: null,
-            restaurant: { nom: 'Resto', owner: { firebaseUid: 'other' } },
-          },
-        });
-      prisma.delivery.create.mockResolvedValue({ id: 'd1' });
+      // F3-12.0 — plus de lecture préalable « existe-t-elle ? » : la
+      // création est un `INSERT … ON CONFLICT DO NOTHING`, puis la ligne est
+      // relue avec ses relations pour _doAssign.
+      prisma.delivery.findUnique.mockResolvedValueOnce({
+        id: 'd1',
+        orderId: 'o1',
+        status: 'EN_ATTENTE',
+        order: {
+          status: 'PRET',
+          isPreorder: false,
+          scheduledFor: null,
+          restaurant: { nom: 'Resto', owner: { firebaseUid: 'other' } },
+        },
+      });
       tx.delivery.findUniqueOrThrow.mockResolvedValue({
         id: 'd1',
         status: 'ASSIGNER',
@@ -375,10 +390,28 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
 
       const res = await service.assignDelivererToOrder('o1', 'liv1', 'uid');
 
-      expect(prisma.delivery.create).toHaveBeenCalledWith({
-        data: { orderId: 'o1', status: 'EN_ATTENTE' },
+      expect(tx.delivery.createMany).toHaveBeenCalledWith({
+        data: [{ orderId: 'o1', status: 'EN_ATTENTE' }],
+        skipDuplicates: true,
       });
+      expect(prisma.delivery.create).not.toHaveBeenCalled();
       expect(res.message).toBe('Livreur assigné avec succès');
+    });
+
+    it('F3-12.0 — une commande annulée entre la lecture et la création ne reçoit pas de livraison', async () => {
+      mockUsers({ id: 'u1', role: 'ADMIN' }, { id: 'liv1', role: 'LIVREUR' });
+      prisma.order.findUnique.mockResolvedValue({
+        id: 'o1',
+        status: 'PRET',
+        restaurant: { nom: 'Resto', owner: { firebaseUid: 'other' } },
+      });
+      // Relue sous `FOR SHARE` : l'annulation a été commise entre-temps.
+      tx.$queryRaw.mockResolvedValueOnce([{ status: 'ANNULER' }]);
+
+      await expect(
+        service.assignDelivererToOrder('o1', 'liv1', 'uid'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(tx.delivery.createMany).not.toHaveBeenCalled();
     });
   });
 
