@@ -3,7 +3,6 @@ import { OnEvent } from '@nestjs/event-emitter';
 import {
   DeliveryAssignmentOutcome,
   DeliveryStatus,
-  DriverStatus,
   IncidentSeverity,
   IncidentType,
 } from '@prisma/client';
@@ -14,6 +13,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { DeliveryAssignmentLogService } from '../deliveries/delivery-assignment-log.service';
 import { CLEARED_DRIVER_ECONOMICS } from '../deliveries/delivery-assignment.service';
 import { ACTIVE_DELIVERY_STATUSES } from '../deliveries/delivery-statuses';
+import { releaseDriverIfIdle } from '../drivers/driver-release';
 import {
   DeliveryAcceptedEvent,
   DeliveryAssignedEvent,
@@ -72,8 +72,9 @@ export class DeliveriesListener {
       event.previousDelivererId &&
       event.previousDelivererId !== event.delivererId
     ) {
+      // F3-12.1 (R5) — sa libération a eu lieu DANS la transaction de
+      // réassignation (`releaseDriverIfIdle`) : on ne fait que le prévenir.
       tasks.push(
-        this.releaseDeliverer(event.previousDelivererId),
         this.notifications.sendPushNotification(
           event.previousDelivererId,
           '↩️ Mission retirée',
@@ -279,9 +280,8 @@ export class DeliveriesListener {
       );
     }
 
-    if (event.delivererId) {
-      tasks.push(this.releaseDeliverer(event.delivererId));
-    }
+    // F3-12.1 (R5) — la libération du livreur a eu lieu dans la transaction
+    // de l'échec (`updateStatus` / `DeliveryFailureService.declare`).
 
     tasks.push(
       this.incidents
@@ -416,7 +416,11 @@ export class DeliveriesListener {
       return;
     }
 
-    await this.closeCancelledDelivery(delivery.id, event.orderId);
+    await this.closeCancelledDelivery(
+      delivery.id,
+      event.orderId,
+      delivery.delivererId,
+    );
 
     // Pas de livreur mobilisé : la course est fermée, personne à prévenir.
     if (!delivery.delivererId) return;
@@ -444,6 +448,7 @@ export class DeliveriesListener {
   private async closeCancelledDelivery(
     deliveryId: string,
     orderId: string,
+    delivererId: string | null,
   ): Promise<void> {
     try {
       await this.prisma.$transaction(async (tx) => {
@@ -465,6 +470,10 @@ export class DeliveriesListener {
           DeliveryAssignmentOutcome.ORDER_CANCELLED,
           'Commande annulée',
         );
+
+        // F3-12.1 (R5) — dans la MÊME transaction que la fermeture (R2 puis
+        // R4), et seulement s'il ne porte plus aucune autre course.
+        if (delivererId) await releaseDriverIfIdle(tx, delivererId);
       });
     } catch (err) {
       this.logger.error(
@@ -492,8 +501,10 @@ export class DeliveriesListener {
         select: { ownerId: true },
       });
 
+      // Aucune libération : une mission `ASSIGNER` n'a jamais posé
+      // `ON_DELIVERY`. « Libérer » ici défaisait l'état d'une AUTRE course
+      // que le livreur portait (F3-12.1, R5).
       await Promise.allSettled([
-        this.releaseDeliverer(event.delivererId),
         restaurant
           ? this.notifications.sendPushNotification(
               restaurant.ownerId,
@@ -513,9 +524,8 @@ export class DeliveriesListener {
       return;
     }
 
-    // cause === 'order_cancelled'
+    // cause === 'order_cancelled' — libéré dans `closeCancelledDelivery`.
     await Promise.allSettled([
-      this.releaseDeliverer(event.delivererId),
       this.notifications.sendPushNotification(
         event.delivererId,
         '❌ Mission annulée',
@@ -527,28 +537,6 @@ export class DeliveriesListener {
         },
       ),
     ]);
-  }
-
-  /**
-   * Repasse un livreur `AVAILABLE`.
-   *
-   * Conditionnel : on ne libère que s'il est encore `ON_DELIVERY`, pour ne pas
-   * réactiver un livreur qui s'est mis `OFFLINE` entre-temps.
-   */
-  private async releaseDeliverer(delivererId: string): Promise<void> {
-    try {
-      const released = await this.prisma.user.updateMany({
-        where: { id: delivererId, driverStatus: DriverStatus.ON_DELIVERY },
-        data: { driverStatus: DriverStatus.AVAILABLE },
-      });
-      if (released.count > 0) {
-        this.logger.log(`Livreur ${delivererId} libéré (AVAILABLE)`);
-      }
-    } catch (err) {
-      this.logger.error(
-        `Libération du livreur ${delivererId} échouée : ${(err as Error).message}`,
-      );
-    }
   }
 }
 

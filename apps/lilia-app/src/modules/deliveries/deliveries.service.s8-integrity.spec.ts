@@ -96,7 +96,19 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
       platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
       // F3-12.0 — `lockOrderRow` : la commande (R1) est verrouillée avant la
       // livraison (R2). N'écrit rien, donc absent de `applied`.
-      $queryRaw: jest.fn(() => {
+      // F3-12.1 (R5) — le livreur (R4) est verrouillé à sa libération : le
+      // double répond selon la table visée, livreur en course.
+      $queryRaw: jest.fn((sql: TemplateStringsArray) => {
+        if (sql.join('?').includes('FROM "User"')) {
+          trace.push('lock:driver');
+          return Promise.resolve([
+            {
+              role: 'LIVREUR',
+              statusUser: 'ACTIVE',
+              driverStatus: 'ON_DELIVERY',
+            },
+          ]);
+        }
         trace.push('lock:order');
         return Promise.resolve([{ status: orderStatus }]);
       }),
@@ -120,6 +132,8 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
             return Promise.resolve({ count: 1 });
           },
         ),
+        // F3-12.1 (R5) — aucune autre course portée : le livreur est libérable.
+        count: jest.fn(() => Promise.resolve(0)),
       },
       order: {
         updateMany: jest.fn(
@@ -146,9 +160,10 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
         }),
       },
       user: {
-        update: jest.fn(() => {
+        // F3-12.1 (R5) — libération conditionnelle (`releaseDriverIfIdle`).
+        updateMany: jest.fn(() => {
           applied.push('driver');
-          return Promise.resolve({});
+          return Promise.resolve({ count: 1 });
         }),
       },
       // Journal d'assignation : la clôture de la main courante appartient à la
@@ -276,6 +291,16 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
       // qui tiennent la commande en `FOR SHARE` puis revendiquent la course.
       expect(trace.indexOf('lock:order')).toBeGreaterThanOrEqual(0);
       expect(trace.indexOf('lock:order')).toBeLessThan(
+        trace.indexOf('write:delivery'),
+      );
+    });
+
+    it('F3-12.1 — libère le livreur sous son verrou (R4), APRÈS la course (R2)', async () => {
+      await markDelivered();
+
+      // La libération compte les courses encore portées : elle doit voir la
+      // course déjà close, donc venir après son écriture, et jamais avant.
+      expect(trace.indexOf('lock:driver')).toBeGreaterThan(
         trace.indexOf('write:delivery'),
       );
     });

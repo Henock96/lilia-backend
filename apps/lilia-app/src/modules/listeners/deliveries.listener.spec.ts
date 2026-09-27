@@ -30,8 +30,15 @@ describe('DeliveriesListener', () => {
   const incidents = { create: jest.fn() };
   const prisma = {
     restaurant: { findUnique: jest.fn() },
-    delivery: { findUnique: jest.fn(), updateMany: jest.fn() },
+    delivery: {
+      findUnique: jest.fn(),
+      updateMany: jest.fn(),
+      // F3-12.1 (R5) — courses encore portées par le livreur à sa libération.
+      count: jest.fn(),
+    },
     user: { updateMany: jest.fn() },
+    // F3-12.1 (R5) — verrou du livreur (R4) pris par `releaseDriverIfIdle`.
+    $queryRaw: jest.fn(),
     // La fermeture d'une course annulée est transactionnelle : le statut et la
     // ligne de journal partent ensemble.
     $transaction: jest.fn((fn: (tx: unknown) => unknown) => fn(prisma)),
@@ -55,6 +62,10 @@ describe('DeliveriesListener', () => {
     incidents.create.mockResolvedValue({ id: 'inc-1' });
     prisma.user.updateMany.mockResolvedValue({ count: 1 });
     prisma.delivery.updateMany.mockResolvedValue({ count: 1 });
+    prisma.delivery.count.mockResolvedValue(0);
+    prisma.$queryRaw.mockResolvedValue([
+      { role: 'LIVREUR', statusUser: 'ACTIVE', driverStatus: 'ON_DELIVERY' },
+    ]);
     prisma.restaurant.findUnique.mockResolvedValue({ ownerId: 'owner-1' });
 
     const module: TestingModule = await Test.createTestingModule({
@@ -108,17 +119,16 @@ describe('DeliveriesListener', () => {
       );
     });
 
-    it('libère ET prévient l’ancien livreur lors d’une réassignation', async () => {
+    it('prévient l’ancien livreur lors d’une réassignation, sans le libérer lui-même', async () => {
       await listener.handleAssigned(
         assigned({ previousDelivererId: 'liv-old' } as never),
       );
 
-      // Sans cette libération, l'ancien livreur restait ON_DELIVERY à vie et
-      // ne pouvait plus accepter aucune course.
-      expect(prisma.user.updateMany).toHaveBeenCalledWith({
-        where: { id: 'liv-old', driverStatus: DriverStatus.ON_DELIVERY },
-        data: { driverStatus: DriverStatus.AVAILABLE },
-      });
+      // F3-12.1 (R5) — la libération a eu lieu DANS la transaction de
+      // réassignation, sous le verrou du livreur et seulement s'il ne porte
+      // plus d'autre course. Libérer ici, à l'aveugle, rendait disponible un
+      // livreur en pleine course empilée.
+      expect(prisma.user.updateMany).not.toHaveBeenCalled();
       expect(titlesFor('liv-old')).toContain('↩️ Mission retirée');
       expect(titlesFor('liv-new')).toContain('🚚 Nouvelle mission');
     });
@@ -280,13 +290,12 @@ describe('DeliveriesListener', () => {
       );
     });
 
-    it('libère le livreur et trace un incident', async () => {
+    it('trace un incident, sans libérer le livreur (déjà fait dans la transaction de l’échec)', async () => {
       await listener.handleFailed(failed);
 
-      expect(prisma.user.updateMany).toHaveBeenCalledWith({
-        where: { id: 'liv-1', driverStatus: DriverStatus.ON_DELIVERY },
-        data: { driverStatus: DriverStatus.AVAILABLE },
-      });
+      // F3-12.1 (R5) — `updateStatus` et `DeliveryFailureService.declare`
+      // libèrent dans leur transaction (`releaseDriverIfIdle`).
+      expect(prisma.user.updateMany).not.toHaveBeenCalled();
       expect(incidents.create).toHaveBeenCalledWith(
         expect.objectContaining({
           type: IncidentType.DRIVER_NO_SHOW,
@@ -320,7 +329,28 @@ describe('DeliveriesListener', () => {
       });
 
       expect(titlesFor('liv-1')).toContain('❌ Mission annulée');
-      expect(prisma.user.updateMany).toHaveBeenCalled();
+      // Libéré dans la transaction de fermeture, conditionnellement.
+      expect(prisma.user.updateMany).toHaveBeenCalledWith({
+        where: { id: 'liv-1', driverStatus: DriverStatus.ON_DELIVERY },
+        data: { driverStatus: DriverStatus.AVAILABLE },
+      });
+    });
+
+    it('F3-12.1 — ne libère pas un livreur qui porte une autre course', async () => {
+      prisma.delivery.findUnique.mockResolvedValue({
+        id: 'd1',
+        delivererId: 'liv-1',
+        status: 'ASSIGNER',
+      });
+      prisma.delivery.count.mockResolvedValue(1);
+
+      await listener.handleOrderCancelled({
+        orderId: 'o1abcdef',
+        restaurantId: 'resto1',
+      });
+
+      expect(titlesFor('liv-1')).toContain('❌ Mission annulée');
+      expect(prisma.user.updateMany).not.toHaveBeenCalled();
     });
 
     it('ne réveille pas un livreur dont la course est déjà terminée', async () => {

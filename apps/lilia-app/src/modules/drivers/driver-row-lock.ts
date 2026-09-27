@@ -1,7 +1,7 @@
 import { DriverStatus, Prisma, Role, StatusUser } from '@prisma/client';
 
 /**
- * Verrouille la ligne `User` d'un livreur (`SELECT … FOR UPDATE`) et rend ce
+ * Verrouille la ligne `User` d'un livreur (`SELECT … FOR NO KEY UPDATE`) et rend ce
  * qui décide de son éligibilité, ou `null` si le compte n'existe pas.
  *
  * **Le verrou du livreur** (F3-12, ordre global des verrous, rang R4) :
@@ -20,6 +20,18 @@ import { DriverStatus, Prisma, Role, StatusUser } from '@prisma/client';
  *
  * ⚠️ Rang R4 : ne jamais prendre ensuite un verrou `Order` ou `Delivery` dans
  * la même transaction (interblocage). `DriverProfile` (R5) vient APRÈS.
+ *
+ * ## `FOR NO KEY UPDATE`, et non `FOR UPDATE` (F3-12.1)
+ *
+ * Écrire `Delivery.delivererId` (ou insérer une ligne de journal) fait poser
+ * par PostgreSQL, au titre de la clé étrangère, un `FOR KEY SHARE` sur la
+ * ligne `User` visée — AVANT tout verrou pris par ce module. `FOR UPDATE` est
+ * incompatible avec `FOR KEY SHARE` : deux réassignations croisées
+ * (Z : A→B ∥ X : B→A) tenaient chacune le `KEY SHARE` d'un livreur et
+ * attendaient le `FOR UPDATE` de l'autre — interblocage réel (40P01), prouvé
+ * par `driver-release.int-spec.ts`. `FOR NO KEY UPDATE` exclut toujours toute
+ * autre écriture de la ligne (c'est le verrou que prend un `UPDATE` ordinaire)
+ * mais laisse passer les contrôles de clé étrangère, qui ne la modifient pas.
  */
 export async function lockDriverRow(
   tx: Prisma.TransactionClient,
@@ -33,7 +45,7 @@ export async function lockDriverRow(
     { role: Role; statusUser: StatusUser; driverStatus: DriverStatus | null }[]
   >`
     SELECT role, "statusUser", "driverStatus"
-      FROM "User" WHERE id = ${userId} FOR UPDATE
+      FROM "User" WHERE id = ${userId} FOR NO KEY UPDATE
   `;
   return rows[0] ?? null;
 }
