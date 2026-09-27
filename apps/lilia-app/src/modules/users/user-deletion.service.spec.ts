@@ -42,6 +42,10 @@ describe('UserDeletionService', () => {
     // F3-12.0 — le solde est lu sous `SELECT … FOR UPDATE` : la ligne `User`
     // (R4) est verrouillée avant la suppression du profil livreur (R5).
     $queryRaw: jest.fn().mockResolvedValue([{ loyaltyPoints: 0 }]),
+    // F3-12.1 — offres de course retirées (R3) en tête de transaction.
+    $executeRaw: jest.fn().mockResolvedValue(0),
+    // F3-12.1 R6 — la garde « livraison en cours » est relue sous le verrou.
+    delivery: { count: jest.fn().mockResolvedValue(0) },
   };
 
   const prisma = {
@@ -50,6 +54,8 @@ describe('UserDeletionService', () => {
     restaurant: { findFirst: jest.fn() },
     delivery: { count: jest.fn() },
     $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
+    // Balayage post-commit des offres (patron §8.4).
+    $executeRaw: jest.fn().mockResolvedValue(0),
   };
   const firebase = { deleteUserSafe: jest.fn() };
   const userCache = { invalidateOrThrow: jest.fn() };
@@ -60,6 +66,9 @@ describe('UserDeletionService', () => {
     prisma.order.count.mockResolvedValue(0);
     prisma.restaurant.findFirst.mockResolvedValue(null);
     prisma.delivery.count.mockResolvedValue(0);
+    tx.delivery.count.mockResolvedValue(0);
+    tx.$executeRaw.mockResolvedValue(0);
+    prisma.$executeRaw.mockResolvedValue(0);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -157,6 +166,19 @@ describe('UserDeletionService', () => {
   });
 
   describe('garde-fous (409)', () => {
+    /**
+     * F3-12.1 R6 — une acceptation commise APRÈS la garde hors transaction :
+     * la relecture sous le verrou du compte refuse, et rien n'est anonymisé.
+     */
+    it('course acceptée entre-temps : relue sous le verrou → 409, rien écrit', async () => {
+      tx.delivery.count.mockResolvedValue(1);
+      await expect(service.deleteOwnAccount('u1')).rejects.toThrow(
+        /livraison en cours/,
+      );
+      expect(tx.user.update).not.toHaveBeenCalled();
+      expect(firebase.deleteUserSafe).not.toHaveBeenCalled();
+    });
+
     it('commande en cours → refus, rien n’est écrit', async () => {
       prisma.order.count.mockResolvedValue(2);
 

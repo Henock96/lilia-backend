@@ -10,6 +10,10 @@ import { IN_FLIGHT_ORDER_STATUSES } from '../orders/order-status-groups';
 import { FirebaseService } from '../firebase/firebase.service';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import { ACTIVE_DELIVERY_STATUSES } from '../deliveries/delivery-statuses';
+import {
+  cancelOpenOffers,
+  sweepRevokedOffers,
+} from '../drivers/driver-offer-revocation';
 
 /**
  * Suppression de compte à l'initiative de l'utilisateur (`DELETE /users/me`).
@@ -65,6 +69,10 @@ export class UserDeletionService {
     const firebaseUid = user.firebaseUid;
 
     await this.prisma.$transaction(async (tx) => {
+      // F3-12.1 — R3 avant le verrou du compte (R4) : ses offres de course
+      // ouvertes tombent avec lui.
+      await cancelOpenOffers(tx, userId);
+
       // Purge — ordre sans importance, aucune de ces tables n'est parente
       // d'une autre sauf Cart → CartItem (cascade PostgreSQL depuis Ar1).
       await tx.adresses.deleteMany({ where: { userId } });
@@ -96,10 +104,29 @@ export class UserDeletionService {
       // chemin inverse (profil, puis `User`) s'interbloquait avec lui. Le
       // solde lu sous verrou ne peut plus non plus bouger entre sa lecture et
       // l'écriture de clôture.
-      const [balance] = await tx.$queryRaw<{ loyaltyPoints: number }[]>`
-        SELECT "loyaltyPoints" FROM "User" WHERE id = ${userId} FOR UPDATE
+      const [balance] = await tx.$queryRaw<
+        { loyaltyPoints: number; driverStatus: string | null }[]
+      >`
+        SELECT "loyaltyPoints", "driverStatus" FROM "User"
+         WHERE id = ${userId} FOR UPDATE
       `;
       if (!balance) throw new NotFoundException('Utilisateur non trouvé.');
+      // F3-12.1 R6 — la garde « livraison en cours » de `assertDeletable` est
+      // une lecture HORS transaction : une acceptation commise entre-temps
+      // laissait une course active à un compte anonymisé. Relue ici, sous le
+      // verrou que prend aussi l'acceptation — l'une attend l'autre.
+      const activeMissions = await tx.delivery.count({
+        where: {
+          delivererId: userId,
+          status: { in: ACTIVE_DELIVERY_STATUSES },
+        },
+      });
+      if (activeMissions > 0 || balance.driverStatus === 'ON_DELIVERY') {
+        throw new ConflictException(
+          'Vous avez une livraison en cours. ' +
+            'Terminez-la avant de supprimer votre compte.',
+        );
+      }
       if (balance.loyaltyPoints !== 0) {
         await tx.loyaltyTransaction.create({
           data: {
@@ -124,6 +151,8 @@ export class UserDeletionService {
         data: this.anonymizedFields(userId),
       });
     });
+
+    await sweepRevokedOffers(this.prisma, userId);
 
     // Hors transaction : Firebase et Redis ne sont pas rollbackables, et on ne
     // veut pas tenir une transaction PostgreSQL ouverte pendant un appel réseau.

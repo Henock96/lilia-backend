@@ -3,6 +3,7 @@ import { OpsModule } from './modules/ops/ops.module';
 import { OrderOutboxEffectsModule } from './modules/outbox/order-outbox-effects.module';
 import { ApprovalsModule } from './modules/approvals/approvals.module';
 import { PayoutOutboxEffectsModule } from './modules/outbox/payout-outbox-effects.module';
+import { AccountOutboxEffectsModule } from './modules/outbox/account-outbox-effects.module';
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
@@ -278,6 +279,7 @@ import { DeliveryPricingModule } from './modules/delivery-pricing/delivery-prici
     OutboxModule,
     OrderOutboxEffectsModule, // lot 4 : effets de commande rejoués par l'outbox
     PayoutOutboxEffectsModule, // F3-07 : notifications de versement par l'outbox
+    AccountOutboxEffectsModule, // F3-12.1 R7 : coupure du compte au ban différé
     ApprovalsModule, // F3-08 : gestes financiers à deux administrateurs
   ],
   providers: [
