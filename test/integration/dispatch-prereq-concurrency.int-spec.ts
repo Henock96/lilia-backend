@@ -59,6 +59,13 @@ const DATABASE_URL = process.env.TEST_DATABASE_URL;
 const describeIfDb = DATABASE_URL ? describe : describe.skip;
 const REPS = Number(process.env.F312_REPS ?? 50);
 
+// Les boucles ×REPS enchaînent jusqu'à 5 transactions par tour : ~1-2 s à
+// vide, mais 25-30 s sous charge CPU saturée (gate finale du 27/09/2026),
+// soit le `testTimeout` global. Un interblocage, lui, ne se cache pas
+// derrière ce délai : PostgreSQL le tranche en ~1 s (40P01), que
+// `expectOnlyBusinessRefusals` refuse.
+jest.setTimeout(120_000);
+
 describeIfDb('F3-12.0 — concurrence livreur / course (PostgreSQL réel)', () => {
   let prisma: PrismaClient;
   let assignment: DeliveryAssignmentService;
@@ -522,11 +529,40 @@ describeIfDb('F3-12.0 — concurrence livreur / course (PostgreSQL réel)', () =
         ]);
         expectOnlyBusinessRefusals(results);
 
-        const { delivery } = await snapshot();
-        const winners = results.filter((r) => r.status === 'fulfilled');
-        expect(winners).toHaveLength(1);
+        const { delivery, open } = await snapshot();
+        const [accepted, assigned] = results;
         expect([A, B]).toContain(delivery.delivererId);
+        if (
+          accepted.status === 'fulfilled' &&
+          assigned.status === 'fulfilled'
+        ) {
+          // Les deux ne passent qu'en SÉRIE : l'acceptation est commise avant
+          // que l'assignation lise la course, qui voit alors A titulaire et le
+          // RÉASSIGNE à B (geste légitime, CAS sur l'état lu). Jamais une
+          // assignation qui aurait écrasé une acceptation qu'elle n'a pas vue.
+          // (Vu sous charge CPU, gate finale du 27/09/2026.)
+          expect(assigned.value).toMatchObject({
+            message: expect.stringMatching(/réassigné/),
+          });
+          expect(delivery.delivererId).toBe(B);
+          expect(delivery.status).toBe(DeliveryStatus.ASSIGNER);
+          expect(open).toHaveLength(1);
+          expect(open[0].delivererId).toBe(B);
+        } else {
+          expect(rejections(results)).toHaveLength(1);
+        }
       }
+    });
+
+    it('acceptation commise AVANT la lecture de l’assignation : réassignation de A vers B, pas d’écrasement', async () => {
+      await acceptLikeOfferTx(A);
+      const out = await assignment.assignDeliverer(DELIVERY, B, ADMIN_UID);
+
+      expect(out.message).toMatch(/réassigné/);
+      const { delivery, open } = await snapshot();
+      expect(delivery.delivererId).toBe(B);
+      expect(delivery.status).toBe(DeliveryStatus.ASSIGNER);
+      expect(open).toHaveLength(1);
     });
 
     it('ordre des verrous : réassignation (Order FOR SHARE → Delivery) ∥ récupération — aucun interblocage', async () => {
@@ -800,6 +836,83 @@ describeIfDb('F3-12.0 — concurrence livreur / course (PostgreSQL réel)', () =
   });
 
   // ═════════════════════════════════════════════════════════════════════════
+  // Test F — acceptation ∥ annulation, acceptation ∥ changement de rôle
+  // ═════════════════════════════════════════════════════════════════════════
+
+  describe('F — acceptation ∥ annulation / changement de rôle', () => {
+    it('entrelacement forcé : l’acceptation attend l’annulation, relit ANNULER et refuse', async () => {
+      await assignment.assignDeliverer(DELIVERY, A, OWNER_UID);
+
+      const held = await holdTransaction(prisma, (tx) => cancelOrder(tx));
+      const accept = assignment.acceptDelivery(DELIVERY, A_UID);
+      accept.catch(() => undefined);
+      // `Order FOR SHARE` (R1) attend le `FOR UPDATE` de l'annulation.
+      await waitUntilBlocked(prisma);
+      await held.commit();
+
+      await expect(accept).rejects.toBeInstanceOf(ConflictException);
+      const { delivery, a } = await snapshot();
+      expect(delivery.status).toBe(DeliveryStatus.ASSIGNER);
+      expect(delivery.driverEconomicsFrozenAt).toBeNull();
+      expect(a.driverStatus).toBe(DriverStatus.AVAILABLE);
+    });
+
+    it(`×${REPS} en parallèle : 0 interblocage ; jamais une course acceptée sur une commande annulée avant elle`, async () => {
+      for (let i = 0; i < REPS; i++) {
+        await reset();
+        await assignment.assignDeliverer(DELIVERY, A, OWNER_UID);
+
+        let cancelledAt: Date | null = null;
+        const results = await Promise.allSettled([
+          prisma.$transaction(async (tx) => {
+            await cancelOrder(tx);
+            const [{ now }] = await tx.$queryRaw<{ now: Date }[]>`
+              SELECT clock_timestamp() AS now`;
+            cancelledAt = now;
+          }),
+          assignment.acceptDelivery(DELIVERY, A_UID),
+        ]);
+        expectOnlyBusinessRefusals(results);
+
+        const { delivery, a } = await snapshot();
+        expect(delivery.status === DeliveryStatus.ACCEPTER).toBe(
+          a.driverStatus === DriverStatus.ON_DELIVERY,
+        );
+        if (delivery.status === DeliveryStatus.ACCEPTER && cancelledAt) {
+          // Les deux ont réussi : l'acceptation précède l'annulation (la
+          // fermeture de la course revient alors au listener).
+          expect(delivery.acceptedAt!.getTime()).toBeLessThanOrEqual(
+            (cancelledAt as Date).getTime(),
+          );
+        }
+      }
+    });
+
+    it('entrelacement forcé : l’acceptation attend le changement de rôle, puis est refusée', async () => {
+      await assignment.assignDeliverer(DELIVERY, A, OWNER_UID);
+
+      // Même écriture que `admin-users.service.updateRole` (LIVREUR → CLIENT).
+      const held = await holdTransaction(prisma, async (tx) => {
+        await tx.user.update({
+          where: { id: A },
+          data: { driverStatus: null },
+        });
+        await tx.user.update({ where: { id: A }, data: { role: Role.CLIENT } });
+      });
+      const accept = assignment.acceptDelivery(DELIVERY, A_UID);
+      accept.catch(() => undefined);
+      await waitUntilBlocked(prisma);
+      await held.commit();
+
+      await expect(accept).rejects.toBeInstanceOf(ForbiddenException);
+      const { delivery, a } = await snapshot();
+      expect(delivery.status).toBe(DeliveryStatus.ASSIGNER);
+      expect(delivery.driverEconomicsFrozenAt).toBeNull();
+      expect(a.driverStatus).toBeNull();
+    });
+  });
+
+  // ═════════════════════════════════════════════════════════════════════════
   // Suppression de compte ∥ désactivation (R4 → R5 des deux côtés)
   // ═════════════════════════════════════════════════════════════════════════
 
@@ -892,6 +1005,29 @@ describeIfDb('F3-12.0 — concurrence livreur / course (PostgreSQL réel)', () =
       const { delivery, open } = await snapshot();
       expect(delivery.delivererId).toBeNull();
       expect(open).toHaveLength(0);
+    });
+
+    it('entrelacement forcé, sens inverse : la désactivation attend l’assignation, voit la mission et refuse', async () => {
+      // Écritures de `_doAssign`, dans son ordre : R1 → R2 → R4. Une
+      // assignation ne change pas `driverStatus` : seul le verrou `User` de
+      // `deactivate` (pas son CAS) lui fait voir la mission.
+      const held = await holdTransaction(prisma, async (tx) => {
+        await tx.$queryRaw`SELECT status FROM "Order" WHERE id = ${ORDER} FOR SHARE`;
+        await tx.delivery.update({
+          where: { id: DELIVERY },
+          data: { status: DeliveryStatus.ASSIGNER, delivererId: A },
+        });
+        await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${A} FOR UPDATE`;
+      });
+      const off = drivers.deactivate(A, { reason: 'test' }, ADMIN);
+      off.catch(() => undefined);
+      await waitUntilBlocked(prisma);
+      await held.commit();
+
+      await expect(off).rejects.toBeInstanceOf(ConflictException);
+      const { delivery, profileA } = await snapshot();
+      expect(delivery.delivererId).toBe(A);
+      expect(profileA.isActive).toBe(true);
     });
 
     it(`×${REPS} en parallèle : jamais un livreur inactif avec une mission ouverte`, async () => {

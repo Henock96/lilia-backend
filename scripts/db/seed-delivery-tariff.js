@@ -35,8 +35,8 @@ const { Client } = require('pg');
 const { describeTarget } = require('./target-database');
 
 const APPLY = process.argv.includes('--apply');
-/** Au-delà de la dernière tranche, le moteur applique son prix : 50 km couvre la ville. */
-const SINGLE_BAND_MAX_KM = 50;
+/** Au-delà de la dernière tranche, le moteur applique son prix : 25 km couvrent la ville. */
+const SINGLE_BAND_MAX_KM = 25;
 
 function argValue(name) {
   const i = process.argv.indexOf(name);
