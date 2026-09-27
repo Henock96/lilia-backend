@@ -1,0 +1,7 @@
+{
+  "orderId": "order-contract-1",
+  "positions": [
+    { "lat": -4.2634, "lng": 15.2429, "timestamp": 1790000000000, "accuracy": 8.5 },
+    { "lat": -4.2641, "lng": 15.2437, "timestamp": 1790000005000 }
+  ]
+}
