@@ -12,7 +12,6 @@ import {
   DeliveryAssignmentOutcome,
   DeliveryFailureReason,
   DeliveryStatus,
-  DriverStatus,
   FailureLiability,
   OrderStatus,
   PayoutStatus,
@@ -28,6 +27,7 @@ import { OrderStatusUpdatedEvent } from '../events/order-events';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OrderTransitionService } from '../orders/order-transition.service';
 import { SmsService } from '../sms/sms.service';
+import { releaseDriverIfIdle } from '../drivers/driver-release';
 import { CLEARED_DRIVER_ECONOMICS } from './delivery-assignment.service';
 import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
 import {
@@ -259,14 +259,11 @@ export class DeliveryFailureService {
           'Cette livraison a changé d’état entre-temps. Rechargez-la avant de réessayer.',
         );
       }
+      // F3-12.1 (R5) — libéré seulement s'il ne porte plus d'autre course : un
+      // vendeur qui déclare l'échec d'une mission EMPILÉE ne doit pas rendre
+      // disponible un livreur en pleine première course.
       if (delivery.delivererId) {
-        await tx.user.updateMany({
-          where: {
-            id: delivery.delivererId,
-            driverStatus: DriverStatus.ON_DELIVERY,
-          },
-          data: { driverStatus: DriverStatus.AVAILABLE },
-        });
+        await releaseDriverIfIdle(tx, delivery.delivererId);
       }
       await this.assignmentLog.close(
         tx,

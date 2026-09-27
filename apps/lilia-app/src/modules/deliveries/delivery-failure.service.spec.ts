@@ -118,7 +118,15 @@ function build(order: unknown = makeOrder(), delivery: unknown = null) {
     delivery: {
       update: jest.fn(),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      // F3-12.1 (R5) — le livreur ne porte aucune autre course.
+      count: jest.fn().mockResolvedValue(0),
     },
+    // F3-12.1 (R5) — verrou du livreur (R4) à sa libération : en course.
+    $queryRaw: jest
+      .fn()
+      .mockResolvedValue([
+        { role: 'LIVREUR', statusUser: 'ACTIVE', driverStatus: 'ON_DELIVERY' },
+      ]),
     refund: { create: jest.fn() },
     user: { updateMany: jest.fn() },
     deliveryFailureReport: { create: jest.fn(), update: jest.fn() },
@@ -312,6 +320,18 @@ describe('DeliveryFailureService.declare', () => {
     expect(data).not.toHaveProperty('delivererId');
     expect(data).not.toHaveProperty('driverPayXaf');
     expect(r.distanceToDestM).toBe(0);
+    // Sans autre course, il est libéré — conditionnellement, jamais à l'aveugle.
+    expect(tx.user.updateMany).toHaveBeenCalledWith({
+      where: { id: 'drv', driverStatus: 'ON_DELIVERY' },
+      data: { driverStatus: 'AVAILABLE' },
+    });
+  });
+
+  it('F3-12.1 — un livreur qui porte une autre course n’est pas libéré', async () => {
+    const { service, tx } = build(undefined, delivery('ASSIGNER'));
+    tx.delivery.count.mockResolvedValue(1);
+    await service.declare('d1', VENDOR, { reason: 'DRIVER_NO_SHOW' });
+    expect(tx.user.updateMany).not.toHaveBeenCalled();
   });
 
   it('« client injoignable » sans protocole démarré : refusé au livreur', async () => {

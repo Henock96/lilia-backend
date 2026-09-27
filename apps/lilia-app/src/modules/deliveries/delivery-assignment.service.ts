@@ -24,6 +24,7 @@ import { OrderStatusUpdatedEvent } from '../events/order-events';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { computeDriverCompensation } from '../drivers/driver-compensation';
 import { lockDriverRow } from '../drivers/driver-row-lock';
+import { releaseDriverIfIdle } from '../drivers/driver-release';
 import { lockOrderRow } from '../orders/order-row-lock';
 
 /**
@@ -402,7 +403,15 @@ export class DeliveryAssignmentService {
       // Entre elle et ce point, le livreur a pu être désactivé, banni ou se
       // mettre hors ligne : on relit sous le même verrou que ces trois gestes.
       // Rang R4 après R1/R2 : l'ordre global est respecté.
-      await lockDriverRow(tx, delivererId);
+      //
+      // F3-12.1 (R5) — l'ancien titulaire est libéré ICI, sous son verrou,
+      // plutôt que par le listener après commit. Deux livreurs dans la même
+      // transaction : verrouillés dans l'ordre de leurs identifiants, sinon
+      // deux réassignations croisées (Z : A→B ∥ X : B→A) s'interbloquent.
+      const drivers = [delivererId, previousDelivererId]
+        .filter((id): id is string => !!id)
+        .sort();
+      for (const id of drivers) await lockDriverRow(tx, id);
       await this.assertAssignable(delivererId, tx);
 
       // Le journal suit l'écriture dans la MÊME transaction : une trace qui
@@ -414,6 +423,9 @@ export class DeliveryAssignmentService {
           delivery.id,
           DeliveryAssignmentOutcome.REASSIGNED,
         );
+        // Seulement s'il ne porte plus aucune autre course : réassigner une
+        // mission EMPILÉE ne rend pas disponible un livreur en pleine course.
+        await releaseDriverIfIdle(tx, previousDelivererId);
       }
       await this.assignmentLog.open(tx, {
         deliveryId: delivery.id,

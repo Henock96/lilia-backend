@@ -22,6 +22,7 @@ import { DeliveryStatus } from './dto/update-delivery.dto';
 import { DeliveryQueryService } from './delivery-query.service';
 import { ACTIVE_DELIVERY_STATUSES } from './delivery-statuses';
 import { lockDriverRow } from '../drivers/driver-row-lock';
+import { releaseDriverIfIdle } from '../drivers/driver-release';
 import { lockOrderRow } from '../orders/order-row-lock';
 import { DeliveryAssignmentService } from './delivery-assignment.service';
 import {
@@ -239,7 +240,7 @@ export class DeliveriesService {
    *  - Crédite le forfait de fidélité et arbitre la récompense de parrainage
    *
    * Quand status = ECHEC :
-   *  - Marque la livraison en échec, libère le livreur (DriverStatus = AVAILABLE)
+   *  - Marque la livraison en échec, libère le livreur s’il ne porte plus d’autre course (`releaseDriverIfIdle`)
    *  - La commande n'est PAS auto-annulée — l'admin/restaurateur doit décider
    */
   async updateStatus(
@@ -415,16 +416,17 @@ export class DeliveriesService {
         });
       }
 
-      // Libère le livreur dans les 2 cas (LIVRER ou ECHEC)
+      // Libère le livreur dans les 2 cas (LIVRER ou ECHEC) — F3-12.1 (R5) :
+      // seulement s'il ne porte plus aucune autre course, sous son verrou (R4,
+      // après R1/R2). C'était un `update` inconditionnel : échouer une course
+      // EMPILÉE rendait disponible un livreur en pleine première course, et
+      // une clôture réactivait un livreur hors ligne ou banni.
       if (
         (status === DeliveryStatus.LIVRER ||
           status === DeliveryStatus.ECHEC) &&
         delivery.delivererId
       ) {
-        await tx.user.update({
-          where: { id: delivery.delivererId },
-          data: { driverStatus: DriverStatus.AVAILABLE },
-        });
+        await releaseDriverIfIdle(tx, delivery.delivererId);
       }
 
       // Clôture de la main en cours, dans la MÊME transaction que le statut.

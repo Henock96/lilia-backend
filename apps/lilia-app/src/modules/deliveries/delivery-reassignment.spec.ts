@@ -130,6 +130,11 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
       ),
       // F3-12.0 — `INSERT … ON CONFLICT DO NOTHING` : la course existe déjà.
       createMany: jest.fn(() => Promise.resolve({ count: 0 })),
+      // F3-12.1 (R5) — « porte-t-il encore une course ? », sur l'unique
+      // course du scénario, `where` réellement évalué.
+      count: jest.fn(({ where }: Row) =>
+        Promise.resolve(matches(delivery, where) ? 1 : 0),
+      ),
     },
     order: {
       updateMany: jest.fn(({ where, data }: Row) => {
