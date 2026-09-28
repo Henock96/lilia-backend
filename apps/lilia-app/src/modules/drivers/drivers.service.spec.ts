@@ -45,6 +45,8 @@ describe('DriversService', () => {
     quartier: { count: jest.fn() },
     // F3-12.0 — `lockDriverRow` : `SELECT … FROM "User" … FOR UPDATE`.
     $queryRaw: jest.fn(),
+    // F3-12.1 — révocation des offres (R3 avant R4, balayage après commit).
+    $executeRaw: jest.fn().mockResolvedValue(0),
     $transaction: jest.fn(),
   };
 
@@ -271,18 +273,23 @@ describe('DriversService', () => {
   // ─── Activation / désactivation ────────────────────────────────────────────
 
   describe('activate', () => {
+    /** F3-12.1 R7 — le compte se lit sous le verrou du livreur (R4). */
+    const lockedAccount = (statusUser = 'ACTIVE', banPendingAt = null) =>
+      prisma.$queryRaw.mockResolvedValue([
+        { role: 'LIVREUR', statusUser, driverStatus: 'OFFLINE', banPendingAt },
+      ]);
+
     it('pose isActive, activatedAt et activatedById', async () => {
       prisma.driverProfile.findUnique.mockResolvedValue({ isActive: false });
-      prisma.user.findUniqueOrThrow.mockResolvedValue({
-        statusUser: 'ACTIVE',
-        firebaseUid: 'fb1',
-      });
+      lockedAccount();
+      prisma.driverProfile.updateMany.mockResolvedValue({ count: 1 });
       prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'LIVREUR' });
 
       await service.activate('u1', 'admin-9');
 
-      expect(prisma.driverProfile.update).toHaveBeenCalledWith(
+      expect(prisma.driverProfile.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
+          where: { userId: 'u1', isActive: false },
           data: expect.objectContaining({
             isActive: true,
             activatedById: 'admin-9',
@@ -297,14 +304,29 @@ describe('DriversService', () => {
      */
     it('compte suspendu → 409, le profil n’est pas activé', async () => {
       prisma.driverProfile.findUnique.mockResolvedValue({ isActive: false });
-      prisma.user.findUniqueOrThrow.mockResolvedValue({
-        statusUser: 'BLOCKED',
-        firebaseUid: 'fb1',
-      });
+      lockedAccount('BLOCKED');
       await expect(service.activate('u1', 'a')).rejects.toBeInstanceOf(
         ConflictException,
       );
-      expect(prisma.driverProfile.update).not.toHaveBeenCalled();
+      expect(prisma.driverProfile.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('ban programmé → 409, le profil n’est pas activé', async () => {
+      prisma.driverProfile.findUnique.mockResolvedValue({ isActive: false });
+      lockedAccount('ACTIVE', new Date() as never);
+      await expect(service.activate('u1', 'a')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(prisma.driverProfile.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('activé par un autre administrateur pendant l’attente → 409', async () => {
+      prisma.driverProfile.findUnique.mockResolvedValue({ isActive: false });
+      lockedAccount();
+      prisma.driverProfile.updateMany.mockResolvedValue({ count: 0 });
+      await expect(service.activate('u1', 'a')).rejects.toBeInstanceOf(
+        ConflictException,
+      );
     });
 
     it('déjà actif → 409', async () => {

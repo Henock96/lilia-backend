@@ -104,7 +104,7 @@ export class UsersController {
   // Doit pouvoir répondre « pas encore de profil » plutôt qu'un 403 (fix M6).
   @AllowUnsynced()
   getProfile(@CurrentUser() user: User) {
-    return { user: user ?? null };
+    return { user: user ? withoutBanPending(user) : null };
   }
   /**
    * Met à jour le profil du user connecté.
@@ -118,7 +118,7 @@ export class UsersController {
     const updated = await this.userService.updateUser(user.id, dto);
     return {
       message: 'Profil mis à jour avec succès.',
-      user: updated,
+      user: withoutBanPending(updated),
     };
   }
 
@@ -141,4 +141,21 @@ export class UsersController {
   async deleteAccount(@CurrentUser() user: User) {
     return this.userDeletionService.deleteOwnAccount(user.id);
   }
+}
+
+/**
+ * F3-12.1 R7 — un ban programmé est une décision d'administration en cours,
+ * pas une information du compte : ni son motif, ni son auteur, ni même son
+ * existence ne partent vers le livreur qui termine sa course.
+ */
+function withoutBanPending<T extends Partial<User>>(
+  user: T,
+): Omit<T, 'banPendingAt' | 'banPendingReason' | 'banPendingById'> {
+  const {
+    banPendingAt: _at,
+    banPendingReason: _reason,
+    banPendingById: _by,
+    ...rest
+  } = user;
+  return rest;
 }

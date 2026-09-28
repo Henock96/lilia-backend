@@ -1,5 +1,12 @@
-import { DeliveryStatus, DriverStatus, Prisma } from '@prisma/client';
+import {
+  DeliveryStatus,
+  DriverStatus,
+  IncidentStatus,
+  Prisma,
+  StatusUser,
+} from '@prisma/client';
 
+import { USER_BAN_APPLIED_EVENT } from '../outbox/outbox-events';
 import { lockDriverRow } from './driver-row-lock';
 
 /** Ce que la libération a décidé — utile aux journaux et aux tests. */
@@ -9,7 +16,12 @@ export type DriverReleaseResult =
   /** Il porte encore une course acceptée : il reste `ON_DELIVERY`. */
   | 'kept_busy'
   /** Il n'était pas `ON_DELIVERY` (hors ligne, disponible, inconnu) : rien. */
-  | 'kept_status';
+  | 'kept_status'
+  /**
+   * F3-12.1 R7 — sa dernière course est close et un ban l'attendait : il est
+   * appliqué ici (`BLOCKED`, `OFFLINE`), la coupure Firebase part par l'outbox.
+   */
+  | 'banned';
 
 /**
  * Courses qui OCCUPENT un livreur au sens de `ON_DELIVERY`.
@@ -53,19 +65,32 @@ const HOLDING_STATUSES: DeliveryStatus[] = [
  *   l'autre, et la seconde relit un état à jour.
  * - Un compte qui n'est plus `ACTIVE` ou plus `LIVREUR` repasse `OFFLINE`,
  *   jamais `AVAILABLE` : une clôture ne réactive pas un compte révoqué.
+ * - **Ban différé (R7, Q3/Q7)** : un ban demandé pendant une course est
+ *   appliqué ici, à la clôture de la DERNIÈRE course tenue, dans la même
+ *   transaction. C'est le seul point d'application : toutes les clôtures
+ *   (livraison, échec, réassignation, annulation) passent par ce helper.
  */
 export async function releaseDriverIfIdle(
   tx: Prisma.TransactionClient,
   driverId: string,
 ): Promise<DriverReleaseResult> {
   const driver = await lockDriverRow(tx, driverId);
-  if (!driver || driver.driverStatus !== DriverStatus.ON_DELIVERY) {
-    return 'kept_status';
+  if (!driver) return 'kept_status';
+
+  const holdingCount = () =>
+    tx.delivery.count({
+      where: { delivererId: driverId, status: { in: HOLDING_STATUSES } },
+    });
+
+  if (driver.banPendingAt) {
+    if ((await holdingCount()) > 0) return 'kept_busy';
+    await applyPendingBan(tx, driverId);
+    return 'banned';
   }
 
-  const holding = await tx.delivery.count({
-    where: { delivererId: driverId, status: { in: HOLDING_STATUSES } },
-  });
+  if (driver.driverStatus !== DriverStatus.ON_DELIVERY) return 'kept_status';
+
+  const holding = await holdingCount();
   if (holding > 0) return 'kept_busy';
 
   const eligible = driver.statusUser === 'ACTIVE' && driver.role === 'LIVREUR';
@@ -78,4 +103,56 @@ export async function releaseDriverIfIdle(
     },
   });
   return 'released';
+}
+
+/**
+ * Applique un ban différé : `BLOCKED` + `OFFLINE`, drapeau effacé, dans une
+ * seule écriture — le CHECK `User_ban_pending_consistent` interdit l'état
+ * intermédiaire. Sous le verrou R4 de l'appelant.
+ *
+ * Firebase et le cache Redis ne sont pas transactionnels : leur coupure est
+ * une OBLIGATION écrite ici (outbox) et exécutée après le commit, y compris
+ * quand la clôture vient du worker. D'ici là, la base refuse déjà tout geste
+ * sensible (acceptation, assignation, offre) : ils relisent `statusUser` sous
+ * ce même verrou.
+ */
+async function applyPendingBan(
+  tx: Prisma.TransactionClient,
+  driverId: string,
+): Promise<void> {
+  await tx.user.update({
+    where: { id: driverId },
+    data: {
+      statusUser: StatusUser.BLOCKED,
+      driverStatus: DriverStatus.OFFLINE,
+      banPendingAt: null,
+      banPendingReason: null,
+      banPendingById: null,
+    },
+  });
+  await tx.outboxEvent.create({
+    data: {
+      type: USER_BAN_APPLIED_EVENT,
+      aggregateId: driverId,
+      payload: { userId: driverId },
+    },
+  });
+  // L'incident ouvert à la demande du ban n'a plus d'objet : sa cause (un
+  // banni encore en course) a disparu.
+  await tx.incident.updateMany({
+    where: {
+      dedupKey: banPendingIncidentKey(driverId),
+      status: { in: [IncidentStatus.OPEN, IncidentStatus.IN_PROGRESS] },
+    },
+    data: {
+      status: IncidentStatus.RESOLVED,
+      autoResolved: true,
+      resolution: 'Course terminée : bannissement appliqué.',
+    },
+  });
+}
+
+/** Une demande de ban différé = un incident ouvert au plus (index partiel). */
+export function banPendingIncidentKey(driverId: string): string {
+  return `ban_pending:${driverId}`;
 }

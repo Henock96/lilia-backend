@@ -315,6 +315,13 @@ describeIfDb(
         where: { id: DELIVERY },
         data: { status: DeliveryStatus.ECHEC, delivererId: null },
       });
+      // Comme les vrais chemins d'échec : la main de A se ferme dans le même
+      // geste. Laissée ouverte, elle viole I1 (F3-12.1-A, une main ouverte
+      // par course au plus) — un état qu'aucun chemin de production n'atteint.
+      await prisma.deliveryAssignment.updateMany({
+        where: { deliveryId: DELIVERY, releasedAt: null },
+        data: { releasedAt: new Date(), outcome: 'FAILED' },
+      });
       await prisma.user.update({
         where: { id: DRIVER_A },
         data: { driverStatus: 'AVAILABLE' },

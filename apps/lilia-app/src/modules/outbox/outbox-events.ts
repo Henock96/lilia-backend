@@ -60,3 +60,12 @@ export const APPROVAL_REQUESTED_EVENT = 'approval.requested';
  * dépilé par `VendorOfferOutboxEffectsService`.
  */
 export const VENDOR_OFFER_NOTICE_EVENT = 'vendor.offer.notice';
+
+/**
+ * F3-12.1 R7 — un ban différé vient d'être appliqué à la clôture de la
+ * dernière course du livreur. Écrit par `releaseDriverIfIdle`, dans la
+ * transaction qui clôt la course (souvent hors de tout contrôleur) ; dépilé
+ * par `AccountOutboxEffectsService`, qui désactive le compte Firebase,
+ * révoque ses jetons et purge le cache de session.
+ */
+export const USER_BAN_APPLIED_EVENT = 'user.ban.applied';

@@ -26,9 +26,17 @@ describe('AdminUsersService — cohérence des changements de rôle', () => {
   let service: AdminUsersService;
 
   const prisma = {
-    user: { findUnique: jest.fn(), update: jest.fn() },
-    driverProfile: { update: jest.fn() },
+    user: {
+      findUnique: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn(),
+    },
+    driverProfile: { updateMany: jest.fn() },
     delivery: { findFirst: jest.fn() },
+    // F3-12.1 R6 — `lockDriverRow` (R4) et révocation des offres (R3).
+    $queryRaw: jest.fn(),
+    $executeRaw: jest.fn(),
     $transaction: jest.fn((cb: any) => cb(prisma)),
   };
   const userCache = { invalidateOrThrow: jest.fn() };
@@ -38,6 +46,20 @@ describe('AdminUsersService — cohérence des changements de rôle', () => {
     prisma.$transaction.mockImplementation((cb: any) => cb(prisma));
     prisma.delivery.findFirst.mockResolvedValue(null);
     prisma.user.update.mockResolvedValue({ id: 'u1', role: 'CLIENT' });
+    prisma.user.updateMany.mockResolvedValue({ count: 1 });
+    prisma.user.findUniqueOrThrow.mockResolvedValue({
+      id: 'u1',
+      role: 'CLIENT',
+    });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        role: 'LIVREUR',
+        statusUser: 'ACTIVE',
+        driverStatus: 'AVAILABLE',
+        banPendingAt: null,
+      },
+    ]);
+    prisma.$executeRaw.mockResolvedValue(0);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -107,7 +129,46 @@ describe('AdminUsersService — cohérence des changements de rôle', () => {
     await expect(
       service.updateUserRole('u1', { role: 'CLIENT' } as never),
     ).rejects.toBeInstanceOf(ConflictException);
-    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.user.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('F3-12.1 R6 — la garde est lue SOUS le verrou du livreur, offres retirées avant', async () => {
+    prisma.user.findUnique.mockResolvedValue(user({ role: 'LIVREUR' }));
+    await service.updateUserRole('u1', { role: 'CLIENT' } as never);
+
+    const [cancel] = prisma.$executeRaw.mock.invocationCallOrder;
+    const [lock] = prisma.$queryRaw.mock.invocationCallOrder;
+    const [guard] = prisma.delivery.findFirst.mock.invocationCallOrder;
+    // R3 → R4 → garde : l'ordre global des verrous, et la garde sous R4.
+    expect(cancel).toBeLessThan(lock);
+    expect(lock).toBeLessThan(guard);
+    // Balayage post-commit (patron §8.4) : un second passage sur les offres.
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it('F3-12.1 R6 — ON_DELIVERY sans course lisible → refusé quand même', async () => {
+    prisma.user.findUnique.mockResolvedValue(user({ role: 'LIVREUR' }));
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        role: 'LIVREUR',
+        statusUser: 'ACTIVE',
+        driverStatus: 'ON_DELIVERY',
+        banPendingAt: null,
+      },
+    ]);
+    await expect(
+      service.updateUserRole('u1', { role: 'CLIENT' } as never),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.user.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('F3-12.1 R6 — rôle changé par un autre admin pendant l’attente → 409 (CAS)', async () => {
+    prisma.user.findUnique.mockResolvedValue(user({ role: 'LIVREUR' }));
+    prisma.user.updateMany.mockResolvedValue({ count: 0 });
+    await expect(
+      service.updateUserRole('u1', { role: 'CLIENT' } as never),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.driverProfile.updateMany).not.toHaveBeenCalled();
   });
 
   /**
@@ -123,25 +184,32 @@ describe('AdminUsersService — cohérence des changements de rôle', () => {
 
     await service.updateUserRole('u1', { role: 'CLIENT' } as never);
 
-    expect(prisma.user.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { driverStatus: null } }),
-    );
-    expect(prisma.driverProfile.update).toHaveBeenCalledWith(
+    expect(prisma.user.updateMany).toHaveBeenCalledWith({
+      where: { id: 'u1', role: 'LIVREUR' },
+      data: { role: 'CLIENT', driverStatus: null },
+    });
+    expect(prisma.driverProfile.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ isActive: false }),
       }),
     );
   });
 
-  it('CLIENT → LIVREUR : aucun profil touché (il n’en a pas encore)', async () => {
+  /**
+   * F3-12.1 (décision Q4) — un livreur se crée par `POST /drivers`, qui pose
+   * son profil : ce changement produisait un LIVREUR sans profil.
+   */
+  it('CLIENT → LIVREUR : refusé (création par la fiche Livreurs)', async () => {
     prisma.user.findUnique.mockResolvedValue(user({ role: 'CLIENT' }));
-    await service.updateUserRole('u1', { role: 'LIVREUR' } as never);
-    expect(prisma.driverProfile.update).not.toHaveBeenCalled();
+    await expect(
+      service.updateUserRole('u1', { role: 'LIVREUR' } as never),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.user.update).not.toHaveBeenCalled();
   });
 
   it('le cache user est invalidé — le rôle est lu par RolesGuard à chaque requête', async () => {
     prisma.user.findUnique.mockResolvedValue(user());
-    await service.updateUserRole('u1', { role: 'LIVREUR' } as never);
+    await service.updateUserRole('u1', { role: 'RESTAURATEUR' } as never);
     expect(userCache.invalidateOrThrow).toHaveBeenCalledWith('fb1');
   });
 });

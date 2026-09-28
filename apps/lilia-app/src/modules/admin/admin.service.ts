@@ -116,8 +116,8 @@ export class AdminService {
    * À coupler avec `FirebaseService.setUserDisabled()` + `revokeUserTokens()`
    * dans le controller.
    */
-  async banUser(userId: string, reason?: string) {
-    return this.adminUsersService.banUser(userId, reason);
+  async banUser(userId: string, reason?: string, adminId?: string) {
+    return this.adminUsersService.banUser(userId, reason, adminId);
   }
 
   /** Lève le bannissement : `statusUser = ACTIVE`. */

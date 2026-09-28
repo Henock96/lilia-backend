@@ -403,15 +403,18 @@ export class AdminController {
     @Body() dto: BanUserDto,
     @CurrentUser() admin: User,
   ) {
-    const { firebaseUid, cacheInvalidated } = await this.adminService.banUser(
-      id,
-      dto.reason,
-    );
+    const { firebaseUid, cacheInvalidated, mode, waitingAssignments } =
+      await this.adminService.banUser(id, dto.reason, admin.id);
 
-    // Désactivation du compte : empêche la ré-authentification.
-    await this.firebaseService.setUserDisabled(firebaseUid, true);
-    // Révocation : bloque le renouvellement du token courant.
-    await this.firebaseService.revokeUserTokens(firebaseUid);
+    // F3-12.1 R7 — un livreur en pleine course n'est pas coupé maintenant : il
+    // doit pouvoir la finir (décision Q3). La coupure part par l'outbox quand
+    // le ban s'applique, à la clôture de sa dernière course.
+    if (mode === 'immediate') {
+      // Désactivation du compte : empêche la ré-authentification.
+      await this.firebaseService.setUserDisabled(firebaseUid, true);
+      // Révocation : bloque le renouvellement du token courant.
+      await this.firebaseService.revokeUserTokens(firebaseUid);
+    }
 
     await this.audit.record({
       actorId: admin.id,
@@ -419,13 +422,28 @@ export class AdminController {
       targetType: 'User',
       targetId: id,
       reason: dto.reason,
+      metadata: { mode },
     });
 
+    const reassign =
+      waitingAssignments > 0
+        ? ` ${waitingAssignments} course(s) assignée(s) non acceptée(s) à réassigner.`
+        : '';
+    if (mode === 'deferred') {
+      return {
+        message:
+          'Livreur en pleine course : il ne reçoit plus aucune course, et le ' +
+          'bannissement s’appliquera à la fin de celle-ci.' +
+          reassign,
+      };
+    }
     return {
-      message: cacheInvalidated
-        ? 'Utilisateur banni, compte Firebase désactivé et tokens révoqués'
-        : 'Utilisateur banni, mais le cache n’a pas pu être purgé : ' +
-          'le blocage peut mettre jusqu’à 5 minutes à s’appliquer',
+      message:
+        (cacheInvalidated
+          ? 'Utilisateur banni, compte Firebase désactivé et tokens révoqués'
+          : 'Utilisateur banni, mais le cache n’a pas pu être purgé : ' +
+            'le blocage peut mettre jusqu’à 5 minutes à s’appliquer') +
+        reassign,
     };
   }
 
@@ -439,10 +457,13 @@ export class AdminController {
   })
   @RequireCapability(AdminCapability.USER_ROLES)
   async unbanUser(@Param('id') id: string, @CurrentUser() admin: User) {
-    const { firebaseUid, cacheInvalidated } =
+    const { firebaseUid, cacheInvalidated, wasBlocked } =
       await this.adminService.unbanUser(id);
 
-    await this.firebaseService.setUserDisabled(firebaseUid, false);
+    // Un ban encore en attente n'a jamais coupé le compte Firebase.
+    if (wasBlocked) {
+      await this.firebaseService.setUserDisabled(firebaseUid, false);
+    }
 
     await this.audit.record({
       actorId: admin.id,
@@ -451,6 +472,9 @@ export class AdminController {
       targetId: id,
     });
 
+    if (!wasBlocked) {
+      return { message: 'Bannissement programmé annulé.' };
+    }
     return {
       message: cacheInvalidated
         ? 'Bannissement levé, compte Firebase réactivé'

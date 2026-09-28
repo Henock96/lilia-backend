@@ -33,18 +33,21 @@ import { DriverStatus, Prisma, Role, StatusUser } from '@prisma/client';
  * autre écriture de la ligne (c'est le verrou que prend un `UPDATE` ordinaire)
  * mais laisse passer les contrôles de clé étrangère, qui ne la modifient pas.
  */
-export async function lockDriverRow(
-  tx: Prisma.TransactionClient,
-  userId: string,
-): Promise<{
+/** Ce qui décide de l'éligibilité d'un livreur, lu sous son verrou. */
+export interface LockedDriver {
   role: Role;
   statusUser: StatusUser;
   driverStatus: DriverStatus | null;
-} | null> {
-  const rows = await tx.$queryRaw<
-    { role: Role; statusUser: StatusUser; driverStatus: DriverStatus | null }[]
-  >`
-    SELECT role, "statusUser", "driverStatus"
+  /** F3-12.1 R7 — ban demandé pendant une course, appliqué à sa clôture. */
+  banPendingAt: Date | null;
+}
+
+export async function lockDriverRow(
+  tx: Prisma.TransactionClient,
+  userId: string,
+): Promise<LockedDriver | null> {
+  const rows = await tx.$queryRaw<LockedDriver[]>`
+    SELECT role, "statusUser", "driverStatus", "banPendingAt"
       FROM "User" WHERE id = ${userId} FOR NO KEY UPDATE
   `;
   return rows[0] ?? null;

@@ -78,6 +78,7 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
     role: 'LIVREUR',
     statusUser: 'ACTIVE',
     driverStatus: DriverStatus.AVAILABLE,
+    banPendingAt: null,
     driverProfile: {
       isActive: true,
       employmentType: 'LILIA',
