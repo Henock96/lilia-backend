@@ -37,8 +37,21 @@ describe('AdminService (caractérisation — clients/users/reviews)', () => {
     // hors service, et les deux écritures doivent réussir ou échouer ensemble.
     // Le mock exécute simplement le callback avec le même client.
     $transaction: jest.fn((cb: any) => cb(prisma)),
+    // F3-12.1 — verrou du compte (R4) et révocation des offres (R3).
+    $queryRaw: jest.fn().mockResolvedValue([
+      {
+        role: 'CLIENT',
+        statusUser: 'ACTIVE',
+        driverStatus: null,
+        banPendingAt: null,
+      },
+    ]),
+    $executeRaw: jest.fn().mockResolvedValue(0),
     driverProfile: { update: jest.fn() },
-    delivery: { findFirst: jest.fn().mockResolvedValue(null) },
+    delivery: {
+      findFirst: jest.fn().mockResolvedValue(null),
+      count: jest.fn().mockResolvedValue(0),
+    },
     loyaltyTransaction: {
       findMany: jest.fn(),
       count: jest.fn(),
@@ -171,12 +184,12 @@ describe('AdminService (caractérisation — clients/users/reviews)', () => {
         restaurant: null,
         driverProfile: null,
       });
-      prisma.user.update.mockResolvedValue({ id: 'u1', role: 'LIVREUR' });
+      prisma.user.update.mockResolvedValue({ id: 'u1', role: 'RESTAURATEUR' });
       const res = await service.updateUserRole('u1', {
-        role: 'LIVREUR',
+        role: 'RESTAURATEUR',
       } as any);
       expect(userCache.invalidateOrThrow).toHaveBeenCalledWith('fb1');
-      expect(res.message).toBe('Rôle mis à jour : LIVREUR');
+      expect(res.message).toBe('Rôle mis à jour : RESTAURATEUR');
     });
   });
 
@@ -209,6 +222,8 @@ describe('AdminService (caractérisation — clients/users/reviews)', () => {
         firebaseUid: 'fb1',
         userId: 'u1',
         cacheInvalidated: true,
+        mode: 'immediate',
+        waitingAssignments: 0,
       });
     });
   });

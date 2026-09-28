@@ -22,6 +22,10 @@ import { DeliveryStatus } from './dto/update-delivery.dto';
 import { DeliveryQueryService } from './delivery-query.service';
 import { ACTIVE_DELIVERY_STATUSES } from './delivery-statuses';
 import { lockDriverRow } from '../drivers/driver-row-lock';
+import {
+  cancelOpenOffers,
+  sweepRevokedOffers,
+} from '../drivers/driver-offer-revocation';
 import { releaseDriverIfIdle } from '../drivers/driver-release';
 import { lockOrderRow } from '../orders/order-row-lock';
 import { DeliveryAssignmentService } from './delivery-assignment.service';
@@ -634,10 +638,19 @@ export class DeliveriesService {
     const user = await this.getUserOrThrow(firebaseUid); // 404 si introuvable (plus de TypeError 500)
     if (user.role !== 'LIVREUR') throw new ForbiddenException();
 
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // F3-12.1 — se déclarer hors ligne retire ses offres ouvertes (R3,
+      // avant le verrou du livreur).
+      if (status === DriverStatus.OFFLINE) await cancelOpenOffers(tx, user.id);
       const locked = await lockDriverRow(tx, user.id);
       if (!locked) throw new NotFoundException('Utilisateur non trouvé.');
       if (locked.role !== 'LIVREUR') throw new ForbiddenException();
+      // R7 — un livreur dont le ban est programmé ne redevient pas candidat.
+      if (status === DriverStatus.AVAILABLE && locked.banPendingAt) {
+        throw new ForbiddenException(
+          'Votre compte ne permet plus de recevoir de course.',
+        );
+      }
 
       if (
         status === DriverStatus.AVAILABLE ||
@@ -673,6 +686,10 @@ export class DeliveriesService {
 
       return tx.user.findUniqueOrThrow({ where: { id: user.id } });
     });
+    if (status !== DriverStatus.AVAILABLE) {
+      await sweepRevokedOffers(this.prisma, user.id);
+    }
+    return updated;
   }
 
   async getMyAssignedDeliveries(firebaseUid: string) {

@@ -77,6 +77,19 @@ model User {
   /// est-il valide ?). Reste sur `User` et non sur `DriverProfile` : c'est un
   /// état volatil, déjà indexé et lu à chaque assignation.
   driverStatus      DriverStatus?
+  /// F3-12.1 R7 (décisions Q3/Q7) — ban DIFFÉRÉ d'un livreur en pleine course.
+  ///
+  /// Un ban immédiat coupe tout (`RolesGuard`, WebSocket, Firebase) : le
+  /// livreur ne pourrait plus finir la course qu'il porte. Posé à la place de
+  /// `BLOCKED` quand il tient une course `ACCEPTER`/`EN_TRANSIT`, ce drapeau le
+  /// rend immédiatement inéligible (ni assignation, ni acceptation, ni offre)
+  /// et le ban s'applique à la clôture de sa dernière course, dans la même
+  /// transaction (`releaseDriverIfIdle`). CHECK : n'existe que sur un compte
+  /// `ACTIVE` — jamais un compte « à moitié banni ».
+  banPendingAt      DateTime?
+  banPendingReason  String?
+  /// `User.id` de l'admin qui a demandé le ban — sans FK, comme `activatedById`.
+  banPendingById    String?
   /// Profil métier du livreur. `null` pour tous les autres rôles.
   driverProfile     DriverProfile?
   lastLogin         DateTime?

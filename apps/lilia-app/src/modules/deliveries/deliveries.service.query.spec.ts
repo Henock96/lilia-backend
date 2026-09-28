@@ -207,6 +207,7 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
       expect(prisma.user.findMany.mock.calls[0][0].where).toEqual({
         role: 'LIVREUR',
         statusUser: 'ACTIVE',
+        banPendingAt: null, // F3-12.1 R7 — ban programmé
         driverProfile: { isActive: true },
         OR: [
           { driverStatus: { in: ['AVAILABLE', 'ON_DELIVERY'] } },

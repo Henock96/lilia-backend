@@ -357,6 +357,9 @@ export class DeliveryQueryService {
       where: {
         role: 'LIVREUR',
         statusUser: 'ACTIVE',
+        // F3-12.1 R7 — même règle que `assertAssignable` : un livreur au ban
+        // programmé n'est plus assignable.
+        banPendingAt: null,
         // Le profil métier doit exister ET être en service. Cette condition
         // reprend mot pour mot celle de `assertAssignable` côté écriture : les
         // deux doivent dire la même chose, sinon la liste propose des livreurs

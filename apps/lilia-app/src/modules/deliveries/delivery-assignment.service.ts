@@ -177,6 +177,7 @@ export class DeliveryAssignmentService {
         role: true,
         statusUser: true,
         driverStatus: true,
+        banPendingAt: true,
         driverProfile: { select: { isActive: true } },
       },
     });
@@ -194,6 +195,13 @@ export class DeliveryAssignmentService {
     if (deliverer.statusUser !== StatusUser.ACTIVE) {
       throw new ForbiddenException(
         `${qui} a un compte ${deliverer.statusUser} : il ne peut pas recevoir de course.`,
+      );
+    }
+
+    // F3-12.1 R7 — ban programmé : il finit sa course en cours, rien de plus.
+    if (deliverer.banPendingAt) {
+      throw new ForbiddenException(
+        `${qui} va être banni à la fin de sa course en cours : il ne peut plus recevoir de course.`,
       );
     }
 
@@ -635,17 +643,20 @@ export class DeliveryAssignmentService {
           driverStatus: DriverStatus.AVAILABLE,
           statusUser: StatusUser.ACTIVE,
           role: Role.LIVREUR,
+          // F3-12.1 R7 — un ban programmé interdit toute nouvelle course.
+          banPendingAt: null,
         },
         data: { driverStatus: DriverStatus.ON_DELIVERY },
       });
       if (driverClaimed.count === 0) {
         const current = await tx.user.findUnique({
           where: { id: user.id },
-          select: { statusUser: true, role: true },
+          select: { statusUser: true, role: true, banPendingAt: true },
         });
         if (
           current?.statusUser !== StatusUser.ACTIVE ||
-          current?.role !== Role.LIVREUR
+          current?.role !== Role.LIVREUR ||
+          current?.banPendingAt
         ) {
           throw new ForbiddenException(
             'Votre compte ne permet plus d’accepter de course.',

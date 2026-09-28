@@ -23,6 +23,10 @@ import { UserCacheService } from '../auth/services/user-cache.service';
 import { PaginationService } from '../../common/pagination/pagination.service';
 import { lockDriverRow } from './driver-row-lock';
 import {
+  cancelOpenOffers,
+  sweepRevokedOffers,
+} from './driver-offer-revocation';
+import {
   CreateDriverDto,
   DeactivateDriverDto,
   DriverFilterDto,
@@ -427,33 +431,51 @@ export class DriversService {
     return { ...(await this.findOne(userId)), message: 'Livreur mis à jour.' };
   }
 
-  /** Met le livreur en service. Réservé à l'ADMIN. */
+  /**
+   * Met le livreur en service. Réservé à l'ADMIN.
+   *
+   * F3-12.1 R7 — décidé sous le verrou du livreur (R4), puis le profil (R5).
+   * Le statut du compte était lu HORS transaction, puis le profil écrit sans
+   * condition : un ban commis entre les deux produisait un compte `BLOCKED`
+   * au profil « en service ». Le ban prend le même verrou : l'un attend
+   * l'autre, et le second relit un état à jour.
+   */
   async activate(userId: string, adminId: string) {
     const profile = await this.getProfileOrThrow(userId);
     if (profile.isActive) {
       throw new ConflictException('Ce livreur est déjà actif.');
     }
 
-    const user = await this.prisma.user.findUniqueOrThrow({
-      where: { id: userId },
-      select: { statusUser: true, firebaseUid: true },
-    });
-    // Activer le profil d'un compte suspendu produirait un livreur « actif »
-    // que `RolesGuard` rejette à chaque requête — un état qui ne veut rien dire.
-    if (user.statusUser !== StatusUser.ACTIVE) {
-      throw new ConflictException(
-        `Le compte de ce livreur est ${user.statusUser}. Levez d'abord la suspension.`,
-      );
-    }
+    await this.prisma.$transaction(async (tx) => {
+      const locked = await lockDriverRow(tx, userId);
+      if (!locked) throw new NotFoundException('Livreur non trouvé.');
+      // Activer le profil d'un compte suspendu produirait un livreur « actif »
+      // que `RolesGuard` rejette à chaque requête — un état qui ne veut rien dire.
+      if (locked.statusUser !== StatusUser.ACTIVE) {
+        throw new ConflictException(
+          `Le compte de ce livreur est ${locked.statusUser}. Levez d'abord la suspension.`,
+        );
+      }
+      if (locked.banPendingAt) {
+        throw new ConflictException(
+          'Un bannissement est programmé pour ce livreur. Annulez-le avant de le remettre en service.',
+        );
+      }
 
-    await this.prisma.driverProfile.update({
-      where: { userId },
-      data: {
-        isActive: true,
-        activatedAt: new Date(),
-        activatedById: adminId,
-        deactivationReason: null,
-      },
+      // Revendiqué, et non écrit : une activation concurrente a pu passer
+      // pendant qu'on attendait le verrou.
+      const activated = await tx.driverProfile.updateMany({
+        where: { userId, isActive: false },
+        data: {
+          isActive: true,
+          activatedAt: new Date(),
+          activatedById: adminId,
+          deactivationReason: null,
+        },
+      });
+      if (activated.count === 0) {
+        throw new ConflictException('Ce livreur est déjà actif.');
+      }
     });
 
     await this.audit.record({
@@ -489,6 +511,8 @@ export class DriversService {
     //  - `DriverProfile` puis `User` est l'ordre inverse de tout le reste
     //    (acceptation, disponibilité) : interblocage possible.
     await this.prisma.$transaction(async (tx) => {
+      // F3-12.1 — R3 avant R4 : ses offres ouvertes tombent avec lui.
+      await cancelOpenOffers(tx, userId);
       const locked = await lockDriverRow(tx, userId);
       if (!locked) throw new NotFoundException('Livreur non trouvé.');
 
@@ -529,6 +553,7 @@ export class DriversService {
         throw new ConflictException("Ce livreur n'est pas actif.");
       }
     });
+    await sweepRevokedOffers(this.prisma, userId);
 
     await this.audit.record({
       actorId: adminId,
