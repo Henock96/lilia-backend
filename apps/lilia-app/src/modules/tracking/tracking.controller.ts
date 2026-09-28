@@ -5,7 +5,26 @@ import { TrackingService } from './tracking.service';
 import { TrackingGateway } from './tracking.gateway';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { BatchPositionsDto, PositionDto } from './dto/tracking-http.dto';
+import {
+  BatchPositionsDto,
+  BufferedPositionDto,
+  PositionDto,
+} from './dto/tracking-http.dto';
+
+/**
+ * F3-12.1 (décision Q5) — au-delà de cet âge, le point le plus récent d'un
+ * lot n'est plus « la position du livreur » : il décrit où il était. Le
+ * diffuser comme position en direct ferait reculer le marqueur du client, et
+ * l'ETA partirait d'un endroit que le livreur a quitté.
+ */
+export const LIVE_BATCH_MAX_AGE_MS = 120_000;
+
+/** Le point le plus récent par horodatage — pas le dernier du tableau. */
+export function latestPosition(
+  positions: BufferedPositionDto[],
+): BufferedPositionDto {
+  return positions.reduce((a, b) => (b.timestamp >= a.timestamp ? b : a));
+}
 
 /**
  * Fallback HTTP quand le WebSocket est impossible (réseau très faible).
@@ -84,8 +103,16 @@ export class TrackingController {
     // un 4xx ferait rejouer indéfiniment un lot qui ne passera jamais.
     if (!live) return { synced: body.positions.length, eta: null };
 
-    // Enregistre seulement la dernière position pour le broadcast
-    const last = body.positions[body.positions.length - 1];
+    // Seule la position la plus RÉCENTE circule. Le dernier élément du
+    // tableau n'est pas forcément elle : l'app trie, mais le contrat ne
+    // l'exige pas, et une file mal ordonnée ferait reculer le marqueur.
+    const last = latestPosition(body.positions);
+
+    // Q5 — un lot rejoué après une longue coupure est acquitté (2xx : l'app
+    // le retire de sa file) mais n'est pas diffusé comme position en direct.
+    if (Date.now() - last.timestamp > LIVE_BATCH_MAX_AGE_MS) {
+      return { synced: body.positions.length, eta: null };
+    }
 
     await this.trackingService.updatePosition({
       orderId: body.orderId,
