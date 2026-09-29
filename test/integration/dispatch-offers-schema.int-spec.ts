@@ -19,8 +19,13 @@ const describeIfDb = DATABASE_URL ? describe : describe.skip;
 
 const UNIQUE = '23505';
 const CHECK = '23514';
-// `ON DELETE RESTRICT` lève `restrict_violation`, pas `foreign_key_violation` (23503).
-const RESTRICT = '23001';
+// `ON DELETE RESTRICT` : le SQLSTATE dépend de la version de PostgreSQL.
+// PG 18 lève `restrict_violation` (23001, « violates RESTRICT setting ») ; PG 16
+// — celui de la CI — lève `foreign_key_violation` (23503), comme pour
+// NO ACTION. Figer l'un des deux faisait passer le test en local (PG 18) et
+// échouer en CI. Le nom de la contrainte, lui, ne varie pas : c'est lui qui
+// prouve que le refus vient bien de cette clé étrangère.
+const RESTRICT = expect.stringMatching(/^23(001|503)$/);
 
 describeIfDb(
   'F3-12.1-A — schéma des offres de course (PostgreSQL réel)',
@@ -41,7 +46,7 @@ describeIfDb(
     /** Refus attendu : SQLSTATE + nom de contrainte, rien de moins. */
     const expectRefused = async (
       run: Promise<unknown>,
-      code: string,
+      code: string | ReturnType<typeof expect.stringMatching>,
       constraint: string,
     ) => {
       await expect(run).rejects.toMatchObject({ code, constraint });
