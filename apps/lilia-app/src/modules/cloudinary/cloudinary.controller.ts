@@ -13,6 +13,7 @@ import { CloudinaryService, CloudinaryFolder } from './cloudinary.service';
 import { UploadImageQueryDto } from './dto/upload-image.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { ACCEPTED_IMAGE_TYPES, isHeif } from './image-format';
 
 /**
  * Plafond de taille, en octets — **une seule fois**, pour que la borne multer
@@ -105,7 +106,9 @@ export class CloudinaryController {
           // Le corollaire est qu'un échec de chargement de `file-type` fait
           // rendre `false` : le contrôle est fail-closed, il refuse plutôt
           // qu'il ne laisse passer.
-          new FileTypeValidator({ fileType: /^image\/(jpeg|jpg|png|webp)$/ }),
+          //
+          // HEIC/HEIF (photos d'iPhone) : acceptés, puis convertis en JPG.
+          new FileTypeValidator({ fileType: ACCEPTED_IMAGE_TYPES }),
         ],
       }),
     )
@@ -121,7 +124,10 @@ export class CloudinaryController {
       );
     }
 
-    const result = await this.cloudinaryService.uploadBuffer(file.buffer, folder);
+    // Un HEIC stocké tel quel ne s'afficherait ni dans Chrome ni sur Android.
+    const result = await this.cloudinaryService.uploadBuffer(file.buffer, folder, undefined, {
+      convertTo: isHeif(file.buffer) ? 'jpg' : undefined,
+    });
     return {
       url: result.secure_url,
       publicId: result.public_id,

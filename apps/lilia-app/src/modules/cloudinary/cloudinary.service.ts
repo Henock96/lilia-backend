@@ -103,6 +103,13 @@ export class CloudinaryService {
     buffer: Buffer,
     folder: CloudinaryFolder,
     fileName?: string,
+    /**
+     * Format de STOCKAGE imposé. `'jpg'` pour un HEIC : l'URL rendue
+     * (`secure_url`) pointe alors un JPG, lisible partout. `fetch_format: auto`
+     * ne suffit pas — il n'agit qu'à la livraison d'URL transformées, pas sur
+     * l'extension de l'original que stockent nos tables.
+     */
+    options: { convertTo?: 'jpg' } = {},
   ): Promise<UploadApiResponse> {
     this.assertConfigured();
     return new Promise((resolve, reject) => {
@@ -111,6 +118,7 @@ export class CloudinaryService {
           folder: `lilia-food/${folder}`,
           public_id: fileName,
           resource_type: 'image',
+          ...(options.convertTo && { format: options.convertTo }),
           transformation: [
             { width: 1200, height: 1200, crop: 'limit' }, // max dimensions
             { quality: 'auto:good' },                      // compression auto
