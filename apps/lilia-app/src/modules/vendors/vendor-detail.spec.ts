@@ -3,6 +3,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { NotFoundException } from '@nestjs/common';
 
 import { VendorsService } from './vendors.service';
+import { VendorOpeningService } from './vendor-opening.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationService } from '../../common/pagination/pagination.service';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
@@ -87,6 +88,10 @@ describe('VendorsService.findOne — détail vendeur', () => {
         { provide: PaginationService, useValue: {} },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         { provide: AdminAuditService, useValue: { record: jest.fn() } },
+        {
+          provide: VendorOpeningService,
+          useValue: { nextOpeningMany: jest.fn().mockResolvedValue(new Map()) },
+        },
       ],
     }).compile();
     service = module.get(VendorsService);

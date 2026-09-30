@@ -7,6 +7,7 @@ import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 import { RestaurantQueryService } from '../restaurants/restaurant-query.service';
 import { VendorsService } from '../vendors/vendors.service';
+import { VendorOpeningService } from '../vendors/vendor-opening.service';
 import { ProductQueryService } from './product-query.service';
 import {
   MENU_PRODUCTS_LIMIT,
@@ -98,6 +99,10 @@ describe('Parité de la carte — GET /vendors/:id vs GET /restaurants/:id', () 
         { provide: PaginationService, useValue: {} },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
         { provide: AdminAuditService, useValue: { record: jest.fn() } },
+        {
+          provide: VendorOpeningService,
+          useValue: { nextOpeningMany: jest.fn().mockResolvedValue(new Map()) },
+        },
       ],
     }).compile();
 

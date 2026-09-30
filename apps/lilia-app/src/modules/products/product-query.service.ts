@@ -1,8 +1,11 @@
 /* eslint-disable prettier/prettier */
 import { Optional, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, ProductType, VendorType } from '@prisma/client';
+import { OrderStatus, Prisma, ProductType, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
+import {
+  PUBLIC_VENDOR_ORDER_BY,
+  PUBLIC_VENDOR_WHERE,
+} from '../../common/vendor-visibility';
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 import { stockStatusWhere, type StockStatus } from './stock-status';
 import {
@@ -20,13 +23,28 @@ import {
   PUBLIC_PRODUCT_MODIFIER_GROUPS_ARGS,
   withPublicModifiers,
 } from '../modifiers/modifier-views';
-import { withVariantStock } from '../orders/stock-units';
+import { variantStockVerdict, withVariantStock } from '../orders/stock-units';
 
 /**
  * Lectures du catalogue produits (extrait de ProductsService — LIL-143).
  * Regroupe les requêtes de consultation : catalogue, détail, populaires,
  * recherche et recommandations.
  */
+/** Candidats examinés par `findAvailableNow` (colonnes légères seulement). */
+export const AVAILABLE_NOW_CANDIDATE_CAP = 500;
+/**
+ * Commandes qui ne comptent pas pour `findPopular` : jamais payées, annulées,
+ * ou échouées à la livraison.
+ */
+const POPULAR_IGNORED_STATUSES: OrderStatus[] = [
+  OrderStatus.EN_ATTENTE,
+  OrderStatus.ANNULER,
+  OrderStatus.ECHEC_LIVRAISON,
+];
+
+/** Au plus 3 produits d'un même vendeur dans « Disponible maintenant ». */
+export const AVAILABLE_NOW_PER_VENDOR = 3;
+
 @Injectable()
 export class ProductQueryService {
   constructor(
@@ -286,12 +304,32 @@ export class ProductQueryService {
   }
 
   /**
-   * Récupère les produits les plus commandés (plats populaires)
+   * Produits les plus commandés — **contrat historique** de « Plats
+   * populaires », conservé pour les applications déjà installées (même forme,
+   * `orderCount` compris). Les versions récentes lisent `available-now`.
+   *
+   * Corrigé a minima le 30/09/2026 : le `groupBy` prenait les `limit` produits
+   * les plus commandés de **tout** l'historique (annulées comprises), **puis**
+   * retirait les non-servables — la liste pouvait sortir presque vide. Le
+   * filtre (frontière publique, catalogue, stock) s'applique désormais dans le
+   * `groupBy`, avant la coupe, et seules les commandes réellement passées
+   * comptent.
+   *
+   * ⚠️ Pas de filtre d'ouverture, volontairement : les anciennes versions
+   * affichent le badge « Fermé » (P3-01), et vider la liste la nuit leur
+   * retirerait la section entière. C'est la différence avec `available-now`.
    */
   async findPopular(limit = 10) {
-    // 1. Agréger le nombre de commandes par produit
     const popularProductIds = await this.prisma.orderItem.groupBy({
       by: ['productId'],
+      where: {
+        order: { status: { notIn: POPULAR_IGNORED_STATUSES } },
+        product: {
+          restaurant: PUBLIC_VENDOR_WHERE,
+          OR: [{ stockRestant: null }, { stockRestant: { gt: 0 } }],
+          AND: [catalogProductWhere(this.prisma.product.fields)],
+        },
+      },
       _count: { productId: true },
       orderBy: { _count: { productId: 'desc' } },
       take: limit,
@@ -306,7 +344,8 @@ export class ProductQueryService {
       popularProductIds.map(p => [p.productId, p._count.productId]),
     );
 
-    // 2. Récupérer les détails complets des produits
+    // Même filtre qu'au-dessus : entre les deux lectures, un produit peut
+    // avoir été retiré — il sort, il n'est pas servi.
     const products = await this.prisma.product.findMany({
       where: {
         id: { in: productIds },
@@ -323,13 +362,142 @@ export class ProductQueryService {
       },
     });
 
-    // 3. Trier par nombre de commandes et attacher le compteur
+    const byId = new Map(withVariantStock(products).map(p => [p.id, p]));
     const sorted = productIds
-      .map(id => products.find(p => p.id === id))
-      .filter(Boolean)
+      .map(id => byId.get(id))
+      .filter(p => p != null)
       .map(p => ({ ...p, orderCount: countMap[p.id] || 0 }));
 
     return { data: sorted };
+  }
+
+  /**
+   * `GET /products/available-now` — ce qu'un client peut commander **maintenant**.
+   *
+   * Remplace « Plats populaires » à l'accueil, qui prenait les 10 produits les
+   * plus commandés **puis** retirait ce qui n'était pas servable : à 01h18 le
+   * 30/09/2026, les 10 venaient de vendeurs fermés. Ici, l'ordre est inverse et
+   * il ne doit jamais l'être à nouveau :
+   *
+   * ```
+   * vendeur public ∧ ouvert ∧ catalogue ∧ stock (pré-filtre SQL)
+   *   → verdict de stock exact par format (variantStockVerdict)
+   *   → classement → au plus 3 par vendeur → limit
+   * ```
+   *
+   * - « ouvert » = colonne `isOpen`, écrite chaque minute par le cron à partir
+   *   de `decideOpening` (et tout de suite à la pause) ; le checkout recalcule
+   *   la règle et reste l'autorité (écart ≤ 1 min, refus avec son message).
+   * - Un produit **sur commande** (`madeToOrder`) n'est pas disponible
+   *   maintenant : il se précommande.
+   * - Classement : commandes **livrées** (LIVRER) des 30 derniers jours. Le
+   *   compteur reste interne : ni `orderCount` ni score dans la réponse.
+   * - Deux requêtes légères en parallèle (candidats, signal) puis une lecture
+   *   complète des seuls produits retenus (≤ 20) : deux allers-retours.
+   */
+  async findAvailableNow(
+    { vendorType, limit = 10 }: { vendorType?: VendorType; limit?: number },
+    now = new Date(),
+  ) {
+    const where: Prisma.ProductWhereInput = {
+      restaurant: {
+        ...PUBLIC_VENDOR_WHERE,
+        isOpen: true,
+        ...(vendorType && { vendorType }),
+      },
+      madeToOrder: false,
+      // Pré-filtre : réduit les candidats, le verdict exact vient ensuite.
+      OR: [{ stockRestant: null }, { stockRestant: { gt: 0 } }],
+      AND: [catalogProductWhere(this.prisma.product.fields, now)],
+    };
+
+    // Candidats et signal partent ensemble : le `groupBy` porte le même filtre
+    // (relation `product`), il n'a pas besoin des identifiants des candidats.
+    // Un aller-retour Render ↔ Neon de moins (~70 ms).
+    const [candidates, delivered] = await Promise.all([
+      this.prisma.product.findMany({
+        where,
+        select: {
+          id: true,
+          restaurantId: true,
+          stockRestant: true,
+          variants: { select: { stockConsumption: true } },
+        },
+        orderBy: [
+          ...PUBLIC_VENDOR_ORDER_BY.map((o) => ({ restaurant: o })),
+          ...MENU_PRODUCTS_ORDER_BY,
+        ],
+        take: AVAILABLE_NOW_CANDIDATE_CAP,
+      }),
+      this.prisma.orderItem.groupBy({
+        by: ['productId'],
+        where: {
+          product: where,
+          order: {
+            status: OrderStatus.LIVRER,
+            createdAt: { gte: new Date(now.getTime() - 30 * 24 * 3600_000) },
+          },
+        },
+        _count: { productId: true },
+      }),
+    ]);
+
+    // Verdict exact : au moins un format achetable. Sans format, rien à
+    // mettre au panier (le panier exige un `variantId`).
+    const sellable = candidates.filter((p) =>
+      p.variants.some(
+        (v) =>
+          variantStockVerdict(p.stockRestant, v.stockConsumption)
+            .stockStatus !== 'OUT_OF_STOCK',
+      ),
+    );
+    if (sellable.length === 0) {
+      return { data: [], meta: { generatedAt: now.toISOString() } };
+    }
+
+    const signal = new Map(
+      delivered.map((d) => [d.productId, d._count.productId]),
+    );
+
+    // Tri stable : signal décroissant, puis l'ordre d'affichage public
+    // (vendeur puis carte), déjà celui de `candidates`.
+    const ranked = sellable
+      .map((p, index) => ({ p, index, score: signal.get(p.id) ?? 0 }))
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .map(({ p }) => p);
+
+    const perVendor = new Map<string, number>();
+    const pickedIds: string[] = [];
+    for (const p of ranked) {
+      const n = perVendor.get(p.restaurantId) ?? 0;
+      if (n >= AVAILABLE_NOW_PER_VENDOR) continue;
+      perVendor.set(p.restaurantId, n + 1);
+      pickedIds.push(p.id);
+      if (pickedIds.length === limit) break;
+    }
+
+    const rows = await this.prisma.product.findMany({
+      where: { id: { in: pickedIds } },
+      include: {
+        category: true,
+        variants: { orderBy: [...MENU_VARIANTS_ORDER_BY] },
+        restaurant: {
+          select: { id: true, nom: true, imageUrl: true, isOpen: true, vendorType: true },
+        },
+        images: { orderBy: [...MENU_IMAGES_ORDER_BY] },
+        modifierGroups: PUBLIC_PRODUCT_MODIFIER_GROUPS_ARGS,
+      },
+    });
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const ordered = pickedIds.map((id) => byId.get(id)).filter((r) => r != null);
+
+    return {
+      data: withPublicModifiers(
+        withVariantStock(ordered),
+        await modifiersEnabled(this.platformSettings),
+      ),
+      meta: { generatedAt: now.toISOString() },
+    };
   }
 
   /**

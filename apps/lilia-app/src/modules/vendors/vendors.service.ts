@@ -37,6 +37,7 @@ import {
   withActiveOffer,
 } from '../vendor-offers/vendor-offer-projection';
 import { vendorOffersEnabled } from '../vendor-offers/vendor-offers-switch';
+import { VendorOpeningService } from './vendor-opening.service';
 
 /**
  * Relations servies avec une fiche vendeur.
@@ -102,6 +103,7 @@ export class VendorsService {
     private readonly pagination: PaginationService,
     private readonly eventEmitter: EventEmitter2,
     private readonly audit: AdminAuditService,
+    private readonly opening: VendorOpeningService,
     // F3-09 — interrupteur des options (carte). Facultatif pour les tests
     // unitaires qui montent le service seul : absent, les options sont
     // éteintes, c'est-à-dire la carte d'avant F3-09.
@@ -200,9 +202,15 @@ export class VendorsService {
       this.prisma.restaurant.count({ where }),
     ]);
 
-    const offersOn = await vendorOffersEnabled(this.platformSettings);
+    const [offersOn, nextOpenings] = await Promise.all([
+      vendorOffersEnabled(this.platformSettings),
+      this.nextOpenings(vendors, now),
+    ]);
     return {
-      data: vendors.map((v) => withActiveOffer(v, offersOn)),
+      data: vendors.map((v) => ({
+        ...withActiveOffer(v, offersOn),
+        nextOpeningAt: nextOpenings.get(v.id) ?? null,
+      })),
       meta: {
         page,
         limit,
@@ -238,10 +246,12 @@ export class VendorsService {
     if (!vendor) throw new NotFoundException(`Vendeur "${id}" introuvable.`);
 
     const { _count, products, ...rest } = vendor;
+    const nextOpenings = await this.nextOpenings([vendor], now);
 
     return {
       data: {
         ...withActiveOffer(rest, await vendorOffersEnabled(this.platformSettings)),
+        nextOpeningAt: nextOpenings.get(vendor.id) ?? null,
         products: withPublicModifiers(
           withVariantStock(withAvailableNow(products, now)),
           await modifiersEnabled(this.platformSettings),
@@ -251,6 +261,23 @@ export class VendorsService {
         hasMoreProducts: _count.products > MENU_PRODUCTS_LIMIT,
       },
     };
+  }
+
+  /**
+   * `nextOpeningAt` des vendeurs **fermés** de la page (ISO UTC, comme
+   * `pausedUntil`). Champ calculé, hors de `PUBLIC_VENDOR_SELECT` : il ne
+   * publie qu'une date, jamais le motif d'une fermeture. Un vendeur ouvert
+   * n'est pas calculé — il vaut `null`.
+   */
+  private async nextOpenings(
+    vendors: ReadonlyArray<{ id: string; isOpen: boolean }>,
+    now: Date,
+  ): Promise<Map<string, string | null>> {
+    const closedIds = vendors.filter((v) => !v.isOpen).map((v) => v.id);
+    const dates = await this.opening.nextOpeningMany(closedIds, now);
+    return new Map(
+      [...dates].map(([id, date]) => [id, date?.toISOString() ?? null]),
+    );
   }
 
   /**

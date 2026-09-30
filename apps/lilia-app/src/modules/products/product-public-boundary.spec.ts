@@ -84,4 +84,21 @@ describe('Lectures publiques du catalogue — frontière marketplace', () => {
     const where = findMany.mock.calls[0][0].where as Record<string, unknown>;
     expect(where.restaurant).toEqual(PUBLIC_VENDOR_WHERE);
   });
+  it('findAvailableNow applique la frontière, l’ouverture et le vendorType avant toute coupe', async () => {
+    const { service, findMany } = build();
+    await service.findAvailableNow({ vendorType: 'BAKERY', limit: 10 });
+
+    const args = findMany.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+      take: number;
+    };
+    expect(args.where.restaurant).toEqual({
+      ...PUBLIC_VENDOR_WHERE,
+      isOpen: true,
+      vendorType: 'BAKERY',
+    });
+    // La coupe au `limit` demandé n'a pas lieu en SQL : le plafond des
+    // candidats est bien au-dessus, le filtre de stock exact vient après.
+    expect(args.take).toBeGreaterThan(10);
+  });
 });

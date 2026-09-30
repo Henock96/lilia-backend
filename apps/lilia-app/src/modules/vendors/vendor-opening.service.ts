@@ -6,6 +6,8 @@ import {
   brazzavilleClock,
   datedClosureAt,
   decideOpening,
+  NEXT_OPENING_HORIZON_DAYS,
+  nextOpeningAt,
   OpeningDecision,
 } from './vendor-opening.policy';
 
@@ -113,6 +115,78 @@ export class VendorOpeningService {
         closedOnHolidays: vendor.closedOnHolidays,
       }),
     }));
+  }
+
+  /**
+   * Prochaine ouverture de chaque vendeur, calculée par `nextOpeningAt` (donc
+   * par `decideOpening`). 3 requêtes lancées ensemble — vendeurs, congés et
+   * jours fériés de l'horizon — quel que soit le nombre de vendeurs.
+   *
+   * Seule une **date** en sort : ni motif de congé, ni note de pause.
+   * Un vendeur ouvert, fermé à la main ou sans ouverture sur l'horizon vaut
+   * `null`.
+   */
+  async nextOpeningMany(
+    restaurantIds: readonly string[],
+    now = new Date(),
+  ): Promise<Map<string, Date | null>> {
+    const result = new Map<string, Date | null>();
+    if (restaurantIds.length === 0) return result;
+
+    const horizonEnd = new Date(
+      now.getTime() + NEXT_OPENING_HORIZON_DAYS * 24 * 3600_000,
+    );
+    const firstDay = brazzavilleClock(now).isoDate;
+    const lastDay = brazzavilleClock(horizonEnd).isoDate;
+    const ids = [...restaurantIds];
+
+    const [vendors, closures, holidays] = await Promise.all([
+      this.prisma.restaurant.findMany({
+        where: { id: { in: ids } },
+        select: OPENING_SELECT,
+      }),
+      this.prisma.vendorClosure.findMany({
+        where: {
+          restaurantId: { in: ids },
+          startsAt: { lt: horizonEnd },
+          endsAt: { gt: now },
+        },
+        select: { restaurantId: true, startsAt: true, endsAt: true },
+      }),
+      this.prisma.publicHoliday.findMany({
+        where: {
+          date: {
+            gte: new Date(`${firstDay}T00:00:00.000Z`),
+            lte: new Date(`${lastDay}T00:00:00.000Z`),
+          },
+        },
+        select: { date: true },
+      }),
+    ]);
+
+    const holidaySet = new Set(
+      holidays.map((h) => h.date.toISOString().slice(0, 10)),
+    );
+    for (const vendor of vendors) {
+      const own = closures.filter((c) => c.restaurantId === vendor.id);
+      result.set(
+        vendor.id,
+        nextOpeningAt(
+          {
+            now,
+            hours: vendor.operatingHours,
+            manualOverride: vendor.manualOverride,
+            currentIsOpen: vendor.isOpen,
+            pausedUntil: vendor.pausedUntil,
+            closures: own,
+            isHoliday: holidaySet.has(firstDay),
+            closedOnHolidays: vendor.closedOnHolidays,
+          },
+          { holidays: holidaySet, closures: own },
+        ),
+      );
+    }
+    return result;
   }
 
   async decide(
