@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { PaginationService } from './pagination/pagination.service';
 import { AdminAuditService } from '../modules/admin-audit/admin-audit.service';
 import { VendorsService } from '../modules/vendors/vendors.service';
+import { VendorOpeningService } from '../modules/vendors/vendor-opening.service';
 import { RestaurantQueryService } from '../modules/restaurants/restaurant-query.service';
 
 /**
@@ -101,6 +102,19 @@ describe('Projection publique des vendeurs', () => {
     const VENDEUR = {
       id: 'v1',
       nom: 'Chez Maman Lili',
+      // Fermé, en congé : `nextOpeningAt` est donc calculé.
+      isOpen: false,
+      manualOverride: false,
+      pausedUntil: null,
+      closedOnHolidays: true,
+      operatingHours: [
+        {
+          dayOfWeek: 'LUNDI',
+          openTime: '10:00',
+          closeTime: '22:00',
+          isClosed: false,
+        },
+      ],
       products: [],
       menuDuJour: [],
       _count: { products: 0 },
@@ -116,6 +130,8 @@ describe('Projection publique des vendeurs', () => {
       };
       order: { groupBy: jest.Mock };
       review: { groupBy: jest.Mock };
+      vendorClosure: { findMany: jest.Mock };
+      publicHoliday: { findMany: jest.Mock };
       product: { fields: Record<string, string> };
       $transaction: jest.Mock;
     };
@@ -129,6 +145,17 @@ describe('Projection publique des vendeurs', () => {
         },
         order: { groupBy: jest.fn().mockResolvedValue([]) },
         review: { groupBy: jest.fn().mockResolvedValue([]) },
+        vendorClosure: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              restaurantId: 'v1',
+              startsAt: new Date('2026-01-01T00:00:00.000Z'),
+              endsAt: new Date('2099-01-01T00:00:00.000Z'),
+              reason: 'Deuil dans la famille',
+            },
+          ]),
+        },
+        publicHoliday: { findMany: jest.fn().mockResolvedValue([]) },
         product: { fields: { availableFrom: 'F', availableUntil: 'U' } },
         $transaction: jest.fn((ops: unknown[]) => Promise.all(ops)),
       };
@@ -137,6 +164,7 @@ describe('Projection publique des vendeurs', () => {
         providers: [
           VendorsService,
           RestaurantQueryService,
+          VendorOpeningService,
           { provide: PrismaService, useValue: prisma },
           { provide: PaginationService, useValue: {} },
           { provide: EventEmitter2, useValue: { emit: jest.fn() } },
@@ -214,6 +242,29 @@ describe('Projection publique des vendeurs', () => {
         // partagée passerait inaperçu : les deux tests précédents restent
         // verts sur un `select` vide.
         expect({ manquantes }).toEqual({ manquantes: [] });
+      },
+    );
+
+    /**
+     * `nextOpeningAt` est un champ **calculé** hors liste blanche : il ne doit
+     * publier qu'une date. Le motif d'un congé (`VendorClosure.reason`) reste
+     * privé — il n'est ni demandé à la base, ni servi.
+     */
+    it.each([
+      ['GET /vendors', () => vendors.findAll({ page: 1, limit: 20 } as never)],
+      ['GET /vendors/:id', () => vendors.findOne('v1')],
+    ] as [string, () => Promise<unknown>][])(
+      '%s : nextOpeningAt est une date, jamais un motif de fermeture',
+      async (_route, appel) => {
+        const réponse = JSON.stringify(await appel());
+
+        const select =
+          prisma.vendorClosure.findMany.mock.calls[0][0].select ?? {};
+        expect(Object.keys(select).sort()).toEqual(
+          ['endsAt', 'restaurantId', 'startsAt'].sort(),
+        );
+        expect(réponse).not.toContain('Deuil');
+        expect(réponse).toContain('"nextOpeningAt"');
       },
     );
   });

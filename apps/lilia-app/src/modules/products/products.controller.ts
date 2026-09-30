@@ -24,6 +24,7 @@ import { UpdateProductDto } from './dto/update-product.dto';
 import { ReorderProductsDto } from './dto/reorder-products.dto';
 import { UpdateProductStockDto } from './dto/update-product-stock.dto';
 import {
+  AvailableNowQueryDto,
   ProductFilterQueryDto,
   ProductSearchQueryDto,
 } from './dto/product-query.dto';
@@ -88,6 +89,22 @@ export class ProductsController {
   @ApiOperation({ summary: 'Plats les plus commandés' })
   findPopular(@Query() query: PaginationQueryDto) {
     return this.productsService.findPopular(query.limit);
+  }
+
+  /**
+   * GET /products/available-now?vendorType=BAKERY&limit=10
+   *
+   * Produits commandables **maintenant** (vendeur ouvert, au catalogue, en
+   * stock), filtrés avant d'être coupés. Rail « Disponible maintenant » de
+   * l'accueil. Aucun compteur de ventes n'est servi.
+   */
+  @Public()
+  @Get('available-now')
+  @ApiOperation({ summary: 'Produits commandables maintenant' })
+  @ApiQuery({ name: 'vendorType', required: false, enum: VendorType })
+  @ApiQuery({ name: 'limit', required: false })
+  findAvailableNow(@Query() query: AvailableNowQueryDto) {
+    return this.productsService.findAvailableNow(query);
   }
 
   /**

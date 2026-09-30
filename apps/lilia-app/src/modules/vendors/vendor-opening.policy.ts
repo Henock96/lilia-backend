@@ -175,3 +175,93 @@ function toMinutes(time: string): number {
   const [h, m] = time.split(':').map(Number);
   return h * 60 + m;
 }
+
+/**
+ * Ce que `decideOpening` lit et qui change avec la date : les jours fériés et
+ * les congés sur tout l'horizon, pas seulement ceux qui couvrent `now`.
+ */
+export interface OpeningHorizon {
+  /** « AAAA-MM-JJ » (jour civil de Brazzaville), comme `PublicHoliday.date`. */
+  holidays: ReadonlySet<string>;
+  /** Congés qui chevauchent l'horizon. */
+  closures: ReadonlyArray<{ startsAt: Date; endsAt: Date }>;
+}
+
+export const NEXT_OPENING_HORIZON_DAYS = 8;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Instants où un vendeur fermé **peut** rouvrir — sans rien juger.
+ *
+ * `decideOpening` est constante par morceaux : elle ne passe de fermé à ouvert
+ * qu'à une heure d'ouverture (`openTime`), à la fin d'une pause, à la fin d'un
+ * congé, ou au minuit qui termine un jour férié. Évaluer la règle à ces seuls
+ * instants suffit donc à trouver la première ouverture. (Les fermetures —
+ * `closeTime`, début de congé — ne font que fermer : inutile de les tester.)
+ */
+export function openingCandidates(
+  input: Pick<OpeningInput, 'now' | 'hours' | 'pausedUntil'>,
+  horizon: OpeningHorizon,
+  days = NEXT_OPENING_HORIZON_DAYS,
+): Date[] {
+  const { now } = input;
+  const end = now.getTime() + days * DAY_MS;
+  const localMidnight = (d: Date): number => {
+    const local = d.getTime() + BRAZZAVILLE_UTC_OFFSET_MS;
+    return local - (local % DAY_MS) - BRAZZAVILLE_UTC_OFFSET_MS;
+  };
+  const firstMidnight = localMidnight(now);
+  const times: number[] = [];
+
+  for (let j = 0; j <= days; j++) {
+    const midnight = firstMidnight + j * DAY_MS;
+    const { day } = brazzavilleClock(new Date(midnight));
+    for (const row of input.hours) {
+      if (row.dayOfWeek !== day || row.isClosed) continue;
+      times.push(midnight + toMinutes(row.openTime) * 60_000);
+    }
+  }
+  if (input.pausedUntil) times.push(input.pausedUntil.getTime());
+  for (const closure of horizon.closures) times.push(closure.endsAt.getTime());
+  for (const isoDate of horizon.holidays) {
+    // Minuit (Brazzaville) du lendemain du férié.
+    times.push(
+      new Date(`${isoDate}T00:00:00.000Z`).getTime() +
+        DAY_MS -
+        BRAZZAVILLE_UTC_OFFSET_MS,
+    );
+  }
+
+  return [...new Set(times)]
+    .filter((t) => t > now.getTime() && t <= end)
+    .sort((a, b) => a - b)
+    .map((t) => new Date(t));
+}
+
+/**
+ * Prochaine ouverture d'un vendeur fermé, ou `null` (déjà ouvert, décision
+ * manuelle, ou aucune ouverture dans l'horizon).
+ *
+ * Il n'y a **pas** de seconde règle d'ouverture ici : chaque candidat est jugé
+ * par `decideOpening` elle-même, avec le férié et les congés de sa date.
+ */
+export function nextOpeningAt(
+  input: OpeningInput,
+  horizon: OpeningHorizon,
+  days = NEXT_OPENING_HORIZON_DAYS,
+): Date | null {
+  if (decideOpening(input).open) return null;
+  // Fermé à la main : c'est le vendeur qui rouvrira, à une heure inconnue.
+  if (input.manualOverride && !input.currentIsOpen) return null;
+
+  for (const t of openingCandidates(input, horizon, days)) {
+    const decision = decideOpening({
+      ...input,
+      now: t,
+      isHoliday: horizon.holidays.has(brazzavilleClock(t).isoDate),
+      closures: horizon.closures,
+    });
+    if (decision.open) return t;
+  }
+  return null;
+}

@@ -2,7 +2,10 @@ import {
   brazzavilleClock,
   datedClosureAt,
   decideOpening,
+  nextOpeningAt,
+  OpeningHorizon,
   OpeningInput,
+  openingCandidates,
 } from './vendor-opening.policy';
 
 /**
@@ -208,5 +211,234 @@ describe('datedClosureAt (R-03.3, précommandes)', () => {
       reason: 'CLOSURE',
       until: closure.endsAt,
     });
+  });
+});
+
+describe('nextOpeningAt', () => {
+  const NONE: OpeningHorizon = { holidays: new Set(), closures: [] };
+  const WEEK = [
+    'LUNDI',
+    'MARDI',
+    'MERCREDI',
+    'JEUDI',
+    'VENDREDI',
+    'SAMEDI',
+    'DIMANCHE',
+  ].map((dayOfWeek) => ({
+    dayOfWeek,
+    openTime: '10:00',
+    closeTime: '22:00',
+    isClosed: false,
+  }));
+  const TUESDAY = '2026-09-29';
+  const WEDNESDAY = '2026-09-30';
+
+  /** La règle elle-même, à un instant quelconque de l'horizon. */
+  function openAt(i: OpeningInput, h: OpeningHorizon, t: Date): boolean {
+    return decideOpening({
+      ...i,
+      now: t,
+      isHoliday: h.holidays.has(brazzavilleClock(t).isoDate),
+      closures: h.closures,
+    }).open;
+  }
+
+  /**
+   * Propriété transversale : le résultat est ouvert selon `decideOpening`, et
+   * aucune minute entre `now` et lui ne l'est (balayage exhaustif, 8 jours).
+   */
+  function expectConsistent(i: OpeningInput, h: OpeningHorizon = NONE) {
+    const result = nextOpeningAt(i, h);
+    const end = result ?? new Date(i.now.getTime() + 8 * 24 * 3600_000);
+    if (result) expect(openAt(i, h, result)).toBe(true);
+    const firstMinute = Math.floor(i.now.getTime() / 60_000) * 60_000 + 60_000;
+    for (let t = firstMinute; t < end.getTime(); t += 60_000) {
+      if (openAt(i, h, new Date(t))) {
+        throw new Error(`ouvert dès ${new Date(t).toISOString()}`);
+      }
+    }
+    return result;
+  }
+
+  it('ouvert maintenant : null', () => {
+    expect(nextOpeningAt(input({ hours: WEEK }), NONE)).toBeNull();
+  });
+
+  it('avant l’ouverture du jour : aujourd’hui 10:00', () => {
+    expect(expectConsistent(input({ hours: WEEK, now: at('07:00') }))).toEqual(
+      at('10:00'),
+    );
+  });
+
+  it('après la fermeture : demain 10:00', () => {
+    expect(expectConsistent(input({ hours: WEEK, now: at('23:00') }))).toEqual(
+      at('10:00', TUESDAY),
+    );
+  });
+
+  it('créneau de nuit (20:00 → 02:00), il est 03:00 : aujourd’hui 20:00', () => {
+    const night = WEEK.map((h) => ({
+      ...h,
+      openTime: '20:00',
+      closeTime: '02:00',
+    }));
+    expect(expectConsistent(input({ hours: night, now: at('03:00') }))).toEqual(
+      at('20:00'),
+    );
+  });
+
+  it('jour fermé : le lendemain à l’heure d’ouverture', () => {
+    const tuesdayClosed = WEEK.map((h) =>
+      h.dayOfWeek === 'MARDI' ? { ...h, isClosed: true } : h,
+    );
+    expect(
+      expectConsistent(input({ hours: tuesdayClosed, now: at('23:00') })),
+    ).toEqual(at('10:00', WEDNESDAY));
+  });
+
+  it('pause dans les horaires : la fin de la pause', () => {
+    expect(
+      expectConsistent(input({ hours: WEEK, pausedUntil: at('14:30') })),
+    ).toEqual(at('14:30'));
+  });
+
+  it('pause au-delà de la fermeture : l’ouverture du lendemain', () => {
+    expect(
+      expectConsistent(
+        input({ hours: WEEK, now: at('21:00'), pausedUntil: at('23:00') }),
+      ),
+    ).toEqual(at('10:00', TUESDAY));
+  });
+
+  it('fermeture exceptionnelle (congé de 3 jours) : première ouverture après', () => {
+    const closure = {
+      startsAt: at('00:00'),
+      endsAt: at('00:00', '2026-10-01'),
+    };
+    const horizon = { holidays: new Set<string>(), closures: [closure] };
+    expect(
+      expectConsistent(input({ hours: WEEK, closures: [closure] }), horizon),
+    ).toEqual(at('10:00', '2026-10-01'));
+  });
+
+  it('congé qui finit en pleine journée : l’heure de fin du congé', () => {
+    const closure = { startsAt: at('00:00'), endsAt: at('15:00') };
+    const horizon = { holidays: new Set<string>(), closures: [closure] };
+    expect(
+      expectConsistent(input({ hours: WEEK, closures: [closure] }), horizon),
+    ).toEqual(at('15:00'));
+  });
+
+  it('férié demain + closedOnHolidays : le surlendemain', () => {
+    const horizon = { holidays: new Set([TUESDAY]), closures: [] };
+    expect(
+      expectConsistent(input({ hours: WEEK, now: at('23:00') }), horizon),
+    ).toEqual(at('10:00', WEDNESDAY));
+  });
+
+  it('férié aujourd’hui : le lendemain, pas plus tard dans la journée', () => {
+    const horizon = { holidays: new Set([MONDAY]), closures: [] };
+    expect(
+      expectConsistent(input({ hours: WEEK, isHoliday: true }), horizon),
+    ).toEqual(at('10:00', TUESDAY));
+  });
+
+  it('férié qui se termine pendant un créneau de nuit : minuit', () => {
+    const night = WEEK.map((h) => ({
+      ...h,
+      openTime: '20:00',
+      closeTime: '02:00',
+    }));
+    const horizon = { holidays: new Set([MONDAY]), closures: [] };
+    expect(
+      expectConsistent(
+        input({ hours: night, now: at('21:00'), isHoliday: true }),
+        horizon,
+      ),
+    ).toEqual(at('00:00', TUESDAY));
+  });
+
+  it('férié + closedOnHolidays = false : férié ignoré', () => {
+    const horizon = { holidays: new Set([TUESDAY]), closures: [] };
+    expect(
+      expectConsistent(
+        input({ hours: WEEK, now: at('23:00'), closedOnHolidays: false }),
+        horizon,
+      ),
+    ).toEqual(at('10:00', TUESDAY));
+  });
+
+  it('fermé à la main (manualOverride) : null, jamais une heure devinée', () => {
+    expect(
+      nextOpeningAt(
+        input({ hours: WEEK, manualOverride: true, currentIsOpen: false }),
+        NONE,
+      ),
+    ).toBeNull();
+  });
+
+  it('ouvert à la main mais en pause : la fin de la pause', () => {
+    expect(
+      expectConsistent(
+        input({
+          hours: [],
+          manualOverride: true,
+          currentIsOpen: true,
+          pausedUntil: at('13:00'),
+        }),
+      ),
+    ).toEqual(at('13:00'));
+  });
+
+  it('aucun horaire : null', () => {
+    expect(expectConsistent(input({ hours: [], now: at('23:00') }))).toBeNull();
+  });
+
+  it('fuseau : 23:30 UTC dimanche = 00:30 lundi à Brazzaville', () => {
+    const mondayOnly = [
+      {
+        dayOfWeek: 'LUNDI',
+        openTime: '10:00',
+        closeTime: '22:00',
+        isClosed: false,
+      },
+    ];
+    expect(
+      expectConsistent(
+        input({ hours: mondayOnly, now: new Date('2026-09-27T23:30:00.000Z') }),
+      ),
+    ).toEqual(new Date('2026-09-28T09:00:00.000Z'));
+  });
+
+  it('plusieurs créneaux (nuit de la veille + jour) : le plus proche', () => {
+    // Une ligne par jour (@@unique restaurantId+dayOfWeek) : dimanche 20:00 →
+    // 02:00 déborde sur lundi, qui ouvre ensuite à 08:00.
+    expect(expectConsistent(input({ now: at('03:00') }))).toEqual(at('08:00'));
+    expect(
+      nextOpeningAt(input({ now: at('23:00', '2026-09-27') }), NONE),
+    ).toBeNull(); // dimanche 23:00 : ouvert (dimanche 20:00 → 02:00)
+  });
+
+  it('aucune ouverture dans l’horizon de 8 jours : null', () => {
+    const closure = {
+      startsAt: at('00:00'),
+      endsAt: at('00:00', '2026-10-20'),
+    };
+    const horizon = { holidays: new Set<string>(), closures: [closure] };
+    expect(
+      expectConsistent(input({ hours: WEEK, closures: [closure] }), horizon),
+    ).toBeNull();
+  });
+
+  it('les candidats sont triés, uniques et postérieurs à maintenant', () => {
+    const c = openingCandidates(
+      { now: at('12:00'), hours: WEEK, pausedUntil: at('10:00') },
+      NONE,
+    );
+    expect(c.every((t) => t > at('12:00'))).toBe(true);
+    expect(c.map(Number)).toEqual(
+      [...new Set(c.map(Number))].sort((a, b) => a - b),
+    );
+    expect(c[0]).toEqual(at('10:00', TUESDAY));
   });
 });

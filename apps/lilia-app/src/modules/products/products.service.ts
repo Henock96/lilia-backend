@@ -64,6 +64,10 @@ export class ProductsService {
     return this.query.findPopular(limit);
   }
 
+  findAvailableNow(query: { vendorType?: VendorType; limit?: number }) {
+    return this.query.findAvailableNow(query);
+  }
+
   search(query: string, limit = 20) {
     return this.query.search(query, limit);
   }

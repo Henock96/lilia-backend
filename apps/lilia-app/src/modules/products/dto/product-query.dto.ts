@@ -1,4 +1,13 @@
-import { IsEnum, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsEnum,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { ProductType, VendorType } from '@prisma/client';
@@ -52,4 +61,23 @@ export class ProductSearchQueryDto extends PaginationQueryDto {
   @IsOptional()
   @Type(() => String)
   q: string = '';
+}
+
+/**
+ * `GET /products/available-now` — ce qu'un client peut commander **maintenant**.
+ * `limit` est borné à 20 : c'est un rail d'accueil, pas un catalogue.
+ */
+export class AvailableNowQueryDto {
+  @ApiPropertyOptional({ enum: VendorType })
+  @IsEnum(VendorType)
+  @IsOptional()
+  vendorType?: VendorType;
+
+  @ApiPropertyOptional({ minimum: 1, maximum: 20, default: 10 })
+  @Type(() => Number)
+  @IsInt({ message: 'limit doit être un entier' })
+  @Min(1, { message: 'limit doit être supérieur ou égal à 1' })
+  @Max(20, { message: 'limit ne peut pas dépasser 20' })
+  @IsOptional()
+  limit: number = 10;
 }
