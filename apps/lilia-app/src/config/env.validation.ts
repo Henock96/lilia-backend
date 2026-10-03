@@ -331,6 +331,11 @@ export const envValidationSchema = Joi.object({
   RESEND_SENDER_EMAIL: Joi.string().email().allow('').optional(),
   RESEND_SENDER_NAME: Joi.string().allow('').optional(),
 
+  // ─── Météo OpenWeatherMap ─────────────────────────────────────────────────
+  // Optionnelle : sans clé, `GET /weather/brazzaville` répond 503 et l'app
+  // masque simplement la météo. La clé ne quitte jamais le serveur.
+  OPENWEATHERMAP_API_KEY: Joi.string().allow('').optional(),
+
   // ─── Sentry ───────────────────────────────────────────────────────────────
   SENTRY_DSN: Joi.string().uri().allow('').optional(),
   // Ces trois-là étaient lues par `instrument.ts` et documentées dans son
