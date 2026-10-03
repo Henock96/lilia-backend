@@ -63,6 +63,7 @@ import { MenuImagesModule } from './modules/menu-images/menu-images.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { EmailModule } from './modules/email/email.module';
 import { SmsModule } from './modules/sms/sms.module';
+import { WeatherModule } from './modules/weather/weather.module';
 import { CloudinaryModule } from './modules/cloudinary/cloudinary.module';
 import { AppScheduleModule } from './modules/schedule/schedule.module';
 import { HealthsModule } from './modules/health/health.module';
@@ -269,6 +270,7 @@ import { DeliveryPricingModule } from './modules/delivery-pricing/delivery-prici
     NotificationsModule,
     EmailModule,
     SmsModule,
+    WeatherModule,
     CloudinaryModule,
     AppScheduleModule,
     HealthsModule,
