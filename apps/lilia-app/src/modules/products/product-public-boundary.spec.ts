@@ -34,6 +34,11 @@ describe('Lectures publiques du catalogue — frontière marketplace', () => {
       restaurant: { findMany: jest.fn().mockResolvedValue([]) },
       orderItem: { groupBy },
       user: { findUnique: jest.fn().mockResolvedValue(null) },
+      // Candidats de la recherche : un produit et un vendeur trouvés.
+      $queryRaw: jest.fn().mockResolvedValue([
+        { kind: 'p', id: 'p1', exact: true },
+        { kind: 'v', id: 'r1', exact: true },
+      ]),
     };
     const access = { resolveTargetRestaurant: jest.fn() };
     return {
@@ -143,6 +148,59 @@ describe('Lectures publiques du catalogue — frontière marketplace', () => {
       'LOW',
       'OUT_OF_STOCK',
     ]);
+  });
+
+  it('search ne lit que les candidats, sous la frontière', async () => {
+    const { service, findMany, prisma } = build();
+    await service.search('gateau');
+
+    const where = findMany.mock.calls[0][0].where as Record<string, unknown>;
+    expect(where.id).toEqual({ in: ['p1'] });
+    expect(where.restaurant).toEqual(PUBLIC_VENDOR_WHERE);
+    const vendors = prisma.restaurant.findMany.mock.calls[0][0] as {
+      where: Record<string, unknown>;
+    };
+    expect(vendors.where).toEqual({
+      ...PUBLIC_VENDOR_WHERE,
+      id: { in: ['r1'] },
+    });
+  });
+
+  it('search : une correspondance exacte écarte les correspondances approchées', async () => {
+    const { service, findMany, prisma } = build();
+    prisma.$queryRaw.mockResolvedValue([
+      { kind: 'p', id: 'exact', exact: true },
+      { kind: 'p', id: 'approchee', exact: false },
+      { kind: 'v', id: 'v-approche', exact: false },
+    ]);
+    await service.search('poulet');
+
+    expect(findMany.mock.calls[0][0].where.id).toEqual({ in: ['exact'] });
+    expect(prisma.restaurant.findMany.mock.calls[0][0].where.id).toEqual({
+      in: [],
+    });
+  });
+
+  it('search : sans correspondance exacte, l’approchée sert de repli', async () => {
+    const { service, findMany, prisma } = build();
+    prisma.$queryRaw.mockResolvedValue([
+      { kind: 'p', id: 'poulet-dg', exact: false },
+    ]);
+    await service.search('poulle');
+
+    expect(findMany.mock.calls[0][0].where.id).toEqual({ in: ['poulet-dg'] });
+  });
+
+  it('search : aucun candidat, aucune lecture du catalogue', async () => {
+    const { service, findMany, prisma } = build();
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    expect(await service.search('zzzz')).toEqual({
+      restaurants: [],
+      products: [],
+    });
+    expect(findMany).not.toHaveBeenCalled();
+    expect(prisma.restaurant.findMany).not.toHaveBeenCalled();
   });
 
   it('findAvailableNow applique la frontière, l’ouverture et le vendorType avant toute coupe', async () => {

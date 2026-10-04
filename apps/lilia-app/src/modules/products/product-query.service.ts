@@ -27,6 +27,12 @@ import {
   withPublicModifiers,
 } from '../modifiers/modifier-views';
 import { variantStockVerdict, withVariantStock } from '../orders/stock-units';
+import {
+  escapeLike,
+  foldSearchText,
+  FUZZY_MIN_LENGTH,
+  FUZZY_THRESHOLD,
+} from './search-fold';
 
 /**
  * Lectures du catalogue produits (extrait de ProductsService — LIL-143).
@@ -532,14 +538,20 @@ export class ProductQueryService {
       return { restaurants: [], products: [] };
     }
 
+    // Le texte n'est comparé qu'ici, replié des deux côtés (accents, casse,
+    // œ, apostrophe typographique). La frontière marketplace, le catalogue,
+    // l'ordre et la coupe restent portés par les requêtes Prisma ci-dessous,
+    // inchangées : elles ne reçoivent que des identifiants candidats.
+    const { productIds, vendorIds } = await this.searchCandidates(searchTerm);
+    if (productIds.length === 0 && vendorIds.length === 0) {
+      return { restaurants: [], products: [] };
+    }
+
     const [restaurants, products, modifiersOn] = await Promise.all([
       this.prisma.restaurant.findMany({
         where: {
           ...PUBLIC_VENDOR_WHERE,
-          OR: [
-            { nom: { contains: searchTerm, mode: 'insensitive' } },
-            { specialties: { some: { name: { contains: searchTerm, mode: 'insensitive' } } } },
-          ],
+          id: { in: vendorIds },
         },
         select: { ...PUBLIC_VENDOR_SELECT, ...RESTAURANT_LIST_INCLUDE },
         orderBy: [...PUBLIC_VENDOR_ORDER_BY],
@@ -547,11 +559,7 @@ export class ProductQueryService {
       }),
       this.prisma.product.findMany({
         where: {
-          OR: [
-            { nom: { contains: searchTerm, mode: 'insensitive' } },
-            { description: { contains: searchTerm, mode: 'insensitive' } },
-            { category: { nom: { contains: searchTerm, mode: 'insensitive' } } },
-          ],
+          id: { in: productIds },
           restaurant: PUBLIC_VENDOR_WHERE,
           AND: [catalogProductWhere(this.prisma.product.fields, now)],
         },
@@ -579,6 +587,66 @@ export class ProductQueryService {
         withVariantStock(withAvailableNow(products, now)),
         modifiersOn,
       ),
+    };
+  }
+
+  /**
+   * Identifiants des produits et vendeurs dont le texte correspond à la
+   * saisie, en **un** aller-retour.
+   *
+   * 1. Correspondance exacte, repliée (`lilia_search_fold`) : « gateau »
+   *    retrouve « Gâteaux », « d'ailes » retrouve « d’ailes ».
+   * 2. Seulement si la première ne rend **rien**, et pour une saisie d'au moins
+   *    {@link FUZZY_MIN_LENGTH} lettres : recherche approchée
+   *    (`word_similarity` ≥ {@link FUZZY_THRESHOLD}) — « poulle » → poulet.
+   *    Jamais mêlée à une correspondance exacte : elle n'ajoute pas de bruit à
+   *    une recherche qui a déjà trouvé.
+   *
+   * Aucune frontière ici (vendeur publié, catalogue, stock) : elles sont
+   * appliquées ensuite par les mêmes `where` que partout ailleurs. Un
+   * identifiant candidat hors frontière ne sort donc jamais.
+   */
+  private async searchCandidates(
+    searchTerm: string,
+  ): Promise<{ productIds: string[]; vendorIds: string[] }> {
+    const folded = foldSearchText(searchTerm);
+    const pattern = `%${escapeLike(folded)}%`;
+    const fuzzy = [...folded].length >= FUZZY_MIN_LENGTH;
+
+    const rows = await this.prisma.$queryRaw<{ kind: 'p' | 'v'; id: string; exact: boolean }[]>`
+      WITH p AS (
+        SELECT p.id,
+               lilia_search_fold(p.nom) LIKE ${pattern} ESCAPE '\'
+            OR lilia_search_fold(p.description) LIKE ${pattern} ESCAPE '\'
+            OR lilia_search_fold(c.nom) LIKE ${pattern} ESCAPE '\' AS exact,
+               GREATEST(
+                 word_similarity(${folded}, lilia_search_fold(p.nom)),
+                 word_similarity(${folded}, lilia_search_fold(c.nom))
+               ) AS sim
+          FROM "Product" p
+          LEFT JOIN "Category" c ON c.id = p."categoryId"
+         WHERE p."deletedAt" IS NULL
+      ), v AS (
+        SELECT r.id,
+               lilia_search_fold(r.nom) LIKE ${pattern} ESCAPE '\'
+            OR EXISTS (SELECT 1 FROM "Specialty" s
+                        WHERE s."restaurantId" = r.id
+                          AND lilia_search_fold(s.name) LIKE ${pattern} ESCAPE '\') AS exact,
+               word_similarity(${folded}, lilia_search_fold(r.nom)) AS sim
+          FROM "Restaurant" r
+      )
+      SELECT 'p' AS kind, id, exact FROM p
+       WHERE exact OR (${fuzzy} AND sim >= ${FUZZY_THRESHOLD})
+      UNION ALL
+      SELECT 'v' AS kind, id, exact FROM v
+       WHERE exact OR (${fuzzy} AND sim >= ${FUZZY_THRESHOLD})
+    `;
+
+    const anyExact = rows.some((r) => r.exact);
+    const kept = anyExact ? rows.filter((r) => r.exact) : rows;
+    return {
+      productIds: kept.filter((r) => r.kind === 'p').map((r) => r.id),
+      vendorIds: kept.filter((r) => r.kind === 'v').map((r) => r.id),
     };
   }
 

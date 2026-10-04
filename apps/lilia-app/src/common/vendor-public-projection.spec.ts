@@ -137,6 +137,7 @@ describe('Projection publique des vendeurs', () => {
       publicHoliday: { findMany: jest.Mock };
       product: { fields: Record<string, string>; findMany: jest.Mock };
       $transaction: jest.Mock;
+      $queryRaw: jest.Mock;
     };
 
     beforeEach(async () => {
@@ -164,6 +165,9 @@ describe('Projection publique des vendeurs', () => {
           findMany: jest.fn().mockResolvedValue([]),
         },
         $transaction: jest.fn((ops: unknown[]) => Promise.all(ops)),
+        $queryRaw: jest
+          .fn()
+          .mockResolvedValue([{ kind: 'v', id: 'v1', exact: true }]),
       };
 
       const module: TestingModule = await Test.createTestingModule({
