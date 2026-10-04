@@ -4,8 +4,10 @@ import { OrderStatus, Prisma, ProductType, VendorType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   PUBLIC_VENDOR_ORDER_BY,
+  PUBLIC_VENDOR_SELECT,
   PUBLIC_VENDOR_WHERE,
 } from '../../common/vendor-visibility';
+import { RESTAURANT_LIST_INCLUDE } from '../restaurants/restaurant.includes';
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 import { stockStatusWhere, type StockStatus } from './stock-status';
 import {
@@ -16,6 +18,7 @@ import {
   MENU_IMAGES_ORDER_BY,
   MENU_PRODUCTS_ORDER_BY,
   MENU_VARIANTS_ORDER_BY,
+  withAvailableNow,
 } from './vendor-menu.include';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { modifiersEnabled } from '../modifiers/modifiers-switch';
@@ -501,21 +504,36 @@ export class ProductQueryService {
   }
 
   /**
-   * Recherche de produits et restaurants par texte
+   * Recherche de produits et de vendeurs par texte — `GET /products/search`.
+   *
+   * Même vendeur, même produit que partout ailleurs dans le catalogue public :
+   *
+   * - **vendeurs** : `select` sur {@link PUBLIC_VENDOR_SELECT}, jamais
+   *   `include`. Cette branche était restée en `include:` après la correction
+   *   des cinq autres lectures publiques (20/09/2026) : le 03/10/2026, une
+   *   recherche d'une seule lettre rendait sans jeton le numéro de reversement
+   *   de sept vendeurs (`payoutPhoneNumber`), leur e-mail et leur `ownerId`.
+   * - **ordre** : {@link PUBLIC_VENDOR_ORDER_BY} — ouverts d'abord. La coupe à
+   *   `limit` arrive **après** le tri : sans `orderBy`, l'ordre était celui du
+   *   tas PostgreSQL, et « poulet » rendait 20 plats dont 12 de boutiques
+   *   fermées intercalés avec les commandables.
+   * - **produits** : les verdicts serveur de la carte — fenêtre de vente
+   *   (`availableNow`), stock **par format** (`stockStatus`), options. Les
+   *   résultats sont rendus par les mêmes cartes que le menu ; sans ces
+   *   champs, l'application recalculait la fenêtre avec l'heure du téléphone.
+   *
+   * Les plats de boutiques fermées restent dans la réponse, à leur place
+   * (après les commandables) : les masquer laisserait croire qu'ils ne sont
+   * pas au menu. Le refus de vente reste au panier et au checkout.
    */
-  async search(query: string, limit = 20) {
+  async search(query: string, limit = 20, now = new Date()) {
     const searchTerm = query.trim();
     if (!searchTerm) {
       return { restaurants: [], products: [] };
     }
 
-    const [restaurants, products] = await Promise.all([
+    const [restaurants, products, modifiersOn] = await Promise.all([
       this.prisma.restaurant.findMany({
-        // Fix SEC-01 : cette branche ne contrôlait que `isActive`, alors que la
-        // branche `products` juste en dessous applique PUBLIC_VENDOR_WHERE. Un
-        // vendeur en DRAFT ou non approuvé était donc énumérable par la
-        // recherche publique — constaté en production sur « Le First Restaurant
-        // Brazzaville », absent de GET /restaurants mais rendu par /search.
         where: {
           ...PUBLIC_VENDOR_WHERE,
           OR: [
@@ -523,11 +541,8 @@ export class ProductQueryService {
             { specialties: { some: { name: { contains: searchTerm, mode: 'insensitive' } } } },
           ],
         },
-        include: {
-          specialties: true,
-          operatingHours: true,
-          photos: { orderBy: [{ isCover: 'desc' }, { displayOrder: 'asc' }] },
-        },
+        select: { ...PUBLIC_VENDOR_SELECT, ...RESTAURANT_LIST_INCLUDE },
+        orderBy: [...PUBLIC_VENDOR_ORDER_BY],
         take: limit,
       }),
       this.prisma.product.findMany({
@@ -538,7 +553,7 @@ export class ProductQueryService {
             { category: { nom: { contains: searchTerm, mode: 'insensitive' } } },
           ],
           restaurant: PUBLIC_VENDOR_WHERE,
-          AND: [catalogProductWhere(this.prisma.product.fields)],
+          AND: [catalogProductWhere(this.prisma.product.fields, now)],
         },
         include: {
           category: true,
@@ -547,12 +562,24 @@ export class ProductQueryService {
             select: { id: true, nom: true, imageUrl: true, isOpen: true },
           },
           images: { orderBy: [...MENU_IMAGES_ORDER_BY] },
+          modifierGroups: PUBLIC_PRODUCT_MODIFIER_GROUPS_ARGS,
         },
+        orderBy: [
+          ...PUBLIC_VENDOR_ORDER_BY.map((o) => ({ restaurant: o })),
+          ...MENU_PRODUCTS_ORDER_BY,
+        ],
         take: limit,
       }),
+      modifiersEnabled(this.platformSettings),
     ]);
 
-    return { restaurants, products };
+    return {
+      restaurants,
+      products: withPublicModifiers(
+        withVariantStock(withAvailableNow(products, now)),
+        modifiersOn,
+      ),
+    };
   }
 
   /**
