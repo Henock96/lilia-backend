@@ -12,6 +12,8 @@ import { AdminAuditService } from '../modules/admin-audit/admin-audit.service';
 import { VendorsService } from '../modules/vendors/vendors.service';
 import { VendorOpeningService } from '../modules/vendors/vendor-opening.service';
 import { RestaurantQueryService } from '../modules/restaurants/restaurant-query.service';
+import { ProductQueryService } from '../modules/products/product-query.service';
+import { RestaurantAccessService } from '../modules/restaurants/restaurant-access.service';
 
 /**
  * **Ce qu'une lecture publique de vendeur a le droit de servir.**
@@ -122,6 +124,7 @@ describe('Projection publique des vendeurs', () => {
 
     let vendors: VendorsService;
     let restaurants: RestaurantQueryService;
+    let products: ProductQueryService;
     let prisma: {
       restaurant: {
         findFirst: jest.Mock;
@@ -132,7 +135,7 @@ describe('Projection publique des vendeurs', () => {
       review: { groupBy: jest.Mock };
       vendorClosure: { findMany: jest.Mock };
       publicHoliday: { findMany: jest.Mock };
-      product: { fields: Record<string, string> };
+      product: { fields: Record<string, string>; findMany: jest.Mock };
       $transaction: jest.Mock;
     };
 
@@ -156,7 +159,10 @@ describe('Projection publique des vendeurs', () => {
           ]),
         },
         publicHoliday: { findMany: jest.fn().mockResolvedValue([]) },
-        product: { fields: { availableFrom: 'F', availableUntil: 'U' } },
+        product: {
+          fields: { availableFrom: 'F', availableUntil: 'U' },
+          findMany: jest.fn().mockResolvedValue([]),
+        },
         $transaction: jest.fn((ops: unknown[]) => Promise.all(ops)),
       };
 
@@ -164,7 +170,9 @@ describe('Projection publique des vendeurs', () => {
         providers: [
           VendorsService,
           RestaurantQueryService,
+          ProductQueryService,
           VendorOpeningService,
+          { provide: RestaurantAccessService, useValue: {} },
           { provide: PrismaService, useValue: prisma },
           { provide: PaginationService, useValue: {} },
           { provide: EventEmitter2, useValue: { emit: jest.fn() } },
@@ -174,10 +182,11 @@ describe('Projection publique des vendeurs', () => {
 
       vendors = module.get(VendorsService);
       restaurants = module.get(RestaurantQueryService);
+      products = module.get(ProductQueryService);
     });
 
     /**
-     * Les cinq routes publiques, avec l'appel de service qui les sert.
+     * Les six routes publiques, avec l'appel de service qui les sert.
      *
      * `findPopular` part de `order.groupBy` : sans vendeur en tête de
      * classement, elle ressort avant d'interroger `restaurant`, et le test ne
@@ -203,6 +212,10 @@ describe('Projection publique des vendeurs', () => {
           },
           'findMany',
         ],
+        // Restée en `include:` jusqu'au 03/10/2026, après la correction des
+        // cinq autres : une recherche d'une seule lettre rendait le numéro de
+        // reversement de sept vendeurs, sans jeton.
+        ['GET /products/search', () => products.search('maman'), 'findMany'],
       ];
 
     it.each(ROUTES)(

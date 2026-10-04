@@ -1,7 +1,10 @@
 import { OnboardingStatus } from '@prisma/client';
 
 import { ProductQueryService } from './product-query.service';
-import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
+import {
+  PUBLIC_VENDOR_ORDER_BY,
+  PUBLIC_VENDOR_WHERE,
+} from '../../common/vendor-visibility';
 
 /**
  * Frontière marketplace des **cinq** lectures publiques du catalogue.
@@ -84,6 +87,64 @@ describe('Lectures publiques du catalogue — frontière marketplace', () => {
     const where = findMany.mock.calls[0][0].where as Record<string, unknown>;
     expect(where.restaurant).toEqual(PUBLIC_VENDOR_WHERE);
   });
+
+  /**
+   * La recherche coupe à `limit` (20) : sans tri, l'ordre était celui du tas
+   * PostgreSQL. Vérifié en production le 03/10/2026 — « poulet » rendait 20
+   * plats, 12 de boutiques fermées intercalés avec les 8 commandables, et
+   * rien ne garantissait que les commandables survivent à la coupe.
+   */
+  it('search classe les boutiques ouvertes d’abord, avant la coupe', async () => {
+    const { service, findMany, prisma } = build();
+    await service.search('poulet');
+
+    const products = findMany.mock.calls[0][0] as {
+      orderBy: Record<string, unknown>[];
+    };
+    expect(products.orderBy.slice(0, PUBLIC_VENDOR_ORDER_BY.length)).toEqual(
+      PUBLIC_VENDOR_ORDER_BY.map((o) => ({ restaurant: o })),
+    );
+
+    const vendors = prisma.restaurant.findMany.mock.calls[0][0] as {
+      orderBy: unknown[];
+    };
+    expect(vendors.orderBy).toEqual([...PUBLIC_VENDOR_ORDER_BY]);
+  });
+
+  /**
+   * Un résultat de recherche est rendu par la même carte qu'un produit du
+   * menu : il doit porter les mêmes verdicts serveur — fenêtre de vente
+   * (`availableNow`) et stock **par format** (`stockStatus`). Sans eux,
+   * l'application recalculait la fenêtre avec l'heure du téléphone et
+   * proposait d'ajouter un format épuisé.
+   */
+  it('search sert les verdicts serveur : availableNow et stock par format', async () => {
+    const { service, findMany } = build();
+    findMany.mockResolvedValue([
+      {
+        id: 'p1',
+        nom: 'Poulet braisé',
+        availableFrom: '11:00',
+        availableUntil: '11:01',
+        stockRestant: 1,
+        variants: [
+          { id: 'v1', stockConsumption: 1 },
+          { id: 'v2', stockConsumption: 2 },
+        ],
+        restaurant: { id: 'r1', nom: 'Chez Lili', isOpen: true },
+      },
+    ]);
+
+    const { products } = await service.search('poulet');
+
+    expect(products[0]).toHaveProperty('availableNow');
+    expect(typeof products[0].availableNow).toBe('boolean');
+    expect(products[0].variants.map((v) => v.stockStatus)).toEqual([
+      'LOW',
+      'OUT_OF_STOCK',
+    ]);
+  });
+
   it('findAvailableNow applique la frontière, l’ouverture et le vendorType avant toute coupe', async () => {
     const { service, findMany } = build();
     await service.findAvailableNow({ vendorType: 'BAKERY', limit: 10 });
