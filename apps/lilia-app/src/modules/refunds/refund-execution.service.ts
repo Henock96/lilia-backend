@@ -24,10 +24,8 @@ import { PaymentEventService } from '../payments/services/payment-event.service'
 import { ProviderUnavailableError } from '../payments/providers/payment-provider.interface';
 import { maskPhone, maskRef } from '../payments/services/payment.service';
 import { refundConflictsWithPayout } from './refund-lines.policy';
-import {
-  consumeApproval,
-  REFUND_APPROVAL_THRESHOLD_XAF,
-} from '../approvals/approval-rules';
+import { consumeApproval } from '../approvals/approval-rules';
+import { executionNeedsApproval } from './refund-approval.policy';
 
 /**
  * Exécution du virement de remboursement au client.
@@ -105,8 +103,7 @@ export class RefundExecutionService {
     // F3-08 / D7 — au-delà du seuil, un administrateur seul ne fait pas partir
     // l'argent. Vérifié ici aussi, pas seulement dans le contrôleur : tout
     // appelant humain passe par cette méthode.
-    const needsApproval =
-      adminUserId !== null && refund.amount >= REFUND_APPROVAL_THRESHOLD_XAF;
+    const needsApproval = executionNeedsApproval(refund, adminUserId);
     if (needsApproval && !opts.approvalId) {
       throw new ConflictException({
         message: `Un remboursement de ${refund.amount} FCFA exige l’approbation d’un second administrateur.`,

@@ -8,6 +8,8 @@ import { ApprovalOutboxEffectsService } from '../../apps/lilia-app/src/modules/o
 import { OutboxService } from '../../apps/lilia-app/src/modules/outbox/outbox.service';
 import { PaymentEventService } from '../../apps/lilia-app/src/modules/payments/services/payment-event.service';
 import { RefundExecutionService } from '../../apps/lilia-app/src/modules/refunds/refund-execution.service';
+import { RefundsService } from '../../apps/lilia-app/src/modules/refunds/refunds.service';
+import { refundClosurePayload } from '../../apps/lilia-app/src/modules/refunds/refund-approval.policy';
 
 /**
  * **F3-08 — gestes financiers à deux administrateurs (PostgreSQL réel).**
@@ -68,6 +70,7 @@ describeIfDb('Approbations à deux administrateurs (PostgreSQL réel)', () => {
       refundExec,
       { invalidate: async () => undefined } as never,
       events,
+      new RefundsService(prisma as never),
     );
   });
 
@@ -357,6 +360,155 @@ describeIfDb('Approbations à deux administrateurs (PostgreSQL réel)', () => {
     const refund = await bigRefund(49_999);
     await refundExec.execute(refund.id, A1);
     expect(sent).toHaveLength(1);
+  });
+
+  it('deux exécutions simultanées du même remboursement : un seul virement', async () => {
+    const refund = await bigRefund(10_000);
+    const outcomes = await Promise.allSettled([
+      refundExec.execute(refund.id, A1),
+      refundExec.execute(refund.id, A2),
+    ]);
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+    expect(sent).toHaveLength(1);
+  });
+
+  // ─── R-01 — clôture déclarative au-delà du seuil ──────────────────────────
+
+  const requestClosure = (
+    refundId: string,
+    closeAs: 'COMPLETED' | 'REJECTED',
+    notes?: string,
+  ) =>
+    approvals.request({
+      kind: 'REFUND_EXECUTION',
+      refId: refundId,
+      payload: refundClosurePayload(
+        { id: refundId, amount: 80_000 },
+        closeAs,
+        notes,
+      ),
+      amountXaf: 80_000,
+      requestedBy: A1,
+      summary: 'test',
+    });
+  const refundRow = (id: string) =>
+    prisma.refund.findUniqueOrThrow({ where: { id } });
+
+  it('R-01 — clôture ≥ seuil par un admin seul : refusée, rien n’est écrit', async () => {
+    const refund = await bigRefund(80_000);
+    const refunds = new RefundsService(prisma as never);
+    await expect(
+      refunds.updateStatus(refund.id, 'COMPLETED', A1, 'Viré à la main'),
+    ).rejects.toMatchObject({ response: { code: 'APPROVAL_REQUIRED' } });
+    expect((await refundRow(refund.id)).status).toBe('PENDING');
+  });
+
+  it('R-01 — l’approbation d’un AUTRE admin clôt le remboursement, sans virement, et le journalise', async () => {
+    const refund = await bigRefund(80_000);
+    const approval = await requestClosure(refund.id, 'REJECTED', 'Doublon');
+
+    expect((await refundRow(refund.id)).status).toBe('PENDING');
+    const result = await approvals.approve(approval.id, A2);
+
+    expect(result).toMatchObject({ closure: { status: 'REJECTED' } });
+    const row = await refundRow(refund.id);
+    expect(row.status).toBe('REJECTED');
+    expect(row.processedBy).toBe(A1); // le demandeur décide, le second approuve
+    expect(row.notes).toBe('Doublon');
+    expect(sent).toHaveLength(0); // une clôture ne vire rien
+    expect(
+      (
+        await prisma.financialApproval.findUniqueOrThrow({
+          where: { id: approval.id },
+        })
+      ).status,
+    ).toBe('CONSUMED');
+    const log = await prisma.adminAuditLog.findFirstOrThrow({
+      where: { action: 'REFUND_UPDATED', targetId: 'ap-order' },
+    });
+    expect(log.actorId).toBe(A1);
+    expect(log.metadata).toMatchObject({
+      refundId: refund.id,
+      status: 'REJECTED',
+      amount: 80_000,
+      approvalId: approval.id,
+      approvedBy: A2,
+    });
+  });
+
+  it('R-01 — le demandeur ne peut pas approuver sa propre clôture', async () => {
+    const refund = await bigRefund(80_000);
+    const approval = await requestClosure(refund.id, 'COMPLETED');
+    await expect(approvals.approve(approval.id, A1)).rejects.toMatchObject({
+      response: { code: 'APPROVAL_SELF_FORBIDDEN' },
+    });
+    expect((await refundRow(refund.id)).status).toBe('PENDING');
+  });
+
+  it('R-01 — deux admins approuvent la même clôture à la même seconde : une seule mutation', async () => {
+    const refund = await bigRefund(80_000);
+    const approval = await requestClosure(refund.id, 'COMPLETED');
+    const outcomes = await Promise.allSettled([
+      approvals.approve(approval.id, A2),
+      approvals.approve(approval.id, A3),
+    ]);
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+    expect((await refundRow(refund.id)).status).toBe('COMPLETED');
+    expect(
+      await prisma.adminAuditLog.count({
+        where: { action: 'REFUND_UPDATED', targetId: 'ap-order' },
+      }),
+    ).toBe(1);
+  });
+
+  it('R-01 — une approbation de clôture ne sert jamais de virement (et inversement)', async () => {
+    const refund = await bigRefund(80_000);
+    const approval = await requestClosure(refund.id, 'COMPLETED');
+    await prisma.financialApproval.update({
+      where: { id: approval.id },
+      data: { status: 'APPROVED', approvedBy: A2, decidedAt: new Date() },
+    });
+    await expect(
+      refundExec.execute(refund.id, A1, { approvalId: approval.id }),
+    ).rejects.toMatchObject({ response: { code: 'APPROVAL_NOT_USABLE' } });
+    expect(sent).toHaveLength(0);
+    // Et l'approbation n'a pas été consommée par la tentative.
+    expect(
+      (
+        await prisma.financialApproval.findUniqueOrThrow({
+          where: { id: approval.id },
+        })
+      ).status,
+    ).toBe('APPROVED');
+  });
+
+  it('R-01 — approuvée « remboursé », elle n’autorise pas « refusé »', async () => {
+    const refund = await bigRefund(80_000);
+    const approval = await requestClosure(refund.id, 'COMPLETED');
+    await prisma.financialApproval.update({
+      where: { id: approval.id },
+      data: { status: 'APPROVED', approvedBy: A2, decidedAt: new Date() },
+    });
+    const refunds = new RefundsService(prisma as never);
+    await expect(
+      refunds.updateStatus(refund.id, 'REJECTED', A1, undefined, {
+        approvalId: approval.id,
+        approvedBy: A2,
+      }),
+    ).rejects.toMatchObject({ response: { code: 'APPROVAL_NOT_USABLE' } });
+    expect((await refundRow(refund.id)).status).toBe('PENDING');
+  });
+
+  it('D-2 — virement prestataire en vol : aucune clôture manuelle', async () => {
+    const refund = await bigRefund(10_000);
+    await refundExec.execute(refund.id, A1); // PROCESSING + providerRefundId
+    const refunds = new RefundsService(prisma as never);
+    await expect(
+      refunds.updateStatus(refund.id, 'REJECTED', A1),
+    ).rejects.toMatchObject({
+      response: { code: 'REFUND_PROVIDER_IN_FLIGHT' },
+    });
+    expect((await refundRow(refund.id)).status).toBe('PROCESSING');
   });
 
   // ─── Capacités ─────────────────────────────────────────────────────────────

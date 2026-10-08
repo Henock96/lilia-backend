@@ -20,6 +20,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { lockOrderRow } from '../orders/order-row-lock';
 import { ComposeRefundDto } from './dto/compose-refund.dto';
 import { RefundExecutionService } from './refund-execution.service';
+import { executionNeedsApproval } from './refund-approval.policy';
 import {
   COUNTED_REFUND_STATUSES,
   composeRefund,
@@ -242,12 +243,32 @@ export class RefundComposerService {
     // Le virement part tout de suite par défaut : l'administrateur vient de
     // décider, lui imposer un second geste dans une autre file n'ajoute rien.
     // Un refus (mode MANUAL, prestataire) laisse la dette PENDING en file.
-    let execution: { executed: boolean; status: string; message: string } = {
+    let execution: {
+      executed: boolean;
+      status: string;
+      message: string;
+      /** R-01 — au-delà du seuil : le contrôleur ouvre la demande d'approbation. */
+      approvalRequired?: boolean;
+    } = {
       executed: false,
       status: RefundStatus.PENDING,
       message: 'Remboursement laissé dans la file « Remboursements ».',
     };
-    if (dto.execute !== false) {
+    if (
+      dto.execute !== false &&
+      executionNeedsApproval({ amount: created.composition.totalXaf }, adminId)
+    ) {
+      // R-01 (FIN-02) — l'exécution aurait levé `APPROVAL_REQUIRED`, avalé
+      // ici en « laissé en file » : la dette restait sans demande ni bouton
+      // pour la solder. Même règle que le virement, signalée au lieu d'échouer.
+      execution = {
+        executed: false,
+        status: RefundStatus.PENDING,
+        approvalRequired: true,
+        message:
+          'Au-delà du seuil, un second administrateur doit approuver le virement. Il partira à son approbation.',
+      };
+    } else if (dto.execute !== false) {
       try {
         const result = await this.execution.execute(created.refundId, adminId);
         execution = { executed: true, ...result };

@@ -3,6 +3,7 @@ import { RequireCapability } from '../auth/decorators/require-capability.decorat
 import { AdminCapability } from '@prisma/client';
 import {
   Body,
+  ConflictException,
   Controller,
   Get,
   HttpCode,
@@ -28,6 +29,10 @@ import {
 } from './refund-execution.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { REFUND_APPROVAL_THRESHOLD_XAF } from '../approvals/approval-rules';
+import {
+  executionNeedsApproval,
+  refundClosurePayload,
+} from './refund-approval.policy';
 import { UpdateRefundStatusDto } from './dto/update-refund-status.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -70,7 +75,14 @@ export class RefundsController {
     // F3-08 / D7 — au-delà du seuil, la demande part chez un second
     // administrateur, qui exécutera en approuvant.
     const pending = await this.refunds.findOne(id);
-    if (pending.data.amount >= REFUND_APPROVAL_THRESHOLD_XAF) {
+    // R-01 — une demande d'approbation pour un remboursement qui n'est plus
+    // à virer n'aboutirait qu'à un refus au moment de l'approbation.
+    if (pending.data.status !== RefundStatus.PENDING) {
+      throw new ConflictException(
+        `Ce remboursement n'est pas en attente (${pending.data.status}).`,
+      );
+    }
+    if (executionNeedsApproval(pending.data, admin.id)) {
       const approval = await this.approvals.request({
         kind: ApprovalKind.REFUND_EXECUTION,
         refId: id,
@@ -125,22 +137,42 @@ export class RefundsController {
     @Body() dto: UpdateRefundStatusDto,
     @CurrentUser() admin: User,
   ) {
-    const result = await this.refunds.updateStatus(
-      id,
-      dto.status,
-      admin.id,
-      dto.notes,
-    );
+    // Le journal (`REFUND_UPDATED`) est écrit par le service, dans la
+    // transaction de la clôture (R-01).
+    try {
+      return await this.refunds.updateStatus(id, dto.status, admin.id, dto.notes);
+    } catch (error) {
+      if (!isApprovalRequired(error)) throw error;
+    }
 
-    await this.audit.record({
-      actorId: admin.id,
-      action: AdminAuditAction.REFUND_UPDATED,
-      targetType: 'Order',
-      targetId: result.data.orderId,
-      reason: dto.notes,
-      metadata: { refundId: id, status: dto.status, amount: result.data.amount },
+    // R-01 — au-delà du seuil, `COMPLETED` / `REJECTED` passent par un second
+    // administrateur : la demande porte le statut et la note exacts, et
+    // l'approbation appliquera ce geste-là, pas un virement. Même forme de
+    // réponse que les autres gestes à deux (numéro de versement, capacités).
+    const pending = await this.refunds.findOne(id);
+    const approval = await this.approvals.request({
+      kind: ApprovalKind.REFUND_EXECUTION,
+      refId: id,
+      payload: refundClosurePayload(pending.data, dto.status, dto.notes),
+      amountXaf: pending.data.amount,
+      requestedBy: admin.id,
+      summary: `${dto.status === RefundStatus.REJECTED ? 'Refus' : 'Clôture « remboursé »'} d’un remboursement de ${pending.data.amount} FCFA (commande #${pending.data.orderId.slice(-6).toUpperCase()})`,
     });
-
-    return result;
+    return {
+      data: { approvalRequired: true, approval },
+      message:
+        'Demande envoyée : un second administrateur doit approuver ce geste. Rien ne change d’ici là.',
+    };
   }
+}
+
+/** Le refus de `RefundsService.updateStatus` qui appelle une demande d'approbation. */
+function isApprovalRequired(error: unknown): boolean {
+  if (!(error instanceof ConflictException)) return false;
+  const response = error.getResponse();
+  return (
+    typeof response === 'object' &&
+    response !== null &&
+    (response as { code?: unknown }).code === 'APPROVAL_REQUIRED'
+  );
 }

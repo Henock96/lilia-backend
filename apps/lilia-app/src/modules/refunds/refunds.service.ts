@@ -4,13 +4,25 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, RefundReasonCode, RefundStatus } from '@prisma/client';
+import {
+  AdminAuditAction,
+  ApprovalKind,
+  Prisma,
+  RefundReasonCode,
+  RefundStatus,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { RequestContext } from '../../common/context/request-context';
+import { consumeApproval } from '../approvals/approval-rules';
 import {
   AUTO_REFUND_REASON_CODES,
   COUNTED_REFUND_STATUSES,
   refundConflictsWithPayout,
 } from './refund-lines.policy';
+import {
+  closureNeedsApproval,
+  refundClosurePayload,
+} from './refund-approval.policy';
 import { recordClawbackIfDue } from '../payments/vendor-balance';
 
 /**
@@ -174,6 +186,7 @@ export class RefundsService {
     status: RefundStatus,
     adminId: string,
     notes?: string,
+    opts: { approvalId?: string; approvedBy?: string } = {},
   ) {
     const refund = await this.prisma.refund.findUnique({ where: { id } });
     if (!refund) throw new NotFoundException('Remboursement introuvable.');
@@ -185,6 +198,19 @@ export class RefundsService {
       throw new ConflictException(
         `Ce remboursement est déjà clos (${refund.status}).`,
       );
+    }
+
+    // R-01 / D-2 — un virement prestataire en vol appartient au prestataire :
+    // son callback (ou la réconciliation) le conclura, et il est conditionné
+    // sur `PROCESSING`. Le clore à la main maintenant ferait ignorer ce
+    // callback — « refusé » alors que l'argent est parti, ou « remboursé »
+    // alors qu'il n'est jamais parti.
+    if (refund.status === RefundStatus.PROCESSING && refund.providerRefundId) {
+      throw new ConflictException({
+        message:
+          'Un virement de remboursement est en cours chez le prestataire. Son issue sera appliquée automatiquement : ne le clôturez pas à la main.',
+        code: 'REFUND_PROVIDER_IN_FLIGHT',
+      });
     }
 
     // Fix F-04 — clôturer « remboursé » à la main pendant qu'un reversement
@@ -210,11 +236,33 @@ export class RefundsService {
     const isFinal =
       status === RefundStatus.COMPLETED || status === RefundStatus.REJECTED;
 
+    // R-01 — même seuil que le virement (`refund-approval.policy.ts`), posé
+    // APRÈS les refus définitifs : une demande d'approbation ne doit pas naître
+    // pour un geste que ce service refuserait de toute façon. Le contrôleur
+    // ouvre la demande sur ce code ; ce service refuse sans elle, quel que
+    // soit l'appelant.
+    if (closureNeedsApproval(refund, status) && !opts.approvalId) {
+      throw new ConflictException({
+        message: `Clore un remboursement de ${refund.amount} FCFA exige l’approbation d’un second administrateur.`,
+        code: 'APPROVAL_REQUIRED',
+      });
+    }
+
     // F3-07 — clôturer « remboursé » un remboursement à la charge d'un vendeur
     // déjà payé fait naître sa dette : même transaction.
-    const claimed = await this.prisma.$transaction(async (tx) => {
+    await this.prisma.$transaction(async (tx) => {
+      // R-01 — l'approbation ne vaut que pour CE statut, CE montant, CETTE
+      // note ; elle est consommée avec la clôture, une seule fois.
+      if (opts.approvalId) {
+        await consumeApproval(tx, {
+          approvalId: opts.approvalId,
+          kind: ApprovalKind.REFUND_EXECUTION,
+          refId: refund.id,
+          payload: refundClosurePayload(refund, status, notes),
+        });
+      }
       const moved = await tx.refund.updateMany({
-        where: { id, status: refund.status },
+        where: { id, status: refund.status, providerRefundId: null },
         data: {
           status,
           notes: notes ?? refund.notes,
@@ -222,17 +270,44 @@ export class RefundsService {
           processedAt: isFinal ? new Date() : refund.processedAt,
         },
       });
-      if (moved.count > 0 && status === RefundStatus.COMPLETED) {
+      // R-01 — l'échec est levé DANS la transaction : une approbation
+      // consommée juste au-dessus doit être rendue si la clôture n'a rien
+      // écrit (course perdue), sans quoi le geste à deux serait à refaire.
+      if (moved.count === 0) {
+        throw new ConflictException(
+          'Ce remboursement a été modifié entre-temps. Rechargez la fiche.',
+        );
+      }
+      if (status === RefundStatus.COMPLETED) {
         await recordClawbackIfDue(tx, refund);
       }
-      return moved;
+      // Journal écrit AVEC la clôture : un geste sur une dette client ne peut
+      // pas réussir sans trace (le journal post-commit avalait ses erreurs).
+      // `targetType: 'Order'` : c'est la commande qui porte le sens pour qui
+      // relira le journal (convention de cette file).
+      await tx.adminAuditLog.create({
+        data: {
+          actorId: adminId,
+          action: AdminAuditAction.REFUND_UPDATED,
+          targetType: 'Order',
+          targetId: refund.orderId,
+          reason: notes ?? null,
+          metadata: {
+            refundId: refund.id,
+            from: refund.status,
+            status,
+            amount: refund.amount,
+            ...(opts.approvalId
+              ? {
+                  approvalId: opts.approvalId,
+                  approvedBy: opts.approvedBy ?? null,
+                }
+              : {}),
+            requestId: RequestContext.requestId() ?? null,
+          },
+        },
+      });
     });
-
-    if (claimed.count === 0) {
-      throw new ConflictException(
-        'Ce remboursement a été modifié entre-temps. Rechargez la fiche.',
-      );
-    }
 
     return this.findOne(id);
   }
