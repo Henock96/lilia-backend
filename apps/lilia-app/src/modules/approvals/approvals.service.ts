@@ -26,6 +26,8 @@ import {
 import { maskPhone } from '../payments/services/payment.service';
 import { payoutAccountCooldownHours } from '../payments/services/restaurant-payout.service';
 import { RefundExecutionService } from '../refunds/refund-execution.service';
+import { RefundsService } from '../refunds/refunds.service';
+import { closureFromPayload } from '../refunds/refund-approval.policy';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import {
   APPROVAL_TTL_HOURS,
@@ -61,6 +63,8 @@ export class ApprovalsService {
     private readonly refundExecution: RefundExecutionService,
     private readonly userCache: UserCacheService,
     private readonly eventEmitter: EventEmitter2,
+    // R-01 — clôture déclarative approuvée (même module : `RefundsCoreModule`).
+    private readonly refunds: RefundsService,
   ) {}
 
   /**
@@ -201,6 +205,11 @@ export class ApprovalsService {
         kind: approval.kind,
         refId: approval.refId,
         decision: 'APPROVED',
+        // R-01 — qui avait demandé, combien, et lequel des deux gestes de
+        // remboursement (virement ou clôture déclarative) a été approuvé.
+        requestedBy: approval.requestedBy,
+        amountXaf: approval.amountXaf,
+        closeAs: closureFromPayload(approval.payload)?.closeAs ?? null,
       },
     });
     await this.afterApproval(approval);
@@ -355,6 +364,24 @@ export class ApprovalsService {
       await this.prisma.$transaction((tx) =>
         this.markApproved(tx, approval, approverId),
       );
+    }
+    // R-01 — approbation d'une CLÔTURE déclarative (`PATCH /refunds/:id/status`
+    // au-delà du seuil) : on applique le statut demandé, on ne vire rien.
+    // L'approbation est consommée dans la transaction de la clôture.
+    const closure = closureFromPayload(approval.payload);
+    if (closure) {
+      const closed = await this.refunds.updateStatus(
+        approval.refId,
+        closure.closeAs,
+        approval.requestedBy,
+        closure.notes,
+        { approvalId: approval.id, approvedBy: approverId },
+      );
+      return {
+        kind: approval.kind,
+        refundId: approval.refId,
+        closure: { status: closed.data.status },
+      };
     }
     const executed = await this.refundExecution.execute(
       approval.refId,

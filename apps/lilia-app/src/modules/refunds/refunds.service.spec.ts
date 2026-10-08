@@ -28,6 +28,8 @@ describe('RefundsService', () => {
     };
     restaurantPayout: { findUnique: jest.Mock };
     vendorBalanceEntry: { createMany: jest.Mock };
+    financialApproval: { updateMany: jest.Mock };
+    adminAuditLog: { create: jest.Mock };
     $transaction: jest.Mock;
   };
   let service: RefundsService;
@@ -51,6 +53,11 @@ describe('RefundsService', () => {
       vendorBalanceEntry: {
         createMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
+      // R-01 — approbation consommée et journal écrits avec la clôture.
+      financialApproval: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      adminAuditLog: { create: jest.fn().mockResolvedValue({}) },
       $transaction: jest.fn(),
     };
     // La transaction reçoit le client lui-même.
@@ -205,10 +212,12 @@ describe('RefundsService', () => {
       expect(write.data.status).toBe(RefundStatus.COMPLETED);
       expect(write.data.processedBy).toBe('admin-1');
       expect(write.data.processedAt).toBeInstanceOf(Date);
-      // Verrou optimiste : l'écriture est conditionnée sur l'état lu.
+      // Verrou optimiste : l'écriture est conditionnée sur l'état lu — et sur
+      // l'absence de virement prestataire en vol (R-01, D-2).
       expect(write.where).toEqual({
         id: 'ref-1',
         status: RefundStatus.PENDING,
+        providerRefundId: null,
       });
     });
 
@@ -365,6 +374,206 @@ describe('RefundsService', () => {
       prisma.refund.updateMany.mockResolvedValue({ count: 1 });
       await service.updateStatus('r1', RefundStatus.REJECTED, 'admin-1');
       expect(prisma.restaurantPayout.findUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * R-01 (audit Admin du 07/10/2026, FIN-01). La clôture déclarative était le
+   * seul chemin d'une dette client sans seuil : un administrateur seul
+   * déclarait « remboursé » ou « refusé » 300 000 FCFA, quand le virement du
+   * même montant exigeait un second administrateur.
+   */
+  describe('R-01 — seuil des 4 yeux et virement en vol', () => {
+    const big = {
+      id: 'r-big',
+      orderId: 'o-big',
+      status: RefundStatus.PENDING,
+      reasonCode: 'GOODWILL',
+      bearer: 'PLATFORM',
+      amount: 80_000,
+      notes: null,
+      processedAt: null,
+      providerRefundId: null,
+    };
+
+    it.each([RefundStatus.COMPLETED, RefundStatus.REJECTED])(
+      '%s ≥ 50 000 sans approbation : 409 APPROVAL_REQUIRED, rien n’est écrit',
+      async (target) => {
+        prisma.refund.findUnique.mockResolvedValue(big);
+        await expect(
+          service.updateStatus('r-big', target, 'admin-a', 'Virement fait'),
+        ).rejects.toMatchObject({
+          response: { code: 'APPROVAL_REQUIRED' },
+        });
+        expect(prisma.refund.updateMany).not.toHaveBeenCalled();
+        expect(prisma.financialApproval.updateMany).not.toHaveBeenCalled();
+      },
+    );
+
+    it('au seuil exact (50 000) : approbation exigée', async () => {
+      prisma.refund.findUnique.mockResolvedValue({ ...big, amount: 50_000 });
+      await expect(
+        service.updateStatus('r-big', RefundStatus.COMPLETED, 'admin-a'),
+      ).rejects.toMatchObject({ response: { code: 'APPROVAL_REQUIRED' } });
+    });
+
+    it('sous le seuil (49 999) : clôture directe, comme avant', async () => {
+      prisma.refund.findUnique.mockResolvedValue({ ...big, amount: 49_999 });
+      prisma.refund.updateMany.mockResolvedValue({ count: 1 });
+      await service.updateStatus('r-big', RefundStatus.COMPLETED, 'admin-a');
+      expect(prisma.refund.updateMany).toHaveBeenCalled();
+      expect(prisma.financialApproval.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('« en cours » (PROCESSING) au-delà du seuil reste direct : rien n’est soldé', async () => {
+      prisma.refund.findUnique.mockResolvedValue(big);
+      prisma.refund.updateMany.mockResolvedValue({ count: 1 });
+      await service.updateStatus('r-big', RefundStatus.PROCESSING, 'admin-a');
+      expect(prisma.refund.updateMany).toHaveBeenCalled();
+    });
+
+    it('avec approbation : consommée DANS la transaction de clôture, pour ce statut et cette note', async () => {
+      prisma.refund.findUnique.mockResolvedValue(big);
+      prisma.refund.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.updateStatus(
+        'r-big',
+        RefundStatus.REJECTED,
+        'admin-a',
+        'Doublon',
+        { approvalId: 'ap-1', approvedBy: 'admin-b' },
+      );
+
+      const consume = prisma.financialApproval.updateMany.mock.calls[0][0];
+      expect(consume.where).toMatchObject({
+        id: 'ap-1',
+        kind: 'REFUND_EXECUTION',
+        refId: 'r-big',
+        status: 'APPROVED',
+      });
+      // Empreinte = remboursement + montant + statut + note.
+      expect(consume.where.payloadHash).toEqual(expect.any(String));
+      expect(consume.data.status).toBe('CONSUMED');
+      // Consommée avant l'écriture : une approbation inutilisable n'écrit rien.
+      expect(
+        prisma.financialApproval.updateMany.mock.invocationCallOrder[0],
+      ).toBeLessThan(prisma.refund.updateMany.mock.invocationCallOrder[0]);
+    });
+
+    it('une approbation inutilisable (déjà consommée, autre montant) : 409, rien n’est clôturé', async () => {
+      prisma.refund.findUnique.mockResolvedValue(big);
+      prisma.financialApproval.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.updateStatus(
+          'r-big',
+          RefundStatus.COMPLETED,
+          'admin-a',
+          undefined,
+          {
+            approvalId: 'ap-used',
+            approvedBy: 'admin-b',
+          },
+        ),
+      ).rejects.toMatchObject({ response: { code: 'APPROVAL_NOT_USABLE' } });
+      expect(prisma.refund.updateMany).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      RefundStatus.COMPLETED,
+      RefundStatus.REJECTED,
+      RefundStatus.PROCESSING,
+    ])(
+      'D-2 — virement prestataire en vol : %s refusé (409 REFUND_PROVIDER_IN_FLIGHT)',
+      async (target) => {
+        // Le prestataire tranchera (callback ou réconciliation). Clore à la
+        // main maintenant, c'est « refusé » mais payé, ou « remboursé » mais
+        // jamais parti : le callback serait ignoré (WHERE status = PROCESSING).
+        prisma.refund.findUnique.mockResolvedValue({
+          ...big,
+          amount: 1_000,
+          status: RefundStatus.PROCESSING,
+          providerRefundId: 'prov-123',
+        });
+        await expect(
+          service.updateStatus('r-big', target, 'admin-a'),
+        ).rejects.toMatchObject({
+          response: { code: 'REFUND_PROVIDER_IN_FLIGHT' },
+        });
+        expect(prisma.refund.updateMany).not.toHaveBeenCalled();
+      },
+    );
+
+    it('journalise la clôture DANS la transaction : qui, quoi, montant, approbation', async () => {
+      prisma.refund.findUnique.mockResolvedValue(big);
+      prisma.refund.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.updateStatus(
+        'r-big',
+        RefundStatus.COMPLETED,
+        'admin-a',
+        'Virement MoMo réf. 123',
+        { approvalId: 'ap-1', approvedBy: 'admin-b' },
+      );
+
+      expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          actorId: 'admin-a',
+          action: 'REFUND_UPDATED',
+          targetType: 'Order',
+          targetId: 'o-big',
+          reason: 'Virement MoMo réf. 123',
+          metadata: expect.objectContaining({
+            refundId: 'r-big',
+            from: RefundStatus.PENDING,
+            status: RefundStatus.COMPLETED,
+            amount: 80_000,
+            approvalId: 'ap-1',
+            approvedBy: 'admin-b',
+          }),
+        }),
+      });
+    });
+
+    it('course perdue avec une approbation : l’échec est levé DANS la transaction, qui annule la consommation', async () => {
+      // Sinon l'approbation committait `CONSUMED` alors que la clôture n'avait
+      // rien écrit : le geste à deux devait être refait par un troisième admin.
+      prisma.refund.findUnique.mockResolvedValue(big);
+      prisma.refund.updateMany.mockResolvedValue({ count: 0 });
+      let insideTransactionFailed = false;
+      prisma.$transaction.mockImplementation(
+        async (fn: (tx: unknown) => Promise<unknown>) => {
+          try {
+            return await fn(prisma);
+          } catch (error) {
+            insideTransactionFailed = true;
+            throw error;
+          }
+        },
+      );
+
+      await expect(
+        service.updateStatus(
+          'r-big',
+          RefundStatus.COMPLETED,
+          'admin-a',
+          undefined,
+          {
+            approvalId: 'ap-1',
+            approvedBy: 'admin-b',
+          },
+        ),
+      ).rejects.toThrow(ConflictException);
+      expect(insideTransactionFailed).toBe(true);
+    });
+
+    it('un changement perdu à la concurrence n’écrit aucune ligne de journal', async () => {
+      prisma.refund.findUnique.mockResolvedValue({ ...big, amount: 1_000 });
+      prisma.refund.updateMany.mockResolvedValue({ count: 0 });
+      await expect(
+        service.updateStatus('r-big', RefundStatus.COMPLETED, 'admin-a'),
+      ).rejects.toThrow(ConflictException);
+      expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
     });
   });
 });
