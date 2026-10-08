@@ -3,10 +3,10 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
-  Matches,
   MaxLength,
 } from 'class-validator';
 import { PaymentMethod } from '@prisma/client';
+import { IsCongoMobilePhone } from '../../../common/validation/congo-phone.decorator';
 
 /**
  * Corps de `POST /payments` (fix H1 — audit du 28/08/2026).
@@ -28,11 +28,12 @@ export class CreatePaymentDto {
   @MaxLength(64)
   orderId: string;
 
-  @IsString()
+  // Les séparateurs sont retirés avant validation, comme pour le
+  // `contactPhone` de la commande : le web et l'app envoient la saisie telle
+  // quelle (`+242 06 123 45 67`), qui était refusée ici après avoir créé la
+  // commande — l'encaissement ne démarrait pas.
   @IsNotEmpty({ message: 'Le numéro de téléphone est requis.' })
-  @Matches(/^(\+?242)?0?[456]\d{7}$/, {
-    message: 'Numéro de téléphone congolais invalide (ex : 06 123 45 67)',
-  })
+  @IsCongoMobilePhone()
   phoneNumber: string;
 
   @IsOptional()
