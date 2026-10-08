@@ -15,6 +15,7 @@ import {
   HANDOVER_MAX_ATTEMPTS,
   handoverCodeMatches,
 } from './delivery-handover';
+import { projectDeliveryForDriver } from './delivery-driver-projection';
 import { ORDER_DELIVERED_EVENT } from '../outbox/outbox-events';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CLEARED_DRIVER_ECONOMICS } from './delivery-assignment.service';
@@ -551,7 +552,15 @@ export class DeliveriesService {
       );
     }
 
-    return { data: updated, message: 'Statut de livraison mis à jour' };
+    return {
+      // D-PAY (DEL-002) — route partagée : seul le livreur reçoit la liste
+      // blanche (ni gain, ni économie de la commande).
+      data:
+        user.role === 'LIVREUR' && updated
+          ? projectDeliveryForDriver(updated)
+          : updated,
+      message: 'Statut de livraison mis à jour',
+    };
   }
 
   /**

@@ -335,6 +335,10 @@ export class DriversService {
             isActive: true,
             activatedAt: true,
             zones: { select: { id: true, nom: true } },
+            // D-PAY : son TYPE de profil (Livreur Lilia / indépendant) est la
+            // seule donnée économique que le livreur voit. Jamais le modèle de
+            // rémunération ni son pourcentage.
+            employmentType: true,
           },
         },
       },

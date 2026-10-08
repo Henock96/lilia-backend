@@ -7,6 +7,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { DeliveryStatus } from './dto/update-delivery.dto';
 import { ACTIVE_DELIVERY_STATUSES } from './delivery-statuses';
 import { projectDeliveryForClient } from './delivery-client-projection';
+import { projectDeliveryForDriver } from './delivery-driver-projection';
 import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
 
 /**
@@ -263,7 +264,8 @@ export class DeliveryQueryService {
     const total = await this.prisma.delivery.count({ where });
 
     return {
-      data: deliveries,
+      // D-PAY (DEL-002) : liste blanche, aucun montant.
+      data: deliveries.map(projectDeliveryForDriver),
       count: deliveries.length,
       meta: { page, limit, total, hasMore: page * limit < total },
     };
@@ -326,6 +328,12 @@ export class DeliveryQueryService {
       delivererId: delivery.delivererId,
       requesterFirebaseUid: firebaseUid,
     });
+
+    // D-PAY (DEL-002) — le livreur ne reçoit que la liste blanche de la
+    // course : ni sa rémunération, ni l'économie de la commande.
+    if (viewer === 'DRIVER') {
+      return { data: projectDeliveryForDriver(delivery) };
+    }
 
     // F3-12.0 — même projection que `by-order` : cette route est ouverte au
     // client propriétaire, elle ne doit pas servir ce que l'autre lui retire.
@@ -401,7 +409,7 @@ export class DeliveryQueryService {
     // fichier posaient déjà ce contrôle.
     if (!user) throw new NotFoundException('Utilisateur non trouvé.');
 
-    return this.prisma.delivery.findMany({
+    const missions = await this.prisma.delivery.findMany({
       where: {
         delivererId: user.id,
         // `ACCEPTER` y figure : c'est l'état d'une course prise en charge dont
@@ -438,6 +446,8 @@ export class DeliveryQueryService {
         },
       },
     });
+    // D-PAY (DEL-002) : liste blanche, aucun montant.
+    return missions.map(projectDeliveryForDriver);
   }
 
   /**

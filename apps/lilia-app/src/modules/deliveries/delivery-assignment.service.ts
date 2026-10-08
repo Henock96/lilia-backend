@@ -15,6 +15,7 @@ import {
   StatusUser,
 } from '@prisma/client';
 import { generateHandoverCode } from './delivery-handover';
+import { projectDeliveryForDriver } from './delivery-driver-projection';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { PrismaService } from '../../prisma/prisma.service';
@@ -706,7 +707,8 @@ export class DeliveryAssignmentService {
       ),
     );
 
-    return updated;
+    // D-PAY (DEL-002) : route LIVREUR — liste blanche, ni gain ni montant.
+    return projectDeliveryForDriver(updated);
   }
 
   /**
@@ -973,6 +975,7 @@ export class DeliveryAssignmentService {
       );
     }
 
-    return updated;
+    // D-PAY (DEL-002) : route LIVREUR — liste blanche, ni gain ni montant.
+    return projectDeliveryForDriver(updated);
   }
 }

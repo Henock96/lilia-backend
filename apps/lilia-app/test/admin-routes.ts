@@ -20,10 +20,10 @@ function controllerFiles(dir: string): string[] {
 }
 
 /**
- * Toutes les routes ouvertes au rôle ADMIN, lues sur les métadonnées Nest de
+ * Toutes les routes ouvertes à [role], lues sur les métadonnées Nest de
  * chaque contrôleur du dépôt — pas d'une liste tenue à la main.
  */
-export function collectAdminRoutes(): AdminRoute[] {
+export function collectRoleRoutes(role: string): AdminRoute[] {
   const routes: AdminRoute[] = [];
   for (const file of controllerFiles(join(__dirname, '../src/modules'))) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -47,7 +47,7 @@ export function collectAdminRoutes(): AdminRoute[] {
         const roles =
           (Reflect.getMetadata(ROLES_KEY, handler) as string[] | undefined) ??
           classRoles;
-        if (!roles?.includes('ADMIN')) continue;
+        if (!roles?.includes(role)) continue;
         routes.push({
           key: `${(value as { name: string }).name}.${name}`,
           capability:
@@ -59,4 +59,9 @@ export function collectAdminRoutes(): AdminRoute[] {
     }
   }
   return routes.sort((a, b) => a.key.localeCompare(b.key));
+}
+
+/** Toutes les routes ouvertes au rôle ADMIN (F3-08). */
+export function collectAdminRoutes(): AdminRoute[] {
+  return collectRoleRoutes('ADMIN');
 }
