@@ -6,7 +6,6 @@ import {
   IsBoolean,
   IsNumber,
   IsDateString,
-  Matches,
   Max,
   MaxLength,
   Min,
@@ -14,6 +13,7 @@ import {
 import { PaymentMethod } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import { OmitType } from '@nestjs/swagger';
+import { IsCongoMobilePhone } from '../../../common/validation/congo-phone.decorator';
 
 export class CreateOrderDto {
   @IsString()
@@ -42,13 +42,8 @@ export class CreateOrderDto {
   // Numéros congolais : 06/05/04 + 7 chiffres, avec ou sans indicatif +242.
   // Les espaces et séparateurs sont retirés avant validation — les claviers
   // mobiles en insèrent, et un rejet sur un espace serait incompréhensible.
-  @IsString()
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.replace(/[\s.\-()]/g, '') : value,
-  )
-  @Matches(/^(\+?242)?0?[456]\d{7}$/, {
-    message: 'Numéro de téléphone congolais invalide (ex : 06 123 45 67)',
-  })
+  // Même règle que `CreatePaymentDto.phoneNumber` : elle n'existe qu'une fois.
+  @IsCongoMobilePhone()
   @IsOptional()
   contactPhone?: string;
 
