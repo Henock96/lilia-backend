@@ -45,7 +45,17 @@ export const DEFAULT_CATEGORIES_BY_VENDOR_TYPE: Record<VendorType, string[]> = {
   HOME_COOK: ['Plats', 'Desserts'],
   BAKERY: ['Pains', 'Viennoiseries', 'Pâtisseries'],
   BEVERAGE_SHOP: ['Sodas', 'Jus', 'Eaux'],
-  GROCERY: ['Épicerie', 'Boissons'],
+  // Les rayons d'une supérette de Brazzaville. Deux suffisaient à « ne pas
+  // naître vide », pas à ranger plusieurs centaines de références.
+  GROCERY: [
+    'Épicerie salée',
+    'Épicerie sucrée',
+    'Petit-déjeuner',
+    'Boissons',
+    'Hygiène',
+    'Entretien',
+    'Bébé',
+  ],
 };
 
 /**

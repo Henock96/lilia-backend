@@ -51,7 +51,10 @@ export class CartCommonService {
       cartItems[0].product.restaurantId !== incomingRestaurantId
     ) {
       throw new BadRequestException(
-        'Vous ne pouvez commander que dans un seul restaurant à la fois. Veuillez vider votre panier.',
+        // « boutique » et non « restaurant » : le panier vaut pour tout
+        // vendeur. ⚠️ Garder « vider » : le site web reconnaît cette erreur à
+        // ce mot (`product-purchase.tsx`, `restaurant-menu.tsx`).
+        'Vous ne pouvez commander que dans une seule boutique à la fois. Veuillez vider votre panier.',
       );
     }
   }

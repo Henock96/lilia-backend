@@ -7,6 +7,7 @@ import { AdminVendorFilterDto } from '../admin/dto/admin-vendor-filter.dto';
 import { CreateRestaurantWithOwnerDto } from '../admin/dto/create-restaurant-with-owner.dto';
 import { CartCommonService } from '../cart/cart-common.service';
 import { DEFAULT_CATEGORIES_BY_VENDOR_TYPE } from '../categories/category.includes';
+import { slugifyCategoryName } from '../categories/category-slug';
 import { OrderValidatorService } from '../orders/order-validator.service';
 import { CreateProductDto } from '../products/dto/create-product.dto';
 import { ProductFilterQueryDto } from '../products/dto/product-query.dto';
@@ -24,12 +25,33 @@ import { VendorsService } from './vendors.service';
 
 // ─── R-03 — création ─────────────────────────────────────────────────────────
 
+/**
+ * Rayons d'une épicerie à sa naissance (lot G3), recopiés à la main : un test
+ * qui importerait la constante qu'il vérifie ne pourrait jamais échouer.
+ */
+const GROCERY_SECTIONS = [
+  'Épicerie salée',
+  'Épicerie sucrée',
+  'Petit-déjeuner',
+  'Boissons',
+  'Hygiène',
+  'Entretien',
+  'Bébé',
+];
+
 describe('G0 — R-03 sections par défaut', () => {
-  it('GROCERY naît avec « Épicerie » et « Boissons », et rien d’autre', () => {
-    expect(DEFAULT_CATEGORIES_BY_VENDOR_TYPE.GROCERY).toEqual([
-      'Épicerie',
-      'Boissons',
-    ]);
+  it('GROCERY naît avec ses sept rayons, dans cet ordre', () => {
+    expect(DEFAULT_CATEGORIES_BY_VENDOR_TYPE.GROCERY).toEqual(GROCERY_SECTIONS);
+  });
+
+  it('les sections par défaut de chaque type ont des slugs distincts', () => {
+    // `@@unique([restaurantId, slug])` : un doublon ferait échouer la création
+    // du vendeur dans sa transaction.
+    for (const type of Object.values(VendorType)) {
+      const slugs =
+        DEFAULT_CATEGORIES_BY_VENDOR_TYPE[type].map(slugifyCategoryName);
+      expect(new Set(slugs).size).toBe(slugs.length);
+    }
   });
 
   it('chaque type de vendeur a au moins une section par défaut', () => {
@@ -84,10 +106,9 @@ describe('G0 — R-03 chemin 1 : POST /vendors (VendorsService.createVendor)', (
     expect(data.vendorType).toBe(VendorType.GROCERY);
     expect(data.adminApproved).toBe(false);
     expect(data.adminApprovedAt).toBeNull();
-    expect(data.categories.create.map((c: { nom: string }) => c.nom)).toEqual([
-      'Épicerie',
-      'Boissons',
-    ]);
+    expect(data.categories.create.map((c: { nom: string }) => c.nom)).toEqual(
+      GROCERY_SECTIONS,
+    );
     // `onboardingStatus` n'est pas écrit : c'est le défaut de la base (DRAFT) qui
     // s'applique — prouvé sur PostgreSQL par grocery-g0.int-spec.ts.
     expect(data).not.toHaveProperty('onboardingStatus');
@@ -158,10 +179,9 @@ describe('G0 — R-03 chemin 2 : POST /admin/vendors (VendorOnboardingService.cr
       adminApprovedAt: null,
       adminApprovedById: null,
     });
-    expect(data.categories.create.map((c: { nom: string }) => c.nom)).toEqual([
-      'Épicerie',
-      'Boissons',
-    ]);
+    expect(data.categories.create.map((c: { nom: string }) => c.nom)).toEqual(
+      GROCERY_SECTIONS,
+    );
   });
 });
 
@@ -217,10 +237,9 @@ describe('G0 — R-03 chemin 3 : POST /admin/restaurants (AdminRestaurantsServic
     expect(data.vendorType).toBe(VendorType.GROCERY);
     expect(data.adminApproved).toBe(false);
     expect(data).not.toHaveProperty('onboardingStatus');
-    expect(data.categories.create.map((c: { nom: string }) => c.nom)).toEqual([
-      'Épicerie',
-      'Boissons',
-    ]);
+    expect(data.categories.create.map((c: { nom: string }) => c.nom)).toEqual(
+      GROCERY_SECTIONS,
+    );
     expect(res.message).toBe('GROCERY créé — en attente de validation');
   });
 
@@ -302,7 +321,7 @@ describe('G0 — R-08 panier mono-vendeur (CartCommonService.assertSameRestauran
     ).not.toThrow();
   });
 
-  it('[ACTUEL] épicerie après restaurant : 400, message « restaurant » + « vider »', () => {
+  it('épicerie après restaurant : 400, « une seule boutique », et toujours « vider »', () => {
     let error: unknown;
     try {
       common.assertSameRestaurant([line('resto')], 'g1');
@@ -311,11 +330,12 @@ describe('G0 — R-08 panier mono-vendeur (CartCommonService.assertSameRestauran
     }
     expect(error).toBeInstanceOf(BadRequestException);
     const message = (error as Error).message;
-    // Le site web détecte cette erreur par `includes('restaurant') ||
-    // includes('vider')` (product-purchase.tsx, restaurant-menu.tsx) : ces
-    // deux mots font partie du contrat de fait.
-    expect(message).toContain('restaurant');
-    expect(message).toContain('vider');
+    // Lot G3 : le message vaut pour tout vendeur, pas seulement un restaurant.
+    expect(message).toContain('une seule boutique');
+    // ⚠️ Contrat de fait : le site web détecte cette erreur par
+    // `includes('restaurant') || includes('vider')` (product-purchase.tsx,
+    // restaurant-menu.tsx). « restaurant » disparaît, « vider » doit rester.
+    expect(message.toLowerCase()).toContain('vider');
     // Aucun code machine : le client ne peut s'appuyer que sur le texte.
     expect((error as BadRequestException).getResponse()).not.toHaveProperty(
       'code',
