@@ -101,11 +101,19 @@ export interface CartView {
   subTotalXaf: number;
   /** Au moins une ligne ne passera pas le checkout telle quelle. */
   hasIssues: boolean;
+  /**
+   * D-4 — taux de frais de service de la boutique du panier, en pourcentage
+   * (5 = 5 %), résolu par le serveur (`serviceFeeBasisPoints`). `null` pour un
+   * panier vide. Pour l'estimation affichée : le montant facturé reste celui
+   * du checkout.
+   */
+  serviceFeePercent: number | null;
 }
 
 export function toCartView(
   cart: CartWithLines,
   modifiersEnabled: boolean,
+  serviceFeePercent: number | null = null,
 ): CartView {
   const quotes = cart.items.map((line) => ({
     line,
@@ -132,6 +140,7 @@ export function toCartView(
     items,
     subTotalXaf: totals.reduce((sum, total) => sum + total, 0),
     hasIssues: items.some((item) => item.issue !== null),
+    serviceFeePercent,
   };
 }
 

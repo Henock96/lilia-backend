@@ -1,6 +1,7 @@
 /* eslint-disable prettier/prettier */
 // orders/order-calculator.service.ts
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { applyBasisPoints } from '../payments/money.util';
 import {
   cartSubtotalXaf,
   orderItemSnapshots,
@@ -39,10 +40,15 @@ export class OrderCalculatorService {
     lines: readonly PricedCartLine[],
     deliveryFee: number,
     isDelivery: boolean,
-    serviceFeePercent: number,
+    /**
+     * Taux de frais de service **en points de base** (1 500 = 15 %), déjà
+     * résolu pour le vendeur par `serviceFeeBasisPoints` (D-4 : les épiceries
+     * ont le leur). Entier, pour calculer l'argent en entiers (règle 5).
+     */
+    serviceFeeBps: number,
     /**
      * Taux propre au vendeur. `null` (le cas courant) signifie « pas de
-     * commission spécifique » : on retombe sur 0, pas sur `serviceFeePercent`,
+     * commission spécifique » : on retombe sur 0, pas sur le taux de service,
      * qui décrit un autre flux d'argent.
      */
     commissionPercent: number | null = null,
@@ -66,7 +72,7 @@ export class OrderCalculatorService {
 
     // Commission appliquée sur le subTotal uniquement
     // (pas sur les frais de livraison — c'est la pratique standard)
-    const serviceFee = Math.round(subTotal * serviceFeePercent / 100);
+    const serviceFee = applyBasisPoints(subTotal, serviceFeeBps);
 
 
     // Prélèvement sur le vendeur, calculé sur le sous-total. Il n'entre pas

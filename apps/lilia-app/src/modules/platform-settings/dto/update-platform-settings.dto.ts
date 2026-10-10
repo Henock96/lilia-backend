@@ -11,6 +11,7 @@ import {
   MaxLength,
   Min,
   ValidateBy,
+  ValidateIf,
   ValidationOptions,
   IsEnum,
 } from 'class-validator';
@@ -89,6 +90,21 @@ export class UpdatePlatformSettingsDto {
   @Min(0)
   @Max(100)
   serviceFeePercent?: number;
+
+  /**
+   * FRAIS DE SERVICE DES ÉPICERIES, en **points de base** (500 = 5 %) —
+   * décision D-4. `null` efface le taux : les épiceries reviennent au taux
+   * général. Entier borné comme le CHECK de la base (0 → 10 000).
+   */
+  @IsOptional()
+  @ValidateIf((_o, value) => value !== null)
+  @IsInt({
+    message:
+      'Le taux épicerie est un nombre entier de points de base (500 = 5 %).',
+  })
+  @Min(0)
+  @Max(10_000)
+  groceryServiceFeeBps?: number | null;
 
   /**
    * COMMISSION VENDEUR par défaut, en pourcentage.

@@ -98,3 +98,21 @@ describe('UpdatePlatformSettingsDto — canal de mise à jour', () => {
     );
   });
 });
+
+describe('UpdatePlatformSettingsDto — frais de service épiceries (D-4)', () => {
+  it.each([0, 500, 10_000])('accepte %p points de base', async (bps) => {
+    expect((await run({ groceryServiceFeeBps: bps })).errors).toEqual([]);
+  });
+
+  it('null rend les épiceries au taux général', async () => {
+    const { dto, errors } = await run({ groceryServiceFeeBps: null });
+    expect(errors).toEqual([]);
+    expect(dto.groceryServiceFeeBps).toBeNull();
+  });
+
+  it.each([-1, 10_001, 5.5])('refuse %p', async (bps) => {
+    expect((await run({ groceryServiceFeeBps: bps })).errors).toContain(
+      'groceryServiceFeeBps',
+    );
+  });
+});

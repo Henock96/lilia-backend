@@ -3078,6 +3078,17 @@ model PlatformSettings {
   /// support de Lilia Food.
   serviceFeePercent Float @default(8)
 
+  /// FRAIS DE SERVICE des ÉPICERIES (`vendorType = GROCERY`), en points de
+  /// base (500 = 5 %). Décision D-4 du 10/10/2026 : un taux commun à toutes
+  /// les épiceries, distinct du taux général.
+  ///
+  /// `NULL` = le taux général s'applique — c'est la valeur au déploiement, donc
+  /// aucun changement de prix tant qu'un administrateur ne l'a pas posé.
+  /// Points de base et non pourcentage flottant (règle 5) ; CHECK
+  /// `PlatformSettings_grocery_service_fee_range` : 0 ≤ valeur ≤ 10 000.
+  /// Le montant reste figé sur chaque commande (`Order.serviceFee`).
+  groceryServiceFeeBps Int?
+
   /// COMMISSION VENDEUR par défaut — retenue **sur** le vendeur au moment du
   /// reversement, jamais payée par le client.
   /// `Restaurant.commissionPercent` la surcharge par vendeur quand il est non
