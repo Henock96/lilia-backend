@@ -31,6 +31,7 @@ import {
 } from '../vendor-offers/vendor-offers.service';
 import { OrderValidatorService } from './order-validator.service';
 import { OrderCalculatorService } from './order-calculator.service';
+import { serviceFeeBasisPoints } from './service-fee';
 import { StockService, type StockMovement } from './stock.service';
 import { StockSignalService } from './stock-signal.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
@@ -386,12 +387,18 @@ export class OrderCheckoutService {
     const commissionPercent =
       restaurant.commissionPercent ?? settings.restaurantCommissionPercent;
 
+    // D-4 — taux de frais de service du vendeur : les épiceries ont le leur.
+    const serviceFeeBps = serviceFeeBasisPoints(
+      settings,
+      restaurant.vendorType,
+    );
+
     // 2. Calcul — isolé, testable unitairement
     let amounts = this.calculator.calculate(
       priced,
       effectiveDeliveryFee,
       isDelivery,
-      settings.serviceFeePercent,
+      serviceFeeBps,
       commissionPercent,
     );
 
@@ -419,7 +426,7 @@ export class OrderCheckoutService {
           priced,
           deliveryQuote.customerFeeXaf,
           isDelivery,
-          settings.serviceFeePercent,
+          serviceFeeBps,
           commissionPercent,
         );
       }

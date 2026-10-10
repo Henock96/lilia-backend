@@ -364,7 +364,7 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        8,
+        800, // 8 %, en points de base depuis D-4
         12,
       );
     });
@@ -377,7 +377,7 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        8,
+        800, // 8 %, en points de base depuis D-4
         10, // et surtout PAS 0, ni `undefined`
       );
     });
@@ -398,7 +398,7 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        8,
+        800, // 8 %, en points de base depuis D-4
         0, // `??` et non `||` : 0 est une valeur, pas un vide
       );
     });

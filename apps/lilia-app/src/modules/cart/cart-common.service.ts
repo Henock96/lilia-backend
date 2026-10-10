@@ -3,6 +3,10 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { PrismaService } from '../../prisma/prisma.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { CART_VIEW_INCLUDE, toCartView, type CartView } from './cart-view';
+import {
+  serviceFeeBasisPoints,
+  serviceFeePercentOf,
+} from '../orders/service-fee';
 
 /**
  * Helpers partagés du panier (extrait de CartService — LIL-147).
@@ -98,6 +102,22 @@ export class CartCommonService {
       }),
       this.platformSettings.getSettings(),
     ]);
-    return full ? toCartView(full, settings.modifiersEnabled) : null;
+    if (!full) return null;
+
+    // D-4 — le taux de frais de service dépend de la boutique (épicerie ou
+    // non) : le serveur le résout et l'annonce, les clients l'affichent. Un
+    // panier ne contient qu'une boutique (`assertSameRestaurant`).
+    const vendorId = full.items[0]?.product.restaurantId;
+    const vendor = vendorId
+      ? await this.prisma.restaurant.findUnique({
+          where: { id: vendorId },
+          select: { vendorType: true },
+        })
+      : null;
+    const serviceFeePercent = vendor
+      ? serviceFeePercentOf(serviceFeeBasisPoints(settings, vendor.vendorType))
+      : null;
+
+    return toCartView(full, settings.modifiersEnabled, serviceFeePercent);
   }
 }

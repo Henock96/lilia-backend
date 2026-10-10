@@ -157,7 +157,7 @@ describe('Calculateur de commande — sous-total, frais, commission', () => {
       priceCartLines([POULET], true),
       1000,
       true,
-      15,
+      1500, // 15 %, en points de base depuis D-4
       10,
     );
     expect(amounts.subTotal).toBe(7600);
