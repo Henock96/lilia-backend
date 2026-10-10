@@ -145,6 +145,10 @@ export class PaymentService {
   ) {
     const order = await this.getPayableOrder(request.orderId, firebaseUid);
 
+    // D-3 (10/10/2026) — aucun article en rupture ne se paie. Avant toute
+    // demande au prestataire, et même pour une commande réglée en points.
+    await this.assertItemsStillAvailable(order.id);
+
     // Fix M3 : une commande intégralement réglée en points de fidélité a un
     // total de 0. Aucun opérateur mobile money n'accepte un transfert nul :
     // on affichait « Envoyez 0 FCFA au … », rien n'était payable, et le cron
@@ -1136,6 +1140,54 @@ export class PaymentService {
   // ══════════════════════════════════════════════════════════════════════════
   // Garde-fous
   // ══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Décision D-3 (10/10/2026) : **aucun article en rupture ne se paie**, chez
+   * tous les vendeurs, restaurants compris.
+   *
+   * Le panier et le checkout refusent déjà un article retiré ou indisponible ;
+   * restait l'intervalle entre le checkout et ce paiement. Un vendeur qui
+   * marquait un article indisponible entre les deux laissait le client être
+   * débité, puis remboursé en entier au refus de la commande.
+   *
+   * Deux choses ne sont **pas** revérifiées, délibérément :
+   *  - le **stock** : il est réservé à cette commande depuis le checkout ;
+   *  - la **fenêtre horaire** : payer deux minutes après la fin du créneau
+   *    d'une commande acceptée au checkout n'est pas une rupture.
+   *
+   * La commande n'est pas touchée (décision Q-D3 a) : elle reste `EN_ATTENTE`,
+   * le client l'annule ou le cron d'expiration rend le stock. `code` stable
+   * pour que les clients distinguent ce refus d'un échec de paiement.
+   */
+  private async assertItemsStillAvailable(orderId: string) {
+    const items = await this.prisma.orderItem.findMany({
+      where: { orderId },
+      select: {
+        product: { select: { nom: true, isAvailable: true, deletedAt: true } },
+        menu: { select: { nom: true, isActive: true } },
+      },
+    });
+
+    const unavailable = new Set<string>();
+    for (const item of items) {
+      if (item.menu && !item.menu.isActive) {
+        unavailable.add(item.menu.nom);
+      } else if (item.product.deletedAt || !item.product.isAvailable) {
+        unavailable.add(item.product.nom);
+      }
+    }
+    if (unavailable.size === 0) return;
+
+    const names = [...unavailable];
+    throw new ConflictException({
+      code: 'ORDER_ITEMS_UNAVAILABLE',
+      message:
+        `${names.length > 1 ? 'Ces articles ne sont' : 'Cet article n’est'} plus disponible${names.length > 1 ? 's' : ''} : ` +
+        `${names.join(', ')}. Aucun paiement n'a été demandé. ` +
+        'Annulez cette commande et repassez-la sans ces articles.',
+      unavailableItems: names,
+    });
+  }
 
   private async getPayableOrder(orderId: string, firebaseUid: string) {
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });

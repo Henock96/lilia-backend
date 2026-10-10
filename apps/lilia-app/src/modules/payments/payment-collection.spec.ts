@@ -38,6 +38,8 @@ describe('PaymentService — encaissement', () => {
     // Aucune ligne de réglages : acceptation vendeur non mise en service.
     platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
     order: { findUnique: jest.fn(), updateMany: jest.fn() },
+    // D-3 : le paiement relit les articles ; ici, tous disponibles.
+    orderItem: { findMany: jest.fn().mockResolvedValue([]) },
     payment: {
       create: jest.fn(),
       findFirst: jest.fn(),
