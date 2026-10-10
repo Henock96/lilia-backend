@@ -44,6 +44,8 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
       findUnique: jest.fn(),
       findFirst: jest.fn(),
     },
+    // D-3 : le paiement relit les articles (valeur posée dans `beforeEach`).
+    orderItem: { findMany: jest.fn() },
     paymentEvent: {
       findFirst: jest.fn(),
       create: jest.fn(),
@@ -91,6 +93,8 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
     // `jest.resetAllMocks()` efface la valeur posée à la déclaration : sans
     // cette ligne, `create` rend `undefined` et le `.catch` de l'appelant lève.
     prisma.incident.create.mockResolvedValue({ id: 'inc-1' });
+    // Idem pour la relecture des articles (D-3) : tous disponibles.
+    prisma.orderItem.findMany.mockResolvedValue([]);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
