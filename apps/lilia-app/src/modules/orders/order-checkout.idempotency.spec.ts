@@ -66,6 +66,7 @@ describe('OrderCheckoutService — idempotence', () => {
     validateCartNotEmpty: jest.fn(),
     validateSameRestaurant: jest.fn(),
     validateRestaurantOpen: jest.fn(),
+    validateServiceMode: jest.fn(),
     validateScheduledNotClosed: jest.fn(),
     validateStock: jest.fn(),
     validateMinimumOrderAmount: jest.fn(),

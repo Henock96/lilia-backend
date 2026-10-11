@@ -79,6 +79,7 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
     validateCartNotEmpty: jest.fn(),
     validateSameRestaurant: jest.fn(),
     validateRestaurantOpen: jest.fn(),
+    validateServiceMode: jest.fn(),
     validateScheduledNotClosed: jest.fn(),
     validateStock: jest.fn(),
     validateMinimumOrderAmount: jest.fn(),
@@ -413,6 +414,58 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  describe('mode de service — relu sur le vendeur au checkout ET au devis', () => {
+    const refusal = new BadRequestException({
+      message: '« Resto » ne propose pas la livraison.',
+      code: 'DELIVERY_UNAVAILABLE',
+    });
+
+    it('checkout : passe au validateur le vendeur relu et le mode demandé', async () => {
+      await service.createOrderFromCart(
+        'uid',
+        { ...baseDto, isDelivery: false },
+        'idem-mode-1',
+      );
+      const vendor =
+        await validator.validateRestaurantOpen.mock.results[0].value;
+      expect(validator.validateServiceMode).toHaveBeenCalledWith(vendor, false);
+    });
+
+    it('checkout : un mode refusé ne crée aucune commande', async () => {
+      validator.validateServiceMode.mockImplementationOnce(() => {
+        throw refusal;
+      });
+      await expect(
+        service.createOrderFromCart('uid', baseDto, 'idem-mode-2'),
+      ).rejects.toBe(refusal);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(calculator.calculate).not.toHaveBeenCalled();
+    });
+
+    it('devis (dryRun) : le même refus, avant tout chiffrage', async () => {
+      validator.validateServiceMode.mockImplementationOnce(() => {
+        throw refusal;
+      });
+      await expect(
+        service.quote('uid', { adresseId: 'a1', isDelivery: true } as any),
+      ).rejects.toBe(refusal);
+      expect(validator.validateServiceMode).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'resto1' }),
+        true,
+      );
+      expect(calculator.calculate).not.toHaveBeenCalled();
+    });
+
+    it('isDelivery absent : le défaut historique (livraison) est celui qui est contrôlé', async () => {
+      const { isDelivery: _omitted, ...dtoWithoutMode } = baseDto;
+      await service.createOrderFromCart('uid', dtoWithoutMode, 'idem-mode-3');
+      expect(validator.validateServiceMode).toHaveBeenCalledWith(
+        expect.anything(),
+        true,
+      );
+    });
   });
 
   it('promo : valide le code, applyCode dans la transaction, discountAmount répercuté', async () => {
