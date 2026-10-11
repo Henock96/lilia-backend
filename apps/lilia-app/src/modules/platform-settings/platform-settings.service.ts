@@ -7,6 +7,13 @@ import { PlatformSettings, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { UpdatePlatformSettingsDto } from './dto/update-platform-settings.dto';
 import { appUpdateViolations } from './app-update-policy';
+import {
+  assertDeliveryPricingSwitch,
+  financialChanges,
+  financialSettingRequiresApproval,
+  FinancialSettingKey,
+  isFinancialSettingKey,
+} from './financial-settings';
 
 const SINGLETON_ID = 'singleton';
 const CACHE_TTL_MS = 60_000;
@@ -109,6 +116,24 @@ export class PlatformSettingsService {
       throw staleSettings();
     }
 
+    // R-09 — un réglage qui fixe de l'argent se demande et s'approuve à deux
+    // (`POST /admin/platform-settings/financial-change`). Tout ou rien : un
+    // corps qui en change un n'écrit rien, pas même ses autres champs. Une
+    // valeur identique est retirée sans être écrite : un formulaire qui
+    // renvoie tout reste accepté, et ne réécrit jamais une valeur qu'une
+    // approbation aurait changée depuis son chargement.
+    const financial = Object.keys(
+      financialChanges(before, changes as Record<string, unknown>),
+    ) as FinancialSettingKey[];
+    if (financial.length > 0) {
+      throw financialSettingRequiresApproval(financial);
+    }
+    for (const key of Object.keys(changes)) {
+      if (isFinancialSettingKey(key)) {
+        delete (changes as Record<string, unknown>)[key];
+      }
+    }
+
     // Les invariants ne sont jugés que si le PATCH touche une version : un
     // état hérité incohérent ne doit pas empêcher de corriger les frais de
     // service en urgence. Il sera refusé à la prochaine écriture des versions.
@@ -128,25 +153,16 @@ export class PlatformSettingsService {
       }
     }
 
-    // F3-02 — en mode PLATFORM, un checkout sans grille publiée est refusé
-    // (jamais de repli sur le prix du vendeur). Basculer sans grille fermerait
-    // la caisse de toute la plateforme : c'est la bascule qu'on refuse. Le
-    // retour à VENDOR_LEGACY, lui, n'exige rien — c'est la sortie de secours.
-    if (
-      changes.deliveryPricingMode === 'PLATFORM' &&
-      before.deliveryPricingMode !== 'PLATFORM'
-    ) {
-      const published = await this.prisma.deliveryTariff.count({
-        where: { status: 'PUBLISHED' },
-      });
-      if (published === 0) {
-        throw new ConflictException({
-          message:
-            'Publiez une grille de livraison avant de passer la tarification en mode plateforme.',
-          code: 'DELIVERY_TARIFF_NOT_PUBLISHED',
-        });
-      }
-    }
+    // F3-02 — jamais atteint par le PATCH (`deliveryPricingMode` est un
+    // réglage financier, refusé plus haut) ; gardé pour que ce chemin
+    // d'écriture ne contourne jamais la règle s'il venait à servir ailleurs.
+    await assertDeliveryPricingSwitch(
+      this.prisma,
+      before.deliveryPricingMode,
+      changes.deliveryPricingMode as
+        | PlatformSettings['deliveryPricingMode']
+        | undefined,
+    );
 
     // F3-09 — l'éditeur d'options n'a de sens que si la plateforme vend des
     // options (CHECK `PlatformSettings_modifiers_rollout_chk` en base).
@@ -191,10 +207,20 @@ export class PlatformSettingsService {
       where: { id: SINGLETON_ID },
     });
 
+    this.invalidateCache();
+    return { before, after, changes };
+  }
+
+  /** R-09 — après une approbation appliquée hors de ce service. */
+  invalidateCache(): void {
     this.cache = null;
     this.cacheExpiry = 0;
     this.inflight = null;
-    return { before, after, changes };
+  }
+
+  /** Lecture fraîche, jamais le cache : base d'une demande financière. */
+  readFreshSettings(): Promise<PlatformSettings> {
+    return this.readFresh();
   }
 
   /**

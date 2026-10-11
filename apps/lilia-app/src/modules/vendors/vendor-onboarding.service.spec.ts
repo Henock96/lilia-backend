@@ -529,4 +529,67 @@ describe('VendorOnboardingService', () => {
       expect(photos.cleanupCloudinary).not.toHaveBeenCalled();
     });
   });
+
+  /**
+   * R-09 — la commission fixe ce que touche le vendeur : elle se demande et
+   * s'approuve à deux (`POST /admin/vendors/:id/commission-change`). Le PATCH
+   * commerce garde les autres réglages, directs.
+   */
+  describe('updateCommerce (R-09)', () => {
+    beforeEach(() => {
+      prisma.restaurant.findUnique.mockResolvedValue({
+        id: 'r1',
+        commissionPercent: null,
+      });
+      prisma.restaurant.update.mockResolvedValue({ id: 'r1' });
+      prisma.restaurant.findUniqueOrThrow.mockResolvedValue({ id: 'r1' });
+    });
+
+    it('une commission différente : 409, rien n’est écrit, pas même les autres champs', async () => {
+      const error = await service
+        .updateCommerce(
+          'r1',
+          { commissionPercent: 7.5, maxOrdersPerDay: 40 },
+          'admin-1',
+        )
+        .catch((e: ConflictException) => e);
+      expect(error).toBeInstanceOf(ConflictException);
+      expect((error as ConflictException).getResponse()).toMatchObject({
+        code: 'VENDOR_COMMISSION_REQUIRES_APPROVAL',
+      });
+      expect(prisma.restaurant.update).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+
+    it('la même commission renvoyée par un formulaire complet passe, sans être écrite', async () => {
+      await service.updateCommerce(
+        'r1',
+        { commissionPercent: null, maxOrdersPerDay: 40 },
+        'admin-1',
+      );
+      const { data } = prisma.restaurant.update.mock.calls[0][0];
+      expect(data).toEqual({ maxOrdersPerDay: 40 });
+      expect(data).not.toHaveProperty('commissionPercent');
+    });
+
+    it('les réglages non financiers restent directs', async () => {
+      await service.updateCommerce(
+        'r1',
+        {
+          minimumOrderAmount: 2000,
+          acceptsPreorders: true,
+          preorderLeadHours: 24,
+        },
+        'admin-1',
+      );
+      expect(prisma.restaurant.update).toHaveBeenCalledWith({
+        where: { id: 'r1' },
+        data: {
+          minimumOrderAmount: 2000,
+          acceptsPreorders: true,
+          preorderLeadHours: 24,
+        },
+      });
+    });
+  });
 });

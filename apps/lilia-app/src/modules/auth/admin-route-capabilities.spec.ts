@@ -190,6 +190,10 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'PromoController.stats': 'NONE',
   'PromoController.toggle': 'SETTINGS',
   'PromoController.validate': 'NONE',
+  // R-09 — réglages qui fixent de l'argent : demande à deux administrateurs.
+  'SettingsApprovalsController.requestPlatformChange': 'FINANCE_EXECUTE',
+  'SettingsApprovalsController.requestVendorCommissionChange':
+    'FINANCE_EXECUTE',
   'QuartiersController.addQuartiersToZone': 'NONE',
   'QuartiersController.createDeliveryZone': 'NONE',
   'QuartiersController.deleteDeliveryZone': 'NONE',

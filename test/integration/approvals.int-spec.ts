@@ -71,6 +71,7 @@ describeIfDb('Approbations à deux administrateurs (PostgreSQL réel)', () => {
       { invalidate: async () => undefined } as never,
       events,
       new RefundsService(prisma as never),
+      { invalidateCache: () => undefined } as never,
     );
   });
 

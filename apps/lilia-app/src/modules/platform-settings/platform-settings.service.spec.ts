@@ -5,6 +5,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 
 const LOADED_AT = new Date('2026-09-22T10:00:00.000Z');
 const WRITTEN_AT = new Date('2026-09-22T10:05:00.000Z');
+const MSG = 'Retour à 14 h';
 
 function row(overrides: Record<string, unknown> = {}) {
   return {
@@ -15,6 +16,10 @@ function row(overrides: Record<string, unknown> = {}) {
     loyaltyPointValueXaf: 50,
     loyaltyMinRedemption: 1,
     referrerBonusPoints: 1,
+    groceryServiceFeeBps: null,
+    vendorPayoutAutoEnabled: false,
+    vendorPayoutDelayMinutes: 60,
+    deliveryPricingMode: 'VENDOR_LEGACY',
     maintenanceMode: false,
     maintenanceMessage: null,
     minAppVersion: '1.3.0',
@@ -90,7 +95,7 @@ describe('PlatformSettingsService', () => {
   describe('écriture', () => {
     it('vide le cache — la lecture suivante refait la requête', async () => {
       await service.getSettings();
-      await service.updateSettings({ serviceFeePercent: 10 });
+      await service.updateSettings({ maintenanceMessage: MSG });
       await service.getSettings();
       // getSettings + lecture fraîche de l'update + getSettings après invalidation
       expect(prisma.platformSettings.upsert).toHaveBeenCalledTimes(3);
@@ -98,21 +103,21 @@ describe('PlatformSettingsService', () => {
 
     it("lit l'état en base, jamais le cache, avant d'écrire", async () => {
       await service.getSettings(); // met en cache
-      await service.updateSettings({ serviceFeePercent: 10 });
+      await service.updateSettings({ maintenanceMessage: MSG });
       expect(prisma.platformSettings.upsert).toHaveBeenCalledTimes(2);
     });
 
     it("écrit sous condition de l'updatedAt lu, et seulement les champs envoyés", async () => {
-      await service.updateSettings({ serviceFeePercent: 12 });
+      await service.updateSettings({ maintenanceMessage: MSG });
       expect(prisma.platformSettings.updateMany).toHaveBeenCalledWith({
         where: { id: 'singleton', updatedAt: LOADED_AT },
-        data: { serviceFeePercent: 12 },
+        data: { maintenanceMessage: MSG },
       });
     });
 
     it('retourne l’avant (lecture fraîche) et l’après (relu)', async () => {
       const { before, after } = await service.updateSettings({
-        serviceFeePercent: 12,
+        maintenanceMessage: MSG,
       });
       expect(before.updatedAt).toEqual(LOADED_AT);
       expect(after.updatedAt).toEqual(WRITTEN_AT);
@@ -132,7 +137,7 @@ describe('PlatformSettingsService', () => {
 
     it("expectedUpdatedAt n'est jamais écrit en base", async () => {
       await service.updateSettings({
-        serviceFeePercent: 12,
+        maintenanceMessage: MSG,
         expectedUpdatedAt: LOADED_AT.toISOString(),
       });
       const { data } = prisma.platformSettings.updateMany.mock.calls[0][0];
@@ -144,7 +149,7 @@ describe('PlatformSettingsService', () => {
     it("accepte l'écriture quand expectedUpdatedAt correspond", async () => {
       await expect(
         service.updateSettings({
-          serviceFeePercent: 12,
+          maintenanceMessage: MSG,
           expectedUpdatedAt: LOADED_AT.toISOString(),
         }),
       ).resolves.toBeDefined();
@@ -153,7 +158,7 @@ describe('PlatformSettingsService', () => {
     it('409 si la configuration a bougé depuis le chargement du formulaire', async () => {
       await expect(
         service.updateSettings({
-          serviceFeePercent: 12,
+          maintenanceMessage: MSG,
           expectedUpdatedAt: '2026-09-22T09:00:00.000Z',
         }),
       ).rejects.toBeInstanceOf(ConflictException);
@@ -163,14 +168,14 @@ describe('PlatformSettingsService', () => {
     it("409 si un autre administrateur écrit entre la lecture et l'écriture", async () => {
       prisma.platformSettings.updateMany.mockResolvedValue({ count: 0 });
       await expect(
-        service.updateSettings({ serviceFeePercent: 12 }),
+        service.updateSettings({ maintenanceMessage: MSG }),
       ).rejects.toBeInstanceOf(ConflictException);
     });
 
     it('le verrou perdu porte le code SETTINGS_STALE (seul signal de « rechargez »)', async () => {
       const error = await service
         .updateSettings({
-          serviceFeePercent: 12,
+          maintenanceMessage: MSG,
           expectedUpdatedAt: '2026-09-22T09:00:00.000Z',
         })
         .catch((e: ConflictException) => e);
@@ -182,7 +187,7 @@ describe('PlatformSettingsService', () => {
     it("n'invalide pas le cache sur un 409", async () => {
       await service.getSettings();
       prisma.platformSettings.updateMany.mockResolvedValue({ count: 0 });
-      await service.updateSettings({ serviceFeePercent: 12 }).catch(() => {});
+      await service.updateSettings({ maintenanceMessage: MSG }).catch(() => {});
       await service.getSettings();
       // getSettings (cache) + lecture fraîche ; la 2ᵉ lecture sert le cache
       expect(prisma.platformSettings.upsert).toHaveBeenCalledTimes(2);
@@ -251,61 +256,85 @@ describe('PlatformSettingsService', () => {
     });
 
     it("ne juge pas les versions quand le PATCH n'y touche pas", async () => {
-      // État hérité incohérent en base : il ne doit pas empêcher de changer
-      // les frais de service en urgence.
+      // État hérité incohérent en base : il ne doit pas empêcher de poser
+      // un message de maintenance en urgence.
       prisma.platformSettings.upsert.mockResolvedValue(
         row({ minAppVersion: '2.0.0', latestAppVersion: null }),
       );
       await expect(
-        service.updateSettings({ serviceFeePercent: 12 }),
+        service.updateSettings({ maintenanceMessage: MSG }),
       ).resolves.toBeDefined();
     });
   });
 
   /**
-   * F3-02 — bascule de la tarification de livraison.
-   *
-   * En mode PLATFORM, un checkout sans grille publiée est refusé (jamais de
-   * repli sur le prix vendeur). Basculer sans grille fermerait donc la caisse
-   * de toute la plateforme : on refuse la bascule elle-même.
+   * R-09 — un réglage qui fixe de l'argent ne passe plus par le PATCH : il se
+   * demande, et un second administrateur l'approuve (`financial-change`).
    */
-  describe('deliveryPricingMode (F3-02)', () => {
-    it('refuse de passer en PLATFORM sans grille publiée (409)', async () => {
-      prisma.deliveryTariff.count.mockResolvedValue(0);
+  describe('réglages financiers (R-09)', () => {
+    it.each([
+      ['serviceFeePercent', 12],
+      ['groceryServiceFeeBps', 500],
+      ['restaurantCommissionPercent', 8],
+      ['loyaltyPointValueXaf', 40],
+      ['loyaltyPointsPerOrder', 2],
+      ['loyaltyMinRedemption', 10],
+      ['referrerBonusPoints', 5],
+      ['vendorPayoutAutoEnabled', true],
+      ['vendorPayoutDelayMinutes', 30],
+      ['deliveryPricingMode', 'PLATFORM'],
+    ])(
+      '%s modifié → 409 FINANCIAL_SETTING_REQUIRES_APPROVAL',
+      async (key, value) => {
+        const error = await service
+          .updateSettings({ [key]: value })
+          .catch((e: ConflictException) => e);
+        expect(error).toBeInstanceOf(ConflictException);
+        expect((error as ConflictException).getResponse()).toMatchObject({
+          code: 'FINANCIAL_SETTING_REQUIRES_APPROVAL',
+          fields: [key],
+        });
+        expect(prisma.platformSettings.updateMany).not.toHaveBeenCalled();
+      },
+    );
+
+    it('tout ou rien : le champ non financier du même corps n’est pas écrit', async () => {
       await expect(
-        service.updateSettings({ deliveryPricingMode: 'PLATFORM' }),
-      ).rejects.toThrow(ConflictException);
-      expect(prisma.deliveryTariff.count).toHaveBeenCalledWith({
-        where: { status: 'PUBLISHED' },
-      });
+        service.updateSettings({
+          maintenanceMessage: MSG,
+          serviceFeePercent: 12,
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
       expect(prisma.platformSettings.updateMany).not.toHaveBeenCalled();
     });
 
-    it('ce refus n’est PAS un conflit entre administrateurs (code distinct)', async () => {
+    it('une valeur financière identique est acceptée mais jamais écrite', async () => {
+      // Un formulaire qui renvoie tous ses champs ne doit pas casser — et ne
+      // doit pas réécrire une valeur qu'une approbation aurait changée entre-temps.
+      await service.updateSettings({
+        serviceFeePercent: 15,
+        loyaltyPointValueXaf: 50,
+        maintenanceMessage: MSG,
+      });
+      expect(prisma.platformSettings.updateMany).toHaveBeenCalledWith({
+        where: { id: 'singleton', updatedAt: LOADED_AT },
+        data: { maintenanceMessage: MSG },
+      });
+    });
+
+    it('seulement des valeurs financières identiques : rien n’est écrit', async () => {
+      await service.updateSettings({ serviceFeePercent: 15 });
+      expect(prisma.platformSettings.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('la bascule de tarification est un geste financier, pas un contrôle de grille', async () => {
       prisma.deliveryTariff.count.mockResolvedValue(0);
       const error = await service
         .updateSettings({ deliveryPricingMode: 'PLATFORM' })
         .catch((e: ConflictException) => e);
       expect((error as ConflictException).getResponse()).toMatchObject({
-        code: 'DELIVERY_TARIFF_NOT_PUBLISHED',
-        message: expect.stringContaining('Publiez une grille'),
+        code: 'FINANCIAL_SETTING_REQUIRES_APPROVAL',
       });
-    });
-
-    it('passe en PLATFORM quand une grille est publiée', async () => {
-      await service.updateSettings({ deliveryPricingMode: 'PLATFORM' });
-      expect(prisma.platformSettings.updateMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: { deliveryPricingMode: 'PLATFORM' },
-        }),
-      );
-    });
-
-    it('le retour à VENDOR_LEGACY n’exige rien : c’est la sortie de secours', async () => {
-      prisma.deliveryTariff.count.mockResolvedValue(0);
-      await service.updateSettings({ deliveryPricingMode: 'VENDOR_LEGACY' });
-      expect(prisma.platformSettings.updateMany).toHaveBeenCalled();
-      expect(prisma.deliveryTariff.count).not.toHaveBeenCalled();
     });
   });
 });

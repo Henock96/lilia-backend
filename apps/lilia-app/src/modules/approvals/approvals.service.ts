@@ -29,11 +29,16 @@ import { RefundExecutionService } from '../refunds/refund-execution.service';
 import { RefundsService } from '../refunds/refunds.service';
 import { closureFromPayload } from '../refunds/refund-approval.policy';
 import { UserCacheService } from '../auth/services/user-cache.service';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import {
   APPROVAL_TTL_HOURS,
   approvalPayloadHash,
   consumeApproval,
 } from './approval-rules';
+import {
+  applyPlatformSettingsChange,
+  applyVendorCommissionChange,
+} from './settings-approvals';
 
 /** Charge utile d'une attribution de capacités. */
 export interface CapabilityGrantPayload {
@@ -65,6 +70,8 @@ export class ApprovalsService {
     private readonly eventEmitter: EventEmitter2,
     // R-01 — clôture déclarative approuvée (même module : `RefundsCoreModule`).
     private readonly refunds: RefundsService,
+    // R-09 — le cache de 60 s doit voir tout de suite un taux approuvé.
+    private readonly settings: PlatformSettingsService,
   ) {}
 
   /**
@@ -191,9 +198,23 @@ export class ApprovalsService {
         ? await this.approveRefund(approval, approverId, relaunch)
         : await this.prisma.$transaction(async (tx) => {
             if (!relaunch) await this.markApproved(tx, approval, approverId);
-            return approval.kind === ApprovalKind.PAYOUT_ACCOUNT_CHANGE
-              ? this.applyPayoutAccountChange(tx, approval, approverId)
-              : this.applyCapabilityGrant(tx, approval, approverId);
+            switch (approval.kind) {
+              case ApprovalKind.PAYOUT_ACCOUNT_CHANGE:
+                return this.applyPayoutAccountChange(tx, approval, approverId);
+              case ApprovalKind.PLATFORM_SETTINGS_CHANGE:
+                return applyPlatformSettingsChange(tx, approval, approverId);
+              case ApprovalKind.VENDOR_COMMISSION_CHANGE:
+                return applyVendorCommissionChange(tx, approval, approverId);
+              case ApprovalKind.CAPABILITY_GRANT:
+                return this.applyCapabilityGrant(tx, approval, approverId);
+              default:
+                // Un type sans application connue ne s'exécute jamais « par
+                // défaut » comme un autre geste.
+                throw new ConflictException({
+                  message: `Type d’approbation non pris en charge : ${approval.kind}.`,
+                  code: 'APPROVAL_KIND_UNSUPPORTED',
+                });
+            }
           });
 
     await this.audit.record({
@@ -438,6 +459,10 @@ export class ApprovalsService {
         maskedPhone: maskPhone(payload.payoutPhoneNumber),
         cooldownHours: payoutAccountCooldownHours(),
       });
+    }
+    if (approval.kind === ApprovalKind.PLATFORM_SETTINGS_CHANGE) {
+      // Les autres instances se réparent au TTL (60 s), comme pour le PATCH.
+      this.settings.invalidateCache();
     }
     if (approval.kind === ApprovalKind.CAPABILITY_GRANT) {
       const user = await this.prisma.user.findUnique({
