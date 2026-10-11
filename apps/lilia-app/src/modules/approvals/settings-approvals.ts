@@ -27,6 +27,8 @@ export interface VendorCommissionChangePayload {
   commissionPercent: number | null;
   /** Valeur au moment de la demande : l'approbation ne vaut que pour elle. */
   before: number | null;
+  /** Pour l'approbateur : qui est concerné (la file n'affiche pas `refId`). */
+  vendorName: string;
 }
 
 function approvalStale(fields: string[]): ConflictException {

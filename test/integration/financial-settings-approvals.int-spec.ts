@@ -309,7 +309,11 @@ describeIfDb(
         expect(res.approval).toMatchObject({
           kind: 'VENDOR_COMMISSION_CHANGE',
           refId: VENDOR,
-          payload: { commissionPercent: 7.5, before: null },
+          payload: {
+            commissionPercent: 7.5,
+            before: null,
+            vendorName: 'Épicerie Deux Signatures',
+          },
         });
         expect(
           (await prisma.restaurant.findUniqueOrThrow({ where: { id: VENDOR } }))

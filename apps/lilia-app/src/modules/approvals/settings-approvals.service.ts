@@ -141,6 +141,7 @@ export class SettingsApprovalsService {
     const payload: VendorCommissionChangePayload = {
       commissionPercent: dto.commissionPercent,
       before: vendor.commissionPercent,
+      vendorName: vendor.nom,
     };
     const label = (v: number | null) =>
       v === null ? 'taux plateforme' : `${v} %`;
