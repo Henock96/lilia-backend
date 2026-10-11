@@ -328,6 +328,9 @@ export class OrderCheckoutService {
     const deliveryAddress = destination?.address ?? null;
     const restaurant =
       await this.validator.validateRestaurantOpen(restaurantId);
+    // Même chemin pour le devis (`dryRun`) et le checkout : un mode que le
+    // vendeur ne propose plus est refusé avant d'être chiffré.
+    this.validator.validateServiceMode(restaurant, isDelivery);
     await this.validator.validateStock(cartItems);
 
     // Multi-vendeurs (LIL-112 + LIL-121 décision 1b)

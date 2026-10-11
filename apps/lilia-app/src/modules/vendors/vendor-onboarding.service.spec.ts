@@ -448,6 +448,12 @@ describe('VendorOnboardingService', () => {
       ).rejects.toThrow(/ne peut pas dépasser/);
     });
 
+    it('bascule un seul mode sans réécrire les frais, le mode de prix ni l’autre mode', async () => {
+      await service.updateDelivery('r1', { supportsPickup: false });
+      const { data } = prisma.restaurant.update.mock.calls[0][0];
+      expect(data).toEqual({ supportsDelivery: true, supportsPickup: false });
+    });
+
     it('compare au delta : un seul champ envoyé est confronté à l’existant', async () => {
       // 10 min de min contre 30 en base : cohérent, doit passer.
       await service.updateDelivery('r1', { estimatedDeliveryTimeMin: 10 });

@@ -103,6 +103,41 @@ export class OrderValidatorService {
   }
 
   /**
+   * Mode de service : le choix du client (`isDelivery`) doit être un mode que
+   * le vendeur propose. `supportsDelivery` / `supportsPickup` étaient servis,
+   * configurables et vérifiés à l'écriture (« au moins un des deux »), mais le
+   * checkout ne les lisait pas : une commande à livrer passait chez un vendeur
+   * qui ne fait que du retrait, et l'inverse.
+   *
+   * `restaurant` est celui que `validateRestaurantOpen` vient de relire en
+   * base : c'est la configuration **actuelle** qui tranche, pas celle que le
+   * client a vue en composant son panier. Un vendeur sans aucun mode (état
+   * que l'écriture refuse, mais qu'une donnée ancienne pourrait porter) est
+   * refusé dans les deux cas — jamais servi par défaut.
+   */
+  validateServiceMode(
+    restaurant: { nom: string; supportsDelivery: boolean; supportsPickup: boolean },
+    isDelivery: boolean,
+  ) {
+    if (isDelivery && !restaurant.supportsDelivery) {
+      throw new BadRequestException({
+        message: restaurant.supportsPickup
+          ? `« ${restaurant.nom} » ne propose pas la livraison. Choisissez le retrait sur place.`
+          : `« ${restaurant.nom} » ne propose pas la livraison.`,
+        code: 'DELIVERY_UNAVAILABLE',
+      });
+    }
+    if (!isDelivery && !restaurant.supportsPickup) {
+      throw new BadRequestException({
+        message: restaurant.supportsDelivery
+          ? `« ${restaurant.nom} » ne propose pas le retrait sur place. Choisissez la livraison.`
+          : `« ${restaurant.nom} » ne propose pas le retrait sur place.`,
+        code: 'PICKUP_UNAVAILABLE',
+      });
+    }
+  }
+
+  /**
    * F3-03, R-03.3 — une précommande dont l'échéance tombe dans une pause ou
    * un congé déclarés est refusée, en disant quand le vendeur rouvre. Un
    * vendeur en congés ne doit pas découvrir le jour de son retour une
