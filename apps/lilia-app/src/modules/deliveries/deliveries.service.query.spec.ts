@@ -17,6 +17,10 @@ import { TrackingService } from '../tracking/tracking.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
 import { ReferralService } from '../users/referral.service';
 import { OrderTransitionService } from '../orders/order-transition.service';
+import {
+  forbiddenDriverKeysIn,
+  fullDeliveryRow,
+} from '../../../test/driver-exposure';
 
 /**
  * Tests de CARACTÉRISATION des lectures de DeliveriesService (LIL-134) :
@@ -167,8 +171,10 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
       prisma.delivery.findUnique.mockResolvedValue(baseDelivery);
       const res = await service.findOne('d1', 'ownerUid');
       expect(prisma.user.findUnique).not.toHaveBeenCalled();
-      // le champ interne owner est retiré de la réponse
-      expect(res.data.order.restaurant).not.toHaveProperty('owner');
+      // le champ interne owner est retiré de la réponse (vue vendeur : la
+      // branche livreur, elle, est une liste blanche faiblement typée)
+      const order = res.data.order as { restaurant: object };
+      expect(order.restaurant).not.toHaveProperty('owner');
     });
 
     it('autorise le client propriétaire de la commande', async () => {
@@ -300,6 +306,38 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
         const res = await service.findByOrderId('o1', 'clientUid');
         expect(res.data.handoverCode).toBeNull();
       });
+    });
+  });
+
+  // D-PAY (DEL-002) — les lectures du livreur passent par la liste blanche.
+  // Prisma est simulé avec une ligne COMPLÈTE (toutes les colonnes
+  // économiques remplies) : une fuite se verrait.
+  describe('D-PAY — aucune donnée économique vers le livreur', () => {
+    it('GET /deliveries/mine', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'liv1' });
+      prisma.delivery.findMany.mockResolvedValue([fullDeliveryRow()]);
+      prisma.delivery.count.mockResolvedValue(1);
+      const res = await service.findAllForDeliverer('uid');
+      // `res.data` et non `res` : `meta.total` est un total de pagination.
+      expect(forbiddenDriverKeysIn(res.data)).toEqual([]);
+      expect(res.data[0]).toMatchObject({ id: 'd1', status: 'EN_TRANSIT' });
+    });
+
+    it('GET /deliveries/my-missions', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'liv1' });
+      prisma.delivery.findMany.mockResolvedValue([fullDeliveryRow('ASSIGNER')]);
+      const res = await service.getMyAssignedDeliveries('uid');
+      expect(forbiddenDriverKeysIn(res)).toEqual([]);
+      expect(res).toHaveLength(1);
+    });
+
+    it('GET /deliveries/:id vu par le livreur assigné', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(fullDeliveryRow());
+      prisma.user.findUnique.mockResolvedValue({ id: 'liv1', role: 'LIVREUR' });
+      const res = await service.findOne('d1', 'livUid');
+      expect(forbiddenDriverKeysIn(res)).toEqual([]);
+      // Pas non plus le `firebaseUid` du vendeur.
+      expect(JSON.stringify(res)).not.toContain('ownerUid');
     });
   });
 });

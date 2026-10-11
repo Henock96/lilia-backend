@@ -8,10 +8,7 @@ import { AuthModule } from '../auth/auth.module';
 import { VendorsCoreModule } from '../vendors/vendors-core.module';
 import { DriversService } from './drivers.service';
 import { DriverSettlementService } from './driver-settlement.service';
-import {
-  AdminDriverSettlementsController,
-  DriverEarningsController,
-} from './driver-settlement.controller';
+import { AdminDriverSettlementsController } from './driver-settlement.controller';
 import {
   AdminDriversController,
   DriversController,
@@ -37,7 +34,6 @@ import {
   ],
   controllers: [
     AdminDriverSettlementsController,
-    DriverEarningsController,
     AdminDriversController,
     DriversController,
   ],

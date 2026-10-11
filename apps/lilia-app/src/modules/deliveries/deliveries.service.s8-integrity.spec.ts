@@ -13,6 +13,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OrderStateMachine } from '../orders/order-state.machine';
 import { OrderTransitionService } from '../orders/order-transition.service';
+import { forbiddenDriverKeysIn } from '../../../test/driver-exposure';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { TrackingService } from '../tracking/tracking.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
@@ -274,6 +275,15 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
     );
 
   describe('cas nominal', () => {
+    it('D-PAY — le livreur reçoit la liste blanche, sans aucun montant', async () => {
+      const res = await markDelivered();
+      expect(forbiddenDriverKeysIn(res.data)).toEqual([]);
+      // Le vendeur et l'admin gardent la vue complète : la projection ne
+      // s'applique qu'au rôle LIVREUR.
+      expect(res.data).toMatchObject({ id: DELIVERY_ID });
+      expect(res.data).not.toHaveProperty('deliverer');
+    });
+
     it('clôture la livraison, la commande, et écrit l’historique', async () => {
       await markDelivered();
 

@@ -147,32 +147,8 @@ export class AdminDriverSettlementsController {
   }
 }
 
-/**
- * Ce que le livreur voit de sa propre rémunération.
- *
- * Séparé pour que `@Roles('LIVREUR')` porte sur la classe, comme
- * `DriverSelfController`. Lecture seule : il consulte, il ne règle rien.
- */
-@ApiTags('Règlements livreurs')
-@ApiBearerAuth()
-@Controller('drivers/me/earnings')
-@Roles('LIVREUR')
-export class DriverEarningsController {
-  constructor(private readonly settlements: DriverSettlementService) {}
-
-  /** Ce qui lui reste dû aujourd'hui. */
-  @Get('outstanding')
-  @ApiOperation({ summary: 'Ce qui me reste dû' })
-  async outstanding(@CurrentUser() user: User) {
-    return {
-      data: await this.settlements.getOutstanding(user.id, new Date()),
-    };
-  }
-
-  /** Ses règlements passés. */
-  @Get()
-  @ApiOperation({ summary: 'Mes règlements' })
-  async list(@CurrentUser() user: User, @Query() page: PaginationQueryDto) {
-    return this.settlements.listForDriver(user.id, page.page, page.limit);
-  }
-}
+// `DriverEarningsController` (`GET /drivers/me/earnings*`) a été retiré
+// (D-PAY, décision Q6 du 27/09/2026 — DEL-002) : le livreur ne voit jamais sa
+// rémunération, ni par course ni en cumul. Les règlements restent consultables
+// par l'ADMIN seul (`AdminDriverSettlementsController` ci-dessus). Une
+// application livreur antérieure qui ouvre « Mes gains » reçoit un 404.

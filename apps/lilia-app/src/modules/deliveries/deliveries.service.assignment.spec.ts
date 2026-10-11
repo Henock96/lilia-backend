@@ -22,6 +22,10 @@ import { TrackingService } from '../tracking/tracking.service';
 import { LoyaltyService } from '../loyalty/loyalty.service';
 import { ReferralService } from '../users/referral.service';
 import { OrderTransitionService } from '../orders/order-transition.service';
+import {
+  forbiddenDriverKeysIn,
+  fullDeliveryRow,
+} from '../../../test/driver-exposure';
 
 /**
  * Tests de CARACTÉRISATION de l'assignation/acceptation de DeliveriesService
@@ -604,6 +608,23 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
       expect(res).toEqual({ id: 'd1', status: 'ACCEPTER' });
     });
 
+    it('D-PAY — la réponse ne porte ni le gain gelé ni aucun montant', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'liv1',
+        nom: 'John',
+        driverStatus: 'AVAILABLE',
+      });
+      prisma.delivery.findUnique.mockResolvedValue(assigned);
+      // Ligne nue telle que `findUniqueOrThrow` la rend après le gel.
+      const { order: _order, ...frozen } = fullDeliveryRow('ACCEPTER');
+      tx.delivery.findUniqueOrThrow.mockResolvedValue(frozen);
+
+      const res = await service.acceptDelivery('d1', 'uid');
+
+      expect(forbiddenDriverKeysIn(res)).toEqual([]);
+      expect(res).toMatchObject({ id: 'd1', status: 'ACCEPTER' });
+    });
+
     it('double-tap : le second appel est rejeté par le verrou optimiste', async () => {
       prisma.user.findUnique.mockResolvedValue({
         id: 'liv1',
@@ -682,6 +703,17 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
         expect.anything(),
       );
       expect(res).toEqual({ id: 'd1', status: 'EN_TRANSIT' });
+    });
+
+    it('D-PAY — la réponse de récupération ne porte aucun montant', async () => {
+      prisma.delivery.findUnique.mockResolvedValue(accepted);
+      const { order: _order, ...frozen } = fullDeliveryRow('EN_TRANSIT');
+      tx.delivery.findUniqueOrThrow.mockResolvedValue(frozen);
+
+      const res = await service.confirmPickup('d1', 'uid');
+
+      expect(forbiddenDriverKeysIn(res)).toEqual([]);
+      expect(res).toMatchObject({ id: 'd1', status: 'EN_TRANSIT' });
     });
 
     it('refuse une récupération sans acceptation préalable', async () => {
