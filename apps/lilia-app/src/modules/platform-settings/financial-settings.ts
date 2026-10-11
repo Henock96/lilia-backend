@@ -73,7 +73,17 @@ export function financialSnapshot(
   ) as FinancialSettings;
 }
 
-/** Champs dont la valeur a bougé depuis la demande (approbation périmée). */
+/**
+ * Champs dont la valeur a bougé depuis la demande (approbation périmée).
+ *
+ * L'égalité stricte est fiable ici, y compris pour les `Float`
+ * (`serviceFeePercent`, `restaurantCommissionPercent`) : la valeur n'est que
+ * transportée (lue en base, stockée en JSONB, relue), jamais recalculée, et un
+ * double fait l'aller-retour JSON à l'identique. Elle cesserait de l'être si
+ * l'on arrondissait `before` avant de le stocker, ou si une colonne passait en
+ * `Decimal` (objet, jamais `===` à un nombre) : revoir alors cette comparaison
+ * et celle de `applyVendorCommissionChange`.
+ */
 export function staleFinancialKeys(
   current: PlatformSettings,
   before: FinancialSettings,

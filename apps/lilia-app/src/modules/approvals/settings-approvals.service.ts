@@ -8,6 +8,7 @@ import { ApprovalKind, Prisma } from '@prisma/client';
 import { IsNumber, Max, Min, ValidateIf } from 'class-validator';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { MAX_COMMISSION_PERCENT } from '../payments/money.util';
 import { UpdatePlatformSettingsDto } from '../platform-settings/dto/update-platform-settings.dto';
 import {
   assertDeliveryPricingSwitch,
@@ -48,7 +49,7 @@ export class VendorCommissionChangeDto {
   @ValidateIf((_, v) => v !== null)
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
-  @Max(50)
+  @Max(MAX_COMMISSION_PERCENT)
   commissionPercent!: number | null;
 }
 
