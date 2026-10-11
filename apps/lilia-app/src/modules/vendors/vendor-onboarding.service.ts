@@ -354,20 +354,36 @@ export class VendorOnboardingService {
     );
   }
 
-  /** ADMIN uniquement — porte la commission, donc la marge de la plateforme. */
+  /**
+   * ADMIN uniquement — minimum de commande, précommandes, plafond journalier.
+   *
+   * R-09 — la **commission** fixe ce que touche le vendeur : elle ne change
+   * plus ici, mais par une demande approuvée par un second administrateur
+   * (`POST /admin/vendors/:id/commission-change`). Une commission différente
+   * de l'actuelle refuse tout le corps (409) ; identique, elle est ignorée,
+   * pour que les formulaires qui renvoient tous leurs champs ne cassent pas.
+   */
   async updateCommerce(
     restaurantId: string,
     dto: UpdateVendorCommerceDto,
-    adminId: string,
+    _adminId: string,
   ) {
     const current = await this.getOrThrow(restaurantId);
+
+    if (
+      dto.commissionPercent !== undefined &&
+      dto.commissionPercent !== current.commissionPercent
+    ) {
+      throw new ConflictException({
+        message:
+          'La commission touche l’argent : elle se demande depuis l’admin web à jour et doit être approuvée par un second administrateur. Rien n’a été enregistré.',
+        code: 'VENDOR_COMMISSION_REQUIRES_APPROVAL',
+      });
+    }
 
     await this.prisma.restaurant.update({
       where: { id: restaurantId },
       data: {
-        ...(dto.commissionPercent !== undefined && {
-          commissionPercent: dto.commissionPercent,
-        }),
         ...(dto.minimumOrderAmount !== undefined && {
           minimumOrderAmount: dto.minimumOrderAmount,
         }),
@@ -382,22 +398,6 @@ export class VendorOnboardingService {
         }),
       },
     });
-
-    if (
-      dto.commissionPercent !== undefined &&
-      dto.commissionPercent !== current.commissionPercent
-    ) {
-      await this.audit.record({
-        actorId: adminId,
-        action: AdminAuditAction.VENDOR_COMMISSION_CHANGED,
-        targetType: 'Restaurant',
-        targetId: restaurantId,
-        metadata: {
-          from: current.commissionPercent,
-          to: dto.commissionPercent,
-        },
-      });
-    }
 
     return this.withReadiness(
       restaurantId,

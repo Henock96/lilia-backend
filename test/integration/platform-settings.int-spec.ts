@@ -65,7 +65,7 @@ describeIfDb('PlatformSettings — verrou optimiste (PostgreSQL réel)', () => {
     // A enregistre son formulaire périmé : il effacerait le blocage.
     await expect(
       instanceA.updateSettings({
-        serviceFeePercent: 12,
+        maintenanceMessage: 'Formulaire périmé',
         minAppVersion: null,
         expectedUpdatedAt: seenByA.updatedAt.toISOString(),
       }),
@@ -75,13 +75,15 @@ describeIfDb('PlatformSettings — verrou optimiste (PostgreSQL réel)', () => {
       where: { id: 'singleton' },
     });
     expect(row.minAppVersion).toBe('1.4.0');
-    expect(row.serviceFeePercent).toBe(15);
+    expect(row.maintenanceMessage).toBeNull();
   });
 
   it('updateMany fait avancer updatedAt — sans quoi le verrou ne verrouille rien', async () => {
     const before = await instanceA.getSettings();
     await new Promise((r) => setTimeout(r, 5));
-    const { after } = await instanceA.updateSettings({ serviceFeePercent: 12 });
+    const { after } = await instanceA.updateSettings({
+      maintenanceMessage: 'Retour à 14 h',
+    });
     expect(after.updatedAt.getTime()).toBeGreaterThan(
       before.updatedAt.getTime(),
     );
@@ -92,8 +94,8 @@ describeIfDb('PlatformSettings — verrou optimiste (PostgreSQL réel)', () => {
     const expectedUpdatedAt = seen.updatedAt.toISOString();
 
     const results = await Promise.allSettled([
-      instanceA.updateSettings({ serviceFeePercent: 11, expectedUpdatedAt }),
-      instanceB.updateSettings({ serviceFeePercent: 13, expectedUpdatedAt }),
+      instanceA.updateSettings({ maintenanceMessage: 'A', expectedUpdatedAt }),
+      instanceB.updateSettings({ maintenanceMessage: 'B', expectedUpdatedAt }),
     ]);
 
     const ok = results.filter((r) => r.status === 'fulfilled');

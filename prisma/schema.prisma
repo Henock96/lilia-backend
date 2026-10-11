@@ -2027,6 +2027,11 @@ enum ApprovalKind {
   REFUND_EXECUTION
   /// Attribution ou retrait de capacités.
   CAPABILITY_GRANT
+  /// R-09 — réglage de plateforme qui fixe de l'argent (frais, commission par
+  /// défaut, points, versements automatiques, tarification de la livraison).
+  PLATFORM_SETTINGS_CHANGE
+  /// R-09 — commission propre à un vendeur.
+  VENDOR_COMMISSION_CHANGE
 }
 
 enum ApprovalStatus {
