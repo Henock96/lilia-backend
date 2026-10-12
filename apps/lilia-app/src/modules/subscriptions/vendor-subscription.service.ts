@@ -263,12 +263,19 @@ export class VendorSubscriptionService {
     return this.verdictFor(vendor.id, now);
   }
 
-  /** Point d'entrée des droits pour le reste du système (Lot 3 et suivants). */
+  /**
+   * Point d'entrée des droits pour le reste du système (Lot 3 et suivants).
+   *
+   * `db` : passer le client de transaction pour relire le droit **sous le
+   * verrou** `Restaurant … FOR UPDATE` que prennent aussi `grant` et `revoke`
+   * — une révocation concurrente est alors vue, pas devancée.
+   */
   async verdictFor(
     restaurantId: string,
     now: Date = new Date(),
+    db: Pick<Prisma.TransactionClient, 'vendorSubscription'> = this.prisma,
   ): Promise<SubscriptionVerdict> {
-    const periods = await this.prisma.vendorSubscription.findMany({
+    const periods = await db.vendorSubscription.findMany({
       where: { restaurantId, status: 'ACTIVE', endsAt: { gt: now } },
       select: { plan: true, status: true, startsAt: true, endsAt: true },
     });

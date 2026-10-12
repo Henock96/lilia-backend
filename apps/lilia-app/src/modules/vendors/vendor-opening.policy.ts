@@ -141,11 +141,26 @@ export function withinHours(
   now: Date,
 ): boolean {
   const clock = brazzavilleClock(now);
-  const today = hours.find((h) => h.dayOfWeek === clock.day);
-  const yesterday = hours.find((h) => h.dayOfWeek === clock.previousDay);
+  return withinHoursAt(hours, clock.day, clock.minutes);
+}
+
+/**
+ * Même règle que `withinHours`, pour un instant de la **semaine type** (jour
+ * + minute depuis minuit, heure de Brazzaville) plutôt qu'une date. Sert à
+ * l'aperçu des réservations (Premium Lot 3), qui raisonne sur un gabarit
+ * hebdomadaire : la traversée de minuit de la veille y est comprise.
+ */
+export function withinHoursAt(
+  hours: readonly OpeningHoursRow[],
+  day: OpeningDay,
+  minutes: number,
+): boolean {
+  const previousDay = DAYS[(DAYS.indexOf(day) + 6) % 7];
+  const today = hours.find((h) => h.dayOfWeek === day);
+  const yesterday = hours.find((h) => h.dayOfWeek === previousDay);
   return (
-    matchesToday(clock.minutes, today) ||
-    matchesOvernightFromYesterday(clock.minutes, yesterday)
+    matchesToday(minutes, today) ||
+    matchesOvernightFromYesterday(minutes, yesterday)
   );
 }
 
