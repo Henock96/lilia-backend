@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { AdminAuditModule } from '../admin-audit/admin-audit.module';
 import { PlatformSettingsCoreModule } from '../platform-settings/platform-settings-core.module';
 import {
   AdminVendorSubscriptionsController,
@@ -15,7 +14,7 @@ import { VendorSubscriptionService } from './vendor-subscription.service';
  * exporté pour les lots suivants (garde des statistiques, réservations).
  */
 @Module({
-  imports: [AdminAuditModule, PlatformSettingsCoreModule],
+  imports: [PlatformSettingsCoreModule],
   controllers: [
     AdminVendorSubscriptionsController,
     VendorSubscriptionController,

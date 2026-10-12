@@ -11,9 +11,8 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
-import { AdminAuditAction, AdminCapability, User } from '@prisma/client';
+import { AdminCapability, User } from '@prisma/client';
 
-import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequireCapability } from '../auth/decorators/require-capability.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -32,17 +31,14 @@ const MAX_REQUEST_KEY_LENGTH = 200;
  * Enregistrer ou révoquer une période fixe ce qu'un vendeur a payé :
  * `FINANCE_EXECUTE` (décision du 11/10/2026 : un seul administrateur, pas de
  * quatre yeux), MFA appliquée par `AdminSecurityGuard` quand elle est exigée.
- * Chaque geste est tracé dans `AdminAuditLog`.
+ * Chaque geste est tracé dans `AdminAuditLog`, dans la transaction du geste.
  */
 @ApiTags('Abonnements (admin)')
 @ApiBearerAuth()
 @Controller('admin/vendors/:vendorId/subscriptions')
 @Roles('ADMIN')
 export class AdminVendorSubscriptionsController {
-  constructor(
-    private readonly subscriptions: VendorSubscriptionService,
-    private readonly audit: AdminAuditService,
-  ) {}
+  constructor(private readonly subscriptions: VendorSubscriptionService) {}
 
   @Get()
   @ApiOperation({ summary: 'Historique des périodes et statut Premium' })
@@ -72,6 +68,7 @@ export class AdminVendorSubscriptionsController {
       );
     }
 
+    // L'audit est écrit par le service, dans la transaction de la période.
     const { subscription, replayed } = await this.subscriptions.grant({
       restaurantId: vendorId,
       adminId: admin.id,
@@ -80,26 +77,6 @@ export class AdminVendorSubscriptionsController {
       paymentReference: dto.paymentReference,
       note: dto.note,
     });
-
-    // Un rejeu n'a rien créé : il ne laisse pas une seconde trace.
-    if (!replayed) {
-      await this.audit.record({
-        actorId: admin.id,
-        action: AdminAuditAction.SUBSCRIPTION_GRANTED,
-        targetType: 'Restaurant',
-        targetId: vendorId,
-        reason: dto.note,
-        metadata: {
-          subscriptionId: subscription.id,
-          plan: subscription.plan,
-          priceXaf: subscription.priceXaf,
-          startsAt: subscription.startsAt.toISOString(),
-          endsAt: subscription.endsAt.toISOString(),
-          paymentMethod: subscription.paymentMethod,
-          paymentReference: subscription.paymentReference,
-        },
-      });
-    }
 
     return {
       data: subscription,
@@ -119,26 +96,13 @@ export class AdminVendorSubscriptionsController {
     @Body() dto: RevokeSubscriptionDto,
     @CurrentUser() admin: User,
   ) {
+    // Révocation et audit dans la même transaction (service).
     const subscription = await this.subscriptions.revoke(
       vendorId,
       subscriptionId,
       admin.id,
       dto.reason,
     );
-
-    await this.audit.record({
-      actorId: admin.id,
-      action: AdminAuditAction.SUBSCRIPTION_REVOKED,
-      targetType: 'Restaurant',
-      targetId: vendorId,
-      reason: dto.reason,
-      metadata: {
-        subscriptionId,
-        priceXaf: subscription.priceXaf,
-        startsAt: subscription.startsAt.toISOString(),
-        endsAt: subscription.endsAt.toISOString(),
-      },
-    });
 
     return { data: subscription, message: 'Période révoquée.' };
   }
