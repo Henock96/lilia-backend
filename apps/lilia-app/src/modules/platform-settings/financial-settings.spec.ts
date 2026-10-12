@@ -8,6 +8,7 @@ import {
   FINANCIAL_SETTING_KEYS,
   financialChanges,
   financialSnapshot,
+  isFinancialSettingKey,
   staleFinancialKeys,
 } from './financial-settings';
 import { UpdatePlatformSettingsDto } from './dto/update-platform-settings.dto';
@@ -24,6 +25,7 @@ const current = {
   vendorPayoutAutoEnabled: false,
   vendorPayoutDelayMinutes: 60,
   deliveryPricingMode: 'VENDOR_LEGACY',
+  premiumMonthlyPriceXaf: 15000,
   maintenanceMode: false,
 } as unknown as PlatformSettings;
 
@@ -122,6 +124,16 @@ describe('Réglages financiers (R-09)', () => {
         'Versements automatiques : désactivés → activés ; ' +
         'Tarification de la livraison : prix du vendeur → grille plateforme',
     );
+  });
+
+  it('Premium (Lot 2) : le prix mensuel est un réglage financier, résumé en XAF', () => {
+    expect(isFinancialSettingKey('premiumMonthlyPriceXaf')).toBe(true);
+    expect(
+      describeFinancialChange({
+        changes: { premiumMonthlyPriceXaf: 20000 },
+        before: { premiumMonthlyPriceXaf: 15000 },
+      }),
+    ).toBe('Prix mensuel Premium : 15000 XAF → 20000 XAF');
   });
 
   /**

@@ -90,6 +90,11 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'AdminVendorOnboardingController.setDisplayOrder': 'NONE',
   'AdminVendorOnboardingController.setFeatured': 'NONE',
   'AdminVendorOnboardingController.updateCommerce': 'FINANCE_EXECUTE',
+  // Premium (Lot 2) — enregistrer ou révoquer un mois payé fixe ce qu'un
+  // vendeur a acheté (décision du 11/10/2026 : FINANCE_EXECUTE seul).
+  'AdminVendorSubscriptionsController.grant': 'FINANCE_EXECUTE',
+  'AdminVendorSubscriptionsController.list': 'NONE',
+  'AdminVendorSubscriptionsController.revoke': 'FINANCE_EXECUTE',
   'ApprovalsController.admins': 'NONE',
   'ApprovalsController.approve': 'FINANCE_APPROVE',
   'ApprovalsController.list': 'NONE',

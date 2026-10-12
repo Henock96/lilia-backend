@@ -53,6 +53,7 @@ import { PlatformSettingsModule } from './modules/platform-settings/platform-set
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { PromoModule } from './modules/promo/promo.module';
 import { VendorOffersModule } from './modules/vendor-offers/vendor-offers.module';
+import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { FavoritesModule } from './modules/favorites/favorites.module';
 import { VendorsModule } from './modules/vendors/vendors.module';
 import { VendorPhotosModule } from './modules/vendor-photos/vendor-photos.module';
@@ -259,6 +260,7 @@ import { DeliveryPricingModule } from './modules/delivery-pricing/delivery-prici
     DashboardModule,
     PromoModule,
     VendorOffersModule, // F3-11 — offres boutique financées par le vendeur
+    SubscriptionsModule, // Premium (Lot 2) — abonnements vendeur
     OpsModule,
     FavoritesModule,
     VendorsModule,
