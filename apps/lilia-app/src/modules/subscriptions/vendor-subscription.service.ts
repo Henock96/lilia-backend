@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, VendorSubscription } from '@prisma/client';
+import { AdminAuditAction, Prisma, VendorSubscription } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { addOneCalendarMonth } from './billing-period';
@@ -37,6 +37,9 @@ export interface GrantResult {
  *    dernière période active — deux admins simultanés sont sérialisés ;
  *  · **pas de double révocation** : `updateMany … WHERE status = 'ACTIVE'`
  *    puis contrôle de `count`.
+ *
+ * Chaque geste écrit son `AdminAuditLog` **dans la même transaction** : pas
+ * de période accordée ou révoquée sans trace (convention R-01).
  *
  * Le prix n'est jamais saisi : il est lu dans `PlatformSettings` et figé sur
  * la période (règle 6).
@@ -81,7 +84,7 @@ export class VendorSubscriptionService {
         });
         const startsAt = last ? last.endsAt : now;
 
-        return tx.vendorSubscription.create({
+        const created = await tx.vendorSubscription.create({
           data: {
             restaurantId: input.restaurantId,
             plan: 'PREMIUM',
@@ -96,6 +99,29 @@ export class VendorSubscriptionService {
             grantedById: input.adminId,
           },
         });
+        // Journal écrit AVEC la période : un mois payé ne peut pas exister
+        // sans trace (l'audit post-commit avalait ses erreurs, et un rejeu
+        // rendait ensuite `replayed` sans jamais la réécrire). Si l'audit
+        // échoue, rien n'est créé et la même clé peut être renvoyée.
+        await tx.adminAuditLog.create({
+          data: {
+            actorId: input.adminId,
+            action: AdminAuditAction.SUBSCRIPTION_GRANTED,
+            targetType: 'Restaurant',
+            targetId: input.restaurantId,
+            reason: input.note ?? null,
+            metadata: {
+              subscriptionId: created.id,
+              plan: created.plan,
+              priceXaf: created.priceXaf,
+              startsAt: created.startsAt.toISOString(),
+              endsAt: created.endsAt.toISOString(),
+              paymentMethod: created.paymentMethod,
+              paymentReference: created.paymentReference,
+            },
+          },
+        });
+        return created;
       });
       return { subscription, replayed: false };
     } catch (error) {
@@ -175,6 +201,23 @@ export class VendorSubscriptionService {
       if (result.count === 0) {
         throw new ConflictException('Cette période est déjà révoquée.');
       }
+      // Même règle que l'attribution : révocation et trace, ou ni l'une ni
+      // l'autre.
+      await tx.adminAuditLog.create({
+        data: {
+          actorId: adminId,
+          action: AdminAuditAction.SUBSCRIPTION_REVOKED,
+          targetType: 'Restaurant',
+          targetId: restaurantId,
+          reason,
+          metadata: {
+            subscriptionId,
+            priceXaf: subscription.priceXaf,
+            startsAt: subscription.startsAt.toISOString(),
+            endsAt: subscription.endsAt.toISOString(),
+          },
+        },
+      });
       return tx.vendorSubscription.findUniqueOrThrow({
         where: { id: subscriptionId },
       });

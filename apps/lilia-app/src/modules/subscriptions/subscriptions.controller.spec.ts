@@ -1,5 +1,4 @@
 import { BadRequestException } from '@nestjs/common';
-import { AdminAuditAction } from '@prisma/client';
 import {
   AdminVendorSubscriptionsController,
   VendorSubscriptionController,
@@ -7,8 +6,9 @@ import {
 
 /**
  * Premium (Lot 2) — ce que les contrôleurs ajoutent au service : l'en-tête
- * d'idempotence exigé, une trace d'audit par geste réel (jamais pour un
- * rejeu), et un verdict vendeur résolu par le compte connecté.
+ * d'idempotence exigé et un verdict vendeur résolu par le compte connecté.
+ * L'audit est écrit par le service, dans la transaction du geste — il est
+ * prouvé sur PostgreSQL réel (`vendor-subscriptions.int-spec.ts`).
  */
 describe('Abonnements — contrôleurs', () => {
   const period = {
@@ -34,11 +34,7 @@ describe('Abonnements — contrôleurs', () => {
     listForVendor: jest.fn(),
     verdictForOwner: jest.fn(),
   };
-  const audit = { record: jest.fn() };
-  const controller = new AdminVendorSubscriptionsController(
-    service as never,
-    audit as never,
-  );
+  const controller = new AdminVendorSubscriptionsController(service as never);
 
   beforeEach(() => jest.clearAllMocks());
 
@@ -59,7 +55,7 @@ describe('Abonnements — contrôleurs', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
-    it('enregistrement : transmet la clé et l’admin, trace l’attribution', async () => {
+    it('enregistrement : transmet la clé, l’admin et la saisie au service', async () => {
       service.grant.mockResolvedValue({
         subscription: period,
         replayed: false,
@@ -72,29 +68,21 @@ describe('Abonnements — contrôleurs', () => {
           adminId: 'admin-1',
           requestKey: 'key-1',
           paymentMethod: 'MOBILE_MONEY',
-        }),
-      );
-      expect(audit.record).toHaveBeenCalledWith(
-        expect.objectContaining({
-          actorId: 'admin-1',
-          action: AdminAuditAction.SUBSCRIPTION_GRANTED,
-          targetType: 'Restaurant',
-          targetId: 'v1',
-          metadata: expect.objectContaining({ priceXaf: 15000 }),
+          paymentReference: 'MP123',
         }),
       );
       expect(res.data).toBe(period);
     });
 
-    it('rejeu de la même clé : même période, aucune seconde trace', async () => {
+    it('rejeu de la même clé : même période, message distinct', async () => {
       service.grant.mockResolvedValue({ subscription: period, replayed: true });
       const res = await controller.grant('v1', dto, admin, 'key-1');
-      expect(audit.record).not.toHaveBeenCalled();
+      expect(res.data).toBe(period);
       expect(res.message).toBe('Cette période était déjà enregistrée.');
     });
   });
 
-  it('révocation : motif transmis et tracé', async () => {
+  it('révocation : motif transmis au service', async () => {
     service.revoke.mockResolvedValue({ ...period, status: 'REVOKED' });
     await controller.revoke(
       'v1',
@@ -107,12 +95,6 @@ describe('Abonnements — contrôleurs', () => {
       'sub-1',
       'admin-1',
       'Paiement annulé',
-    );
-    expect(audit.record).toHaveBeenCalledWith(
-      expect.objectContaining({
-        action: AdminAuditAction.SUBSCRIPTION_REVOKED,
-        reason: 'Paiement annulé',
-      }),
     );
   });
 

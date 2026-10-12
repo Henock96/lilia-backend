@@ -12,7 +12,9 @@ import { addOneCalendarMonth } from '../../apps/lilia-app/src/modules/subscripti
  *    (verrou `FOR UPDATE` sur le vendeur) ;
  *  · même clé rejouée en parallèle → une seule ligne (index unique) ;
  *  · double révocation → un seul succès (`updateMany … WHERE ACTIVE`) ;
- *  · CHECK de la migration : vocabulaires et cohérence refusés en base.
+ *  · CHECK de la migration : vocabulaires et cohérence refusés en base ;
+ *  · audit dans la transaction : pas de période accordée ou révoquée sans
+ *    sa ligne `AdminAuditLog`, ni de trace sans période.
  */
 const DATABASE_URL = process.env.TEST_DATABASE_URL;
 const describeIfDb = DATABASE_URL ? describe : describe.skip;
@@ -59,6 +61,16 @@ describeIfDb('Abonnements vendeur (PostgreSQL réel)', () => {
           adresse: 'Moungali',
           phone: `06000009${n}`,
           ownerId: `vs-o${n}`,
+        },
+      });
+      // L'audit est écrit dans la transaction : son auteur doit exister
+      // (FK `AdminAuditLog.actorId`).
+      await prisma.user.create({
+        data: {
+          id: `admin-${n}`,
+          firebaseUid: `fb-vs-admin-${n}`,
+          email: `vs-admin-${n}@t.local`,
+          role: 'ADMIN',
         },
       });
     }
@@ -238,6 +250,109 @@ describeIfDb('Abonnements vendeur (PostgreSQL réel)', () => {
       expect((await service.verdictFor('vs-v1')).paidUntil).toEqual(
         chain[chain.length - 1].endsAt,
       );
+    });
+  });
+
+  describe('journal d’audit écrit dans la transaction du geste', () => {
+    const auditsFor = (
+      action: 'SUBSCRIPTION_GRANTED' | 'SUBSCRIPTION_REVOKED',
+    ) => prisma.adminAuditLog.findMany({ where: { action } });
+
+    it('attribution : une ligne d’audit qui désigne la période créée', async () => {
+      const { subscription } = await grant('k-audit');
+      const audits = await auditsFor('SUBSCRIPTION_GRANTED');
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({
+        actorId: 'admin-1',
+        targetType: 'Restaurant',
+        targetId: 'vs-v1',
+      });
+      expect(audits[0].metadata).toMatchObject({
+        subscriptionId: subscription.id,
+        priceXaf: 15000,
+      });
+    });
+
+    it('l’audit échoue : aucune période, et la même clé reste utilisable', async () => {
+      // Auteur inconnu → la FK de `AdminAuditLog` refuse la ligne : c'est un
+      // vrai échec d'écriture d'audit, dans la base, pas un mock.
+      await expect(
+        service.grant({
+          restaurantId: 'vs-v1',
+          adminId: 'admin-fantome',
+          requestKey: 'k-retry',
+          paymentMethod: 'CASH',
+        }),
+      ).rejects.toBeDefined();
+      expect(await prisma.vendorSubscription.count()).toBe(0);
+      expect(await prisma.adminAuditLog.count()).toBe(0);
+
+      // La clé n'a pas été « brûlée » : le renvoi crée la période, pas un
+      // `replayed` sur une période fantôme.
+      const retried = await grant('k-retry');
+      expect(retried.replayed).toBe(false);
+      expect(await prisma.vendorSubscription.count()).toBe(1);
+      expect(await auditsFor('SUBSCRIPTION_GRANTED')).toHaveLength(1);
+    });
+
+    it('rejeu de la même clé, en série puis en parallèle : une période, une trace', async () => {
+      await grant('k-rejeu');
+      await grant('k-rejeu');
+      await Promise.all([1, 2, 3, 4].map(() => grant('k-rejeu')));
+      expect(await prisma.vendorSubscription.count()).toBe(1);
+      expect(await auditsFor('SUBSCRIPTION_GRANTED')).toHaveLength(1);
+    });
+
+    it('cinq attributions concurrentes : cinq périodes, cinq traces, chacune la sienne', async () => {
+      const results = await Promise.all(
+        [1, 2, 3, 4, 5].map((i) => grant(`k-conc-${i}`)),
+      );
+      const audits = await auditsFor('SUBSCRIPTION_GRANTED');
+      expect(audits).toHaveLength(5);
+      const audited = new Set(
+        audits.map(
+          (a) => (a.metadata as { subscriptionId: string }).subscriptionId,
+        ),
+      );
+      expect(audited).toEqual(new Set(results.map((r) => r.subscription.id)));
+    });
+
+    it('révocation : une trace ; si l’audit échoue, la période reste ACTIVE', async () => {
+      const { subscription } = await grant('k-rev-audit');
+
+      await expect(
+        service.revoke('vs-v1', subscription.id, 'admin-fantome', 'Erreur'),
+      ).rejects.toBeDefined();
+      expect(
+        (
+          await prisma.vendorSubscription.findUniqueOrThrow({
+            where: { id: subscription.id },
+          })
+        ).status,
+      ).toBe('ACTIVE');
+      expect(await auditsFor('SUBSCRIPTION_REVOKED')).toHaveLength(0);
+
+      // Deux révocations simultanées : un seul succès, une seule trace.
+      await Promise.allSettled([
+        service.revoke(
+          'vs-v1',
+          subscription.id,
+          'admin-1',
+          'Paiement contesté',
+        ),
+        service.revoke(
+          'vs-v1',
+          subscription.id,
+          'admin-2',
+          'Paiement contesté',
+        ),
+      ]);
+      const revoked = await auditsFor('SUBSCRIPTION_REVOKED');
+      expect(revoked).toHaveLength(1);
+      expect(revoked[0]).toMatchObject({
+        targetId: 'vs-v1',
+        reason: 'Paiement contesté',
+      });
     });
   });
 
