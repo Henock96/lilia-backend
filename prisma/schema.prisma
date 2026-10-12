@@ -509,6 +509,8 @@ model Restaurant {
   promoCodes     PromoCode[]      @relation("RestaurantPromoCodes")
   /// F3-11 — offres boutique financées par le vendeur.
   vendorOffers   VendorOffer[]
+  /// Premium — périodes d'abonnement payées (voir `VendorSubscription`).
+  subscriptions  VendorSubscription[]
 
   /// F3-12 — le dispatch automatique propose-t-il les courses de ce vendeur ?
   /// `MANUAL` par défaut : l'assignation reste humaine tant qu'un ADMIN n'a
@@ -3036,6 +3038,10 @@ enum AdminAuditAction {
   CAPABILITY_CHANGED
   /// F3-11 — offre boutique d'un vendeur arrêtée d'urgence (motif obligatoire).
   VENDOR_OFFER_STOPPED
+  // Premium (Lot 2) — attribuer un abonnement fixe ce qu'un vendeur a payé ;
+  // le révoquer retire un droit payé. Deux décisions nominatives.
+  SUBSCRIPTION_GRANTED
+  SUBSCRIPTION_REVOKED
 }
 
 model Incident {
@@ -3257,6 +3263,14 @@ model PlatformSettings {
   dispatchAutoOfflineAfterExpired Int     @default(2)
   /// Quota « 1 sur N » de 1ʳᵉˢ offres aux indépendants (Q-B). 0 = jamais.
   dispatchIndependentEveryN       Int     @default(4)
+
+  // ── Abonnement Premium (Lot 2, octobre 2026) ─────────────────────────────
+
+  /// Prix d'un mois d'abonnement Premium, en XAF entiers. Figé sur chaque
+  /// période à l'attribution (`VendorSubscription.priceXaf`) : le modifier ne
+  /// touche que les périodes suivantes. Réglage financier (R-09) : modifiable
+  /// seulement par une demande approuvée. CHECK > 0.
+  premiumMonthlyPriceXaf Int @default(15000)
 
   updatedAt DateTime @updatedAt
 }
@@ -3578,4 +3592,52 @@ model VendorOfferRedemption {
   createdAt   DateTime    @default(now())
 
   @@index([offerId])
+}
+
+/// Premium (Lot 2, octobre 2026) — une période d'abonnement **payée**, une
+/// ligne par mois calendaire.
+///
+/// Le paiement a lieu hors plateforme (Mobile Money, espèces, virement) ; un
+/// administrateur `FINANCE_EXECUTE` l'enregistre. C'est un fait comptable,
+/// au même titre que `DriverSettlement` : jamais supprimé, seulement révoqué.
+///
+/// **Aucun droit n'est stocké ailleurs.** Un vendeur est Premium à l'instant
+/// `t` s'il existe une ligne `ACTIVE` avec `startsAt ≤ t < endsAt`
+/// (`subscriptions/entitlements.ts`). Pas de booléen sur `Restaurant`, pas de
+/// cron d'expiration : un abonnement échu cesse de compter tout seul.
+///
+/// Les périodes d'un vendeur ne se chevauchent pas : l'attribution verrouille
+/// la ligne `Restaurant` (`FOR UPDATE`) et empile la nouvelle période à la fin
+/// de la dernière période active.
+///
+/// Vocabulaires en `TEXT` + CHECK, listes miroir dans `subscriptions/plans.ts`
+/// (règle 14 — pas d'enum PostgreSQL pour un vocabulaire évolutif).
+model VendorSubscription {
+  id               String     @id @default(cuid())
+  restaurantId     String
+  restaurant       Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  /// CHECK : 'PREMIUM'.
+  plan             String
+  /// CHECK : 'ACTIVE' | 'REVOKED'.
+  status           String     @default("ACTIVE")
+  startsAt         DateTime
+  /// Exclue : la période couvre [startsAt, endsAt[. CHECK endsAt > startsAt.
+  endsAt           DateTime
+  /// Prix lu dans `PlatformSettings` à l'attribution — jamais saisi.
+  priceXaf         Int
+  /// CHECK : 'MOBILE_MONEY' | 'CASH' | 'BANK_TRANSFER' | 'OTHER'.
+  paymentMethod    String
+  /// Référence de la transaction (n° MoMo…), pour le rapprochement.
+  paymentReference String?
+  note             String?
+  /// Clé d'idempotence (`Idempotency-Key`) : un double envoi ne crée pas deux
+  /// mois. Unique en base — c'est elle qui arbitre, pas un contrôle applicatif.
+  requestKey       String     @unique
+  grantedById      String // User.id de l'admin (pas de FK, comme adminApprovedById)
+  grantedAt        DateTime   @default(now())
+  revokedById      String?
+  revokedAt        DateTime?
+  revokeReason     String?
+
+  @@index([restaurantId, status, endsAt])
 }

@@ -82,6 +82,8 @@ export const PLATFORM_SETTINGS_BOUNDS = {
   MAX_MIN_REDEMPTION: 500,
   /** Même raisonnement que le forfait de commande, côté parrainage. */
   MAX_REFERRER_BONUS: 50,
+  /** Dix fois le prix retenu (15 000 XAF) : arrête une faute de frappe. */
+  MAX_PREMIUM_MONTHLY_PRICE_XAF: 150_000,
 } as const;
 
 export class UpdatePlatformSettingsDto {
@@ -166,6 +168,18 @@ export class UpdatePlatformSettingsDto {
   @Min(1)
   @Max(PLATFORM_SETTINGS_BOUNDS.MAX_MIN_REDEMPTION)
   loyaltyMinRedemption?: number;
+
+  /**
+   * PREMIUM (Lot 2) — prix d'un mois d'abonnement vendeur, en XAF entiers.
+   * Figé sur chaque période à l'attribution : le changer ne touche que les
+   * mois enregistrés ensuite. Réglage financier (R-09) : passe par une
+   * demande approuvée. Borné > 0 comme le CHECK de la base.
+   */
+  @IsOptional()
+  @IsInt({ message: 'Un montant en XAF est un entier — pas de sous-unité.' })
+  @Min(1)
+  @Max(PLATFORM_SETTINGS_BOUNDS.MAX_PREMIUM_MONTHLY_PRICE_XAF)
+  premiumMonthlyPriceXaf?: number;
 
   /** Récompense du parrain à la première commande livrée de son filleul. */
   @IsOptional()
