@@ -54,6 +54,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { PromoModule } from './modules/promo/promo.module';
 import { VendorOffersModule } from './modules/vendor-offers/vendor-offers.module';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
+import { ReservationsModule } from './modules/reservations/reservations.module';
 import { FavoritesModule } from './modules/favorites/favorites.module';
 import { VendorsModule } from './modules/vendors/vendors.module';
 import { VendorPhotosModule } from './modules/vendor-photos/vendor-photos.module';
@@ -261,6 +262,7 @@ import { DeliveryPricingModule } from './modules/delivery-pricing/delivery-prici
     PromoModule,
     VendorOffersModule, // F3-11 — offres boutique financées par le vendeur
     SubscriptionsModule, // Premium (Lot 2) — abonnements vendeur
+    ReservationsModule, // Premium (Lot 3) — configuration de la réservation sur place
     OpsModule,
     FavoritesModule,
     VendorsModule,

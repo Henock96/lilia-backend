@@ -511,6 +511,10 @@ model Restaurant {
   vendorOffers   VendorOffer[]
   /// Premium — périodes d'abonnement payées (voir `VendorSubscription`).
   subscriptions  VendorSubscription[]
+  /// Premium Lot 3 — configuration de la réservation sur place.
+  reservationSettings ReservationSettings?
+  reservationSpaces   ReservationSpace[]
+  reservationWindows  ReservationWindow[]
 
   /// F3-12 — le dispatch automatique propose-t-il les courses de ce vendeur ?
   /// `MANUAL` par défaut : l'assignation reste humaine tant qu'un ADMIN n'a
@@ -3272,6 +3276,14 @@ model PlatformSettings {
   /// seulement par une demande approuvée. CHECK > 0.
   premiumMonthlyPriceXaf Int @default(15000)
 
+  // ── Réservation sur place (Premium Lot 3, octobre 2026) ──────────────────
+
+  /// Les réservations sur place sont-elles ouvertes aux clients ? Éteint par
+  /// défaut. Le Lot 3 ne fait que le LIRE (aperçu vendeur : « pas encore
+  /// visible des clients ») ; aucun parcours client ne le consulte encore, et
+  /// aucune route ne l'écrit : l'allumer est une décision séparée.
+  reservationsEnabled Boolean @default(false)
+
   updatedAt DateTime @updatedAt
 }
 
@@ -3640,4 +3652,91 @@ model VendorSubscription {
   revokeReason     String?
 
   @@index([restaurantId, status, endsAt])
+}
+
+// ─── Réservation sur place — configuration (Premium Lot 3, octobre 2026) ────
+//
+// Le restaurant décrit son service de réservation ; aucune réservation client
+// n'existe encore (lots suivants). Décisions : `lilia-engineering/features/
+// 2026-10-12-premium-lot3-reservations-config/03-approval.md`.
+//
+// Écriture réservée au Premium actif (`ON_SITE_RESERVATIONS`), vérifiée par le
+// serveur à chaque `PUT`. Rien n'est stocké sur le droit : un abonnement
+// expiré laisse la configuration intacte, lisible et gelée.
+//
+// Bornes portées DEUX fois : par le moteur pur `reservation-config.ts`
+// (messages en français, aperçu) et par des CHECK SQL (migration
+// `20261012120000_reservation_settings`) — la base refuse ce que le code
+// oublierait. Vocabulaire `kind` en TEXT + CHECK (règle 14).
+
+/// Réglages de réservation d'un restaurant (un par restaurant).
+model ReservationSettings {
+  restaurantId    String     @id
+  restaurant      Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  /// Le restaurateur a activé la réservation. Ne suffit pas à la rendre
+  /// effective : droit Premium et interrupteur plateforme sont lus à part.
+  enabled         Boolean    @default(false)
+  /// Temps d'occupation d'une table ou d'une place (D5). CHECK 30–240.
+  slotDurationMin Int        @default(90)
+  /// Pas entre deux heures d'arrivée proposées (D6). CHECK IN (15, 30, 60).
+  slotStepMin     Int        @default(30)
+  /// Marge de remise en état entre deux réservations d'une même ressource (D7). CHECK 0–60.
+  bufferMin       Int        @default(15)
+  /// Délai minimal entre la réservation et l'arrivée (D8). CHECK 30–2880.
+  minLeadMin      Int        @default(120)
+  /// Horizon maximal de réservation (D9). CHECK 1–90.
+  maxAdvanceDays  Int        @default(30)
+  /// Taille de groupe maximale (D10). CHECK 1–50.
+  maxPartySize    Int        @default(8)
+  /// Verrou optimiste : un `PUT` porte la version lue, sinon 409.
+  version         Int        @default(1)
+  updatedById     String // User.id (pas de FK, comme grantedById)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+}
+
+/// Table entière (`TABLE`) ou espace de places réservables à l'unité (`SEATS`).
+/// Jamais supprimée : archivée (`archivedAt`), car les réservations des lots
+/// suivants y feront référence.
+model ReservationSpace {
+  id                 String     @id @default(cuid())
+  restaurantId       String
+  /// Restrict : les réservations des lots suivants y feront référence.
+  restaurant         Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  /// CHECK : 'TABLE' | 'SEATS'. Champs de l'autre type obligatoirement NULL.
+  kind               String
+  /// Libellé affiché, espaces réduits. CHECK 1–40 caractères.
+  label              String
+  /// Clé d'unicité : libellé en NFC, minuscules, accents conservés. Unique par
+  /// restaurant parmi les ressources NON archivées — index unique partiel SQL
+  /// `ReservationSpace_active_label_key` (Prisma ne sait pas le déclarer).
+  labelKey           String
+  /// TABLE : groupe admis, 1 ≤ minGuests ≤ maxGuests ≤ 50.
+  minGuests          Int?
+  maxGuests          Int?
+  /// SEATS : places de l'espace (1–200) et places au plus par réservation.
+  seatCount          Int?
+  maxSeatsPerBooking Int?
+  position           Int        @default(0)
+  archivedAt         DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  @@index([restaurantId, archivedAt])
+}
+
+/// Plage hebdomadaire de réservation : 0 à 3 par jour, sans traversée de
+/// minuit. `endTime` = dernière heure d'arrivée autorisée, incluse. Remplacées
+/// à chaque `PUT` : aucune réservation ne référence une plage.
+model ReservationWindow {
+  id           String     @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  dayOfWeek    DayOfWeek
+  /// "HH:mm", CHECK format et startTime < endTime.
+  startTime    String
+  endTime      String
+  createdAt    DateTime   @default(now())
+
+  @@index([restaurantId, dayOfWeek])
 }
