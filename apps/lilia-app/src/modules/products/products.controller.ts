@@ -9,6 +9,7 @@ import {
   Delete,
   HttpCode,
   HttpStatus,
+  Headers,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -252,6 +253,8 @@ export class ProductsController {
     @Param('id') id: string,
     @Body() dto: UpdateProductStockDto,
     @FirebaseUser() fbUser: DecodedIdToken,
+    // ADM-01 — optionnelle : sans elle, comportement inchangé (apps installées).
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.productsService.updateStock(
       id,
@@ -261,6 +264,7 @@ export class ProductsController {
         units: dto.units,
       },
       fbUser.uid,
+      idempotencyKey,
     );
   }
 

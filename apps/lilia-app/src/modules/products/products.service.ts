@@ -102,7 +102,8 @@ export class ProductsService {
     productId: string,
     gesture: { stockQuotidien?: number | null; action?: 'RESTOCK' | 'COUNT'; units?: number },
     firebaseUid: string,
+    idempotencyKey?: string,
   ) {
-    return this.command.updateStock(productId, gesture, firebaseUid);
+    return this.command.updateStock(productId, gesture, firebaseUid, idempotencyKey);
   }
 }
