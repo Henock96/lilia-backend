@@ -234,6 +234,11 @@ export const envValidationSchema = Joi.object({
   // les applications livreur installées soient mises à jour. À passer à
   // `true` une fois `lilia_food_delivery` ≥ la version qui le demande.
   DELIVERY_HANDOVER_CODE_REQUIRED: Joi.boolean().default(false),
+  // 1B (ADM-03) — `true` ferme la remise ADMIN d'un retrait par la route de
+  // statut : seul l'arbitrage motivé (`POST /admin/orders/:id/pickup/arbitrate`,
+  // FINANCE_EXECUTE) reste ouvert. `false` pendant la transition, le temps que
+  // l'admin web et l'app vendeurs installées passent par l'arbitrage.
+  ADMIN_PICKUP_ARBITRATION_ENFORCED: Joi.boolean().default(false),
   PAWAPAY_PUBLIC_KEY: Joi.string().allow('').optional(),
   PAWAPAY_CALLBACK_IPS: Joi.string().allow('').optional(),
 

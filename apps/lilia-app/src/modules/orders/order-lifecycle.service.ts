@@ -5,7 +5,9 @@ import {
   NotFoundException,
   ForbiddenException,
   Logger,
+  Optional,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   AdminAuditAction,
   LoyaltyTransactionType,
@@ -22,6 +24,10 @@ import {
   OrderStatusUpdatedEvent,
 } from '../events/order-events';
 import { OrderStateMachine } from './order-state.machine';
+import {
+  PICKUP_ARBITRATION_ENFORCED_ENV,
+  type PickupArbitration,
+} from './pickup-arbitration';
 import { OrderTransitionService } from './order-transition.service';
 import {
   actorFromRole,
@@ -91,7 +97,38 @@ export class OrderLifecycleService {
     // F3-10 — invalidation du catalogue quand une restitution change le
     // statut d'un format. En dernier : ajout sans décaler les autres.
     private readonly stockSignal: StockSignalService,
+    // 1B — interrupteur `ADMIN_PICKUP_ARBITRATION_ENFORCED`. Optionnel et en
+    // dernier, pour la même raison.
+    @Optional() private readonly config?: ConfigService,
   ) {}
+
+  /** 1B — l'ancien chemin de remise ADMIN d'un retrait est-il fermé ? */
+  private pickupArbitrationEnforced(): boolean {
+    const raw = this.config?.get<string | boolean>(
+      PICKUP_ARBITRATION_ENFORCED_ENV,
+    );
+    return raw === true || raw === 'true';
+  }
+
+  /**
+   * 1B (ADM-03, D-1) — l'ADMIN clôture un retrait à la place du client et du
+   * vendeur. La preuve `PICKUP_ADMIN_OVERRIDE` ouvre une échéance de
+   * versement : le geste porte un motif, journalisé dans la transaction de la
+   * clôture. La capacité (`FINANCE_EXECUTE`) et la MFA sont portées par la
+   * route ; le rôle, le type de commande et la transition, ici.
+   */
+  async arbitratePickup(
+    orderId: string,
+    firebaseUid: string,
+    arbitration: PickupArbitration,
+  ) {
+    return this.updateOrderStatusByRestaurateur(
+      orderId,
+      firebaseUid,
+      'LIVRER',
+      { arbitration },
+    );
+  }
 
   async cancelOrder(orderId: string, firebaseUid: string) {
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
@@ -331,6 +368,7 @@ export class OrderLifecycleService {
     fromStatus: OrderStatus,
     newStatus: OrderStatus,
     user: { id: string; role: string },
+    opts: { auditWritten?: boolean } = {},
   ): Promise<void> {
     const orderId = updatedOrder.id;
     // 🔥 ÉMETTRE L'ÉVÉNEMENT au lieu d'appeler directement les notifications
@@ -352,7 +390,8 @@ export class OrderLifecycleService {
     // décision d'arbitrage : il entre au journal d'audit, comme les gestes
     // sur les paiements et les remboursements. `OrderHistory` dit ce qui a
     // changé ; le journal dit qu'un administrateur l'a décidé.
-    if (user.role === 'ADMIN') {
+    // 1B — un arbitrage a déjà écrit sa ligne, motivée, dans la transaction.
+    if (user.role === 'ADMIN' && !opts.auditWritten) {
       await this.audit.record({
         actorId: user.id,
         action: AdminAuditAction.ORDER_STATUS_FORCED,
@@ -370,13 +409,51 @@ export class OrderLifecycleService {
     orderId: string,
     firebaseUid: string,
     newStatus: OrderStatus,
-    options: { rejection?: VendorRejection } = {},
+    options: {
+      rejection?: VendorRejection;
+      arbitration?: PickupArbitration;
+    } = {},
   ) {
     this.logger.log(
       `🔄 [STATUT] Début mise à jour - commande: ${orderId}, nouveau statut: ${newStatus}, par: ${firebaseUid}`,
     );
 
     const { user, order } = await this.loadStaffOrder(orderId, firebaseUid);
+
+    // 1B (ADM-03, D-1) — clôturer un retrait à la place du client ouvre un
+    // versement : c'est un arbitrage motivé (`arbitratePickup`), pas un
+    // changement de statut. Interrupteur éteint pendant la transition, le
+    // temps que l'admin web et l'app vendeurs installées soient à jour.
+    if (options.arbitration) {
+      if (user.role !== 'ADMIN') {
+        throw new ForbiddenException(
+          'Seul un administrateur arbitre la remise d’une commande.',
+        );
+      }
+      if (newStatus !== 'LIVRER') {
+        throw new BadRequestException(
+          'Un arbitrage de remise clôture la commande.',
+        );
+      }
+      if (order.isDelivery) {
+        throw new ConflictException({
+          message:
+            'Une livraison ne s’arbitre pas ici : elle se conclut depuis la course.',
+          code: 'PICKUP_NOT_APPLICABLE',
+        });
+      }
+    } else if (
+      user.role === 'ADMIN' &&
+      newStatus === 'LIVRER' &&
+      !order.isDelivery &&
+      this.pickupArbitrationEnforced()
+    ) {
+      throw new ForbiddenException({
+        message:
+          'La remise d’un retrait par un administrateur est un arbitrage : utilisez « Arbitrer la remise », avec un motif.',
+        code: 'PICKUP_ARBITRATION_REQUIRED',
+      });
+    }
 
     // ⚠️ Fix F-07 (Master Audit v1) — « payée » n'est pas un statut qu'on
     // déclare : c'est la conséquence d'un encaissement. Cette route laissait
@@ -409,7 +486,10 @@ export class OrderLifecycleService {
     const historyReason = options.rejection
       ? `Refus vendeur : ${options.rejection.reason}` +
         (options.rejection.note ? ` — ${options.rejection.note}` : '')
-      : undefined;
+      : options.arbitration
+        ? `Arbitrage ADMIN : ${options.arbitration.reason}` +
+          (options.arbitration.note ? ` — ${options.arbitration.note}` : '')
+        : undefined;
 
     const actor = this.resolveActor(user.role);
     if (!actor)
@@ -553,6 +633,28 @@ export class OrderLifecycleService {
                   }
                 : { ...base, to: newStatus },
             );
+            // 1B — l'arbitrage ouvre un versement : sa trace naît avec la
+            // clôture, ou pas du tout (une course perdue l'annule aussi).
+            if (options.arbitration) {
+              await tx.adminAuditLog.create({
+                data: {
+                  actorId: user.id,
+                  action: AdminAuditAction.ORDER_STATUS_FORCED,
+                  targetType: 'Order',
+                  targetId: orderId,
+                  reason: options.arbitration.reason,
+                  metadata: {
+                    from: order.status,
+                    to: newStatus,
+                    kind: 'PICKUP_ARBITRATION',
+                    reason: options.arbitration.reason,
+                    ...(options.arbitration.note
+                      ? { note: options.arbitration.note }
+                      : {}),
+                  },
+                },
+              });
+            }
             // F3-07 / D-P5 — retrait prêt : le code que le client montrera au
             // comptoir naît avec `PRET`. Un code déjà tiré ne change pas
             // (`update: {}`) : le client a pu le noter.
@@ -587,6 +689,7 @@ export class OrderLifecycleService {
       order.status,
       newStatus,
       user,
+      { auditWritten: Boolean(options.arbitration) },
     );
     this.logger.log(
       `🔄 [STATUT] Succès: commande ${orderId} - ${order.status} → ${newStatus} (par ${user.id}/${user.role})`,
