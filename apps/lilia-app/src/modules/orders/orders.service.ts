@@ -8,6 +8,7 @@ import {
   VendorRejection,
 } from './order-lifecycle.service';
 import { OrderReorderService } from './order-reorder.service';
+import type { PickupArbitration } from './pickup-arbitration';
 
 /**
  * Façade du domaine commandes. Délègue aux services dédiés (LIL-134) :
@@ -104,6 +105,19 @@ export class OrdersService {
       orderId,
       firebaseUid,
       newStatus,
+    );
+  }
+
+  /** ADMIN, retrait : arbitrage motivé de la remise (1B, ADM-03). */
+  arbitratePickup(
+    orderId: string,
+    firebaseUid: string,
+    arbitration: PickupArbitration,
+  ) {
+    return this.lifecycleService.arbitratePickup(
+      orderId,
+      firebaseUid,
+      arbitration,
     );
   }
 

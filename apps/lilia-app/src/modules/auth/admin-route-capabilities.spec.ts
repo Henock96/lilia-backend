@@ -77,6 +77,8 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'AdminPayoutController.updatePayoutAccount': 'FINANCE_EXECUTE',
   'AdminPayoutController.vendorPayoutAccounts': 'NONE',
   'AdminPayoutController.webhookHealth': 'NONE',
+  // 1B — la remise forcée d'un retrait ouvre un versement vendeur.
+  'AdminPickupArbitrationController.arbitrate': 'FINANCE_EXECUTE',
   'AdminPublicHolidaysController.create': 'NONE',
   'AdminPublicHolidaysController.list': 'NONE',
   'AdminPublicHolidaysController.remove': 'NONE',

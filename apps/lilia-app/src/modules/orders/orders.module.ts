@@ -6,6 +6,7 @@ import { OrderCheckoutService } from './order-checkout.service';
 import { OrderReorderService } from './order-reorder.service';
 import { OrderReceiptService } from './order-receipt.service';
 import { OrdersController } from './orders.controller';
+import { AdminPickupArbitrationController } from './admin-pickup-arbitration.controller';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PaginationService } from '../../common/pagination/pagination.service';
@@ -37,7 +38,7 @@ import { VendorOffersCoreModule } from '../vendor-offers/vendor-offers-core.modu
     // F3-11 — offre boutique au checkout et au devis.
     VendorOffersCoreModule,
   ],
-  controllers: [OrdersController],
+  controllers: [OrdersController, AdminPickupArbitrationController],
   providers: [
     OrdersService,
     OrderQueryService,
