@@ -368,7 +368,7 @@ export class OrderLifecycleService {
     fromStatus: OrderStatus,
     newStatus: OrderStatus,
     user: { id: string; role: string },
-    opts: { auditWritten?: boolean } = {},
+    opts: { auditWritten?: boolean; reason?: string } = {},
   ): Promise<void> {
     const orderId = updatedOrder.id;
     // 🔥 ÉMETTRE L'ÉVÉNEMENT au lieu d'appeler directement les notifications
@@ -397,7 +397,11 @@ export class OrderLifecycleService {
         action: AdminAuditAction.ORDER_STATUS_FORCED,
         targetType: 'Order',
         targetId: orderId,
-        metadata: { from: fromStatus, to: newStatus },
+        metadata: {
+          from: fromStatus,
+          to: newStatus,
+          ...(opts.reason ? { reason: opts.reason } : {}),
+        },
       });
     }
   }
@@ -412,6 +416,8 @@ export class OrderLifecycleService {
     options: {
       rejection?: VendorRejection;
       arbitration?: PickupArbitration;
+      /** Lot 2 (ADM-09) — motif facultatif d'une annulation. */
+      cancelReason?: string;
     } = {},
   ) {
     this.logger.log(
@@ -483,13 +489,20 @@ export class OrderLifecycleService {
       newStatus,
       options,
     );
+    // Lot 2 (ADM-09) — le motif ne vaut que pour une annulation.
+    const cancelReason =
+      newStatus === 'ANNULER'
+        ? options.cancelReason?.trim() || undefined
+        : undefined;
     const historyReason = options.rejection
       ? `Refus vendeur : ${options.rejection.reason}` +
         (options.rejection.note ? ` — ${options.rejection.note}` : '')
       : options.arbitration
         ? `Arbitrage ADMIN : ${options.arbitration.reason}` +
           (options.arbitration.note ? ` — ${options.arbitration.note}` : '')
-        : undefined;
+        : cancelReason
+          ? `Annulation : ${cancelReason}`
+          : undefined;
 
     const actor = this.resolveActor(user.role);
     if (!actor)
@@ -689,7 +702,7 @@ export class OrderLifecycleService {
       order.status,
       newStatus,
       user,
-      { auditWritten: Boolean(options.arbitration) },
+      { auditWritten: Boolean(options.arbitration), reason: cancelReason },
     );
     this.logger.log(
       `🔄 [STATUT] Succès: commande ${orderId} - ${order.status} → ${newStatus} (par ${user.id}/${user.role})`,
