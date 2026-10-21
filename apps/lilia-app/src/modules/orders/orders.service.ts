@@ -100,12 +100,19 @@ export class OrdersService {
     orderId: string,
     firebaseUid: string,
     newStatus: OrderStatus,
+    cancelReason?: string,
   ) {
     return this.lifecycleService.updateOrderStatusByRestaurateur(
       orderId,
       firebaseUid,
       newStatus,
+      { cancelReason },
     );
+  }
+
+  /** Lot 2 (ADM-02) — une commande du back-office, relue par identifiant. */
+  findRestaurantOrderById(firebaseUid: string, orderId: string) {
+    return this.queryService.findRestaurantOrderById(firebaseUid, orderId);
   }
 
   /** ADMIN, retrait : arbitrage motivé de la remise (1B, ADM-03). */

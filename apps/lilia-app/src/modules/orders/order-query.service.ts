@@ -364,6 +364,34 @@ export class OrderQueryService {
   }
 
   /**
+   * Lot 2 (ADM-02) — une commande du back-office, relue par son identifiant.
+   *
+   * La fiche de l'app vendeurs la cherchait dans les vingt dernières de la
+   * liste : hors de cette page, elle restait figée sur l'instantané de
+   * navigation, statut et gestes compris. Même portée que la liste
+   * (`resolveOrderScope`), même `include`, mêmes gestes : un élément de liste,
+   * seul.
+   *
+   * - Commande d'une autre boutique ⇒ **404**, comme une commande inconnue :
+   *   un vendeur n'apprend pas qu'elle existe.
+   * - **Jamais** le code de retrait (`PickupHandover`) : le vendeur qui le
+   *   recevrait validerait seul sa remise, donc son propre versement. C'est ce
+   *   qui interdit d'ouvrir `GET /orders/:id` au personnel.
+   */
+  async findRestaurantOrderById(firebaseUid: string, orderId: string) {
+    const { scope, include, role } = await this.resolveOrderScope(firebaseUid);
+
+    const order = await this.prisma.order.findFirst({
+      where: { ...scope, id: orderId },
+      include,
+    });
+    if (!order) throw new NotFoundException('Commande introuvable.');
+
+    const [withActions] = await this.withAllowedActions([order], role);
+    return withActions;
+  }
+
+  /**
    * Nombre de commandes payées que le vendeur n'a pas encore prises en charge
    * (fix H7). Alimente le badge de l'app vendeur : c'est le filet qui ne
    * dépend d'aucun push.

@@ -168,6 +168,8 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'OrdersController.acceptOrder': 'NONE',
   'OrdersController.getPendingOrdersCount': 'NONE',
   'OrdersController.getReceipt': 'NONE',
+  // Lot 2 — lecture d'une commande par le personnel, même portée que la liste.
+  'OrdersController.getRestaurantOrder': 'NONE',
   'OrdersController.getRestaurantOrders': 'NONE',
   'OrdersController.getStuckOrders': 'NONE',
   'OrdersController.getUserOrders': 'NONE',

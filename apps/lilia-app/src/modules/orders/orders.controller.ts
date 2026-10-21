@@ -219,6 +219,32 @@ export class OrdersController {
   }
 
   /**
+   * Lot 2 (ADM-02) — une commande du back-office, relue par son identifiant,
+   * telle qu'un élément de `GET /orders/restaurant` (même portée, mêmes
+   * gestes). Commande d'une autre boutique ⇒ 404. Jamais le code de retrait.
+   *
+   * ⚠️ Déclarée **après** `restaurant/stuck` et `restaurant/pending-count` :
+   * avant, elle lirait « stuck » comme un identifiant
+   * (`orders.controller.routing.spec.ts`).
+   */
+  @Get('restaurant/:id')
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @ApiOperation({ summary: 'Une commande reçue (restaurateur / admin)' })
+  @ApiParam({ name: 'id', description: 'ID de la commande' })
+  @ApiResponse({
+    status: 404,
+    description: 'Commande introuvable ou hors boutique',
+  })
+  async getRestaurantOrder(
+    @Param('id') id: string,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return {
+      data: await this.ordersService.findRestaurantOrderById(fbUser.uid, id),
+    };
+  }
+
+  /**
    * Commandes d'un utilisateur spécifique — ADMIN uniquement.
    * Route déplacée depuis UserController où elle n'avait pas sa place.
    */
@@ -315,6 +341,7 @@ export class OrdersController {
       id,
       fbUser.uid,
       updateOrderStatusDto.status,
+      updateOrderStatusDto.reason,
     );
   }
 
