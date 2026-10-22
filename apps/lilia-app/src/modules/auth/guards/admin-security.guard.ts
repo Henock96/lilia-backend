@@ -13,6 +13,7 @@ import { AdminCapability, User } from '@prisma/client';
 
 import { FirebaseService } from '../../firebase/firebase.service';
 import { REQUIRE_CAPABILITY_KEY } from '../decorators/require-capability.decorator';
+import { REQUIRE_SECOND_FACTOR_KEY } from '../decorators/require-second-factor.decorator';
 import { AuthenticatedRequest } from '../types/authenticated-request.interface';
 
 /** Âge maximal de la dernière authentification pour un geste FINANCE_* (R-08.2). */
@@ -54,7 +55,13 @@ export class AdminSecurityGuard implements CanActivate {
       REQUIRE_CAPABILITY_KEY,
       [context.getHandler(), context.getClass()],
     );
-    if (!capability) return true;
+    if (!capability) {
+      const secondFactor = this.reflector.getAllAndOverride<boolean>(
+        REQUIRE_SECOND_FACTOR_KEY,
+        [context.getHandler(), context.getClass()],
+      );
+      return secondFactor ? this.checkSecondFactor(context) : true;
+    }
 
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
     const user = request.user as User | undefined;
@@ -103,8 +110,40 @@ export class AdminSecurityGuard implements CanActivate {
     return true;
   }
 
+  /**
+   * Lot 1C (ADM-05) — route `@RequireSecondFactor` : l'ADMIN doit s'être
+   * connecté avec son second facteur. Interrupteur dédié
+   * `ADMIN_SECOND_FACTOR_ENFORCED`, allumé une fois l'admin web et l'app
+   * vendeurs à jour (ils savent traiter `MFA_SESSION_REQUIRED`).
+   *
+   * 401 et non 403 : la réponse est « reconnectez-vous », comme le step-up ;
+   * l'admin web y répond par sa fenêtre de réauthentification.
+   */
+  private checkSecondFactor(context: ExecutionContext): boolean {
+    if (!this.flag('ADMIN_SECOND_FACTOR_ENFORCED')) return true;
+    const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
+    const user = request.user as User | undefined;
+    if (user?.role !== 'ADMIN') return true;
+    const token = request.firebaseUser as
+      | { firebase?: { sign_in_second_factor?: string } }
+      | undefined;
+    if (token?.firebase?.sign_in_second_factor) return true;
+    this.logger.warn(
+      `Geste sensible refusé sans second facteur : administrateur ${user.id}`,
+    );
+    throw new UnauthorizedException({
+      message:
+        'Reconnectez-vous avec votre code de double authentification pour faire ce geste.',
+      code: 'MFA_SESSION_REQUIRED',
+    });
+  }
+
   private mfaRequired(): boolean {
-    const raw = this.config?.get<string | boolean>('ADMIN_MFA_REQUIRED');
+    return this.flag('ADMIN_MFA_REQUIRED');
+  }
+
+  private flag(name: string): boolean {
+    const raw = this.config?.get<string | boolean>(name);
     return raw === true || raw === 'true';
   }
 }

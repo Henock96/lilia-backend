@@ -17,6 +17,7 @@ import { AssignDeliveryDto, DeclineDeliveryDto, DeliveryStatus, SetDriverStatusD
 import { UpdateLocationDto } from './dto/update-location.dto';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequireSecondFactor } from '../auth/decorators/require-second-factor.decorator';
 import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
 
 @ApiTags('Deliveries')
@@ -120,6 +121,7 @@ export class DeliveriesController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Assigner un livreur via l\'ID commande' })
   @ApiParam({ name: 'orderId' })
+  @RequireSecondFactor()
   assignDelivererToOrder(
     @Param('orderId') orderId: string,
     @Body() dto: AssignDeliveryDto,
@@ -173,6 +175,7 @@ export class DeliveriesController {
   @Roles('RESTAURATEUR', 'ADMIN', 'LIVREUR')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Mettre à jour le statut d\'une livraison' })
+  @RequireSecondFactor()
   updateStatus(
     @Param('id') id: string,
     @Body() dto: UpdateDeliveryStatusDto,
@@ -195,6 +198,7 @@ export class DeliveriesController {
   @Roles('RESTAURATEUR', 'ADMIN')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Assigner un livreur' })
+  @RequireSecondFactor()
   assignDeliverer(
     @Param('id') id: string,
     @Body() dto: AssignDeliveryDto,

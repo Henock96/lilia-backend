@@ -34,6 +34,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { DecodedIdToken } from 'firebase-admin/auth';
 import { User } from '@prisma/client';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequireSecondFactor } from '../auth/decorators/require-second-factor.decorator';
 import { MaintenanceGuard } from '../platform-settings/guards/maintenance.guard';
 import { MinAppVersionGuard } from '../platform-settings/guards/min-app-version.guard';
 import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
@@ -332,6 +333,7 @@ export class OrdersController {
   @ApiResponse({ status: 200, description: 'Statut mis à jour' })
   @ApiResponse({ status: 400, description: 'Transition invalide' })
   @ApiResponse({ status: 403, description: 'Commande hors restaurant' })
+  @RequireSecondFactor()
   updateOrderStatus(
     @Param('id') id: string,
     @FirebaseUser() fbUser: DecodedIdToken,
@@ -421,6 +423,7 @@ export class OrdersController {
   })
   @ApiResponse({ status: 403, description: 'Commande hors restaurant' })
   @ApiResponse({ status: 409, description: 'Statut changé entre-temps' })
+  @RequireSecondFactor()
   acceptOrder(
     @Param('id') id: string,
     @FirebaseUser() fbUser: DecodedIdToken,
@@ -448,6 +451,7 @@ export class OrdersController {
     status: 403,
     description: 'Commande hors restaurant, ou déjà reversée',
   })
+  @RequireSecondFactor()
   rejectOrder(
     @Param('id') id: string,
     @FirebaseUser() fbUser: DecodedIdToken,

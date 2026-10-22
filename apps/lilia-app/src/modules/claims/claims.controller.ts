@@ -15,6 +15,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AdminAuditAction, User } from '@prisma/client';
 
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequireSecondFactor } from '../auth/decorators/require-second-factor.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { ClaimsService } from './claims.service';
@@ -114,6 +115,7 @@ export class ClaimsController {
   @Roles('ADMIN')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Refuser une réclamation (motif communiqué)' })
+  @RequireSecondFactor()
   async reject(
     @Param('id') id: string,
     @Body() dto: RejectClaimDto,

@@ -4,6 +4,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { RestaurantScheduleService } from './restaurant-schedule.service';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequireSecondFactor } from '../auth/decorators/require-second-factor.decorator';
 
 @ApiTags('Admin — Scheduler')
 @ApiBearerAuth()
@@ -30,6 +31,7 @@ export class ScheduleController {
   @Post('reset-stock')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Forcer le reset du stock quotidien' })
+  @RequireSecondFactor()
   resetStock() {
     return this.scheduleService.handleDailyStockReset();
   }

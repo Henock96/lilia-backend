@@ -13,6 +13,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { Throttle } from '@nestjs/throttler';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequireSecondFactor } from '../auth/decorators/require-second-factor.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import {
   ConcludeFailureDto,
@@ -54,6 +55,7 @@ export class DeliveryFailureController {
   @Roles('LIVREUR', 'RESTAURATEUR', 'ADMIN')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Déclarer l’échec d’une livraison' })
+  @RequireSecondFactor()
   async declare(
     @Param('id') id: string,
     @Body() dto: DeclareDeliveryFailureDto,

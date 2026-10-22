@@ -30,6 +30,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequireCapability } from '../auth/decorators/require-capability.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequireSecondFactor } from '../auth/decorators/require-second-factor.decorator';
 import { ApprovalsService } from './approvals.service';
 
 export class ListApprovalsQueryDto {
@@ -90,6 +91,7 @@ export class ApprovalsController {
   @Post('approvals/:id/reject')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Refuser une demande, ou retirer la sienne' })
+  @RequireSecondFactor()
   async reject(
     @Param('id') id: string,
     @Body() dto: RejectApprovalDto,

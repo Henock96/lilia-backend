@@ -9,6 +9,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { DecodedIdToken } from 'firebase-admin/auth';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequireSecondFactor } from '../auth/decorators/require-second-factor.decorator';
 import { Public } from '../auth/decorators/public.decorator';
 import { DeliveryFeeQueryDto } from './dto/delivery-fee-query.dto';
 import { AddQuartiersToZoneDto, CreateDeliveryZoneDto, UpdateDeliveryZoneDto } from './dto/delivery-zone.dto';
@@ -45,6 +46,7 @@ export class QuartiersController {
   @Post('seed')
   @Roles('ADMIN')
   @ApiOperation({ summary: 'Initialiser les quartiers (admin, une fois)' })
+  @RequireSecondFactor()
   async seedQuartiers() {
     return this.quartiersService.seedQuartiers();
   }
@@ -64,6 +66,7 @@ export class QuartiersController {
   @Patch(':id/centroid')
   @Roles('ADMIN')
   @ApiOperation({ summary: "Définir le centroïde d'un quartier (admin)" })
+  @RequireSecondFactor()
   async setCentroid(
     @Param('id') id: string,
     @Body() dto: SetQuartierCentroidDto,

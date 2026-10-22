@@ -256,6 +256,76 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'VendorsController.updateProfile': 'NONE',
 };
 
+/**
+ * Lot 1C (ADM-05, D-2) — gestes ADMIN sensibles sans capacité financière :
+ * second facteur exigé (`@RequireSecondFactor`, interrupteur
+ * `ADMIN_SECOND_FACTOR_ENFORCED`). Liste validée le 22/10/2026. Toute route
+ * ajoutée ou retirée du décorateur doit l'être ici, et inversement.
+ */
+const SECOND_FACTOR_ROUTES: readonly string[] = [
+  // Commandes (ADMIN seulement ; le vendeur n'est pas concerné)
+  'OrdersController.acceptOrder',
+  'OrdersController.rejectOrder',
+  'OrdersController.updateOrderStatus',
+  // Vendeurs
+  'AdminController.approveVendor',
+  'AdminController.createRestaurantWithOwner',
+  'AdminController.deleteReview',
+  'AdminController.suspendVendor',
+  'AdminController.unsuspendVendor',
+  'AdminVendorOnboardingController.activate',
+  'AdminVendorOnboardingController.create',
+  'AdminVendorOnboardingController.resendInvitation',
+  'VendorsController.approve',
+  // Livreurs
+  'AdminDriversController.activate',
+  'AdminDriversController.create',
+  'AdminDriversController.deactivate',
+  'AdminDriversController.resendInvitation',
+  'AdminDriversController.update',
+  // Livraisons
+  'DeliveriesController.assignDeliverer',
+  'DeliveriesController.assignDelivererToOrder',
+  'DeliveriesController.updateStatus',
+  'DeliveryFailureController.declare',
+  // Arbitrages
+  'ApprovalsController.reject',
+  'ClaimsController.reject',
+  // Paiements
+  'PaymentController.reconcile',
+  // Exploitation
+  'AdminPublicHolidaysController.create',
+  'AdminPublicHolidaysController.remove',
+  'QuartiersController.seedQuartiers',
+  'QuartiersController.setCentroid',
+  'ScheduleController.resetStock',
+  'SmsController.sendTest',
+];
+
+describe('Second facteur sur les gestes ADMIN sensibles (Lot 1C)', () => {
+  const routes = collectAdminRoutes();
+
+  it('le décorateur et la liste coïncident exactement', () => {
+    const marked = routes
+      .filter((r) => r.secondFactor)
+      .map((r) => r.key)
+      .sort();
+    expect(marked).toEqual([...SECOND_FACTOR_ROUTES].sort());
+  });
+
+  it('aucune route à capacité ne porte aussi le marqueur (la capacité fait déjà mieux)', () => {
+    expect(
+      routes.filter((r) => r.secondFactor && r.capability).map((r) => r.key),
+    ).toEqual([]);
+  });
+
+  it('chaque route de la liste est ouverte à l’ADMIN et classée NONE', () => {
+    for (const key of SECOND_FACTOR_ROUTES) {
+      expect(ADMIN_ROUTE_CAPABILITIES[key]).toBe('NONE');
+    }
+  });
+});
+
 describe('Classement des routes ADMIN (F3-08)', () => {
   const routes = collectAdminRoutes();
 
