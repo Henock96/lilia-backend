@@ -4,11 +4,14 @@ import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 
 import { ROLES_KEY } from '../src/modules/auth/decorators/roles.decorator';
 import { REQUIRE_CAPABILITY_KEY } from '../src/modules/auth/decorators/require-capability.decorator';
+import { REQUIRE_SECOND_FACTOR_KEY } from '../src/modules/auth/decorators/require-second-factor.decorator';
 
 export interface AdminRoute {
   /** `Contrôleur.méthode` — clé stable de la table de classement. */
   key: string;
   capability: string | undefined;
+  /** Lot 1C — route marquée `@RequireSecondFactor`. */
+  secondFactor: boolean;
 }
 
 function controllerFiles(dir: string): string[] {
@@ -54,6 +57,9 @@ export function collectRoleRoutes(role: string): AdminRoute[] {
             (Reflect.getMetadata(REQUIRE_CAPABILITY_KEY, handler) as
               | string
               | undefined) ?? classCap,
+          secondFactor:
+            Reflect.getMetadata(REQUIRE_SECOND_FACTOR_KEY, handler) === true ||
+            Reflect.getMetadata(REQUIRE_SECOND_FACTOR_KEY, value) === true,
         });
       }
     }

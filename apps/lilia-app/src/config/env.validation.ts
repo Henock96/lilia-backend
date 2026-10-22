@@ -239,6 +239,10 @@ export const envValidationSchema = Joi.object({
   // FINANCE_EXECUTE) reste ouvert. `false` pendant la transition, le temps que
   // l'admin web et l'app vendeurs installées passent par l'arbitrage.
   ADMIN_PICKUP_ARBITRATION_ENFORCED: Joi.boolean().default(false),
+  // 1C (ADM-05) — `true` exige un jeton avec second facteur pour les gestes
+  // ADMIN sensibles (`@RequireSecondFactor`). `false` tant que l'admin web et
+  // l'app vendeurs installées ne savent pas traiter `MFA_SESSION_REQUIRED`.
+  ADMIN_SECOND_FACTOR_ENFORCED: Joi.boolean().default(false),
   PAWAPAY_PUBLIC_KEY: Joi.string().allow('').optional(),
   PAWAPAY_CALLBACK_IPS: Joi.string().allow('').optional(),
 

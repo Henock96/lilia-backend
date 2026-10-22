@@ -18,6 +18,7 @@ import { FilterVendorsDto } from './dto/filter-vendors.dto';
 import { UpdateVendorProfileDto } from './dto/update-vendor-profile.dto';
 import { Public } from '../auth/decorators/public.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequireSecondFactor } from '../auth/decorators/require-second-factor.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 
 /**
@@ -58,6 +59,7 @@ export class VendorsController {
   @Roles('ADMIN')
   @Patch(':id/approve')
   @ApiOperation({ summary: 'Approuver un vendeur (BEVERAGE_SHOP surtout)' })
+  @RequireSecondFactor()
   approve(@Param('id') id: string, @CurrentUser() admin: User) {
     return this.service.approveVendor(id, admin.id);
   }

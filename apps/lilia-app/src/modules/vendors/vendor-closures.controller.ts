@@ -12,6 +12,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequireSecondFactor } from '../auth/decorators/require-second-factor.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 import {
@@ -124,6 +125,7 @@ export class AdminPublicHolidaysController {
   }
 
   @Post()
+  @RequireSecondFactor()
   async create(
     @Body() dto: CreatePublicHolidayDto,
     @CurrentUser() admin: User,
@@ -133,6 +135,7 @@ export class AdminPublicHolidaysController {
 
   @Delete(':date')
   @HttpCode(HttpStatus.NO_CONTENT)
+  @RequireSecondFactor()
   async remove(@Param('date') date: string, @CurrentUser() admin: User) {
     await this.holidays.remove(date, admin.id);
   }

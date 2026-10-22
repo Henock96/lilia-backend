@@ -28,6 +28,7 @@ import { RestaurantHoursService } from '../restaurants/restaurant-hours.service'
 import { RestaurantAccessService } from '../restaurants/restaurant-access.service';
 import { DeliveryZonesService } from '../quartiers/delivery-zones.service';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequireSecondFactor } from '../auth/decorators/require-second-factor.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import {
   ActivateVendorDto,
@@ -245,6 +246,7 @@ export class AdminVendorOnboardingController {
       "par l'administrateur : une invitation part vers le propriétaire pour " +
       'qu’il définisse le sien.',
   })
+  @RequireSecondFactor()
   async create(
     @Body() dto: CreateVendorOnboardingDto,
     @CurrentUser() admin: User,
@@ -282,6 +284,7 @@ export class AdminVendorOnboardingController {
   @ApiOperation({
     summary: 'Activer le vendeur — refusé si la checklist est incomplète',
   })
+  @RequireSecondFactor()
   activate(
     @Param('id') id: string,
     @Body() dto: ActivateVendorDto,
@@ -299,6 +302,7 @@ export class AdminVendorOnboardingController {
   @ApiOperation({
     summary: "Renvoyer l'invitation d'activation au propriétaire",
   })
+  @RequireSecondFactor()
   async resendInvitation(@Param('id') id: string) {
     const result = await this.invitation.sendForVendor(id);
     return { data: result, message: 'Invitation renvoyée.' };

@@ -5,6 +5,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { SmsService } from './sms.service';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequireSecondFactor } from '../auth/decorators/require-second-factor.decorator';
 
 @ApiTags('Admin — SMS')
 @ApiBearerAuth()
@@ -16,6 +17,7 @@ export class SmsController {
   @Post('test')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Envoyer un SMS de test (admin)' })
+  @RequireSecondFactor()
   sendTest(@Body('to') to: string) {
     return this.smsService.send(
       to,

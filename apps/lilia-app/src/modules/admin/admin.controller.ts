@@ -30,6 +30,7 @@ import { GetDelivererMissionsQueryDto } from './dto/get-deliverer-missions.dto';
 import { AdminVendorFilterDto } from './dto/admin-vendor-filter.dto';
 import { SuspendVendorDto } from './dto/suspend-vendor.dto';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequireSecondFactor } from '../auth/decorators/require-second-factor.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { FirebaseService } from '../firebase/firebase.service';
 import {
@@ -86,6 +87,7 @@ export class AdminController {
 
   @Post('restaurants')
   @ApiOperation({ summary: 'Créer un restaurant avec son propriétaire' })
+  @RequireSecondFactor()
   async createRestaurantWithOwner(@Body() dto: CreateRestaurantWithOwnerDto) {
     return this.adminService.createRestaurantWithOwner(dto);
   }
@@ -141,6 +143,7 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Approuver un vendeur en attente' })
   @ApiParam({ name: 'id', description: 'ID du vendeur (Restaurant)' })
+  @RequireSecondFactor()
   async approveVendor(@Param('id') id: string, @CurrentUser() admin: User) {
     const result = await this.adminService.approveVendor(id, admin.id);
     await this.audit.record({
@@ -158,6 +161,7 @@ export class AdminController {
     summary: 'Suspendre un vendeur (isActive=false, raison obligatoire)',
   })
   @ApiParam({ name: 'id', description: 'ID du vendeur (Restaurant)' })
+  @RequireSecondFactor()
   async suspendVendor(
     @Param('id') id: string,
     @Body() dto: SuspendVendorDto,
@@ -191,6 +195,7 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Lever la suspension d’un vendeur (isActive=true)' })
   @ApiParam({ name: 'id', description: 'ID du vendeur (Restaurant)' })
+  @RequireSecondFactor()
   unsuspendVendor(@Param('id') id: string, @CurrentUser() admin: User) {
     return this.adminService.activateVendor(id, admin.id);
   }
@@ -631,6 +636,7 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Supprimer un avis (modération)' })
   @ApiParam({ name: 'id', description: "ID de l'avis" })
+  @RequireSecondFactor()
   deleteReview(@Param('id') id: string) {
     return this.adminService.deleteReview(id);
   }

@@ -22,6 +22,7 @@ import { User } from '@prisma/client';
 import { DriversService } from './drivers.service';
 import { VendorInvitationService } from '../vendors/vendor-invitation.service';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { RequireSecondFactor } from '../auth/decorators/require-second-factor.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
 import {
@@ -87,6 +88,7 @@ export class AdminDriversController {
       'avec un secret jetable et le livreur définit le sien via un lien signé. ' +
       'Le profil naît inactif — activez-le une fois les documents vérifiés.',
   })
+  @RequireSecondFactor()
   async create(@Body() dto: CreateDriverDto, @CurrentUser() admin: User) {
     const created = await this.drivers.createDriver(dto, admin.id);
     // Envoi immédiat. Un échec ne fait pas échouer la création : l'admin
@@ -98,6 +100,7 @@ export class AdminDriversController {
   @Patch(':id')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Modifier le compte et le profil métier' })
+  @RequireSecondFactor()
   update(
     @Param('id') id: string,
     @Body() dto: UpdateDriverDto,
@@ -109,6 +112,7 @@ export class AdminDriversController {
   @Patch(':id/activate')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Mettre le livreur en service' })
+  @RequireSecondFactor()
   activate(@Param('id') id: string, @CurrentUser() admin: User) {
     return this.drivers.activate(id, admin.id);
   }
@@ -119,6 +123,7 @@ export class AdminDriversController {
     summary: 'Retirer le livreur de la file d’assignation',
     description: 'Refusé tant qu’il a une course en cours.',
   })
+  @RequireSecondFactor()
   deactivate(
     @Param('id') id: string,
     @Body() dto: DeactivateDriverDto,
@@ -134,6 +139,7 @@ export class AdminDriversController {
     long: { limit: 5, ttl: 3600000 },
   })
   @ApiOperation({ summary: "Renvoyer le lien d'activation au livreur" })
+  @RequireSecondFactor()
   async resendInvitation(@Param('id') id: string) {
     const result = await this.invitation.sendForDriver(id);
     return { data: result, message: 'Invitation renvoyée.' };

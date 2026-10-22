@@ -26,6 +26,7 @@ import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { FirebaseUser } from '../../auth/decorators/firebase-user.decorator';
 import { Public } from '../../auth/decorators/public.decorator';
 import { Roles } from '../../auth/decorators/roles.decorator';
+import { RequireSecondFactor } from '../../auth/decorators/require-second-factor.decorator';
 import { AdminAuditService } from '../../admin-audit/admin-audit.service';
 
 @ApiTags('Paiements')
@@ -223,6 +224,7 @@ export class PaymentController {
   @Roles('ADMIN')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Réconcilier un paiement auprès du prestataire' })
+  @RequireSecondFactor()
   async reconcile(
     @Param('paymentId') paymentId: string,
     @CurrentUser() admin: User,
