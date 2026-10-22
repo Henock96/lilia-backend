@@ -1,4 +1,5 @@
 import { DashboardSalesStatsService } from './dashboard-sales-stats.service';
+import { REVENUE_ORDER_WHERE } from './revenue-scope';
 import type { DashboardCommonService } from './dashboard-common.service';
 import type { PrismaService } from '../../prisma/prisma.service';
 
@@ -27,21 +28,22 @@ import type { PrismaService } from '../../prisma/prisma.service';
  * la signaler. Même idiome que `pagination-bounds.spec.ts`, qui compare les
  * DTOs entre eux plutôt qu'à une liste de champs.
  *
- * ## Ce que ce test ne dit PAS
+ * ## Le contenu du périmètre : décision D-5 (23/10/2026)
  *
- * Il n'arbitre pas le **contenu** du périmètre. Le filtre en vigueur,
- * `≠ ANNULER`, compte les `EN_ATTENTE` : des commandes jamais payées. Décider
- * si le tableau de bord d'un vendeur annonce des commandes *reçues* ou de
- * l'argent *encaissé* est une décision métier, pas une correction de bug — et
- * le jour où elle sera prise, ce test exigera qu'elle s'applique aux quatre
- * endroits d'un coup. C'est exactement ce qu'on lui demande.
+ * Le filtre `≠ ANNULER` comptait les `EN_ATTENTE`, des commandes jamais
+ * payées. La décision est prise : « revenus » = commandes **payées et
+ * livrées**, à la date de livraison (`revenue-scope.ts`). Ce test l'exige
+ * partout d'un coup, comme prévu. Les heures de pointe, qui comptent
+ * l'activité et non l'argent, gardent `≠ ANNULER`.
  */
 describe('Dashboard vendeur — un seul périmètre de chiffre d’affaires', () => {
   /** `where` capturés par requête Prisma, dans l'ordre des appels. */
   function build() {
     const groupBy = jest.fn().mockResolvedValue([]);
     const findMany = jest.fn().mockResolvedValue([]);
-    const aggregate = jest.fn().mockResolvedValue({ _sum: { total: 0 } });
+    const aggregate = jest
+      .fn()
+      .mockResolvedValue({ _sum: { total: 0 }, _count: { id: 0 } });
     const count = jest.fn().mockResolvedValue(0);
 
     const prisma = {
@@ -69,7 +71,7 @@ describe('Dashboard vendeur — un seul périmètre de chiffre d’affaires', ()
   }
 
   interface PrismaArgs {
-    where?: { status?: unknown };
+    where?: { status?: unknown; paidAt?: unknown };
     select?: Record<string, unknown>;
     _sum?: Record<string, unknown>;
   }
@@ -87,12 +89,12 @@ describe('Dashboard vendeur — un seul périmètre de chiffre d’affaires', ()
   const touchesMoney = (args: PrismaArgs) =>
     args?.select?.total !== undefined || args?._sum?.total !== undefined;
 
-  it('applique le même filtre de statut à toute requête qui somme Order.total', async () => {
+  it('D-5 : toute requête qui somme Order.total porte le périmètre payées et livrées', async () => {
     const { service, findMany, aggregate, groupBy } = build();
 
     // `getOrderStats` est volontairement absent : son `groupBy` doit ramener la
     // ligne `ANNULER` pour `byStatus`, donc il ne peut pas la filtrer en SQL.
-    // Son périmètre à lui est vérifié par les trois tests suivants.
+    // Son total est vérifié par le test suivant.
     await service.getOverview('uid');
     await service.getRevenueChart('uid');
     await service.getPeakHours('uid');
@@ -108,30 +110,51 @@ describe('Dashboard vendeur — un seul périmètre de chiffre d’affaires', ()
 
     // Garde-fou du garde-fou : si un jour plus aucune requête n'est reconnue,
     // ce test passerait à vide en donnant l'illusion de protéger.
-    expect(moneyCalls.length).toBeGreaterThanOrEqual(5);
+    // 4 sommes de la vue générale + graphique + classement.
+    expect(moneyCalls.length).toBeGreaterThanOrEqual(6);
 
-    const perimetres = moneyCalls.map((args) =>
-      JSON.stringify(args.where?.status ?? null),
-    );
-
-    expect(new Set(perimetres).size).toBe(1);
-    expect(JSON.parse(perimetres[0])).toEqual({ not: 'ANNULER' });
+    for (const args of moneyCalls) {
+      expect({
+        status: args.where?.status,
+        paidAt: args.where?.paidAt,
+      }).toEqual(REVENUE_ORDER_WHERE);
+    }
   });
 
-  it('le total de GET /dashboard/orders exclut les commandes annulées', async () => {
-    const { service, groupBy } = build();
+  it('le total de GET /dashboard/orders suit D-5, le nombre de commandes reste l’activité', async () => {
+    const { service, groupBy, aggregate } = build();
 
     groupBy.mockResolvedValueOnce([
       { status: 'LIVRER', _count: { status: 3 }, _sum: { total: 3_000 } },
+      { status: 'EN_ATTENTE', _count: { status: 2 }, _sum: { total: 9_000 } },
       { status: 'ANNULER', _count: { status: 7 }, _sum: { total: 70_000 } },
     ]);
+    aggregate.mockResolvedValueOnce({
+      _sum: { total: 3_000 },
+      _count: { id: 3 },
+    });
 
     const { data } = await service.getOrderStats('uid');
 
-    // 70 000 XAF d'annulations ne sont le revenu de personne.
+    // Ni les annulations ni les commandes jamais payées ne sont un revenu.
     expect(data.totals.revenue).toBe(3_000);
-    expect(data.totals.orders).toBe(3);
+    // Activité : commandes non annulées.
+    expect(data.totals.orders).toBe(5);
+    // Panier moyen sur les commandes comptées en revenus, pas sur l'activité.
     expect(data.totals.averageOrderValue).toBe('1000');
+
+    const revenueCall = aggregate.mock.calls[0][0] as PrismaArgs;
+    expect({
+      status: revenueCall.where?.status,
+      paidAt: revenueCall.where?.paidAt,
+    }).toEqual(REVENUE_ORDER_WHERE);
+  });
+
+  it('les heures de pointe restent l’activité : commandes non annulées', async () => {
+    const { service, findMany } = build();
+    await service.getPeakHours('uid');
+    const args = findMany.mock.calls[0][0] as PrismaArgs;
+    expect(args.where?.status).toEqual({ not: 'ANNULER' });
   });
 
   it('les parts par statut somment à 100 % — annulations comprises', async () => {

@@ -1,5 +1,6 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { startOfPeriod } from './brazzaville-time';
 
 /**
  * Helpers analytics partagés (extrait de DashboardService — LIL-142).
@@ -35,28 +36,9 @@ export class DashboardCommonService {
   }
 
   /**
-   * Helper pour obtenir le filtre de date
+   * Début de la période, à l'heure de Brazzaville (DASH-03, Lot 5).
    */
   getDateFilter(period?: string): Date | null {
-    if (!period) return null;
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    switch (period) {
-      case 'today':
-        return today;
-      case 'week': {
-        const startOfWeek = new Date(today);
-        startOfWeek.setDate(today.getDate() - today.getDay());
-        return startOfWeek;
-      }
-      case 'month':
-        return new Date(today.getFullYear(), today.getMonth(), 1);
-      case 'year':
-        return new Date(today.getFullYear(), 0, 1);
-      default:
-        return null;
-    }
+    return startOfPeriod(period);
   }
 }
