@@ -139,3 +139,35 @@ node scripts/db/phase3-baseline.js --json   # à archiver
 Session en `default_transaction_read_only = on`. La base visée est celle de la
 cascade d'environnement — `npm run db:target` d'abord ; pour la production,
 poser `DATABASE_URL` explicitement.
+
+## `staging-sanitize.js` — anonymisation de la préproduction
+
+La préproduction est une branche Neon créée depuis la production. Avant le
+premier démarrage de son service, et après chaque rafraîchissement de la
+branche, ce script coupe les effets sortants (jetons FCM, outbox en attente,
+versement automatique) et remplace les données personnelles par des valeurs
+neutres. Montants, statuts, identifiants et `firebaseUid` ne bougent pas.
+ADMIN et comptes passés par `--keep=` sont épargnés.
+
+```bash
+# 1. Déclarer l'hôte de la branche (jamais celui de la prod)
+export LILIA_STAGING_DATABASE_HOSTS=<endpoint de la branche staging>
+# 2. Marquer la branche, une fois vérifiée dans la console Neon
+#      COMMENT ON DATABASE <base> IS 'lilia-staging';
+# 3. Simuler, puis valider
+DATABASE_URL=<url de la branche> node scripts/db/staging-sanitize.js --keep=moi@exemple.com
+DATABASE_URL=<url de la branche> node scripts/db/staging-sanitize.js --keep=moi@exemple.com --commit
+```
+
+Refus sans échappatoire hors de deux cas : base locale, ou hôte déclaré **et**
+base marquée. La marque vit dans la base : une branche fraîchement copiée de la
+prod ne l'a pas (le « reset from parent » l'efface aussi) — il faut la reposer à
+chaque rafraîchissement. Une base déclarée préproduction reste refusée par
+`assertLocalDatabase`.
+
+⚠️ Ces deux gestes sont la seule frontière avec la production : ne poser la
+marque, et ne déclarer l'hôte, qu'après avoir lu dans la console Neon que
+l'endpoint appartient à la branche `staging` et non à la branche principale.
+Le script protège les données copiées ; il ne protège pas des identifiants
+prestataires (pawaPay, Infobip, Resend) de production posés par erreur sur le
+service de préproduction.

@@ -48,6 +48,7 @@ function describeTarget(url = process.env.DATABASE_URL) {
     return {
       ok: false,
       isLocal: false,
+      isStaging: false,
       host: null,
       database: null,
       label: 'DATABASE_URL absent',
@@ -63,6 +64,7 @@ function describeTarget(url = process.env.DATABASE_URL) {
     return {
       ok: false,
       isLocal: false,
+      isStaging: false,
       host: null,
       database: null,
       label: 'DATABASE_URL illisible',
@@ -72,14 +74,34 @@ function describeTarget(url = process.env.DATABASE_URL) {
   const host = parsed.hostname;
   const database = parsed.pathname.replace(/^\//, '') || null;
   const isLocal = LOCAL_HOSTS.has(host);
+  const isStaging = !isLocal && stagingHosts().has(host);
 
   return {
     ok: true,
     isLocal,
+    isStaging,
     host,
     database,
-    label: `${host}/${database ?? '?'}`,
+    label: `${isStaging ? 'préproduction ' : ''}${host}/${database ?? '?'}`,
   };
+}
+
+/**
+ * Hôtes déclarés comme préproduction (`LILIA_STAGING_DATABASE_HOSTS`, liste
+ * séparée par des virgules — l'endpoint Neon de la branche `staging`).
+ *
+ * La déclaration ne relâche **aucune** garde : une base de préproduction reste
+ * distante, donc refusée par `assertLocalDatabase`. Elle ne sert qu'à nommer la
+ * cible et aux outils propres à la préproduction (`staging-sanitize.js`), qui
+ * exigent en plus une marque posée dans la base elle-même.
+ */
+function stagingHosts() {
+  return new Set(
+    (process.env.LILIA_STAGING_DATABASE_HOSTS ?? '')
+      .split(',')
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean),
+  );
 }
 
 /** L'échappatoire explicite est-elle armée ? */

@@ -16,6 +16,10 @@ import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/exception-filters/http-exception.filter';
 import { RedisIoAdapter } from './common/adapters/redis-io.adapter';
 import { CORS_ALLOWED_HEADERS } from './common/http/cors-headers';
+import {
+  isDeployedEnvironment,
+  resolveCorsOrigin,
+} from './config/deployment-environment';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
@@ -99,25 +103,13 @@ async function bootstrap() {
   app.useGlobalFilters(new HttpExceptionFilter());
 
   // ─── CORS ───────────────────────────────────────────────────────────────────
-  const isProduction = process.env.NODE_ENV === 'production';
-  const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '')
-    .split(',')
-    .map((o) => o.trim())
-    .filter(Boolean);
-
-  // En production, refléter TOUTE origine avec `credentials: true` est une faille
-  // (CSRF / exfiltration cross-site). On exige une liste blanche explicite et on
-  // échoue au démarrage si elle est absente plutôt que de basculer en `true`.
-  if (isProduction && allowedOrigins.length === 0) {
-    throw new Error(
-      'ALLOWED_ORIGINS doit être défini en production (liste blanche CORS). ' +
-        'Ex: ALLOWED_ORIGINS=https://lilia-food.com,https://admin.lilia-food.com',
-    );
-  }
-
+  // Production et préproduction : liste blanche stricte, refus de démarrer si
+  // elle est vide (`deployment-environment.ts`). Dev : toute origine.
   app.enableCors({
-    // Prod : liste blanche stricte. Dev : tout autoriser pour le confort local.
-    origin: isProduction ? allowedOrigins : true,
+    origin: resolveCorsOrigin(
+      process.env.NODE_ENV,
+      process.env.ALLOWED_ORIGINS,
+    ),
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     /**
      * ⚠️ Cette liste doit contenir **tout** en-tête que les clients web
@@ -148,8 +140,8 @@ async function bootstrap() {
   });
 
   // ─── Swagger ────────────────────────────────────────────────────────────────
-  if (process.env.NODE_ENV !== 'production') {
-    // Swagger uniquement en dev/staging — pas exposé en prod
+  if (!isDeployedEnvironment(process.env.NODE_ENV)) {
+    // Swagger uniquement en local — ni en prod, ni en préproduction
     const config = new DocumentBuilder()
       .setTitle('Lilia Food API')
       .setDescription('API de la plateforme de livraison Lilia Food')

@@ -51,3 +51,31 @@ describe('HealthController — exemption de throttling (P-04)', () => {
     expect(skipFor(handler, THROTTLER_LONG)).toBeUndefined();
   });
 });
+
+describe('HealthController — détail de configuration', () => {
+  const saved = process.env.NODE_ENV;
+  afterEach(() => {
+    process.env.NODE_ENV = saved;
+  });
+
+  const controller = () =>
+    new HealthController(
+      { isReady: () => true } as never,
+      null as never,
+      null as never,
+    );
+
+  it.each(['production', 'staging'])('en %s, ne rend que le statut', (env) => {
+    // La préproduction est publique comme la prod : pas de fingerprinting.
+    process.env.NODE_ENV = env;
+    expect(Object.keys(controller().check()).sort()).toEqual([
+      'status',
+      'timestamp',
+    ]);
+  });
+
+  it('en développement, rend le diagnostic', () => {
+    process.env.NODE_ENV = 'development';
+    expect(controller().check()).toHaveProperty('environment');
+  });
+});
