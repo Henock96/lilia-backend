@@ -57,7 +57,7 @@
     "helmet": "^8.2.0",
     "ioredis": "^5.10.1",
     "joi": "^18.2.5",
-    "multer": "^2.3.0",
+    "multer": "^2.5.0",
     "nestjs-pino": "^4.6.1",
     "pdfmake": "^0.3.10",
     "pg": "^8.20.0",
@@ -117,9 +117,9 @@
     "@prisma/config": {
       "deepmerge-ts": "^8.0.2"
     },
-    "fast-uri": "^3.1.7",
+    "fast-uri": "^3.1.9",
     "mysql2": "^3.24.3",
-    "multer": "^2.3.0",
+    "multer": "^2.5.0",
     "qs": "^6.16.0"
   },
   "jest": {
