@@ -2,6 +2,13 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DashboardCommonService } from './dashboard-common.service';
+import {
+  brazzavilleDateKey,
+  brazzavilleHour,
+  startOfDaysAgo,
+  startOfPeriod,
+} from './brazzaville-time';
+import { revenueWhere } from './revenue-scope';
 
 /**
  * Statistiques de ventes (extrait de DashboardService — LIL-142).
@@ -22,13 +29,12 @@ export class DashboardSalesStatsService {
     const restaurant = await this.common.getRestaurant(firebaseUid);
     const restaurantFilter = restaurant ? { restaurantId: restaurant.id } : {};
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const startOfWeek = new Date(today);
-    startOfWeek.setDate(today.getDate() - today.getDay());
-
-    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    // Lot 5 (DASH-03) — bornes à l'heure de Brazzaville, plus au fuseau du
+    // serveur (UTC sur Render).
+    const now = new Date();
+    const today = startOfPeriod('today', now)!;
+    const startOfWeek = startOfPeriod('week', now)!;
+    const startOfMonth = startOfPeriod('month', now)!;
 
     // Récupérer les statistiques en parallèle
     const [
@@ -71,32 +77,23 @@ export class DashboardSalesStatsService {
           status: { not: 'ANNULER' },
         },
       }),
+      // Lot 5 (D-5) — revenus : commandes payées et livrées, à la date de
+      // livraison (`revenue-scope.ts`). Les compteurs de commandes ci-dessus
+      // restent l'activité (commandes non annulées, à la date de commande).
       this.prisma.order.aggregate({
-        where: { ...restaurantFilter, status: { not: 'ANNULER' } },
+        where: { ...restaurantFilter, ...revenueWhere() },
         _sum: { total: true },
       }),
       this.prisma.order.aggregate({
-        where: {
-          ...restaurantFilter,
-          createdAt: { gte: today },
-          status: { not: 'ANNULER' },
-        },
+        where: { ...restaurantFilter, ...revenueWhere(today) },
         _sum: { total: true },
       }),
       this.prisma.order.aggregate({
-        where: {
-          ...restaurantFilter,
-          createdAt: { gte: startOfWeek },
-          status: { not: 'ANNULER' },
-        },
+        where: { ...restaurantFilter, ...revenueWhere(startOfWeek) },
         _sum: { total: true },
       }),
       this.prisma.order.aggregate({
-        where: {
-          ...restaurantFilter,
-          createdAt: { gte: startOfMonth },
-          status: { not: 'ANNULER' },
-        },
+        where: { ...restaurantFilter, ...revenueWhere(startOfMonth) },
         _sum: { total: true },
       }),
       this.prisma.product.count({
@@ -190,15 +187,14 @@ export class DashboardSalesStatsService {
    * `totals` n'avait alors **aucun lecteur** (le web ne lit que `byStatus`, le
    * client Flutter le désérialise sans jamais l'afficher).
    *
-   * ## Ce qui n'est PAS tranché ici — décision métier
+   * ## Décision D-5 (23/10/2026)
    *
-   * Le périmètre retenu reste `≠ ANNULER`, donc il compte les `EN_ATTENTE` :
-   * des commandes jamais payées, qu'`OrderExpiryService` ferme au bout de
-   * 45 minutes. Les exclure ferait du « revenu » du vendeur autre chose que ce
-   * qu'il affiche depuis l'origine, et ce n'est pas une correction de bug :
-   * c'est au métier de dire si son tableau de bord annonce des commandes
-   * **reçues** ou de l'argent **encaissé**. Constat et proposition dans
-   * `PHASE1E_2026-09-16_RELEASE_VERIFICATION.md` §11.
+   * `totals.revenue` = commandes **payées et livrées**, à la date de
+   * livraison (`revenue-scope.ts`), comme les trois autres calculs. Il ne se
+   * déduit donc plus de `byStatus` (daté par `createdAt`) : une seconde
+   * agrégation le calcule. `totals.orders` reste l'activité (commandes non
+   * annulées) ; le panier moyen se calcule sur les commandes comptées en
+   * revenus, sans quoi il mélangerait deux périmètres.
    */
   async getOrderStats(firebaseUid: string, period?: string) {
     const restaurant = await this.common.getRestaurant(firebaseUid);
@@ -206,15 +202,22 @@ export class DashboardSalesStatsService {
 
     const dateFilter = this.common.getDateFilter(period);
 
-    const stats = await this.prisma.order.groupBy({
-      by: ['status'],
-      where: {
-        ...restaurantFilter,
-        ...(dateFilter && { createdAt: { gte: dateFilter } }),
-      },
-      _count: { status: true },
-      _sum: { total: true },
-    });
+    const [stats, revenue] = await Promise.all([
+      this.prisma.order.groupBy({
+        by: ['status'],
+        where: {
+          ...restaurantFilter,
+          ...(dateFilter && { createdAt: { gte: dateFilter } }),
+        },
+        _count: { status: true },
+        _sum: { total: true },
+      }),
+      this.prisma.order.aggregate({
+        where: { ...restaurantFilter, ...revenueWhere(dateFilter) },
+        _sum: { total: true },
+        _count: { id: true },
+      }),
+    ]);
 
     // Même périmètre que `getOverview` / `getRevenueChart` / `getPeakHours` :
     // ils somment la même colonne, ils doivent compter les mêmes lignes.
@@ -224,10 +227,8 @@ export class DashboardSalesStatsService {
     const facturables = stats.filter((s) => s.status !== 'ANNULER');
 
     const totalOrders = facturables.reduce((acc, s) => acc + s._count.status, 0);
-    const totalRevenue = facturables.reduce(
-      (acc, s) => acc + (s._sum.total || 0),
-      0,
-    );
+    const totalRevenue = revenue._sum.total ?? 0;
+    const revenueOrders = revenue._count.id;
 
     // ⚠️ Dénominateur distinct, et il doit le rester.
     //
@@ -252,34 +253,32 @@ export class DashboardSalesStatsService {
         totals: {
           orders: totalOrders,
           revenue: totalRevenue,
-          averageOrderValue: totalOrders > 0 ? (totalRevenue / totalOrders).toFixed(0) : 0,
+          averageOrderValue: revenueOrders > 0 ? (totalRevenue / revenueOrders).toFixed(0) : 0,
         },
       },
     };
   }
 
   /**
-   * Récupère l'évolution des revenus par jour
+   * Évolution des revenus par jour.
+   *
+   * Lot 5 (D-5) — commandes payées et livrées, rangées au **jour de leur
+   * livraison**, à l'heure de Brazzaville. `orders` compte donc les commandes
+   * livrées ce jour-là.
    */
   async getRevenueChart(firebaseUid: string, days = 30) {
     const restaurant = await this.common.getRestaurant(firebaseUid);
     const restaurantFilter = restaurant ? { restaurantId: restaurant.id } : {};
 
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
-    startDate.setHours(0, 0, 0, 0);
+    const startDate = startOfDaysAgo(days);
 
     const orders = await this.prisma.order.findMany({
-      where: {
-        ...restaurantFilter,
-        createdAt: { gte: startDate },
-        status: { not: 'ANNULER' },
-      },
+      where: { ...restaurantFilter, ...revenueWhere(startDate) },
       select: {
         total: true,
-        createdAt: true,
+        deliveredAt: true,
       },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { deliveredAt: 'asc' },
     });
 
     // Grouper par jour
@@ -287,15 +286,16 @@ export class DashboardSalesStatsService {
 
     // Initialiser tous les jours avec 0
     for (let i = 0; i < days; i++) {
-      const date = new Date(startDate);
-      date.setDate(startDate.getDate() + i);
-      const dateKey = date.toISOString().split('T')[0];
+      const dateKey = brazzavilleDateKey(
+        new Date(startDate.getTime() + i * 86_400_000),
+      );
       dailyRevenue.set(dateKey, { revenue: 0, orders: 0 });
     }
 
     // Ajouter les données réelles
     orders.forEach((order) => {
-      const dateKey = order.createdAt.toISOString().split('T')[0];
+      // `revenueWhere(startDate)` impose `deliveredAt ≥ startDate` : jamais nul.
+      const dateKey = brazzavilleDateKey(order.deliveredAt!);
       const current = dailyRevenue.get(dateKey) || { revenue: 0, orders: 0 };
       dailyRevenue.set(dateKey, {
         revenue: current.revenue + order.total,
@@ -341,7 +341,8 @@ export class DashboardSalesStatsService {
     }));
 
     orders.forEach((order) => {
-      const hour = order.createdAt.getHours();
+      // Lot 5 (DASH-03) — heure de Brazzaville, plus celle du serveur.
+      const hour = brazzavilleHour(order.createdAt);
       hourlyStats[hour].count++;
     });
 
@@ -360,12 +361,11 @@ export class DashboardSalesStatsService {
     const dateFilter = this.common.getDateFilter(period);
 
     // 1 seul groupBy au lieu de N requêtes aggregate
+    // Lot 5 (D-5) — même périmètre que les autres revenus : payées et
+    // livrées, à la date de livraison.
     const revenueByRestaurant = await this.prisma.order.groupBy({
       by: ['restaurantId'],
-      where: {
-        status: { not: 'ANNULER' },
-        ...(dateFilter && { createdAt: { gte: dateFilter } }),
-      },
+      where: revenueWhere(dateFilter),
       _sum: { total: true },
       _count: { id: true },
     });
