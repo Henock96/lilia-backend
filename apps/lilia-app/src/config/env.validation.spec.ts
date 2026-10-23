@@ -84,3 +84,49 @@ describe('envValidationSchema — mode PAWAPAY', () => {
     expect(error).toBeUndefined();
   });
 });
+
+describe('envValidationSchema — environnements déployés', () => {
+  const base = {
+    DATABASE_URL: 'postgresql://user@localhost:5432/db',
+    FIREBASE_PROJECT_ID: 'proj',
+    FIREBASE_CLIENT_EMAIL: 'svc@proj.iam.gserviceaccount.com',
+    FIREBASE_PRIVATE_KEY:
+      '-----BEGIN PRIVATE KEY-----x-----END PRIVATE KEY-----',
+    PAYMENT_MODE: 'MANUAL',
+    ALLOWED_ORIGINS: 'https://staging.example.test',
+    REDIS_URL: 'rediss://default:x@redis.example.test:6379',
+  };
+
+  const validate = (env: Record<string, unknown>) =>
+    envValidationSchema.validate(env, { abortEarly: false });
+
+  it.each(['staging', 'production'])('%s démarre avec le minimum', (env) => {
+    expect(validate({ ...base, NODE_ENV: env }).error).toBeUndefined();
+  });
+
+  it.each(['staging', 'production'])(
+    '%s exige ALLOWED_ORIGINS et REDIS_URL',
+    (env) => {
+      // Une préproduction sans Redis perd verrous de cron et throttling ; sans
+      // liste blanche, elle refléterait toute origine.
+      const { error } = validate({
+        ...base,
+        NODE_ENV: env,
+        ALLOWED_ORIGINS: undefined,
+        REDIS_URL: undefined,
+      });
+      expect(error?.message).toContain('ALLOWED_ORIGINS');
+      expect(error?.message).toContain('REDIS_URL');
+    },
+  );
+
+  it('le développement reste démarrable sans eux', () => {
+    const { error } = validate({
+      ...base,
+      NODE_ENV: 'development',
+      ALLOWED_ORIGINS: undefined,
+      REDIS_URL: undefined,
+    });
+    expect(error).toBeUndefined();
+  });
+});

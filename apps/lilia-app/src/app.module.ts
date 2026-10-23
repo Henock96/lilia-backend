@@ -90,6 +90,7 @@ import { TrackingModule } from './modules/tracking/tracking.module';
 // Email + SMS de bienvenue : gérés par UserListener (modules/listeners/user.listener.ts)
 import { RedisModule } from '@nestjs-modules/ioredis';
 import { envValidationSchema } from './config/env.validation';
+import { isDeployedEnvironment } from './config/deployment-environment';
 import { DeliveryPricingModule } from './modules/delivery-pricing/delivery-pricing.module';
 @Module({
   imports: [
@@ -129,18 +130,17 @@ import { DeliveryPricingModule } from './modules/delivery-pricing/delivery-prici
       pinoHttp: {
         level:
           process.env.LOG_LEVEL ??
-          (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
-        transport:
-          process.env.NODE_ENV !== 'production'
-            ? {
-                target: 'pino-pretty',
-                options: {
-                  singleLine: true,
-                  translateTime: 'SYS:HH:MM:ss',
-                  ignore: 'pid,hostname',
-                },
-              }
-            : undefined,
+          (isDeployedEnvironment(process.env.NODE_ENV) ? 'info' : 'debug'),
+        transport: !isDeployedEnvironment(process.env.NODE_ENV)
+          ? {
+              target: 'pino-pretty',
+              options: {
+                singleLine: true,
+                translateTime: 'SYS:HH:MM:ss',
+                ignore: 'pid,hostname',
+              },
+            }
+          : undefined,
         // Jamais de token Firebase / mot de passe / cookie en clair dans les logs.
         redact: {
           paths: [

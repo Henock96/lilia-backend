@@ -14,6 +14,7 @@ const { describeTarget, assertLocalDatabase, OVERRIDE } = guard as {
   describeTarget: (url?: string) => {
     ok: boolean;
     isLocal: boolean;
+    isStaging: boolean;
     host: string | null;
     database: string | null;
     label: string;
@@ -129,5 +130,56 @@ describe('assertLocalDatabase', () => {
     // Elle prévient, elle ne se tait pas.
     expect(spy).toHaveBeenCalledWith(expect.stringContaining('NON LOCALE'));
     spy.mockRestore();
+  });
+});
+
+/**
+ * Préproduction : une base distante **nommée** comme telle.
+ *
+ * Elle reste distante, donc refusée par `assertLocalDatabase` : la reconnaître
+ * ne sert qu'aux outils qui lui sont propres (`staging-sanitize.js`) et à
+ * l'affichage. Sans déclaration explicite, elle est la production.
+ */
+describe('describeTarget — préproduction', () => {
+  const STAGING_URL =
+    'postgresql://user:s3cret@ep-preprod-1111.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require';
+  const saved = process.env.LILIA_STAGING_DATABASE_HOSTS;
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.LILIA_STAGING_DATABASE_HOSTS;
+    else process.env.LILIA_STAGING_DATABASE_HOSTS = saved;
+  });
+
+  it('sans déclaration, une base distante n’est pas la préproduction', () => {
+    delete process.env.LILIA_STAGING_DATABASE_HOSTS;
+    const t = describeTarget(STAGING_URL);
+    expect(t.isStaging).toBe(false);
+  });
+
+  it('reconnaît l’hôte déclaré, et lui seul', () => {
+    process.env.LILIA_STAGING_DATABASE_HOSTS =
+      ' ep-preprod-1111.c-2.us-east-1.aws.neon.tech , autre.example ';
+    const staging = describeTarget(STAGING_URL);
+    expect(staging.isStaging).toBe(true);
+    expect(staging.isLocal).toBe(false);
+    expect(staging.label).toMatch(/^préproduction /);
+    expect(describeTarget(PROD_URL).isStaging).toBe(false);
+  });
+
+  it('une base locale n’est jamais la préproduction', () => {
+    process.env.LILIA_STAGING_DATABASE_HOSTS = 'localhost';
+    const t = describeTarget('postgresql://localhost:5432/x');
+    expect(t.isStaging).toBe(false);
+  });
+
+  it('assertLocalDatabase refuse toujours la préproduction', () => {
+    const savedUrl = process.env.DATABASE_URL;
+    process.env.LILIA_STAGING_DATABASE_HOSTS =
+      'ep-preprod-1111.c-2.us-east-1.aws.neon.tech';
+    process.env.DATABASE_URL = STAGING_URL;
+    expect(() => assertLocalDatabase('reset', { exit: false })).toThrow(
+      /REFUS/,
+    );
+    process.env.DATABASE_URL = savedUrl;
   });
 });

@@ -17,6 +17,7 @@ import { OutboxModule } from '../../lilia-app/src/modules/outbox/outbox.module';
 import { AppScheduleModule } from '../../lilia-app/src/modules/schedule/schedule.module';
 import { LoyaltyModule } from '../../lilia-app/src/modules/loyalty/loyalty.module';
 import { envValidationSchema } from '../../lilia-app/src/config/env.validation';
+import { isDeployedEnvironment } from '../../lilia-app/src/config/deployment-environment';
 import { buildRedisOptions } from '../../lilia-app/src/common/redis/redis-options';
 
 import { WorkerController } from './worker.controller';
@@ -68,11 +69,10 @@ import { WorkerService } from './worker.service';
       pinoHttp: {
         level:
           process.env.LOG_LEVEL ??
-          (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
-        transport:
-          process.env.NODE_ENV !== 'production'
-            ? { target: 'pino-pretty', options: { singleLine: true } }
-            : undefined,
+          (isDeployedEnvironment(process.env.NODE_ENV) ? 'info' : 'debug'),
+        transport: !isDeployedEnvironment(process.env.NODE_ENV)
+          ? { target: 'pino-pretty', options: { singleLine: true } }
+          : undefined,
       },
     }),
     // Les verrous de cron et l'idempotence passent par Redis : sans lui, deux

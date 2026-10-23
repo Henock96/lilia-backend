@@ -11,6 +11,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { Public } from '../auth/decorators/public.decorator';
 import { SkipResponseWrap } from '../../common/interceptors/api-response.interceptor';
 import { SKIP_ALL_THROTTLERS } from '../../common/throttler/throttler-names';
+import { isDeployedEnvironment } from '../../config/deployment-environment';
 
 @ApiTags('Health')
 @Controller('health')
@@ -43,7 +44,8 @@ export class HealthController {
    * `RENDER_SERVICE_NAME` et la liste des secrets configurés (sous forme de
    * booléens). C'est du fingerprinting offert à un attaquant — il apprend
    * quelles intégrations tenter. Le détail de configuration n'est plus servi
-   * qu'en dehors de la production, où il aide réellement au diagnostic.
+   * qu'en local, où il aide réellement au diagnostic — ni en production, ni en
+   * préproduction (`deployment-environment.ts`).
    */
   @Public()
   @SkipThrottle(SKIP_ALL_THROTTLERS)
@@ -55,7 +57,7 @@ export class HealthController {
       timestamp: new Date().toISOString(),
     };
 
-    if (process.env.NODE_ENV === 'production') return base;
+    if (isDeployedEnvironment(process.env.NODE_ENV)) return base;
 
     return {
       ...base,

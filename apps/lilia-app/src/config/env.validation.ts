@@ -1,5 +1,7 @@
 import * as Joi from 'joi';
 
+import { DEPLOYED_ENVIRONMENTS } from './deployment-environment';
+
 /**
  * Schéma de validation des variables d'environnement.
  *
@@ -93,8 +95,10 @@ export const envValidationSchema = Joi.object({
   // alertes du cockpit ops (e-mail). Absente : l'alerte part sans lien.
   ADMIN_WEB_URL: Joi.string().uri().empty('').optional(),
 
+  // Requise partout où l'API est déployée, préproduction comprise
+  // (`deployment-environment.ts`).
   ALLOWED_ORIGINS: Joi.string().when('NODE_ENV', {
-    is: 'production',
+    is: Joi.valid(...DEPLOYED_ENVIRONMENTS),
     then: Joi.required(),
     otherwise: Joi.optional().allow(''),
   }),
@@ -128,7 +132,7 @@ export const envValidationSchema = Joi.object({
   REDIS_URL: Joi.string()
     .uri({ scheme: ['redis', 'rediss'] })
     .when('NODE_ENV', {
-      is: 'production',
+      is: Joi.valid(...DEPLOYED_ENVIRONMENTS),
       then: Joi.required(),
       otherwise: Joi.optional(),
     }),
