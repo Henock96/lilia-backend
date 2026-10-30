@@ -3,12 +3,16 @@ import {
   PaymentEventKind,
   PaymentEventOutcome,
   PaymentEventSource,
+  Refund,
   RefundStatus,
 } from '@prisma/client';
 import * as Sentry from '@sentry/nestjs';
 
 import { PrismaService } from '../../prisma/prisma.service';
-import { PaymentEventService } from '../payments/services/payment-event.service';
+import {
+  PaymentEventService,
+  guardSignalOutcome,
+} from '../payments/services/payment-event.service';
 import { ProviderTransactionStatus } from '../payments/providers/payment-provider.interface';
 import { recordClawbackIfDue } from '../payments/vendor-balance';
 
@@ -78,6 +82,18 @@ export class RefundProviderService {
       payload: input.status.raw,
     });
 
+    // F-10 (audit du 28/10/2026) — un traitement qui lève marque le signal
+    // `FAILED_PROCESSING` au lieu de le laisser `APPLIED`.
+    return guardSignalOutcome(this.events, eventId, () =>
+      this.applyRecordedStatus(refund, input, eventId),
+    );
+  }
+
+  private async applyRecordedStatus(
+    refund: Refund,
+    input: { status: ProviderTransactionStatus; source: PaymentEventSource },
+    eventId: string | null,
+  ): Promise<RefundApplyOutcome> {
     if (input.status.state === 'PENDING') {
       await this.events.setOutcome(eventId, PaymentEventOutcome.IGNORED);
       return 'IGNORED';
@@ -120,6 +136,9 @@ export class RefundProviderService {
         data: {
           status: target,
           processedAt: target === RefundStatus.COMPLETED ? new Date() : null,
+          // F-12 — confirmé par le prestataire : c'est la preuve la plus forte,
+          // et le CHECK `Refund_declared_closure_has_proof` l'exige.
+          closureMethod: target === RefundStatus.COMPLETED ? 'PROVIDER' : null,
           providerTransactionId: input.status.providerTransactionId ?? null,
           failureCode:
             target === RefundStatus.PENDING

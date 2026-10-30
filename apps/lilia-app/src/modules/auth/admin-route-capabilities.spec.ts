@@ -66,6 +66,16 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'AdminDriverSettlementsController.list': 'NONE',
   'AdminDriverSettlementsController.outstanding': 'NONE',
   'AdminDriverSettlementsController.record': 'FINANCE_EXECUTE',
+  // Lot 2 (30/10/2026) — grand livre. Lecture pour tout administrateur ;
+  // écrire au grand livre (rattrapage, contre-passation, exclusion,
+  // arbitrage) fixe ce que Lilia doit à chacun : FINANCE_EXECUTE.
+  'AdminLedgerController.balances': 'NONE',
+  'AdminLedgerController.catchUp': 'FINANCE_EXECUTE',
+  'AdminLedgerController.exceptions': 'NONE',
+  'AdminLedgerController.excludeOrder': 'FINANCE_EXECUTE',
+  'AdminLedgerController.resolveException': 'FINANCE_EXECUTE',
+  'AdminLedgerController.reverse': 'FINANCE_EXECUTE',
+  'AdminLedgerController.vendorBalance': 'NONE',
   'AdminOrderRefundsController.create': 'FINANCE_EXECUTE',
   'AdminOrderRefundsController.quote': 'NONE',
   'AdminPayoutController.getFinancials': 'NONE',
@@ -80,6 +90,16 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   // 1B — la remise forcée d'un retrait ouvre un versement vendeur.
   'AdminPickupArbitrationController.arbitrate': 'FINANCE_EXECUTE',
   'AdminPublicHolidaysController.create': 'NONE',
+  // Lot 2 — rapprochement. Importer, scanner ou résoudre ouvre ou lève un
+  // blocage des versements : FINANCE_EXECUTE. Une note ne change rien.
+  'AdminReconciliationController.addNote': 'NONE',
+  'AdminReconciliationController.getItem': 'NONE',
+  'AdminReconciliationController.importExport': 'FINANCE_EXECUTE',
+  'AdminReconciliationController.listItems': 'NONE',
+  'AdminReconciliationController.listRuns': 'NONE',
+  'AdminReconciliationController.resolve': 'FINANCE_EXECUTE',
+  'AdminReconciliationController.scan': 'FINANCE_EXECUTE',
+  'AdminReconciliationController.summary': 'NONE',
   'AdminPublicHolidaysController.list': 'NONE',
   'AdminPublicHolidaysController.remove': 'NONE',
   // F3-11 — l'arrêt d'une offre vendeur est un réglage commercial, comme
@@ -87,6 +107,8 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'AdminVendorOffersController.list': 'NONE',
   'AdminVendorOffersController.stop': 'SETTINGS',
   'AdminVendorOnboardingController.activate': 'NONE',
+  // F-03 (audit du 28/10/2026) — lecture seule, aucune donnée financière.
+  'AdminVendorReachabilityController.list': 'NONE',
   'AdminVendorOnboardingController.create': 'NONE',
   'AdminVendorOnboardingController.resendInvitation': 'NONE',
   'AdminVendorOnboardingController.setDisplayOrder': 'NONE',

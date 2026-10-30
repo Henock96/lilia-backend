@@ -1,6 +1,7 @@
 import { RefundStatus } from '@prisma/client';
 
 import { REFUND_APPROVAL_THRESHOLD_XAF } from '../approvals/approval-rules';
+import { RefundClosureProof } from './refund-closure-proof';
 
 /**
  * Quand un remboursement exige un second administrateur (F3-08 / D7, R-01).
@@ -52,11 +53,13 @@ export function refundClosurePayload(
   refund: { id: string; amount: number },
   closeAs: RefundStatus,
   notes?: string | null,
+  proof?: RefundClosureProof | null,
 ): {
   refundId: string;
   amountXaf: number;
   closeAs: RefundStatus;
   notes?: string;
+  proof?: { method: string; externalReference: string; paidAt: string };
 } {
   const trimmed = notes?.trim();
   return {
@@ -64,20 +67,50 @@ export function refundClosurePayload(
     amountXaf: refund.amount,
     closeAs,
     ...(trimmed ? { notes: trimmed } : {}),
+    // F-12 — la preuve entre dans l'empreinte : approuver la référence
+    // « MP-123 » n'autorise pas une clôture sous la référence « MP-999 ».
+    ...(proof
+      ? {
+          proof: {
+            method: proof.method,
+            externalReference: proof.externalReference,
+            paidAt: proof.paidAt.toISOString(),
+          },
+        }
+      : {}),
   };
 }
 
 /** Lecture d'une charge utile stockée : est-ce une approbation de clôture ? */
-export function closureFromPayload(
-  payload: unknown,
-): { closeAs: RefundStatus; notes?: string } | null {
+export function closureFromPayload(payload: unknown): {
+  closeAs: RefundStatus;
+  notes?: string;
+  proof?: Partial<{
+    method: string;
+    externalReference: string;
+    paidAt: string;
+  }>;
+} | null {
   if (!payload || typeof payload !== 'object') return null;
-  const { closeAs, notes } = payload as { closeAs?: unknown; notes?: unknown };
+  const { closeAs, notes, proof } = payload as {
+    closeAs?: unknown;
+    notes?: unknown;
+    proof?: unknown;
+  };
   if (closeAs !== RefundStatus.COMPLETED && closeAs !== RefundStatus.REJECTED) {
     return null;
   }
   return {
     closeAs,
     ...(typeof notes === 'string' && notes ? { notes } : {}),
+    ...(proof && typeof proof === 'object'
+      ? {
+          proof: proof as Partial<{
+            method: string;
+            externalReference: string;
+            paidAt: string;
+          }>,
+        }
+      : {}),
   };
 }

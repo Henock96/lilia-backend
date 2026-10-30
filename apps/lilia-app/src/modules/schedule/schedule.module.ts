@@ -19,6 +19,8 @@ import { OrdersCoreModule } from '../orders/orders-core.module';
 import { PaymentCoreModule } from '../payments/payment-core.module';
 import { RefundsCoreModule } from '../refunds/refunds-core.module';
 import { VendorOffersCoreModule } from '../vendor-offers/vendor-offers-core.module';
+import { LedgerCoreModule } from '../ledger/ledger-core.module';
+import { LedgerPostingCron } from '../ledger/ledger-posting.cron';
 
 @Module({
     imports: [
@@ -32,6 +34,7 @@ import { VendorOffersCoreModule } from '../vendor-offers/vendor-offers-core.modu
         // Le cron réconcilie aussi les remboursements client restés PROCESSING.
         RefundsCoreModule,
         VendorOffersCoreModule, // F3-11 : échéance des offres
+        LedgerCoreModule, // lot 2 : posteur du grand livre (interrupteur éteint)
     ],
     providers: [
         // Les 5 crons sont toujours enregistrés. Le choix « ce processus
@@ -54,6 +57,8 @@ import { VendorOffersCoreModule } from '../vendor-offers/vendor-offers-core.modu
         // F3-07 : versement automatique au vendeur (interrupteur éteint).
         VendorPayoutAutoService,
         VendorOfferExpiryService,
+        // Lot 2 : posteur du grand livre (`LEDGER_POSTING_ENABLED`, éteint).
+        LedgerPostingCron,
         PrismaService,
     ],
 })

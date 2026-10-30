@@ -396,7 +396,13 @@ export class ApprovalsService {
         closure.closeAs,
         approval.requestedBy,
         closure.notes,
-        { approvalId: approval.id, approvedBy: approverId },
+        // F-12 — la preuve approuvée, telle qu'elle figure dans l'empreinte :
+        // le service la revalide et l'écrit avec la clôture.
+        {
+          approvalId: approval.id,
+          approvedBy: approverId,
+          proof: closure.proof,
+        },
       );
       return {
         kind: approval.kind,

@@ -73,13 +73,15 @@ export class NotificationsService {
     // son appareil. Il ne pourrait PAS lire celles d'autrui (l'envoi part du
     // `userId`, pas du token). L'entropie d'un token FCM le rend non
     // énumérable, et l'obtenir suppose déjà un accès à l'appareil.
+    const now = new Date();
     await this.prisma.fcmToken.upsert({
       where: { token },
-      update: { userId: user.id },
+      update: { userId: user.id, lastRegisteredAt: now },
       create: {
         token,
         userId: user.id,
-        createdAt: new Date(),
+        createdAt: now,
+        lastRegisteredAt: now,
       },
     });
 
@@ -200,15 +202,33 @@ export class NotificationsService {
     return { sent, failed, devices: tokens.length };
   }
 
+  /**
+   * Envoie un push à tous les appareils d'un utilisateur.
+   *
+   * ⚠️ Ne lève jamais : le résultat dit ce qui s'est passé. Il renvoyait
+   * `void`, et ses appelants prenaient sa résolution pour un succès — dont
+   * `OrdersListener`, qui acquittait l'obligation de prévenir le vendeur
+   * d'une commande payée alors que rien n'était parti (audit du 28/10/2026,
+   * F-01). Un vendeur sans app installée ne recevait alors ni rappel ni SMS.
+   *
+   * `accepted` compte les messages **acceptés par Firebase**. Ce n'est pas une
+   * preuve d'affichage sur le téléphone : FCM peut encore les retenir (appareil
+   * éteint, économiseur de batterie) ou les perdre.
+   */
   async sendPushNotification(
     userId: string,
     title: string,
     body: string,
     data?: Record<string, string>,
-  ): Promise<void> {
+  ): Promise<PushDeliveryResult> {
     if (!this.firebase.isReady()) {
       this.logger.error('Firebase non prêt — notification annulée');
-      return;
+      return {
+        accepted: 0,
+        failed: 0,
+        devices: 0,
+        reason: 'FIREBASE_NOT_READY',
+      };
     }
 
     const tokens = await this.prisma.fcmToken.findMany({
@@ -218,7 +238,7 @@ export class NotificationsService {
 
     if (tokens.length === 0) {
       this.logger.warn(`Aucun FCM token pour user ${userId}`);
-      return;
+      return { accepted: 0, failed: 0, devices: 0, reason: 'NO_TOKEN' };
     }
 
     // ✅ Envoi à TOUS les devices du user, pas seulement tokens[0]
@@ -276,7 +296,33 @@ export class NotificationsService {
 
     const success = results.filter((r) => r.status === 'fulfilled').length;
     this.logger.log(
-      `Notification envoyée : ${success}/${tokens.length} devices — user ${userId}`,
+      `Notification acceptée par FCM : ${success}/${tokens.length} devices — user ${userId}`,
     );
+    return {
+      accepted: success,
+      failed: tokens.length - success,
+      devices: tokens.length,
+      ...(success === 0 ? { reason: 'ALL_FAILED' as const } : {}),
+    };
   }
+}
+
+/**
+ * Issue d'un envoi unitaire. `reason` n'est posé que quand **rien** n'a été
+ * accepté : c'est le cas que l'appelant doit traiter comme un échec.
+ */
+export interface PushDeliveryResult {
+  /** Messages acceptés par Firebase — pas une preuve d'affichage. */
+  accepted: number;
+  failed: number;
+  /** Appareils visés (tokens enregistrés). */
+  devices: number;
+  reason?: 'FIREBASE_NOT_READY' | 'NO_TOKEN' | 'ALL_FAILED';
+}
+
+/** Au moins un appareil a reçu le message de Firebase. */
+export function pushWasAccepted(
+  result: PushDeliveryResult | undefined,
+): boolean {
+  return (result?.accepted ?? 0) > 0;
 }

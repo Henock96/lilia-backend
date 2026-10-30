@@ -24,6 +24,8 @@ function build() {
     restaurantPayout: delegate(),
     incident: delegate(),
     outboxEvent: delegate(),
+    // Point 6 — commandes immobiles, lues par une requête SQL.
+    $queryRaw: jest.fn().mockResolvedValue([]),
   };
   return { service: new OpsQueueService(prisma as never), prisma };
 }
@@ -40,7 +42,7 @@ describe('OpsQueueService', () => {
     });
   });
 
-  it('dix files, dans l’ordre de l’écran', async () => {
+  it('quatorze files, dans l’ordre de l’écran', async () => {
     const { service } = build();
     const buckets = await service.queue(NOW);
     expect(buckets.map((b) => b.key)).toEqual([
@@ -54,7 +56,76 @@ describe('OpsQueueService', () => {
       'payouts_failed',
       'incidents_open',
       'outbox_failed',
+      // Audit du 28/10/2026, point 6.
+      'order_stale',
+      'payouts_in_flight',
+      'refunds_in_flight',
+      'claims_stalled',
     ]);
+  });
+
+  it('point 6 — argent en vol et réclamations immobiles : conditions', async () => {
+    const { service, prisma } = build();
+    await service.queue(NOW);
+    expect(
+      prisma.restaurantPayout.count.mock.calls.map((c) => c[0].where),
+    ).toContainEqual({
+      status: 'PENDING',
+      requestedAt: { lte: ago(30) },
+    });
+    expect(
+      prisma.refund.count.mock.calls.map((c) => c[0].where),
+    ).toContainEqual({
+      status: 'PROCESSING',
+      updatedAt: { lte: ago(30) },
+    });
+    expect(
+      prisma.incident.count.mock.calls.map((c) => c[0].where),
+    ).toContainEqual({
+      type: 'CUSTOMER_CLAIM',
+      status: 'IN_PROGRESS',
+      updatedAt: { lte: ago(24 * 60) },
+    });
+  });
+
+  it('point 6 — une commande immobile apparaît une seule fois, avec son action', async () => {
+    const { service, prisma } = build();
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        id: 'o-prep',
+        status: 'EN_PREPARATION',
+        isDelivery: true,
+        scheduledFor: null,
+        paidAt: ago(80),
+        updatedAt: ago(1), // une écriture sans rapport ne remet rien à zéro
+        shopName: 'Chez Awa',
+        delivererId: null,
+        pickedUpAt: null,
+        enteredAt: ago(50),
+      },
+      {
+        // Déjà dans « acceptance_late » : pas de doublon.
+        id: 'o-paid',
+        status: 'PAYER',
+        isDelivery: true,
+        scheduledFor: null,
+        paidAt: ago(20),
+        updatedAt: ago(20),
+        shopName: 'Chez Awa',
+        delivererId: null,
+        pickedUpAt: null,
+        enteredAt: ago(20),
+      },
+    ]);
+    const buckets = await service.queue(NOW);
+    const stale = buckets.find((b) => b.key === 'order_stale')!;
+    expect(stale.count).toBe(1);
+    expect(stale.items[0]).toMatchObject({
+      id: 'o-prep@EN_PREPARATION',
+      orderId: 'o-prep',
+      since: ago(50).toISOString(),
+    });
+    expect(SLA_BUCKETS).toContain('order_stale');
   });
 
   it('conditions par file', async () => {

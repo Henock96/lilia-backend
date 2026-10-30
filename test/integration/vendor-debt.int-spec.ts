@@ -9,6 +9,13 @@ import { PayoutStateMachine } from '../../apps/lilia-app/src/modules/payments/pa
 import { RefundExecutionService } from '../../apps/lilia-app/src/modules/refunds/refund-execution.service';
 import { RefundProviderService } from '../../apps/lilia-app/src/modules/refunds/refund-provider.service';
 import { RefundsService } from '../../apps/lilia-app/src/modules/refunds/refunds.service';
+
+/** F-12 — preuve d'une clôture déclarée (synthétique). */
+const PROOF = {
+  method: 'MOBILE_MONEY_MANUAL',
+  externalReference: 'MP-TEST-0001',
+  paidAt: new Date('2026-10-29T09:00:00Z'),
+};
 import { VendorPayoutAutoService } from '../../apps/lilia-app/src/modules/schedule/vendor-payout-auto.service';
 import { vendorDebtXaf } from '../../apps/lilia-app/src/modules/payments/vendor-balance';
 import { VendorEarningsService } from '../../apps/lilia-app/src/modules/payments/services/vendor-earnings.service';
@@ -247,14 +254,18 @@ describeIfDb('Dette vendeur et versement automatique (PostgreSQL réel)', () => 
     await deliveredOrder('vd-a');
     await paid('vd-a');
     const refund = await vendorRefund('vd-a', 1200);
-    await refunds.updateStatus(refund.id, 'COMPLETED', ADMIN);
+    await refunds.updateStatus(refund.id, 'COMPLETED', ADMIN, undefined, {
+      proof: PROOF,
+    });
     expect(await debt()).toBe(1200);
   });
 
   it('remboursement AVANT versement : retenu sur la commande même, pas de dette', async () => {
     await deliveredOrder('vd-a');
     const refund = await vendorRefund('vd-a', 1000);
-    await refunds.updateStatus(refund.id, 'COMPLETED', ADMIN);
+    await refunds.updateStatus(refund.id, 'COMPLETED', ADMIN, undefined, {
+      proof: PROOF,
+    });
     expect(await debt()).toBe(0);
     const res = await payouts.requestPayout({
       orderId: 'vd-a',
@@ -279,7 +290,9 @@ describeIfDb('Dette vendeur et versement automatique (PostgreSQL réel)', () => 
         bearer: 'PLATFORM',
       },
     });
-    await refunds.updateStatus(refund.id, 'COMPLETED', ADMIN);
+    await refunds.updateStatus(refund.id, 'COMPLETED', ADMIN, undefined, {
+      proof: PROOF,
+    });
     expect(await debt()).toBe(0);
   });
 
@@ -292,6 +305,8 @@ describeIfDb('Dette vendeur et versement automatique (PostgreSQL réel)', () => 
       (await vendorRefund('vd-a', 1500)).id,
       'COMPLETED',
       ADMIN,
+      undefined,
+      { proof: PROOF },
     );
     await deliveredOrder('vd-b');
     sent.length = 0;
@@ -314,6 +329,8 @@ describeIfDb('Dette vendeur et versement automatique (PostgreSQL réel)', () => 
       (await vendorRefund('vd-a', 1500)).id,
       'COMPLETED',
       ADMIN,
+      undefined,
+      { proof: PROOF },
     );
     await deliveredOrder('vd-b');
     reject = true;
@@ -339,6 +356,8 @@ describeIfDb('Dette vendeur et versement automatique (PostgreSQL réel)', () => 
       (await vendorRefund('vd-a', 1500)).id,
       'COMPLETED',
       ADMIN,
+      undefined,
+      { proof: PROOF },
     );
     await deliveredOrder('vd-b');
     const res = await payouts.requestPayout({
@@ -373,6 +392,8 @@ describeIfDb('Dette vendeur et versement automatique (PostgreSQL réel)', () => 
       (await vendorRefund('vd-a', 4500)).id,
       'COMPLETED',
       ADMIN,
+      undefined,
+      { proof: PROOF },
     );
     await deliveredOrder('vd-b');
     await paid('vd-b'); // 4 500 − 4 500 : NETTING, déjà SUCCESS
@@ -396,6 +417,8 @@ describeIfDb('Dette vendeur et versement automatique (PostgreSQL réel)', () => 
       (await vendorRefund('vd-b', 700)).id,
       'COMPLETED',
       ADMIN,
+      undefined,
+      { proof: PROOF },
     );
     expect(await debt()).toBe(700);
   });
@@ -407,6 +430,8 @@ describeIfDb('Dette vendeur et versement automatique (PostgreSQL réel)', () => 
       (await vendorRefund('vd-a', 1500)).id,
       'COMPLETED',
       ADMIN,
+      undefined,
+      { proof: PROOF },
     );
     await deliveredOrder('vd-b');
     await deliveredOrder('vd-c');
@@ -485,6 +510,8 @@ describeIfDb('Dette vendeur et versement automatique (PostgreSQL réel)', () => 
       (await vendorRefund('vd-a', 1500)).id,
       'COMPLETED',
       ADMIN,
+      undefined,
+      { proof: PROOF },
     );
     await deliveredOrder('vd-due', new Date(Date.now() + 3_600_000));
     await deliveredOrder('vd-noproof');

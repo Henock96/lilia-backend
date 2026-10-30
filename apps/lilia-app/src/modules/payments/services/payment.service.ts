@@ -30,7 +30,10 @@ import {
   ProviderTransactionStatus,
   ProviderUnavailableError,
 } from '../providers/payment-provider.interface';
-import { PaymentEventService } from './payment-event.service';
+import {
+  PaymentEventService,
+  guardSignalOutcome,
+} from './payment-event.service';
 import { OrderTransitionService } from '../../orders/order-transition.service';
 import { OrderTransitionSource } from '../../orders/order-transition.types';
 
@@ -54,6 +57,7 @@ const ORDER_SOURCE_BY_PAYMENT_EVENT: Record<
   [PaymentEventSource.CLIENT_POLL]: 'POLLING',
   [PaymentEventSource.RECONCILIATION]: 'CRON',
   [PaymentEventSource.INITIATION]: 'BACKEND',
+  [PaymentEventSource.ADMIN]: 'ADMIN_APP',
 };
 
 /** Masque un numéro de téléphone pour les logs : garde les 2 derniers chiffres. */
@@ -505,6 +509,29 @@ export class PaymentService {
       paymentId: payment.id,
     });
 
+    // F-10 (audit du 28/10/2026) — le signal est enregistré `APPLIED` par
+    // défaut AVANT d'être traité. Un traitement qui lève (base indisponible,
+    // transaction annulée) laissait donc une ligne « appliquée » alors que rien
+    // n'avait bougé, et le compteur de santé la prenait pour une preuve. Elle
+    // est désormais marquée `FAILED_PROCESSING` ; l'erreur remonte inchangée
+    // (le webhook répond 503 et pawaPay rejoue).
+    return guardSignalOutcome(this.events, eventId, () =>
+      this.applyRecordedCollectionStatus(payment, input, eventId),
+    );
+  }
+
+  private async applyRecordedCollectionStatus(
+    payment: {
+      id: string;
+      orderId: string;
+      amount: number;
+      currency: string;
+      providerTransactionId: string | null;
+      order: { id: string; userId: string; restaurantId: string };
+    },
+    input: { status: ProviderTransactionStatus; source: PaymentEventSource },
+    eventId: string | null,
+  ): Promise<ApplyOutcome> {
     // ── Statut non terminal : rien à décider ──────────────────────────────────
     if (input.status.state === 'PENDING') {
       await this.events.setOutcome(eventId, PaymentEventOutcome.IGNORED);
@@ -1086,7 +1113,9 @@ export class PaymentService {
         currency: payment.currency,
         raw: { confirmedBy: 'admin' },
       },
-      source: PaymentEventSource.WEBHOOK,
+      // F-10 — c'est un geste humain, pas un callback : enregistré `WEBHOOK`,
+      // il comptait comme une preuve que le webhook prestataire fonctionnait.
+      source: PaymentEventSource.ADMIN,
     });
 
     if (outcome === 'DUPLICATE') {

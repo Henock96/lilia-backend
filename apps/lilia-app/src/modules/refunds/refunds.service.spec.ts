@@ -3,6 +3,13 @@ import { Prisma, RefundStatus } from '@prisma/client';
 
 import { RefundsService } from './refunds.service';
 
+/** F-12 — preuve valide d'une clôture déclarée (synthétique). */
+const PROOF = {
+  method: 'MOBILE_MONEY_MANUAL',
+  externalReference: 'MP261029.1200.A1',
+  paidAt: new Date('2026-10-29T09:00:00Z'),
+};
+
 /**
  * Remboursements dus après annulation d'une commande payée (fix H5).
  *
@@ -206,12 +213,17 @@ describe('RefundsService', () => {
         RefundStatus.COMPLETED,
         'admin-1',
         'Virement effectué',
+        { proof: PROOF },
       );
 
       const write = prisma.refund.updateMany.mock.calls[0][0];
       expect(write.data.status).toBe(RefundStatus.COMPLETED);
       expect(write.data.processedBy).toBe('admin-1');
       expect(write.data.processedAt).toBeInstanceOf(Date);
+      // F-12 — la preuve est écrite avec la clôture.
+      expect(write.data.closureMethod).toBe('MOBILE_MONEY_MANUAL');
+      expect(write.data.externalReference).toBe('MP261029.1200.A1');
+      expect(write.data.externalPaidAt).toEqual(PROOF.paidAt);
       // Verrou optimiste : l'écriture est conditionnée sur l'état lu — et sur
       // l'absence de virement prestataire en vol (R-01, D-2).
       expect(write.where).toEqual({
@@ -258,8 +270,80 @@ describe('RefundsService', () => {
       prisma.refund.updateMany.mockResolvedValue({ count: 0 });
 
       await expect(
-        service.updateStatus('ref-1', RefundStatus.COMPLETED, 'admin-2'),
+        service.updateStatus(
+          'ref-1',
+          RefundStatus.COMPLETED,
+          'admin-2',
+          undefined,
+          {
+            proof: PROOF,
+          },
+        ),
       ).rejects.toThrow(ConflictException);
+    });
+
+    describe('F-12 — preuve obligatoire pour déclarer « remboursé »', () => {
+      it.each([
+        ['aucune preuve', undefined],
+        ['méthode manquante', { ...PROOF, method: undefined }],
+        [
+          'méthode PROVIDER (réservée au prestataire)',
+          { ...PROOF, method: 'PROVIDER' },
+        ],
+        ['référence vide', { ...PROOF, externalReference: '   ' }],
+        ['référence trop courte', { ...PROOF, externalReference: 'ab' }],
+        ['date manquante', { ...PROOF, paidAt: undefined }],
+        [
+          'date dans le futur',
+          { ...PROOF, paidAt: new Date(Date.now() + 86_400_000) },
+        ],
+      ])(
+        '%s : 400 REFUND_PROOF_REQUIRED, rien n’est écrit',
+        async (_l, proof) => {
+          prisma.refund.findUnique.mockResolvedValue(pending);
+          await expect(
+            service.updateStatus(
+              'ref-1',
+              RefundStatus.COMPLETED,
+              'admin-1',
+              'ok',
+              {
+                proof: proof as never,
+              },
+            ),
+          ).rejects.toMatchObject({
+            response: { code: 'REFUND_PROOF_REQUIRED' },
+          });
+          expect(prisma.refund.updateMany).not.toHaveBeenCalled();
+        },
+      );
+
+      it('un refus (REJECTED) ne demande pas de preuve de virement', async () => {
+        prisma.refund.findUnique.mockResolvedValue(pending);
+        prisma.refund.updateMany.mockResolvedValue({ count: 1 });
+        await service.updateStatus(
+          'ref-1',
+          RefundStatus.REJECTED,
+          'admin-1',
+          'Doublon',
+        );
+        expect(
+          prisma.refund.updateMany.mock.calls[0][0].data.closureMethod,
+        ).toBeUndefined();
+      });
+
+      it('la preuve est vérifiée AVANT toute demande d’approbation', async () => {
+        // Sinon un second administrateur approuverait une clôture sans pièce.
+        prisma.refund.findUnique.mockResolvedValue({
+          ...pending,
+          amount: 80_000,
+        });
+        await expect(
+          service.updateStatus('ref-1', RefundStatus.COMPLETED, 'admin-1'),
+        ).rejects.toMatchObject({
+          response: { code: 'REFUND_PROOF_REQUIRED' },
+        });
+      });
     });
 
     it('signale une fiche inexistante', async () => {
@@ -327,7 +411,15 @@ describe('RefundsService', () => {
         status: 'SUCCESS',
       });
       prisma.refund.updateMany.mockResolvedValue({ count: 1 });
-      await service.updateStatus('r1', RefundStatus.COMPLETED, 'admin-1');
+      await service.updateStatus(
+        'r1',
+        RefundStatus.COMPLETED,
+        'admin-1',
+        undefined,
+        {
+          proof: PROOF,
+        },
+      );
       expect(prisma.refund.updateMany).toHaveBeenCalled();
     });
 
@@ -338,7 +430,15 @@ describe('RefundsService', () => {
         bearer: 'PLATFORM',
       });
       prisma.refund.updateMany.mockResolvedValue({ count: 1 });
-      await service.updateStatus('r1', RefundStatus.COMPLETED, 'admin-1');
+      await service.updateStatus(
+        'r1',
+        RefundStatus.COMPLETED,
+        'admin-1',
+        undefined,
+        {
+          proof: PROOF,
+        },
+      );
       expect(prisma.restaurantPayout.findUnique).not.toHaveBeenCalled();
     });
 
@@ -355,7 +455,15 @@ describe('RefundsService', () => {
         restaurantId: 'r1',
       });
       prisma.refund.updateMany.mockResolvedValue({ count: 1 });
-      await service.updateStatus('r1', RefundStatus.COMPLETED, 'admin-1');
+      await service.updateStatus(
+        'r1',
+        RefundStatus.COMPLETED,
+        'admin-1',
+        undefined,
+        {
+          proof: PROOF,
+        },
+      );
       expect(prisma.vendorBalanceEntry.createMany).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
@@ -401,7 +509,9 @@ describe('RefundsService', () => {
       async (target) => {
         prisma.refund.findUnique.mockResolvedValue(big);
         await expect(
-          service.updateStatus('r-big', target, 'admin-a', 'Virement fait'),
+          service.updateStatus('r-big', target, 'admin-a', 'Virement fait', {
+            proof: PROOF,
+          }),
         ).rejects.toMatchObject({
           response: { code: 'APPROVAL_REQUIRED' },
         });
@@ -413,14 +523,30 @@ describe('RefundsService', () => {
     it('au seuil exact (50 000) : approbation exigée', async () => {
       prisma.refund.findUnique.mockResolvedValue({ ...big, amount: 50_000 });
       await expect(
-        service.updateStatus('r-big', RefundStatus.COMPLETED, 'admin-a'),
+        service.updateStatus(
+          'r-big',
+          RefundStatus.COMPLETED,
+          'admin-a',
+          undefined,
+          {
+            proof: PROOF,
+          },
+        ),
       ).rejects.toMatchObject({ response: { code: 'APPROVAL_REQUIRED' } });
     });
 
     it('sous le seuil (49 999) : clôture directe, comme avant', async () => {
       prisma.refund.findUnique.mockResolvedValue({ ...big, amount: 49_999 });
       prisma.refund.updateMany.mockResolvedValue({ count: 1 });
-      await service.updateStatus('r-big', RefundStatus.COMPLETED, 'admin-a');
+      await service.updateStatus(
+        'r-big',
+        RefundStatus.COMPLETED,
+        'admin-a',
+        undefined,
+        {
+          proof: PROOF,
+        },
+      );
       expect(prisma.refund.updateMany).toHaveBeenCalled();
       expect(prisma.financialApproval.updateMany).not.toHaveBeenCalled();
     });
@@ -473,6 +599,7 @@ describe('RefundsService', () => {
           {
             approvalId: 'ap-used',
             approvedBy: 'admin-b',
+            proof: PROOF,
           },
         ),
       ).rejects.toMatchObject({ response: { code: 'APPROVAL_NOT_USABLE' } });
@@ -513,7 +640,7 @@ describe('RefundsService', () => {
         RefundStatus.COMPLETED,
         'admin-a',
         'Virement MoMo réf. 123',
-        { approvalId: 'ap-1', approvedBy: 'admin-b' },
+        { approvalId: 'ap-1', approvedBy: 'admin-b', proof: PROOF },
       );
 
       expect(prisma.adminAuditLog.create).toHaveBeenCalledWith({
@@ -561,6 +688,7 @@ describe('RefundsService', () => {
           {
             approvalId: 'ap-1',
             approvedBy: 'admin-b',
+            proof: PROOF,
           },
         ),
       ).rejects.toThrow(ConflictException);
@@ -571,7 +699,15 @@ describe('RefundsService', () => {
       prisma.refund.findUnique.mockResolvedValue({ ...big, amount: 1_000 });
       prisma.refund.updateMany.mockResolvedValue({ count: 0 });
       await expect(
-        service.updateStatus('r-big', RefundStatus.COMPLETED, 'admin-a'),
+        service.updateStatus(
+          'r-big',
+          RefundStatus.COMPLETED,
+          'admin-a',
+          undefined,
+          {
+            proof: PROOF,
+          },
+        ),
       ).rejects.toThrow(ConflictException);
       expect(prisma.adminAuditLog.create).not.toHaveBeenCalled();
     });

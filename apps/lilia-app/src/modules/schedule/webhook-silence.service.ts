@@ -6,6 +6,8 @@ import * as Sentry from '@sentry/nestjs';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { CronLockService } from '../../common/locks/cron-lock.service';
+import { readPaymentMode } from '../../config/payment-mode';
+import { PROVEN_WEBHOOK_WHERE } from '../payments/webhook-proof';
 
 /**
  * Détecte qu'**aucun callback prestataire n'arrive plus**, et le dit.
@@ -82,7 +84,7 @@ export class WebhookSilenceService {
   private async checkUnlocked(): Promise<void> {
     // En mode MANUAL, aucun prestataire n'émet de callback : l'absence est le
     // fonctionnement nominal, pas une anomalie.
-    const mode = this.config.get<string>('PAYMENT_MODE') ?? 'MANUAL';
+    const mode = readPaymentMode(this.config);
     if (mode === 'MANUAL') return;
 
     const since = new Date(
@@ -91,8 +93,10 @@ export class WebhookSilenceService {
 
     const [activity, webhooks] = await Promise.all([
       this.prisma.paymentEvent.count({ where: { receivedAt: { gte: since } } }),
+      // F-10 — seuls les callbacks pawaPay appliqués ou reconnus comme doublon
+      // prouvent que la voie nominale fonctionne (cf. `PROVEN_WEBHOOK_WHERE`).
       this.prisma.paymentEvent.count({
-        where: { receivedAt: { gte: since }, source: 'WEBHOOK' },
+        where: { receivedAt: { gte: since }, ...PROVEN_WEBHOOK_WHERE },
       }),
     ]);
 
@@ -109,7 +113,7 @@ export class WebhookSilenceService {
     if (activity === 0) return;
 
     const total = await this.prisma.paymentEvent.count({
-      where: { source: 'WEBHOOK' },
+      where: PROVEN_WEBHOOK_WHERE,
     });
 
     const message =

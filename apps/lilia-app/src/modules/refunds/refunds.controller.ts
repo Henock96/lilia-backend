@@ -34,6 +34,7 @@ import {
   refundClosurePayload,
 } from './refund-approval.policy';
 import { UpdateRefundStatusDto } from './dto/update-refund-status.dto';
+import { assertDeclaredClosureProof } from './refund-closure-proof';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
@@ -139,8 +140,20 @@ export class RefundsController {
   ) {
     // Le journal (`REFUND_UPDATED`) est écrit par le service, dans la
     // transaction de la clôture (R-01).
+    // F-12 — preuve d'une clôture déclarée ; le service la valide.
+    const proof = {
+      method: dto.closureMethod,
+      externalReference: dto.externalReference,
+      paidAt: dto.externalPaidAt,
+    };
     try {
-      return await this.refunds.updateStatus(id, dto.status, admin.id, dto.notes);
+      return await this.refunds.updateStatus(
+        id,
+        dto.status,
+        admin.id,
+        dto.notes,
+        { proof },
+      );
     } catch (error) {
       if (!isApprovalRequired(error)) throw error;
     }
@@ -153,7 +166,16 @@ export class RefundsController {
     const approval = await this.approvals.request({
       kind: ApprovalKind.REFUND_EXECUTION,
       refId: id,
-      payload: refundClosurePayload(pending.data, dto.status, dto.notes),
+      // La preuve a déjà été validée par `updateStatus` avant le refus
+      // `APPROVAL_REQUIRED` : elle entre telle quelle dans l'empreinte.
+      payload: refundClosurePayload(
+        pending.data,
+        dto.status,
+        dto.notes,
+        dto.status === RefundStatus.COMPLETED
+          ? assertDeclaredClosureProof(proof)
+          : null,
+      ),
       amountXaf: pending.data.amount,
       requestedBy: admin.id,
       summary: `${dto.status === RefundStatus.REJECTED ? 'Refus' : 'Clôture « remboursé »'} d’un remboursement de ${pending.data.amount} FCFA (commande #${pending.data.orderId.slice(-6).toUpperCase()})`,

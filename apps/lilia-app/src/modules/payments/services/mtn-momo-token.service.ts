@@ -3,6 +3,7 @@ import { Injectable, Logger, HttpException, HttpStatus, OnModuleInit } from '@ne
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 import { randomUUID } from 'node:crypto';
+import { readPaymentMode } from '../../../config/payment-mode';
 
 export interface MtnMomoConfig {
   baseUrl: string;
@@ -59,7 +60,7 @@ export class MtnMomoTokenService implements OnModuleInit {
   private isInitialized = false;
 
   constructor(private configService: ConfigService) {
-    this.paymentMode = this.configService.get<string>('PAYMENT_MODE', 'MANUAL');
+    this.paymentMode = readPaymentMode(this.configService);
     // Charger la configuration
     this.config = {
       baseUrl: this.configService.get<string>(

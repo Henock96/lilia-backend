@@ -2,6 +2,7 @@
 import { OpsModule } from './modules/ops/ops.module';
 import { OrderOutboxEffectsModule } from './modules/outbox/order-outbox-effects.module';
 import { ApprovalsModule } from './modules/approvals/approvals.module';
+import { LedgerModule } from './modules/ledger/ledger.module';
 import { PayoutOutboxEffectsModule } from './modules/outbox/payout-outbox-effects.module';
 import { AccountOutboxEffectsModule } from './modules/outbox/account-outbox-effects.module';
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
@@ -287,6 +288,7 @@ import { DeliveryPricingModule } from './modules/delivery-pricing/delivery-prici
     PayoutOutboxEffectsModule, // F3-07 : notifications de versement par l'outbox
     AccountOutboxEffectsModule, // F3-12.1 R7 : coupure du compte au ban différé
     ApprovalsModule, // F3-08 : gestes financiers à deux administrateurs
+    LedgerModule, // lot 2 : grand livre et rapprochement (routes ADMIN)
   ],
   providers: [
     // `ParallelThrottlerGuard` et non `ThrottlerGuard` : les deux limiteurs

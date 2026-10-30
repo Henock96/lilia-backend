@@ -204,7 +204,10 @@ describeIfDb(
       ).rejects.toMatchObject({ code: 'P2002' });
 
       // Une fois le premier versé, un second remboursement passe.
-      await prisma.refund.updateMany({ data: { status: 'COMPLETED' } });
+      await prisma.refund.updateMany({
+        // F-12 — une clôture porte sa preuve (CHECK).
+        data: { status: 'COMPLETED', closureMethod: 'PROVIDER' },
+      });
       await composer.create(ORDER, goodwill(300), ADMIN.id);
       expect(await prisma.refund.count({ where: { orderId: ORDER } })).toBe(2);
     });
@@ -221,6 +224,7 @@ describeIfDb(
             reason: 'antérieur',
             reasonCode: 'OTHER',
             status: 'COMPLETED',
+            closureMethod: 'PROVIDER',
           },
         });
         const results = await Promise.allSettled([
@@ -247,7 +251,10 @@ describeIfDb(
         ADMIN.id,
       );
       expect(r).toMatchObject({ amountXaf: 1500, bearer: 'VENDOR' });
-      await prisma.refund.updateMany({ data: { status: 'COMPLETED' } });
+      await prisma.refund.updateMany({
+        // F-12 — une clôture porte sa preuve (CHECK).
+        data: { status: 'COMPLETED', closureMethod: 'PROVIDER' },
+      });
 
       const quote = await composer.quote(ORDER, { lines: [] });
       expect(
@@ -277,6 +284,7 @@ describeIfDb(
           reason: 'x',
           reasonCode: 'OTHER',
           status: 'COMPLETED',
+          closureMethod: 'PROVIDER',
         },
       });
       await expect(
@@ -338,7 +346,7 @@ describeIfDb(
       });
       await prisma.refund.update({
         where: { id: first!.id },
-        data: { status: 'COMPLETED' },
+        data: { status: 'COMPLETED', closureMethod: 'PROVIDER' },
       });
       const replay = await refunds.openForCancelledOrder({
         orderId: ORDER,
