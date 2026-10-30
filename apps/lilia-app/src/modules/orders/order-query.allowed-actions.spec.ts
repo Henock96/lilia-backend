@@ -20,7 +20,9 @@ describe('OrderQueryService — allowedActions publié avec la commande', () => 
     const rows = orders.map((o, i) => ({ id: `o-${i}`, userId: 'u-1', ...o }));
     const prisma = {
       user: { findUnique: jest.fn().mockResolvedValue({ id: 'u-1', role }) },
-      restaurant: { findFirst: jest.fn().mockResolvedValue({ id: 'r-1' }) },
+      // Lot 3 — boutiques accessibles : possédées ou membre actif.
+      restaurant: { findMany: jest.fn().mockResolvedValue([{ id: 'r-1' }]) },
+      shopMembership: { findMany: jest.fn().mockResolvedValue([]) },
       platformSettings: {
         findUnique: jest
           .fn()

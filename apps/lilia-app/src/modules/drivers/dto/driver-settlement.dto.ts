@@ -9,6 +9,19 @@ import {
   MaxLength,
 } from 'class-validator';
 
+/** Lot 3 — détail des courses d'un livreur (ADMIN). */
+export class DriverCoursesQueryDto {
+  @ApiPropertyOptional({ description: 'ISO 8601, inclus' })
+  @IsOptional()
+  @IsDateString()
+  from?: string;
+
+  @ApiPropertyOptional({ description: 'ISO 8601, exclu' })
+  @IsOptional()
+  @IsDateString()
+  to?: string;
+}
+
 export class OutstandingQueryDto {
   /**
    * Coupure du décompte. Omise ⇒ maintenant.

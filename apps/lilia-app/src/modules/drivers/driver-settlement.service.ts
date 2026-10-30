@@ -14,6 +14,7 @@ import {
 } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { DriverCourseStatus, driverCourseStatus } from './driver-course-status';
 
 /** Ce que Lilia Food doit à un livreur à un instant donné. */
 export interface DriverOutstanding {
@@ -261,6 +262,101 @@ export class DriverSettlementService {
   }
 
   /** Historique des règlements d'un livreur, le plus récent d'abord. */
+  /**
+   * Lot 3 (point 5) — détail par course, pour l'ADMIN : paie figée (part,
+   * base, montant), situation (réglée, à recevoir, retenue, en litige,
+   * montant inconnu), règlement et sa référence. Lecture pure.
+   *
+   * ⚠️ D-PAY : jamais exposé au livreur. Seul `admin/driver-settlements` le
+   * sert ; `driver-route-exposure.spec.ts` garde l'autre côté.
+   */
+  async listCourses(
+    driverId: string,
+    opts: { from?: Date; to?: Date; limit?: number } = {},
+  ) {
+    await this.assertDriver(driverId);
+    const take = Math.min(Math.max(opts.limit ?? 100, 1), 200);
+    const createdAt =
+      opts.from || opts.to
+        ? {
+            ...(opts.from ? { gte: opts.from } : {}),
+            ...(opts.to ? { lt: opts.to } : {}),
+          }
+        : undefined;
+    const rows = await this.prisma.delivery.findMany({
+      where: { delivererId: driverId, ...(createdAt ? { createdAt } : {}) },
+      orderBy: { createdAt: 'desc' },
+      take,
+      select: {
+        id: true,
+        orderId: true,
+        status: true,
+        createdAt: true,
+        deliveredAt: true,
+        failedAt: true,
+        driverPayXaf: true,
+        driverSharePercent: true,
+        driverBaseXaf: true,
+        driverEconomicsFrozenAt: true,
+        order: { select: { status: true, failureLiability: true } },
+        driverSettlement: {
+          select: {
+            id: true,
+            status: true,
+            reference: true,
+            method: true,
+            paidAt: true,
+          },
+        },
+      },
+    });
+
+    const courses = rows.map((r) => ({
+      deliveryId: r.id,
+      orderId: r.orderId,
+      deliveryStatus: r.status,
+      orderStatus: r.order.status,
+      failureLiability: r.order.failureLiability,
+      createdAt: r.createdAt,
+      deliveredAt: r.deliveredAt,
+      failedAt: r.failedAt,
+      driverPayXaf: r.driverEconomicsFrozenAt ? r.driverPayXaf : null,
+      driverSharePercent: r.driverSharePercent,
+      driverBaseXaf: r.driverBaseXaf,
+      settlement:
+        r.driverSettlement?.status === 'PAID' ? r.driverSettlement : null,
+      situation: driverCourseStatus({
+        deliveryStatus: r.status,
+        orderStatus: r.order.status,
+        failureLiability: r.order.failureLiability,
+        economicsFrozen: Boolean(r.driverEconomicsFrozenAt),
+        settlementStatus: r.driverSettlement?.status ?? null,
+      }),
+    }));
+
+    const sum = (s: DriverCourseStatus) =>
+      courses
+        .filter((c) => c.situation === s)
+        .reduce((acc, c) => acc + (c.driverPayXaf ?? 0), 0);
+    return {
+      data: courses,
+      meta: {
+        currency: 'XAF',
+        returned: courses.length,
+        totals: {
+          payableXaf: sum('PAYABLE'),
+          settledXaf: sum('SETTLED'),
+          retainedCount: courses.filter((c) => c.situation === 'RETAINED')
+            .length,
+          disputedCount: courses.filter((c) => c.situation === 'DISPUTED')
+            .length,
+          unknownPayCount: courses.filter((c) => c.situation === 'UNKNOWN_PAY')
+            .length,
+        },
+      },
+    };
+  }
+
   async listForDriver(driverId: string, page = 1, limit = 20) {
     const where = { driverId };
     const [rows, total] = await Promise.all([

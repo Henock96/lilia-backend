@@ -27,6 +27,16 @@ export const ORDER_TRANSITION_MATRIX: Record<
   OrderStatus,
   Partial<Record<OrderStatus, OrderActor[]>>
 > = {
+  // Durcissement lot 3 (30/10/2026) — parcours `ACCEPT_FIRST` uniquement.
+  // Rien n'est encaissable dans cet état : accepter ouvre le paiement
+  // (`EN_ATTENTE`, par `POST /orders/:id/accept`) ; refuser, renoncer ou
+  // laisser expirer annule sans remboursement — aucun argent n'a pu bouger.
+  // L'expiration est une transition SYSTÈME (`OrderLifecycleService
+  // .expireRequest`), hors matrice comme les autres crons.
+  DEMANDE_ENVOYEE: {
+    EN_ATTENTE: ['RESTAURATEUR', 'ADMIN'],
+    ANNULER: ['CLIENT', 'RESTAURATEUR', 'ADMIN'],
+  },
   EN_ATTENTE: {
     PAYER: ['ADMIN'], // déclenché par le webhook / la confirmation admin
     ANNULER: ['CLIENT', 'RESTAURATEUR', 'ADMIN'],

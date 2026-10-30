@@ -74,6 +74,8 @@ describe('OrderLifecycleService — acceptation et refus vendeur (F3-01)', () =>
       user: { findUnique: jest.fn().mockResolvedValue(opts.user ?? VENDOR) },
       order: { findUnique: jest.fn().mockResolvedValue(order) },
       platformSettings: { findUnique: jest.fn().mockResolvedValue(settings) },
+      // Lot 3 — un vendeur d'une autre boutique n'en est pas membre non plus.
+      shopMembership: { count: jest.fn().mockResolvedValue(0) },
       $transaction: jest.fn(async (fn: (t: typeof tx) => unknown) => fn(tx)),
     };
     const eventEmitter = { emit: jest.fn() };

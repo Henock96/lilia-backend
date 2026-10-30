@@ -57,6 +57,9 @@ import {
 } from '../modifiers/modifier-selection';
 import { modifierErrorForCheckout } from '../modifiers/modifier-http';
 import { ORDER_ITEM_OPTIONS_ARGS } from '../modifiers/order-item-options';
+import { OutboxService } from '../outbox/outbox.service';
+import { ORDER_REQUESTED_EVENT } from '../outbox/outbox-events';
+import { chooseOrderFlow, requestExpiry } from './order-flow';
 
 /** Commande renvoyée par le checkout (même `include` que la création). */
 type CreatedOrder = Prisma.OrderGetPayload<{
@@ -137,6 +140,9 @@ export class OrderCheckoutService {
     // n'ouvre plus une seconde connexion ici : Render plafonne les connexions
     // Redis et `UserCacheService` utilise déjà ce même pool.
     @Optional() @InjectRedis() private readonly redis?: Redis,
+    // Lot 3 — demande à présenter au vendeur, écrite avec la commande.
+    // Optionnel et en dernier : ajout sans décaler les autres.
+    @Optional() private readonly outbox?: OutboxService,
   ) {
     this.idempotencyEnabled = Boolean(
       this.config.get<string>('REDIS_URL') && this.redis,
@@ -159,6 +165,11 @@ export class OrderCheckoutService {
     firebaseUid: string,
     dto: CreateOrderDto,
     idempotencyKey?: string,
+    /**
+     * Lot 3 — l'application du client sait conduire « accepter puis payer »
+     * (`X-Lilia-Order-Flow: accept-first`). Faux par défaut : parcours actuel.
+     */
+    acceptFirstCapable = false,
   ) {
     // Fix H8 : l'en-tête est désormais OBLIGATOIRE. Le mécanisme `SET NX`
     // était correct mais ne s'activait que si le client l'envoyait — un client
@@ -190,7 +201,7 @@ export class OrderCheckoutService {
         "Checkout sans garde d'idempotence (Redis indisponible)",
         'warning',
       );
-      return this.performCheckout(firebaseUid, dto);
+      return this.performCheckout(firebaseUid, dto, { acceptFirstCapable });
     }
 
     const claim = await this.claimIdempotencyKey(cacheKey, key);
@@ -202,7 +213,9 @@ export class OrderCheckoutService {
     }
 
     try {
-      const result = await this.performCheckout(firebaseUid, dto);
+      const result = await this.performCheckout(firebaseUid, dto, {
+        acceptFirstCapable,
+      });
       await this.storeIdempotentResult(cacheKey, result);
       return result;
     } catch (err) {
@@ -244,12 +257,12 @@ export class OrderCheckoutService {
   private async performCheckout(
     firebaseUid: string,
     dto: CreateOrderDto,
-    options?: { dryRun?: false },
+    options?: { dryRun?: false; acceptFirstCapable?: boolean },
   ): Promise<CheckoutResult>;
   private async performCheckout(
     firebaseUid: string,
     dto: CreateOrderDto,
-    options: { dryRun?: boolean } = {},
+    options: { dryRun?: boolean; acceptFirstCapable?: boolean } = {},
   ): Promise<CheckoutQuote | CheckoutResult> {
     const {
       adresseId,
@@ -570,6 +583,25 @@ export class OrderCheckoutService {
         total: finalTotal,
       };
     }
+    // Lot 3 — parcours figé sur la commande : « accepter puis payer » seulement
+    // si le réglage l'active ET que l'application du client sait le conduire.
+    const orderFlow = chooseOrderFlow({
+      platformFlow: settings.orderFlow,
+      clientDeclaresAcceptFirst: Boolean(options.acceptFirstCapable),
+      isPreorder: isPreorder ?? Boolean(scheduledForDate),
+      totalXaf: finalTotal,
+    });
+    if (orderFlow === 'ACCEPT_FIRST' && !this.outbox) {
+      // Une demande sans obligation de prévenir le vendeur attendrait une
+      // réponse qui ne viendrait jamais : on refuse plutôt que de la créer.
+      throw new Error(
+        'Parcours ACCEPT_FIRST sans OutboxService : la demande ne peut pas être présentée au vendeur.',
+      );
+    }
+    const createdAt = new Date();
+    const initialStatus =
+      orderFlow === 'ACCEPT_FIRST' ? 'DEMANDE_ENVOYEE' : 'EN_ATTENTE';
+
     // 5. Exécuter la création de la commande et la suppression du panier dans une transaction
     let stockMovements: StockMovement[] = [];
     const { order } = await this.prisma.$transaction(async (tx) => {
@@ -654,7 +686,16 @@ export class OrderCheckoutService {
           deliveryLandmark: destination?.landmark ?? null,
           deliveryQuartierId,
           paymentMethod,
-          status: 'EN_ATTENTE',
+          status: initialStatus,
+          orderFlow,
+          ...(orderFlow === 'ACCEPT_FIRST'
+            ? {
+                requestExpiresAt: requestExpiry(
+                  createdAt,
+                  settings.vendorRequestTimeoutMinutes,
+                ),
+              }
+            : {}),
           isPreorder: isPreorder ?? Boolean(scheduledForDate),
           scheduledFor: scheduledForDate,
           items: {
@@ -703,11 +744,21 @@ export class OrderCheckoutService {
       // fausserait exactement la mesure pour laquelle cette table existe.
       await this.transitions.recordCreation(tx, {
         orderId: newOrder.id,
-        to: 'EN_ATTENTE',
+        to: initialStatus,
         actor: 'CLIENT',
         actorUserId: user.id,
         source: 'APP',
       });
+
+      // Lot 3 — une demande DOIT atteindre le vendeur : l'obligation naît avec
+      // elle (outbox), comme `order.paid` dans le parcours historique.
+      if (orderFlow === 'ACCEPT_FIRST') {
+        await this.outbox!.enqueueInTransaction(tx, {
+          type: ORDER_REQUESTED_EVENT,
+          aggregateId: newOrder.id,
+          payload: {},
+        });
+      }
 
       // F3-11 — budget de l'offre réservé sous condition : deux checkouts
       // simultanés ne le dépassent jamais, le perdant reçoit 409 et relance

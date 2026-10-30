@@ -29,6 +29,7 @@ const GROUPS: Array<[string, readonly OrderStatus[], Table]> = [
     'PAID — l’argent a été encaissé et n’a pas été rendu par annulation',
     PAID_ORDER_STATUSES,
     {
+      DEMANDE_ENVOYEE: false,
       EN_ATTENTE: false,
       PAYER: true,
       ACCEPTEE: true,
@@ -44,6 +45,7 @@ const GROUPS: Array<[string, readonly OrderStatus[], Table]> = [
     'IN_FLIGHT — commande non terminale (bloque la suppression de compte)',
     IN_FLIGHT_ORDER_STATUSES,
     {
+      DEMANDE_ENVOYEE: true,
       EN_ATTENTE: true,
       PAYER: true,
       ACCEPTEE: true,
@@ -59,6 +61,7 @@ const GROUPS: Array<[string, readonly OrderStatus[], Table]> = [
     'STUCK — payée, pas encore partie : ce qu’un vendeur peut oublier',
     STUCK_ORDER_STATUSES,
     {
+      DEMANDE_ENVOYEE: false,
       EN_ATTENTE: false,
       PAYER: true,
       ACCEPTEE: true,
@@ -74,6 +77,7 @@ const GROUPS: Array<[string, readonly OrderStatus[], Table]> = [
     'ASSIGNABLE — un livreur peut encore être désigné',
     ASSIGNABLE_ORDER_STATUSES,
     {
+      DEMANDE_ENVOYEE: false,
       EN_ATTENTE: false,
       PAYER: true,
       ACCEPTEE: true,

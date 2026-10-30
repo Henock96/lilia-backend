@@ -119,6 +119,17 @@ export class OrderExpiryService {
                 createdAt: { lt: pendingCutoff },
                 Payment: { some: { status: 'PENDING' } },
               },
+              // Lot 3 — demande acceptée (`ACCEPT_FIRST`) dont la fenêtre de
+              // paiement est close, sans encaissement en cours : le vendeur
+              // ne doit pas garder une commande que personne ne paiera. Un
+              // paiement PENDING la protège — le prestataire tranche en
+              // quelques minutes, et une confirmation tardive est un
+              // incident tracé, jamais un débit perdu.
+              {
+                orderFlow: 'ACCEPT_FIRST',
+                paymentDueAt: { lt: new Date(now) },
+                Payment: { none: { status: 'PENDING' } },
+              },
             ],
           },
         ],

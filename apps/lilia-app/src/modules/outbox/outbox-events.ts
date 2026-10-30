@@ -37,6 +37,21 @@ export const ORDER_EXPIRED_EVENT = 'order.expired';
  */
 export const ORDER_ACCEPTANCE_EXPIRED_EVENT = 'order.acceptance_expired';
 
+// ── Parcours « accepter puis payer » (durcissement lot 3, 30/10/2026) ──────
+
+/**
+ * Demande à présenter au vendeur. L'obligation reste ouverte tant que la
+ * demande attend (`DEMANDE_ENVOYEE`) : rappel, puis SMS si aucun appareil n'a
+ * accepté le push — même garantie que `order.paid` (lot 1A).
+ */
+export const ORDER_REQUESTED_EVENT = 'order.requested';
+
+/** Demande acceptée → le client doit payer (« payez maintenant »). */
+export const ORDER_REQUEST_ACCEPTED_EVENT = 'order.request_accepted';
+
+/** Demande expirée sans réponse → client et vendeur prévenus, rien encaissé. */
+export const ORDER_REQUEST_EXPIRED_EVENT = 'order.request_expired';
+
 /**
  * Versement vendeur abouti / en échec (F3-07). Écrits avec la transition du
  * versement : c'est souvent le worker qui la conclut (réconciliation,

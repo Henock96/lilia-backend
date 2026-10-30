@@ -51,7 +51,11 @@ import {
   ORDER_EXPIRED_EVENT,
   ORDER_REFUND_DUE_EVENT,
   ORDER_ACCEPTANCE_EXPIRED_EVENT,
+  ORDER_REQUEST_ACCEPTED_EVENT,
+  ORDER_REQUEST_EXPIRED_EVENT,
 } from '../outbox/outbox-events';
+import { paymentDeadline } from './order-flow';
+import { assertShopAccess } from '../vendors/shop-access';
 
 /**
  * Cycle de vie d'une commande (LIL-134) : annulation, transitions de statut,
@@ -154,12 +158,15 @@ export class OrderLifecycleService {
     // Fix H5 : le CLIENT ne peut plus annuler une commande déjà payée —
     // l'argent est encaissé. Message explicite plutôt que l'erreur générique
     // de la state machine : le client doit savoir quoi faire ensuite.
-    if (order.status !== 'EN_ATTENTE') {
+    // Lot 3 — renoncer à une demande que le vendeur n'a pas encore acceptée
+    // est permis : rien n'a pu être encaissé.
+    if (order.status !== 'EN_ATTENTE' && order.status !== 'DEMANDE_ENVOYEE') {
       throw new ForbiddenException(
         'Cette commande est déjà payée et ne peut plus être annulée depuis ' +
           "l'application. Contactez le support pour demander un remboursement.",
       );
     }
+    const wasRequest = order.status === 'DEMANDE_ENVOYEE';
 
     this.stateMachine.assertTransition(order.status, 'ANNULER', 'CLIENT');
 
@@ -197,11 +204,14 @@ export class OrderLifecycleService {
     // (`total >= 1000 ? total : 0`, règle écrite nulle part) mais le montant
     // réellement encaissé. `openForCancelledOrder` ne crée rien si aucun
     // paiement n'a abouti — cas nominal d'une annulation avant paiement.
-    const refund = await this.refunds.openForCancelledOrder({
-      orderId: order.id,
-      reason: 'Annulation par le client',
-      requestedBy: user.id,
-    });
+    // Lot 3 — une demande n'a jamais été payable : pas même l'appel.
+    const refund = wasRequest
+      ? null
+      : await this.refunds.openForCancelledOrder({
+          orderId: order.id,
+          reason: 'Annulation par le client',
+          requestedBy: user.id,
+        });
 
     const orderCancelledEvent = new OrderCancelledEvent(
       order.id,
@@ -228,6 +238,18 @@ export class OrderLifecycleService {
     const actor = this.resolveActor(user.role);
     if (!actor)
       throw new ForbiddenException('Acteur invalide pour cette transition');
+    // Lot 3 — « Accepter » une demande ouvre son paiement.
+    if (order.status === 'DEMANDE_ENVOYEE') {
+      return this.acceptRequest(order, user, actor, prepMinutes);
+    }
+    // Lot 3 — payée dans le parcours `ACCEPT_FIRST`, elle est déjà acceptée.
+    if (order.status === 'PAYER' && order.acceptedAt) {
+      throw new ConflictException({
+        message:
+          'Cette commande est déjà acceptée et payée : commencez la préparation.',
+        code: 'ORDER_ALREADY_ACCEPTED',
+      });
+    }
     this.stateMachine.assertTransition(order.status, 'ACCEPTEE', actor);
 
     const now = new Date();
@@ -255,6 +277,79 @@ export class OrderLifecycleService {
       updatedOrder,
       order.status,
       'ACCEPTEE',
+      user,
+    );
+    return updatedOrder;
+  }
+
+  /**
+   * Le vendeur accepte une DEMANDE (lot 3, parcours `ACCEPT_FIRST`).
+   *
+   * `DEMANDE_ENVOYEE → EN_ATTENTE` : le paiement s'ouvre, avec son échéance
+   * (`paymentDueAt`). Le temps de préparation est annoncé maintenant ; la
+   * préparation, elle, ne commence qu'une fois payée.
+   *
+   * Concurrence avec l'expiration : les deux passent par le verrou
+   * `WHERE status = DEMANDE_ENVOYEE` — une seule issue gagne, l'autre reçoit
+   * 409 (vendeur) ou sort en silence (cron). Une acceptation après
+   * l'échéance est refusée même si le cron n'est pas encore passé.
+   */
+  private async acceptRequest(
+    order: {
+      id: string;
+      status: OrderStatus;
+      requestExpiresAt: Date | null;
+    },
+    user: { id: string; role: string },
+    actor: 'CLIENT' | 'RESTAURATEUR' | 'ADMIN' | 'LIVREUR',
+    prepMinutes: number,
+  ) {
+    this.stateMachine.assertTransition(order.status, 'EN_ATTENTE', actor);
+    const now = new Date();
+    if (order.requestExpiresAt && order.requestExpiresAt <= now) {
+      throw new ConflictException({
+        message:
+          'Cette demande a expiré : le client a été prévenu et n’a rien payé.',
+        code: 'ORDER_REQUEST_EXPIRED',
+      });
+    }
+    const settings = await this.prisma.platformSettings.findUnique({
+      where: { id: 'singleton' },
+      select: { acceptedPaymentWindowMinutes: true },
+    });
+    const windowMinutes = settings?.acceptedPaymentWindowMinutes ?? 10;
+
+    const updatedOrder = await this.prisma.$transaction(async (tx) => {
+      await this.transitions.transition(tx, {
+        orderId: order.id,
+        from: 'DEMANDE_ENVOYEE',
+        to: 'EN_ATTENTE',
+        actor: actorFromRole(user.role) ?? 'SYSTEM',
+        actorUserId: user.id,
+        source: sourceFromRole(user.role),
+        data: {
+          acceptedAt: now,
+          estimatedReadyAt: new Date(now.getTime() + prepMinutes * 60_000),
+          paymentDueAt: paymentDeadline(now, windowMinutes),
+        },
+      });
+      // « Payez maintenant » doit atteindre le client même si ce processus
+      // meurt après le commit.
+      await this.outbox.enqueueInTransaction(tx, {
+        type: ORDER_REQUEST_ACCEPTED_EVENT,
+        aggregateId: order.id,
+        payload: {},
+      });
+      return tx.order.findUniqueOrThrow({
+        where: { id: order.id },
+        include: { restaurant: true, items: true },
+      });
+    });
+
+    await this.announceStatusChange(
+      updatedOrder,
+      'DEMANDE_ENVOYEE',
+      'EN_ATTENTE',
       user,
     );
     return updatedOrder;
@@ -310,9 +405,15 @@ export class OrderLifecycleService {
     this.logger.log(
       `🔄 [STATUT] Commande trouvée: ${orderId}, statut actuel: ${order.status}, client: ${order.userId}, restaurant: ${order.restaurant.nom}`,
     );
-    if (user.role !== 'ADMIN' && order.restaurant.ownerId !== user.id) {
-      throw new ForbiddenException(
-        "Cette commande n'appartient pas à votre restaurant.",
+    // Lot 3 (point 7) — propriétaire historique OU membre actif autorisé à
+    // traiter les commandes (`ShopMembership`, mode compatibilité).
+    if (user.role !== 'ADMIN') {
+      await assertShopAccess(
+        this.prisma,
+        user.id,
+        order.restaurantId,
+        'ORDERS',
+        { knownOwnerId: order.restaurant.ownerId },
       );
     }
 
@@ -329,10 +430,11 @@ export class OrderLifecycleService {
    *   délai de réponse reste mesurable.
    */
   private async transitionDataFor(
-    from: OrderStatus,
+    order: { status: OrderStatus; acceptedAt: Date | null },
     to: OrderStatus,
     options: { rejection?: VendorRejection },
   ): Promise<Prisma.OrderUpdateManyMutationInput | undefined> {
+    const from = order.status;
     if (to === 'ANNULER' && options.rejection) {
       return {
         vendorRejectionReason: options.rejection.reason,
@@ -342,6 +444,9 @@ export class OrderLifecycleService {
       };
     }
     if (from === 'PAYER' && to === 'EN_PREPARATION') {
+      // Lot 3 — acceptée AVANT le paiement (`ACCEPT_FIRST`) : préparer est le
+      // geste nominal, et l'heure d'acceptation déjà écrite ne bouge pas.
+      if (order.acceptedAt) return undefined;
       const settings = await this.prisma.platformSettings.findUnique({
         where: { id: 'singleton' },
         select: { orderAcceptanceRequired: true },
@@ -478,14 +583,21 @@ export class OrderLifecycleService {
 
     // F3-01 — même raisonnement : « acceptée » exige un temps de préparation,
     // que seul `POST /orders/:id/accept` porte.
-    if (newStatus === 'ACCEPTEE') {
+    // Lot 3 — accepter une demande (`→ EN_ATTENTE`) aussi.
+    if (
+      newStatus === 'ACCEPTEE' ||
+      (newStatus === 'EN_ATTENTE' && order.status === 'DEMANDE_ENVOYEE')
+    ) {
       throw new BadRequestException(
         'Pour accepter une commande, utilisez « Accepter » avec un temps de préparation.',
       );
     }
+    // Lot 3 — une demande n'a jamais été payable : son annulation n'ouvre
+    // aucun remboursement (ni obligation, ni appel).
+    const wasRequest = order.status === 'DEMANDE_ENVOYEE';
 
     const transitionData = await this.transitionDataFor(
-      order.status,
+      order,
       newStatus,
       options,
     );
@@ -610,20 +722,23 @@ export class OrderLifecycleService {
             // `.catch(log)` qui suit le commit ne suffisait pas : si le
             // processus mourait entre les deux, le remboursement n'était
             // jamais ouvert et rien ne le signalait.
-            await this.outbox.enqueueInTransaction(tx, {
-              type: ORDER_REFUND_DUE_EVENT,
-              aggregateId: orderId,
-              payload: {
-                reason:
-                  historyReason ?? `Annulation par ${user.role.toLowerCase()}`,
-                requestedBy: user.id,
-                // F3-01 / D2 — un refus vendeur ne laisse aucun doute sur la
-                // dette : le remboursement peut partir sans geste humain.
-                ...(options.rejection
-                  ? { vendorFault: true, reasonCode: 'VENDOR_REJECTED' }
-                  : {}),
-              },
-            });
+            if (!wasRequest) {
+              await this.outbox.enqueueInTransaction(tx, {
+                type: ORDER_REFUND_DUE_EVENT,
+                aggregateId: orderId,
+                payload: {
+                  reason:
+                    historyReason ??
+                    `Annulation par ${user.role.toLowerCase()}`,
+                  requestedBy: user.id,
+                  // F3-01 / D2 — un refus vendeur ne laisse aucun doute sur
+                  // la dette : le remboursement peut partir sans geste humain.
+                  ...(options.rejection
+                    ? { vendorFault: true, reasonCode: 'VENDOR_REJECTED' }
+                    : {}),
+                },
+              });
+            }
             return updated;
           })
         : await this.prisma.$transaction(async (tx) => {
@@ -728,7 +843,7 @@ export class OrderLifecycleService {
     // ouvre une ligne de remboursement. C'est le seul chemin qui rend la dette
     // visible et traçable — le client, lui, ne peut plus annuler après
     // paiement (state machine).
-    if (newStatus === 'ANNULER') {
+    if (newStatus === 'ANNULER' && !wasRequest) {
       await this.refunds
         .openForCancelledOrder({
           orderId,
@@ -1059,6 +1174,62 @@ export class OrderLifecycleService {
     if (expired) {
       this.logger.warn(
         `⏱️ Commande ${orderId} non acceptée à temps — annulée, remboursement dû`,
+      );
+    }
+    return expired;
+  }
+
+  /**
+   * Lot 3 — une demande sans réponse du vendeur à l'échéance est annulée.
+   *
+   * Transition SYSTÈME, stock et avantages rendus, client et vendeur prévenus
+   * par l'outbox (le cron tourne dans le worker). **Aucun remboursement** :
+   * une demande n'a jamais été payable (`POST /payments` la refuse).
+   *
+   * Idempotent : le verrou `WHERE status = DEMANDE_ENVOYEE` départage une
+   * acceptation arrivée à la dernière seconde — une seule des deux gagne.
+   */
+  async expireRequest(orderId: string, now = new Date()): Promise<boolean> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { items: true },
+    });
+    if (
+      !order ||
+      order.status !== 'DEMANDE_ENVOYEE' ||
+      !order.requestExpiresAt ||
+      order.requestExpiresAt > now
+    ) {
+      return false;
+    }
+
+    const reason = 'Demande sans réponse du vendeur dans le délai';
+    const expired = await this.prisma.$transaction(async (tx) => {
+      const { moved } = await this.transitions.tryTransition(tx, {
+        orderId,
+        from: 'DEMANDE_ENVOYEE',
+        to: 'ANNULER',
+        actor: 'SYSTEM',
+        source: 'CRON',
+        reason,
+      });
+      if (!moved) return false;
+
+      await this.stockService.restoreInTransaction(tx, order.items, {
+        orderCreatedAt: order.createdAt,
+      });
+      await this.restoreCheckoutCompensations(tx, orderId, order.userId);
+      await this.outbox.enqueueInTransaction(tx, {
+        type: ORDER_REQUEST_EXPIRED_EVENT,
+        aggregateId: orderId,
+        payload: {},
+      });
+      return true;
+    });
+
+    if (expired) {
+      this.logger.warn(
+        `⏱️ Demande ${orderId} sans réponse du vendeur — annulée, rien encaissé`,
       );
     }
     return expired;

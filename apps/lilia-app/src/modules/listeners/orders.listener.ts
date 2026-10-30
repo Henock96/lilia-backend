@@ -11,6 +11,7 @@ import { OrderCreatedEvent, OrderStatusUpdatedEvent, OrderCancelledEvent } from 
 import { OrderStatus } from '@prisma/client';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { OutboxService } from '../outbox/outbox.service';
+import { otherOrderRecipients } from '../vendors/shop-access';
 
 @Injectable()
 export class OrdersListener {
@@ -42,6 +43,49 @@ export class OrdersListener {
     this.logger.log(`Commande créée : ${event.orderId}`);
 
     try {
+      // Lot 3 — une DEMANDE (`ACCEPT_FIRST`) ne se paie pas encore : le
+      // client attend l'accord, le vendeur doit répondre maintenant.
+      const created = await this.prisma.order.findUnique({
+        where: { id: event.orderId },
+        select: {
+          status: true,
+          total: true,
+          restaurantId: true,
+          restaurant: { select: { ownerId: true } },
+        },
+      });
+      if (created?.status === 'DEMANDE_ENVOYEE') {
+        this.trackingGateway.broadcastOrderStatus(
+          event.orderId,
+          'DEMANDE_ENVOYEE',
+        );
+        // Chemin rapide. L'obligation durable est l'outbox `order.requested`
+        // (rappel chaque minute, SMS si aucun appareil n'accepte).
+        await Promise.allSettled([
+          this.notificationsService.sendPushNotification(
+            created.restaurant.ownerId,
+            '📨 Nouvelle demande de commande',
+            `${Math.round(created.total)} FCFA — acceptez ou refusez rapidement.`,
+            { orderId: event.orderId, type: 'new_order', kind: 'request' },
+          ),
+          this.notificationsService.sendPushNotification(
+            event.userId,
+            '📨 Demande envoyée',
+            `${event.orderData.restaurantName} va confirmer votre commande. Vous paierez après son accord.`,
+            { orderId: event.orderId, type: 'order_created' },
+          ),
+          // Lot 3 (point 7) — les autres membres qui traitent les commandes.
+          this.notifyOtherMembers(
+            created.restaurantId,
+            created.restaurant.ownerId,
+            '📨 Nouvelle demande de commande',
+            `${Math.round(created.total)} FCFA — acceptez ou refusez rapidement.`,
+            { orderId: event.orderId, type: 'new_order', kind: 'request' },
+          ),
+        ]);
+        return;
+      }
+
       await this.notificationsService.sendPushNotification(
         event.userId,
         '🧾 Commande enregistrée',
@@ -86,6 +130,7 @@ export class OrdersListener {
           scheduledFor: true,
           paidAt: true,
           acceptDeadlineAt: true,
+          acceptedAt: true,
           _count: { select: { items: true } },
           restaurant: { select: { ownerId: true, nom: true } },
         },
@@ -99,8 +144,11 @@ export class OrdersListener {
       const push = await this.notificationsService
         .sendPushNotification(
           order.restaurant.ownerId,
-          '🔔 Nouvelle commande payée',
-          `${Math.round(order.total)} FCFA — ${order._count.items} article(s). À accepter.`,
+          // Lot 3 — acceptée avant le paiement : il ne reste qu'à préparer.
+          order.acceptedAt
+            ? '✅ Commande payée — à préparer'
+            : '🔔 Nouvelle commande payée',
+          `${Math.round(order.total)} FCFA — ${order._count.items} article(s). ${order.acceptedAt ? 'À préparer.' : 'À accepter.'}`,
           {
             orderId: event.orderId,
             type: 'new_order',
@@ -111,6 +159,17 @@ export class OrdersListener {
           this.logger.error(`Push vendeur échoué : ${err.message}`);
           return undefined;
         });
+      // Lot 3 (point 7) — les autres membres qui traitent les commandes. Le
+      // push du propriétaire, lui, garde la main sur le rappel et le SMS.
+      await this.notifyOtherMembers(
+        event.restaurantId,
+        order.restaurant.ownerId,
+        order.acceptedAt
+          ? '✅ Commande payée — à préparer'
+          : '🔔 Nouvelle commande payée',
+        `${Math.round(order.total)} FCFA — ${order._count.items} article(s).`,
+        { orderId: event.orderId, type: 'new_order' },
+      );
 
       // ⚠️ L'outbox n'est PLUS acquittée ici (audit du 28/10/2026, F-01).
       //
@@ -156,6 +215,15 @@ export class OrdersListener {
     this.logger.log(`order.status.updated : ${event.orderId} → ${event.newStatus}`);
     // Le client voit le changement de statut en temps réel sur sa carte
     this.trackingGateway.broadcastOrderStatus(event.orderId, event.newStatus);
+    // Lot 3 — demande acceptée : le client est prévenu par l'outbox
+    // (`order.request_accepted`, « payez maintenant »), durable même si ce
+    // processus meurt après le commit. Un second push ici le doublerait.
+    if (
+      event.previousStatus === 'DEMANDE_ENVOYEE' &&
+      event.newStatus === 'EN_ATTENTE'
+    ) {
+      return;
+    }
     // F3-07 — un retrait ne se « livre » pas : prête et remise se disent
     // autrement au comptoir, et la preuve de remise change ce qu'on demande
     // au client (confirmer) et ce qu'on annonce au vendeur (versement).
@@ -168,7 +236,14 @@ export class OrdersListener {
         : null;
     const msg = pickup
       ? pickupClientMessage(event.newStatus, pickup.deliveryProof)
-      : this.getStatusMessage(event.newStatus);
+      : event.previousStatus === 'DEMANDE_ENVOYEE' &&
+          event.newStatus === 'ANNULER'
+        ? {
+            // Lot 3 — refus d'une demande : rien n'a été encaissé.
+            title: '❌ Demande refusée',
+            body: 'La boutique ne peut pas prendre votre commande. Aucun montant n’a été débité.',
+          }
+        : this.getStatusMessage(event.newStatus);
     const notifs: Promise<any>[] = [
       this.notificationsService.sendPushNotification(
         event.userId,
@@ -278,8 +353,36 @@ export class OrdersListener {
       );
   }
 
+  /**
+   * Lot 3 (point 7) — push aux membres actifs de la boutique qui traitent les
+   * commandes, propriétaire exclu (il a déjà le sien). Jamais bloquant : un
+   * échec se journalise, la commande n'en dépend pas.
+   */
+  private async notifyOtherMembers(
+    restaurantId: string,
+    ownerId: string,
+    title: string,
+    body: string,
+    data: Record<string, string>,
+  ): Promise<void> {
+    try {
+      const others = await otherOrderRecipients(
+        this.prisma,
+        restaurantId,
+        ownerId,
+      );
+      if (others.length === 0) return;
+      await this.notificationsService.sendPushToUsers(others, title, body, data);
+    } catch (err) {
+      this.logger.error(
+        `Push aux membres de la boutique ${restaurantId} échoué : ${(err as Error).message}`,
+      );
+    }
+  }
+
   private getStatusMessage(status: OrderStatus): { title: string; body: string } {
     const map: Record<OrderStatus, { title: string; body: string }> = {
+      DEMANDE_ENVOYEE: { title: '📨 Demande envoyée', body: 'La boutique va confirmer votre commande. Vous paierez après son accord.' },
       EN_ATTENTE:     { title: '⏳ Commande en attente', body: 'Votre commande est en attente de paiement' },
       PAYER:          { title: '💸 Paiement confirmé', body: 'Votre paiement a été accepté' },
       ACCEPTEE:       { title: '👍 Commande acceptée', body: 'Le vendeur a accepté votre commande' },
