@@ -29,7 +29,7 @@ describe('AdminPayoutController — webhookHealth', () => {
     lastWebhookAt: jest.fn(),
   };
   const prisma = {
-    paymentEvent: { count: jest.fn() },
+    paymentEvent: { count: jest.fn(), groupBy: jest.fn() },
     restaurant: { findMany: jest.fn() },
     order: { groupBy: jest.fn() },
   };
@@ -76,6 +76,7 @@ describe('AdminPayoutController — webhookHealth', () => {
     });
     events.lastWebhookAt.mockResolvedValue(null);
     prisma.paymentEvent.count.mockResolvedValue(0);
+    prisma.paymentEvent.groupBy.mockResolvedValue([]);
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [AdminPayoutController],
@@ -141,6 +142,90 @@ describe('AdminPayoutController — webhookHealth', () => {
     expect(data.callbackUrls).toEqual({
       deposits: '/webhooks/pawapay/deposits',
       payouts: '/webhooks/pawapay/payouts',
+    });
+  });
+
+  describe('F-10 — ce qui compte comme preuve (audit du 28/10/2026)', () => {
+    it('ne compte que les webhooks pawaPay appliqués ou reconnus', async () => {
+      await controller.webhookHealth();
+      expect(prisma.paymentEvent.count).toHaveBeenCalledWith({
+        where: {
+          source: 'WEBHOOK',
+          provider: 'PAWAPAY',
+          outcome: { in: ['APPLIED', 'DUPLICATE'] },
+        },
+      });
+    });
+
+    it('ventile les signaux : webhook, interrogation, admin, échec', async () => {
+      prisma.paymentEvent.groupBy.mockResolvedValue([
+        {
+          source: 'WEBHOOK',
+          outcome: 'APPLIED',
+          provider: 'PAWAPAY',
+          _count: { _all: 3 },
+        },
+        {
+          source: 'WEBHOOK',
+          outcome: 'DUPLICATE',
+          provider: 'PAWAPAY',
+          _count: { _all: 2 },
+        },
+        {
+          source: 'WEBHOOK',
+          outcome: 'IGNORED',
+          provider: 'PAWAPAY',
+          _count: { _all: 4 },
+        },
+        {
+          source: 'CLIENT_POLL',
+          outcome: 'APPLIED',
+          provider: 'PAWAPAY',
+          _count: { _all: 5 },
+        },
+        {
+          source: 'RECONCILIATION',
+          outcome: 'APPLIED',
+          provider: 'PAWAPAY',
+          _count: { _all: 1 },
+        },
+        {
+          source: 'ADMIN',
+          outcome: 'APPLIED',
+          provider: 'MANUAL',
+          _count: { _all: 6 },
+        },
+        // Historique d'avant F-10 : confirmation manuelle enregistrée WEBHOOK.
+        {
+          source: 'WEBHOOK',
+          outcome: 'APPLIED',
+          provider: 'MANUAL',
+          _count: { _all: 7 },
+        },
+        {
+          source: 'WEBHOOK',
+          outcome: 'FAILED_PROCESSING',
+          provider: 'PAWAPAY',
+          _count: { _all: 1 },
+        },
+      ]);
+
+      const { data } = await controller.webhookHealth();
+
+      expect(data.signals).toEqual({
+        webhookApplied: 3,
+        webhookDuplicate: 2,
+        webhookIgnored: 4,
+        pollingApplied: 6,
+        adminApplied: 13,
+        failedProcessing: 1,
+        mismatch: 0,
+      });
+    });
+
+    it('PAYMENT_MODE absent : erreur explicite, pas de repli MANUAL', async () => {
+      env = {};
+      await expect(controller.webhookHealth()).rejects.toThrow(/PAYMENT_MODE/);
     });
   });
 

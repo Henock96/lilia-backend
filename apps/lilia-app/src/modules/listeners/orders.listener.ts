@@ -1,7 +1,11 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { NotificationsService } from '../notifications/notifications.service';
+import {
+  NotificationsService,
+  pushWasAccepted,
+} from '../notifications/notifications.service';
+import { orderPaidReminderAt } from '../outbox/vendor-contact';
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderCreatedEvent, OrderStatusUpdatedEvent, OrderCancelledEvent } from '../events/order-events';
 import { OrderStatus } from '@prisma/client';
@@ -80,6 +84,8 @@ export class OrdersListener {
           total: true,
           isDelivery: true,
           scheduledFor: true,
+          paidAt: true,
+          acceptDeadlineAt: true,
           _count: { select: { items: true } },
           restaurant: { select: { ownerId: true, nom: true } },
         },
@@ -90,7 +96,7 @@ export class OrdersListener {
         return;
       }
 
-      const sent = await this.notificationsService
+      const push = await this.notificationsService
         .sendPushNotification(
           order.restaurant.ownerId,
           '🔔 Nouvelle commande payée',
@@ -101,18 +107,38 @@ export class OrdersListener {
             customerId: event.userId,
           },
         )
-        .then(() => true)
-        .catch((err) => {
+        .catch((err: Error) => {
           this.logger.error(`Push vendeur échoué : ${err.message}`);
-          return false;
+          return undefined;
         });
 
-      // Fix H7 : on n'acquitte l'outbox QUE si la notification est réellement
-      // partie. Sinon la ligne reste PENDING et le dispatcher la reprend — c'est
-      // le signal le plus critique du métier, il ne doit pas dépendre d'un push
-      // best-effort.
-      if (event.outboxId && sent) {
-        await this.outbox.markSent(event.outboxId);
+      // ⚠️ L'outbox n'est PLUS acquittée ici (audit du 28/10/2026, F-01).
+      //
+      // Elle l'était dès que `sendPushNotification` se résolvait — or cette
+      // méthode ne lève jamais : sans token, Firebase non prêt ou tous les
+      // envois refusés, elle rendait la main sans rien avoir envoyé, et
+      // l'obligation la plus critique du métier était close à vide. Un vendeur
+      // sans app installée ne recevait alors ni rappel ni SMS.
+      //
+      // Et même accepté par Firebase, un push ne prouve pas que le vendeur l'a
+      // vu. L'obligation ne se ferme donc que quand la commande quitte `PAYER`
+      // (le dispatcher le constate). Un push accepté reporte seulement la
+      // première reprise à l'échéance d'escalade, pour ne pas doubler le signal
+      // dans la minute ; refusé, la ligne reste due et le dispatcher passe au
+      // SMS dès sa première reprise.
+      if (event.outboxId && pushWasAccepted(push)) {
+        const settings = await this.prisma.platformSettings.findUnique({
+          where: { id: 'singleton' },
+          select: { vendorAcceptanceReminderLeadMinutes: true },
+        });
+        await this.outbox.deferUntil(
+          event.outboxId,
+          orderPaidReminderAt({
+            paidAt: order.paidAt ?? new Date(),
+            acceptDeadlineAt: order.acceptDeadlineAt,
+            leadMinutes: settings?.vendorAcceptanceReminderLeadMinutes ?? 3,
+          }),
+        );
       }
 
       this.trackingGateway.broadcastOrderStatus(event.orderId, 'PAYER');

@@ -41,6 +41,8 @@ import {
 import { toMsisdn } from '../providers/pawapay/pawapay.mapper';
 import { PawaPaySignatureService } from '../providers/pawapay/pawapay-signature.service';
 import { WebhookReceptionMonitor } from '../services/webhook-reception.monitor';
+import { PROVEN_WEBHOOK_WHERE } from '../webhook-proof';
+import { readPaymentMode } from '../../../config/payment-mode';
 import { PlatformSettingsService } from '../../platform-settings/platform-settings.service';
 import { ApprovalsService } from '../../approvals/approvals.service';
 import { applyPayoutAccount } from '../payout-account';
@@ -407,12 +409,18 @@ export class AdminPayoutController {
     const days = Math.min(Math.max(Number(daysRaw) || 7, 1), 90);
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-    const [bySource, lastWebhookAt, allTimeWebhooks, rejected] =
+    const [bySource, lastWebhookAt, allTimeWebhooks, rejected, signals] =
       await Promise.all([
         this.events.countBySource(since),
         this.events.lastWebhookAt(),
-        this.prisma.paymentEvent.count({ where: { source: 'WEBHOOK' } }),
+        // F-10 — seuls les callbacks pawaPay appliqués ou reconnus comptent.
+        this.prisma.paymentEvent.count({ where: PROVEN_WEBHOOK_WHERE }),
         this.reception.summary(days),
+        this.prisma.paymentEvent.groupBy({
+          by: ['source', 'outcome', 'provider'],
+          where: { receivedAt: { gte: since } },
+          _count: { _all: true },
+        }),
       ]);
 
     const signatureConfigured = this.signature.isEnabled;
@@ -420,7 +428,7 @@ export class AdminPayoutController {
       .split(',')
       .map((ip) => ip.trim())
       .filter(Boolean);
-    const paymentMode = this.config.get<string>('PAYMENT_MODE') ?? 'MANUAL';
+    const paymentMode = readPaymentMode(this.config);
 
     return {
       data: {
@@ -437,6 +445,12 @@ export class AdminPayoutController {
         },
         windowDays: days,
         eventsBySource: bySource,
+        /**
+         * F-10 — ventilation de la fenêtre par voie et par issue. Un nombre
+         * de cette table dit par où les transactions ont été conclues ; il ne
+         * dit pas qu'elles sont justes (c'est le rapprochement).
+         */
+        signals: summarizeSignals(signals),
         lastWebhookAt,
         /**
          * Le critère de sortie du blocker P0-3 : tant qu'il vaut 0, la chaîne
@@ -460,6 +474,61 @@ export class AdminPayoutController {
       },
     };
   }
+}
+
+/**
+ * Ventilation lisible des signaux d'une fenêtre (F-10). Fonction pure.
+ *
+ * - `webhookApplied` / `webhookDuplicate` : callbacks pawaPay appliqués ou
+ *   reconnus comme rejeu d'une transaction connue ;
+ * - `webhookIgnored` : callbacks reçus sans effet (transaction inconnue, statut
+ *   non terminal) — un callback ignoré ne prouve pas que la voie marche ;
+ * - `pollingApplied` : conclusions par interrogation (client ou cron) ;
+ * - `adminApplied` : gestes d'un administrateur ;
+ * - `failedProcessing` : signaux enregistrés dont le traitement a levé ;
+ * - `mismatch` : écarts de montant ou de devise.
+ */
+export function summarizeSignals(
+  rows: {
+    source: string;
+    outcome: string;
+    provider: string;
+    _count: { _all: number };
+  }[],
+) {
+  const out = {
+    webhookApplied: 0,
+    webhookDuplicate: 0,
+    webhookIgnored: 0,
+    pollingApplied: 0,
+    adminApplied: 0,
+    failedProcessing: 0,
+    mismatch: 0,
+  };
+  for (const r of rows) {
+    const n = r._count._all;
+    if (r.outcome === 'FAILED_PROCESSING') out.failedProcessing += n;
+    else if (r.outcome === 'MISMATCH') out.mismatch += n;
+    else if (r.source === 'WEBHOOK' && r.provider === 'PAWAPAY') {
+      if (r.outcome === 'APPLIED') out.webhookApplied += n;
+      else if (r.outcome === 'DUPLICATE') out.webhookDuplicate += n;
+      else out.webhookIgnored += n;
+    } else if (
+      (r.source === 'CLIENT_POLL' || r.source === 'RECONCILIATION') &&
+      r.outcome === 'APPLIED'
+    ) {
+      out.pollingApplied += n;
+    } else if (
+      // Historique : avant F-10, la confirmation manuelle était `WEBHOOK` +
+      // `MANUAL`. Elle est rangée ici, pas parmi les webhooks.
+      (r.source === 'ADMIN' ||
+        (r.source === 'WEBHOOK' && r.provider === 'MANUAL')) &&
+      r.outcome === 'APPLIED'
+    ) {
+      out.adminApplied += n;
+    }
+  }
+  return out;
 }
 
 /** Ce que l'exploitant doit faire, déduit de ce qu'on observe. */
@@ -511,7 +580,10 @@ export function diagnoseWebhookReception(input: {
   if (input.webhooksEverReceived > 0) {
     return {
       state: 'ok',
-      summary: `${input.webhooksEverReceived} callback(s) reçus et authentifiés depuis l'origine.`,
+      summary:
+        `${input.webhooksEverReceived} callback(s) pawaPay appliqué(s) ou reconnu(s) ` +
+        "depuis l'origine : la voie nominale a fonctionné. Cela ne prouve pas " +
+        'que chaque transaction est juste — voir le rapprochement.',
       nextSteps: [],
     };
   }

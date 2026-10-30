@@ -42,6 +42,8 @@ describe('RestaurantPayoutService', () => {
     },
     // Compte de reversement relu sous verrou (fix F-08).
     restaurant: { findUniqueOrThrow: jest.fn() },
+    // Lot 2 — écarts de rapprochement ouverts (aucun par défaut).
+    reconciliationItem: { findMany: jest.fn() },
     // Verrou de la ligne `Order` sous lequel naît le reversement (fix F-04).
     $queryRaw: jest.fn(),
     // La transaction reçoit le client lui-même : les assertions sur
@@ -117,6 +119,7 @@ describe('RestaurantPayoutService', () => {
       _sum: { amountXaf: null },
     });
     prisma.refund.findMany.mockResolvedValue([]);
+    prisma.reconciliationItem.findMany.mockResolvedValue([]);
     // Par défaut, le compte relu est celui de la commande, hors délai de carence.
     prisma.restaurant.findUniqueOrThrow.mockImplementation(async () => {
       const order =
@@ -169,6 +172,42 @@ describe('RestaurantPayoutService', () => {
         payoutAmount: 4500,
         currency: 'XAF',
       });
+    });
+
+    it('lot 2 — écart de rapprochement ouvert sur le vendeur → RECONCILIATION_BLOCKED', async () => {
+      prisma.order.findUnique.mockResolvedValue(readyOrder());
+      prisma.reconciliationItem.findMany.mockResolvedValue([
+        { blockScope: 'VENDOR', type: 'AMOUNT_MISMATCH' },
+      ]);
+      const result = await service.checkEligibility('o1');
+      expect(result).toMatchObject({
+        eligible: false,
+        code: 'RECONCILIATION_BLOCKED',
+      });
+      expect(result.reason).toMatch(/de ce vendeur/);
+      // Le filtre porte sur CE vendeur, ou sur un blocage global.
+      expect(prisma.reconciliationItem.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            status: 'OPEN',
+            OR: [
+              { blockScope: 'GLOBAL' },
+              { blockScope: 'VENDOR', restaurantId: 'r1' },
+            ],
+          },
+        }),
+      );
+    });
+
+    it('lot 2 — écart global → le motif dit « versements suspendus »', async () => {
+      prisma.order.findUnique.mockResolvedValue(readyOrder());
+      prisma.reconciliationItem.findMany.mockResolvedValue([
+        { blockScope: 'VENDOR', type: 'AMOUNT_MISMATCH' },
+        { blockScope: 'GLOBAL', type: 'PROVIDER_ONLY' },
+      ]);
+      const result = await service.checkEligibility('o1');
+      expect(result.code).toBe('RECONCILIATION_BLOCKED');
+      expect(result.reason).toMatch(/^Versements suspendus.*PROVIDER_ONLY/);
     });
 
     it('commande introuvable → ORDER_NOT_FOUND', async () => {

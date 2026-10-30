@@ -100,8 +100,21 @@ describe('envValidationSchema — environnements déployés', () => {
   const validate = (env: Record<string, unknown>) =>
     envValidationSchema.validate(env, { abortEarly: false });
 
-  it.each(['staging', 'production'])('%s démarre avec le minimum', (env) => {
-    expect(validate({ ...base, NODE_ENV: env }).error).toBeUndefined();
+  it('staging démarre avec le minimum, MANUAL compris', () => {
+    expect(validate({ ...base, NODE_ENV: 'staging' }).error).toBeUndefined();
+  });
+
+  it('production démarre avec le minimum en PAWAPAY', () => {
+    expect(
+      validate({
+        ...base,
+        NODE_ENV: 'production',
+        PAYMENT_MODE: 'PAWAPAY',
+        PAWAPAY_API_URL: 'https://api.pawapay.io',
+        PAWAPAY_API_TOKEN: 'jeton',
+        PAWAPAY_CALLBACK_IPS: '1.2.3.4',
+      }).error,
+    ).toBeUndefined();
   });
 
   it.each(['staging', 'production'])(
@@ -119,6 +132,71 @@ describe('envValidationSchema — environnements déployés', () => {
       expect(error?.message).toContain('REDIS_URL');
     },
   );
+
+  // ─── F-11 (audit du 28/10/2026) ─────────────────────────────────────────
+  it.each(['staging', 'production'])(
+    '%s refuse de démarrer sans PAYMENT_MODE (plus de repli MANUAL)',
+    (env) => {
+      const { error, value } = validate({
+        ...base,
+        NODE_ENV: env,
+        PAYMENT_MODE: undefined,
+      });
+      expect(error?.message).toContain('PAYMENT_MODE');
+      // Le message nomme la variable sans exposer d'autre valeur.
+      expect(error?.message).not.toContain('rediss://');
+      expect(value.PAYMENT_MODE).toBeUndefined();
+    },
+  );
+
+  it('production refuse PAYMENT_MODE=MANUAL sans dérogation explicite', () => {
+    const { error } = validate({ ...base, NODE_ENV: 'production' });
+    expect(error?.message).toContain(
+      'PAYMENT_MODE=MANUAL est refusé en production',
+    );
+  });
+
+  it.each(['false', '', undefined])(
+    'production refuse MANUAL quand ALLOW_MANUAL_PAYMENTS vaut %p',
+    (flag) => {
+      const { error } = validate({
+        ...base,
+        NODE_ENV: 'production',
+        ALLOW_MANUAL_PAYMENTS: flag,
+      });
+      expect(error).toBeDefined();
+    },
+  );
+
+  it('production accepte MANUAL avec ALLOW_MANUAL_PAYMENTS=true', () => {
+    const { error } = validate({
+      ...base,
+      NODE_ENV: 'production',
+      ALLOW_MANUAL_PAYMENTS: 'true',
+    });
+    expect(error).toBeUndefined();
+  });
+
+  it('sur Render, NODE_ENV absent fait échouer le démarrage', () => {
+    const { error } = validate({
+      ...base,
+      RENDER: 'true',
+      NODE_ENV: undefined,
+    });
+    expect(error?.message).toContain('NODE_ENV');
+  });
+
+  it('hors Render, NODE_ENV absent vaut development et MANUAL reste le défaut', () => {
+    const { error, value } = validate({
+      ...base,
+      PAYMENT_MODE: undefined,
+      ALLOWED_ORIGINS: undefined,
+      REDIS_URL: undefined,
+    });
+    expect(error).toBeUndefined();
+    expect(value.NODE_ENV).toBe('development');
+    expect(value.PAYMENT_MODE).toBe('MANUAL');
+  });
 
   it('le développement reste démarrable sans eux', () => {
     const { error } = validate({

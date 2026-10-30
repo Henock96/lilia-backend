@@ -31,7 +31,10 @@ import {
   PAYOUT_BLOCKING_STATUSES,
   PayoutStateMachine,
 } from '../payout-state.machine';
-import { PaymentEventService } from './payment-event.service';
+import {
+  PaymentEventService,
+  guardSignalOutcome,
+} from './payment-event.service';
 import { lockOrderRow } from '../../orders/order-row-lock';
 import { maskPhone, maskRef, PaymentStatus } from './payment.service';
 import {
@@ -49,6 +52,10 @@ import {
   restoreDebtOfFailedPayout,
   vendorDebtXaf,
 } from '../vendor-balance';
+import {
+  reconciliationBlockMessage,
+  reconciliationPayoutBlock,
+} from '../../ledger/reconciliation-block';
 
 /** Qui a déclenché un versement : un administrateur, ou le worker (F3-07). */
 export type PayoutTrigger = 'MANUAL' | 'AUTO';
@@ -138,7 +145,9 @@ export type PayoutIneligibilityCode =
   | 'VENDOR_PAYOUT_ACCOUNT_COOLING_DOWN'
   | 'PAYOUT_ALREADY_COMPLETED'
   | 'PAYOUT_IN_PROGRESS'
-  | 'PROVIDER_DOES_NOT_SUPPORT_PAYOUT';
+  | 'PROVIDER_DOES_NOT_SUPPORT_PAYOUT'
+  // Lot 2 (30/10/2026) — écart de rapprochement ouvert et bloquant.
+  | 'RECONCILIATION_BLOCKED';
 
 export interface PayoutEligibility {
   eligible: boolean;
@@ -325,6 +334,21 @@ export class RestaurantPayoutService {
         eligible: false,
         code: 'VENDOR_PAYOUT_ACCOUNT_COOLING_DOWN',
         reason: payoutCoolingMessage(coolingUntil),
+      });
+    }
+
+    // Lot 2 — tant qu'un écart de rapprochement bloquant est ouvert (sur ce
+    // vendeur, ou sur le wallet), aucun argent ne part. Manuel comme
+    // automatique : `requestPayout` rejoue cette méthode.
+    const block = await reconciliationPayoutBlock(
+      this.prisma,
+      order.restaurant.id,
+    );
+    if (block) {
+      return withBreakdown({
+        eligible: false,
+        code: 'RECONCILIATION_BLOCKED',
+        reason: reconciliationBlockMessage(block),
       });
     }
 
@@ -765,6 +789,19 @@ export class RestaurantPayoutService {
       });
     }
 
+    // Lot 2 — vérifié AVANT d'effacer la tentative échouée : un versement
+    // bloqué par le rapprochement ne doit pas perdre sa ligne en chemin.
+    const block = await reconciliationPayoutBlock(
+      this.prisma,
+      existing.restaurantId,
+    );
+    if (block) {
+      throw new ConflictException({
+        message: reconciliationBlockMessage(block),
+        code: 'RECONCILIATION_BLOCKED',
+      });
+    }
+
     // Suppression conditionnée sur le statut lu : si le reversement a changé
     // d'état entre la lecture et l'écriture (réconciliation concurrente), on
     // n'efface rien.
@@ -819,6 +856,22 @@ export class RestaurantPayoutService {
       payoutId: payout.id,
     });
 
+    // F-10 (audit du 28/10/2026) — un traitement qui lève marque le signal
+    // `FAILED_PROCESSING` au lieu de le laisser `APPLIED`.
+    return guardSignalOutcome(this.events, eventId, () =>
+      this.applyRecordedPayoutStatus(payout, input, eventId),
+    );
+  }
+
+  private async applyRecordedPayoutStatus(
+    payout: Prisma.RestaurantPayoutGetPayload<{
+      include: {
+        restaurant: { select: { id: true; nom: true; ownerId: true } };
+      };
+    }>,
+    input: { status: ProviderTransactionStatus; source: PaymentEventSource },
+    eventId: string | null,
+  ): Promise<'APPLIED' | 'DUPLICATE' | 'IGNORED' | 'MISMATCH'> {
     if (input.status.state === 'PENDING') {
       await this.events.setOutcome(eventId, PaymentEventOutcome.IGNORED);
       return 'IGNORED';

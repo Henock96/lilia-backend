@@ -7,6 +7,29 @@ import {
 } from '@prisma/client';
 
 import { PrismaService } from '../../../prisma/prisma.service';
+import { PROVEN_WEBHOOK_WHERE } from '../webhook-proof';
+
+/**
+ * Exécute le traitement d'un signal déjà enregistré ; s'il lève, la ligne
+ * passe `FAILED_PROCESSING` et l'erreur remonte inchangée (F-10, audit du
+ * 28/10/2026).
+ *
+ * Sans cela, le signal gardait l'issue `APPLIED` posée par défaut à
+ * l'enregistrement, alors que rien n'avait avancé. Fonction libre et non
+ * méthode : elle ne dépend que de `setOutcome`.
+ */
+export async function guardSignalOutcome<T>(
+  events: Pick<PaymentEventService, 'setOutcome'>,
+  eventId: string | null,
+  process: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await process();
+  } catch (err) {
+    await events.setOutcome(eventId, PaymentEventOutcome.FAILED_PROCESSING);
+    throw err;
+  }
+}
 
 /**
  * Journal des signaux reçus d'un prestataire — callbacks et réponses de
@@ -146,10 +169,13 @@ export class PaymentEventService {
     return out;
   }
 
-  /** Date du dernier callback prestataire reçu, `null` si jamais aucun. */
+  /**
+   * Date du dernier callback pawaPay **appliqué ou reconnu** (F-10), `null` si
+   * jamais aucun. Une confirmation manuelle ou un callback ignoré n'en est pas.
+   */
   async lastWebhookAt(): Promise<Date | null> {
     const last = await this.prisma.paymentEvent.findFirst({
-      where: { source: PaymentEventSource.WEBHOOK },
+      where: PROVEN_WEBHOOK_WHERE,
       orderBy: { receivedAt: 'desc' },
       select: { receivedAt: true },
     });

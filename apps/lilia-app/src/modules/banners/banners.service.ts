@@ -9,6 +9,20 @@ import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { CreateBannerDto } from './dto/create-banner.dto';
 import { UpdateBannerDto } from './dto/update-banner.dto';
 
+/** Projection publique d'une bannière — liste blanche (F-31). */
+export const PUBLIC_BANNER_SELECT = {
+  id: true,
+  title: true,
+  imageUrl: true,
+  description: true,
+  linkUrl: true,
+  isActive: true,
+  displayOrder: true,
+  restaurantId: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.BannerSelect;
+
 @Injectable()
 export class BannersService {
   constructor(private prisma: PrismaService) {}
@@ -29,14 +43,27 @@ export class BannersService {
 
     const banners = await this.prisma.banner.findMany({
       where,
+      select: PUBLIC_BANNER_SELECT,
       orderBy: { displayOrder: 'asc' },
     });
 
     return { data: banners, message: 'Bannières récupérées avec succès' };
   }
 
+  /**
+   * Route PUBLIQUE. Mêmes conditions que la liste (audit du 28/10/2026,
+   * F-31) : elle servait n'importe quelle bannière par identifiant — inactive,
+   * ou d'un vendeur suspendu. Aucun client ne l'appelle pour l'édition.
+   */
   async findOne(id: string) {
-    const banner = await this.prisma.banner.findUnique({ where: { id } });
+    const banner = await this.prisma.banner.findFirst({
+      where: {
+        id,
+        isActive: true,
+        OR: [{ restaurantId: null }, { restaurant: PUBLIC_VENDOR_WHERE }],
+      },
+      select: PUBLIC_BANNER_SELECT,
+    });
     if (!banner) {
       throw new NotFoundException('Bannière non trouvée');
     }

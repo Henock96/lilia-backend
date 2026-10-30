@@ -25,6 +25,8 @@ import { PublicHolidaysService } from './public-holidays.service';
 import { VendorOnboardingService } from './vendor-onboarding.service';
 import { PreorderValidatorService } from './preorder-validator.service';
 import { PlatformSettingsCoreModule } from '../platform-settings/platform-settings-core.module';
+import { AdminVendorReachabilityController } from './vendor-reachability.controller';
+import { VendorReachabilityService } from './vendor-reachability.service';
 
 @Module({
   imports: [
@@ -51,8 +53,10 @@ import { PlatformSettingsCoreModule } from '../platform-settings/platform-settin
     // F3-03 — pause, congés, jours fériés.
     VendorClosuresController,
     AdminPublicHolidaysController,
+    AdminVendorReachabilityController,
   ],
   providers: [
+    VendorReachabilityService,
     VendorsService,
     VendorOpeningService,
     VendorClosuresService,

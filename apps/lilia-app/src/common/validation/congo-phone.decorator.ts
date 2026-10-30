@@ -15,6 +15,19 @@ const PHONE_SEPARATORS = /[\s.\-()]/g;
  */
 const CONGO_MOBILE = /^(\+?242)?0?[456]\d{7}$/;
 
+/**
+ * Même règle, hors DTO : le numéro sans séparateurs s'il est un mobile
+ * congolais, sinon `null`. Sert quand le numéro vient du compte (`User.phone`)
+ * et non du corps de la requête (Lot 4, réservations).
+ */
+export function cleanCongoMobilePhone(
+  raw: string | null | undefined,
+): string | null {
+  if (!raw) return null;
+  const cleaned = raw.replace(PHONE_SEPARATORS, '');
+  return CONGO_MOBILE.test(cleaned) ? cleaned : null;
+}
+
 export const CONGO_PHONE_MESSAGE =
   'Numéro de téléphone congolais invalide (ex : 06 123 45 67)';
 

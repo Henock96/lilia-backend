@@ -9,6 +9,13 @@ import { OutboxService } from '../../apps/lilia-app/src/modules/outbox/outbox.se
 import { PaymentEventService } from '../../apps/lilia-app/src/modules/payments/services/payment-event.service';
 import { RefundExecutionService } from '../../apps/lilia-app/src/modules/refunds/refund-execution.service';
 import { RefundsService } from '../../apps/lilia-app/src/modules/refunds/refunds.service';
+
+/** F-12 — preuve d'une clôture déclarée (synthétique). */
+const PROOF = {
+  method: 'MOBILE_MONEY_MANUAL' as const,
+  externalReference: 'MP-TEST-0002',
+  paidAt: new Date('2026-10-29T09:00:00Z'),
+};
 import { refundClosurePayload } from '../../apps/lilia-app/src/modules/refunds/refund-approval.policy';
 
 /**
@@ -387,6 +394,7 @@ describeIfDb('Approbations à deux administrateurs (PostgreSQL réel)', () => {
         { id: refundId, amount: 80_000 },
         closeAs,
         notes,
+        closeAs === 'COMPLETED' ? PROOF : null,
       ),
       amountXaf: 80_000,
       requestedBy: A1,
@@ -399,7 +407,9 @@ describeIfDb('Approbations à deux administrateurs (PostgreSQL réel)', () => {
     const refund = await bigRefund(80_000);
     const refunds = new RefundsService(prisma as never);
     await expect(
-      refunds.updateStatus(refund.id, 'COMPLETED', A1, 'Viré à la main'),
+      refunds.updateStatus(refund.id, 'COMPLETED', A1, 'Viré à la main', {
+        proof: PROOF,
+      }),
     ).rejects.toMatchObject({ response: { code: 'APPROVAL_REQUIRED' } });
     expect((await refundRow(refund.id)).status).toBe('PENDING');
   });
@@ -435,6 +445,28 @@ describeIfDb('Approbations à deux administrateurs (PostgreSQL réel)', () => {
       approvalId: approval.id,
       approvedBy: A2,
     });
+  });
+
+  it('F-12 — la clôture approuvée écrit la preuve exacte de la demande', async () => {
+    const refund = await bigRefund(80_000);
+    const approval = await requestClosure(refund.id, 'COMPLETED');
+    await approvals.approve(approval.id, A2);
+    const row = await refundRow(refund.id);
+    expect(row.status).toBe('COMPLETED');
+    expect(row.closureMethod).toBe('MOBILE_MONEY_MANUAL');
+    expect(row.externalReference).toBe('MP-TEST-0002');
+    expect(row.externalPaidAt).toEqual(PROOF.paidAt);
+  });
+
+  it('F-12 — la base refuse une clôture « remboursé » sans preuve, quel que soit l’écrivain', async () => {
+    const refund = await bigRefund(80_000);
+    await expect(
+      prisma.$executeRaw`UPDATE "Refund" SET status = 'COMPLETED' WHERE id = ${refund.id}`,
+    ).rejects.toThrow(/Refund_declared_closure_has_proof/);
+    await expect(
+      prisma.$executeRaw`UPDATE "Refund" SET status = 'COMPLETED', "closureMethod" = 'CASH', "externalReference" = 'ab', "externalPaidAt" = now() WHERE id = ${refund.id}`,
+    ).rejects.toThrow(/Refund_declared_closure_has_proof/);
+    expect((await refundRow(refund.id)).status).toBe('PENDING');
   });
 
   it('R-01 — le demandeur ne peut pas approuver sa propre clôture', async () => {

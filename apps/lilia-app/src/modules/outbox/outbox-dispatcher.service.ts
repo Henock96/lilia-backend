@@ -6,9 +6,17 @@ import * as Sentry from '@sentry/nestjs';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { CronLockService } from '../../common/locks/cron-lock.service';
-import { NotificationsService } from '../notifications/notifications.service';
+import {
+  NotificationsService,
+  pushWasAccepted,
+} from '../notifications/notifications.service';
+import { AdminAlertService } from '../notifications/admin-alert.service';
 import { SmsService, SmsOutcome } from '../sms/sms.service';
 import { OutboxService } from './outbox.service';
+import {
+  ORDER_PAID_ESCALATION_MINUTES,
+  pickEscalationPhone,
+} from './vendor-contact';
 import { VendorInvitationService } from '../vendors/vendor-invitation.service';
 import { VENDOR_INVITATION_EVENT } from '../vendors/events/vendor-events';
 
@@ -35,7 +43,7 @@ export class OutboxDispatcherService {
   private static readonly BATCH_SIZE = 50;
   private static readonly MAX_ATTEMPTS = 8;
   /** Au-delà, on ne compte plus sur le push : SMS au vendeur. */
-  private static readonly ESCALATION_MINUTES = 10;
+  private static readonly ESCALATION_MINUTES = ORDER_PAID_ESCALATION_MINUTES;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -44,6 +52,7 @@ export class OutboxDispatcherService {
     private readonly sms: SmsService,
     private readonly lock: CronLockService,
     private readonly invitations: VendorInvitationService,
+    private readonly adminAlerts: AdminAlertService,
   ) {}
 
   /**
@@ -134,6 +143,64 @@ export class OutboxDispatcherService {
     );
   }
 
+  /**
+   * SMS de secours au vendeur (F-02) : numéro du compte, sinon de la
+   * boutique. Quand aucun SMS ne peut partir — pas de numéro exploitable,
+   * Infobip non configuré ou en échec — les administrateurs sont prévenus,
+   * **une fois** par commande : un humain doit appeler la boutique.
+   *
+   * L'événement reste ouvert dans tous les cas où le SMS n'est pas parti ;
+   * il est rejoué au rythme du backoff.
+   */
+  private async escalateBySms(
+    event: OutboxEvent,
+    input: {
+      orderId: string;
+      message: string;
+      ageMinutes: number;
+      shopName: string;
+      ownerPhone: string | null | undefined;
+      shopPhone: string | null | undefined;
+    },
+  ): Promise<void> {
+    const target = pickEscalationPhone({
+      ownerPhone: input.ownerPhone,
+      shopPhone: input.shopPhone,
+    });
+
+    let outcome: SmsOutcome | 'NO_PHONE';
+    if (target) {
+      outcome = await this.sms.send(target.phone, input.message);
+      await this.acknowledgeEscalation(
+        outcome,
+        event.id,
+        input.orderId,
+        input.ageMinutes,
+      );
+      if (outcome === 'SENT') return;
+    } else {
+      outcome = 'NO_PHONE';
+      this.logger.error(
+        `Escalade impossible pour la commande ${input.orderId} : aucun numéro mobile exploitable (compte ni boutique).`,
+      );
+    }
+
+    if (!(await this.outbox.claimUnreachableAlert(event.id))) return;
+    const why =
+      outcome === 'NO_PHONE'
+        ? 'aucun numéro mobile exploitable'
+        : outcome === 'SKIPPED'
+          ? 'service SMS non configuré'
+          : 'échec de l’envoi SMS';
+    await this.adminAlerts.notify({
+      title: '📵 Vendeur injoignable — commande payée',
+      body: `${input.shopName} n'a reçu ni push ni SMS pour la commande #${input.orderId.slice(-6).toUpperCase()} (${why}). Appelez la boutique.`,
+      // Pas de `href` : le back-office n'a pas de page par commande, et la
+      // référence courte suffit pour la retrouver dans « Commandes ».
+      data: { type: 'vendor_unreachable', orderId: input.orderId },
+    });
+  }
+
   private async dispatchOne(event: OutboxEvent): Promise<void> {
     switch (event.type) {
       case 'order.created':
@@ -177,7 +244,12 @@ export class OutboxDispatcherService {
         total: true,
         createdAt: true,
         restaurant: {
-          select: { nom: true, ownerId: true, owner: { select: { phone: true } } },
+          select: {
+            nom: true,
+            phone: true,
+            ownerId: true,
+            owner: { select: { phone: true } },
+          },
         },
       },
     });
@@ -211,18 +283,14 @@ export class OutboxDispatcherService {
       ageMinutes >= OutboxDispatcherService.ESCALATION_MINUTES;
 
     if (shouldEscalate) {
-      const phone = order.restaurant.owner?.phone;
-      if (phone) {
-        const outcome = await this.sms.send(
-          phone,
-          `Lilia Food : une commande de ${Math.round(order.total)} FCFA attend depuis ${Math.round(ageMinutes)} min. Ouvrez l'application pour la preparer.`,
-        );
-        await this.acknowledgeEscalation(outcome, event.id, order.id, ageMinutes);
-      } else {
-        this.logger.error(
-          `Escalade impossible pour la commande ${order.id} : le vendeur n'a pas de téléphone renseigné.`,
-        );
-      }
+      await this.escalateBySms(event, {
+        orderId: order.id,
+        message: `Lilia Food : une commande de ${Math.round(order.total)} FCFA attend depuis ${Math.round(ageMinutes)} min. Ouvrez l'application pour la preparer.`,
+        ageMinutes,
+        shopName: order.restaurant.nom,
+        ownerPhone: order.restaurant.owner?.phone,
+        shopPhone: order.restaurant.phone,
+      });
     }
 
     // On NE marque pas SENT : tant que la commande n'est pas prise en charge,
@@ -256,6 +324,7 @@ export class OutboxDispatcherService {
         restaurant: {
           select: {
             nom: true,
+            phone: true,
             ownerId: true,
             owner: { select: { phone: true } },
           },
@@ -275,7 +344,7 @@ export class OutboxDispatcherService {
       return;
     }
 
-    await this.notifications.sendPushNotification(
+    const push = await this.notifications.sendPushNotification(
       order.restaurant.ownerId,
       '🔔 Commande payée en attente',
       `${Math.round(order.total)} FCFA — à accepter`,
@@ -294,21 +363,22 @@ export class OutboxDispatcherService {
     const escalationDue = reminderAt
       ? Date.now() >= reminderAt.getTime()
       : ageMinutes >= OutboxDispatcherService.ESCALATION_MINUTES;
-    const shouldEscalate = !event.escalatedAt && escalationDue;
+    // F-01 (audit du 28/10/2026) — aucun appareil n'a accepté le push (pas
+    // d'app, pas de token, Firebase en panne) : attendre l'échéance ne sert à
+    // rien, le vendeur ne peut pas avoir été prévenu. Le SMS part dès cette
+    // reprise.
+    const shouldEscalate =
+      !event.escalatedAt && (escalationDue || !pushWasAccepted(push));
 
     if (shouldEscalate) {
-      const phone = order.restaurant.owner?.phone;
-      if (phone) {
-        const outcome = await this.sms.send(
-          phone,
-          `Lilia Food : une commande payee de ${Math.round(order.total)} FCFA attend depuis ${Math.round(ageMinutes)} min. Ouvrez l'application pour la preparer.`,
-        );
-        await this.acknowledgeEscalation(outcome, event.id, order.id, ageMinutes);
-      } else {
-        this.logger.error(
-          `Escalade impossible pour la commande ${order.id} : le vendeur n'a pas de téléphone renseigné.`,
-        );
-      }
+      await this.escalateBySms(event, {
+        orderId: order.id,
+        message: `Lilia Food : une commande payee de ${Math.round(order.total)} FCFA attend depuis ${Math.round(ageMinutes)} min. Ouvrez l'application pour la preparer.`,
+        ageMinutes,
+        shopName: order.restaurant.nom,
+        ownerPhone: order.restaurant.owner?.phone,
+        shopPhone: order.restaurant.phone,
+      });
     }
 
     // On NE marque pas SENT : tant que la commande n'est pas acceptée,

@@ -12,6 +12,7 @@ import {
 import { ManualPaymentProvider } from './providers/manual.provider';
 import { MtnMomoProvider } from './providers/mtn-momo.provider';
 import { PawaPayProvider } from './providers/pawapay/pawapay.provider';
+import { readPaymentMode } from '../../config/payment-mode';
 
 /**
  * Modes d'encaissement possibles, pilotés par `PAYMENT_MODE`.
@@ -52,7 +53,17 @@ export class PaymentProviderRegistry {
     mtn: MtnMomoProvider,
     pawapay: PawaPayProvider,
   ) {
-    this.mode = config.get<PaymentMode>('PAYMENT_MODE', PaymentMode.MANUAL);
+    this.mode = readPaymentMode(config) as PaymentMode;
+    if (
+      this.mode === PaymentMode.MANUAL &&
+      config.get<string>('NODE_ENV') === 'production'
+    ) {
+      // Seul chemin possible : `ALLOW_MANUAL_PAYMENTS=true` (env.validation).
+      this.logger.warn(
+        '⚠️ Production en PAYMENT_MODE=MANUAL par dérogation ' +
+          '(ALLOW_MANUAL_PAYMENTS=true) : les paiements sont déclarés à la main.',
+      );
+    }
     this.byName = new Map<PaymentProviderName, PaymentProvider>([
       [manual.name, manual],
       [mtn.name, mtn],

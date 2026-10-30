@@ -24,6 +24,11 @@ import {
   refundClosurePayload,
 } from './refund-approval.policy';
 import { recordClawbackIfDue } from '../payments/vendor-balance';
+import {
+  RefundClosureProof,
+  assertDeclaredClosureProof,
+  refundProofLevel,
+} from './refund-closure-proof';
 
 /**
  * Remboursements (fix H5 — audit du 28/08/2026).
@@ -164,7 +169,12 @@ export class RefundsService {
       this.prisma.refund.count({ where }),
     ]);
 
-    return { data: refunds, meta: { page, limit, total } };
+    // F-12 — `proofLevel` dit qui affirme le remboursement : le prestataire,
+    // un administrateur avec référence, ou personne (historique).
+    return {
+      data: refunds.map((r) => ({ ...r, proofLevel: refundProofLevel(r) })),
+      meta: { page, limit, total },
+    };
   }
 
   async findOne(id: string) {
@@ -173,7 +183,7 @@ export class RefundsService {
       include: { order: true, payment: true, lines: true },
     });
     if (!refund) throw new NotFoundException('Remboursement introuvable.');
-    return { data: refund };
+    return { data: { ...refund, proofLevel: refundProofLevel(refund) } };
   }
 
   /**
@@ -186,7 +196,16 @@ export class RefundsService {
     status: RefundStatus,
     adminId: string,
     notes?: string,
-    opts: { approvalId?: string; approvedBy?: string } = {},
+    opts: {
+      approvalId?: string;
+      approvedBy?: string;
+      /** F-12 — preuve d'une clôture déclarée (obligatoire pour COMPLETED). */
+      proof?: Partial<{
+        method: string;
+        externalReference: string;
+        paidAt: Date | string;
+      }>;
+    } = {},
   ) {
     const refund = await this.prisma.refund.findUnique({ where: { id } });
     if (!refund) throw new NotFoundException('Remboursement introuvable.');
@@ -236,6 +255,15 @@ export class RefundsService {
     const isFinal =
       status === RefundStatus.COMPLETED || status === RefundStatus.REJECTED;
 
+    // F-12 (audit du 28/10/2026) — une clôture « remboursé » à la main est une
+    // DÉCLARATION : elle exige sa preuve (méthode, référence, date), vérifiée
+    // avant toute demande d'approbation. Le chemin du prestataire ne passe pas
+    // ici (`RefundProviderService`, `closureMethod = PROVIDER`).
+    const proof: RefundClosureProof | null =
+      status === RefundStatus.COMPLETED
+        ? assertDeclaredClosureProof(opts.proof)
+        : null;
+
     // R-01 — même seuil que le virement (`refund-approval.policy.ts`), posé
     // APRÈS les refus définitifs : une demande d'approbation ne doit pas naître
     // pour un geste que ce service refuserait de toute façon. Le contrôleur
@@ -258,7 +286,7 @@ export class RefundsService {
           approvalId: opts.approvalId,
           kind: ApprovalKind.REFUND_EXECUTION,
           refId: refund.id,
-          payload: refundClosurePayload(refund, status, notes),
+          payload: refundClosurePayload(refund, status, notes, proof),
         });
       }
       const moved = await tx.refund.updateMany({
@@ -268,6 +296,13 @@ export class RefundsService {
           notes: notes ?? refund.notes,
           processedBy: adminId,
           processedAt: isFinal ? new Date() : refund.processedAt,
+          ...(proof
+            ? {
+                closureMethod: proof.method,
+                externalReference: proof.externalReference,
+                externalPaidAt: proof.paidAt,
+              }
+            : {}),
         },
       });
       // R-01 — l'échec est levé DANS la transaction : une approbation
@@ -297,6 +332,15 @@ export class RefundsService {
             from: refund.status,
             status,
             amount: refund.amount,
+            ...(proof
+              ? {
+                  proof: {
+                    method: proof.method,
+                    externalReference: proof.externalReference,
+                    paidAt: proof.paidAt.toISOString(),
+                  },
+                }
+              : {}),
             ...(opts.approvalId
               ? {
                   approvalId: opts.approvalId,

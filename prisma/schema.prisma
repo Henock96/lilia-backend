@@ -322,6 +322,11 @@ model FcmToken {
   id        String   @id @default(cuid())
   token     String   @unique
   createdAt DateTime @default(now())
+  /// Dernière inscription de ce token par une app (audit du 28/10/2026, F-03).
+  /// `createdAt` ne bouge pas quand l'upsert transfère ou renouvelle le token :
+  /// sans cette colonne, l'administration ne pouvait pas dire si un vendeur
+  /// avait rouvert son app depuis des semaines. Reprise : `= createdAt`.
+  lastRegisteredAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id])
   userId    String
 
@@ -2261,6 +2266,10 @@ enum PaymentEventSource {
   RECONCILIATION // interrogation par le cron
   CLIENT_POLL // déclenché par GET /payments/:id/status
   INITIATION // réponse synchrone à la demande d'opération
+  /// Geste d'un administrateur (confirmation manuelle, mode MANUAL). Était
+  /// enregistré `WEBHOOK` : un humain se faisait passer pour le prestataire
+  /// dans le compteur de santé des webhooks (audit du 28/10/2026, F-10).
+  ADMIN
 }
 
 enum PaymentEventOutcome {
@@ -2268,6 +2277,10 @@ enum PaymentEventOutcome {
   DUPLICATE // état déjà atteint — rejeu sans effet
   IGNORED // transaction inconnue, ou statut non terminal
   MISMATCH // montant/devise incohérents ⇒ aucune transition, incident ouvert
+  /// Le traitement a levé après l'enregistrement du signal (base indisponible,
+  /// verrou…) : rien n'a avancé, le prestataire rejouera. La ligne restait
+  /// `APPLIED`, valeur posée avant traitement (audit du 28/10/2026, F-10).
+  FAILED_PROCESSING
 }
 
 enum DayOfWeek {
@@ -2837,6 +2850,25 @@ model Refund {
   failureCode    String?
   failureMessage String?
 
+  // ─── Preuve de clôture (audit du 28/10/2026, F-12) ───────────────────────
+  //
+  // `COMPLETED` disait « l'argent est revenu au client » sans dire QUI
+  // l'affirmait : un virement confirmé par pawaPay et une déclaration d'admin
+  // sans référence avaient le même statut. Ces colonnes le disent.
+
+  /// Comment le remboursement a été conclu. `TEXT` + CHECK (règle 14) :
+  /// `PROVIDER` (confirmé par le prestataire), `MOBILE_MONEY_MANUAL`, `CASH`,
+  /// `BANK_TRANSFER`, `OTHER` (déclarés par un administrateur, avec
+  /// référence). `null` = historique antérieur à F-12, non qualifié.
+  closureMethod     String?
+  /// Référence opposable d'un remboursement déclaré : numéro de transaction
+  /// Mobile Money, de reçu, de virement. Obligatoire pour toute clôture
+  /// déclarée depuis F-12 (CHECK `Refund_declared_closure_has_proof`).
+  externalReference String?
+  /// Instant déclaré du remboursement hors prestataire (≠ `processedAt`,
+  /// instant de la saisie).
+  externalPaidAt    DateTime?
+
   // ─── Remboursements partiels (F3-06, septembre 2026) ─────────────────────
   //
   // `@@unique([orderId])` a disparu : une commande peut être remboursée en
@@ -3091,7 +3123,11 @@ model PlatformSettings {
   /// panier (`total = subTotal + deliveryFee + serviceFee - discount`).
   /// Couvrent le fonctionnement, la technique, les frais de paiement et le
   /// support de Lilia Food.
-  serviceFeePercent Float @default(8)
+  ///
+  /// Politique commerciale en vigueur : **15 %** (décision du 29/10/2026). Le
+  /// défaut ne vaut que pour une ligne CRÉÉE (base vierge, préproduction) ;
+  /// il ne réécrit jamais la ligne `singleton` déjà enregistrée en production.
+  serviceFeePercent Float @default(15)
 
   /// FRAIS DE SERVICE des ÉPICERIES (`vendorType = GROCERY`), en points de
   /// base (500 = 5 %). Décision D-4 du 10/10/2026 : un taux commun à toutes
@@ -3112,7 +3148,11 @@ model PlatformSettings {
   /// ⚠️ Ne jamais écrire ce taux en dur dans le code : il n'est pas arrêté, et
   /// il est appelé à varier par vendeur. Le calcul passe TOUJOURS par
   /// `RestaurantPayoutService.resolveCommissionPercent`.
-  restaurantCommissionPercent Float @default(10)
+  ///
+  /// Politique de lancement : **0 %**, volontairement (décision du 29/10/2026).
+  /// Le défaut historique de 10 % ne doit jamais s'appliquer à une base neuve.
+  /// Comme ci-dessus, il ne touche pas la ligne déjà enregistrée.
+  restaurantCommissionPercent Float @default(0)
 
   /// PART DU LIVREUR sur les frais de livraison, en pourcentage.
   ///
@@ -3739,4 +3779,177 @@ model ReservationWindow {
   createdAt    DateTime   @default(now())
 
   @@index([restaurantId, dayOfWeek])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GRAND LIVRE FINANCIER (durcissement, lot 2 — 30/10/2026)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Journal en partie double, AJOUT SEUL : chaque fait d'argent durable
+// (encaissement abouti, commande livrée, remboursement conclu, versement
+// abouti, règlement livreur, correction vendeur) donne UNE transaction dont
+// les lignes s'annulent. Gabarits et équilibre : `modules/ledger/`.
+//
+// Garanties portées par la base (migration `ledger`) :
+//  · somme des lignes d'une transaction = 0 (trigger différé) ;
+//  · `UPDATE` / `DELETE` refusés sur les deux tables (une correction est une
+//    contre-passation, jamais une réécriture) ;
+//  · une clé `sourceEventKey` par fait (idempotence, concurrence comprise) ;
+//  · vocabulaires bornés par CHECK (`TEXT`, règle 14).
+
+/// Une transaction équilibrée : un fait source, une seule fois.
+model LedgerTransaction {
+  id             String             @id @default(cuid())
+  /// `COLLECTION`, `ACQUISITION`, `REFUND`, `PAYOUT`… (`LEDGER_KINDS`).
+  kind           String
+  /// Table du fait source (`Payment`, `Order`, `Refund`…) et son identifiant.
+  sourceType     String
+  sourceId       String
+  /// Clé d'idempotence (`payment:<id>:success`…) : un fait, une transaction.
+  sourceEventKey String             @unique
+  /// D'où vient la preuve du fait (`WEBHOOK`, `RECONCILIATION`, `ADMIN`…).
+  origin         String
+  /// `LIVE` (écrit au fil de l'eau) ou `BACKFILL` (reprise de l'historique).
+  postingMode    String             @default("LIVE")
+  /// Instant du fait (paiement abouti, livraison…), pas de l'écriture.
+  occurredAt     DateTime
+  recordedAt     DateTime           @default(now())
+  /// Auteur d'un geste manuel (contre-passation) ; `null` = système.
+  actorUserId    String?
+  /// Transaction que celle-ci contre-passe — une seule fois.
+  reversesTxId   String?            @unique
+  reverses       LedgerTransaction? @relation("LedgerReversal", fields: [reversesTxId], references: [id], onDelete: Restrict)
+  reversedBy     LedgerTransaction? @relation("LedgerReversal")
+  /// Référence opposable : transaction prestataire, reçu, virement.
+  evidenceRef    String?
+  note           String?
+  entries        LedgerEntry[]
+
+  @@index([sourceType, sourceId])
+  @@index([occurredAt])
+}
+
+/// Une ligne : montant XAF signé (débit > 0, crédit < 0) sur un compte.
+model LedgerEntry {
+  id          String            @id @default(cuid())
+  txId        String
+  tx          LedgerTransaction @relation(fields: [txId], references: [id], onDelete: Restrict)
+  /// `psp:PAWAPAY`, `vendor_payable`, `clearing:order`… (`LEDGER_ACCOUNT_PATTERN`).
+  account     String
+  /// Sous-compte : `ORDER`, `VENDOR`, `DRIVER` — et son identifiant.
+  subjectType String?
+  subjectId   String?
+  amountXaf   Int
+  currency    String            @default("XAF")
+
+  @@index([account, subjectId])
+  @@index([txId])
+}
+
+/// Fait source qui n'a pas pu être écrit sans inventer (total incohérent,
+/// livreur manquant…) : listé pour arbitrage humain, rejoué une fois résolu.
+model LedgerPostingException {
+  id             String    @id @default(cuid())
+  sourceEventKey String    @unique
+  sourceType     String
+  sourceId       String
+  reason         String
+  detail         String
+  firstSeenAt    DateTime  @default(now())
+  lastSeenAt     DateTime  @default(now())
+  resolvedAt     DateTime?
+  resolvedBy     String?
+  resolutionNote String?
+}
+
+/// Commande EXCLUE du grand livre (commande de test), sur liste explicite
+/// validée par un humain — jamais par heuristique. Ses faits ne sont pas
+/// écrits ; le rapport de reprise les compte à part.
+model LedgerExcludedOrder {
+  orderId   String   @id
+  reason    String
+  createdBy String
+  createdAt DateTime @default(now())
+}
+
+// ─── Rapprochement Lilia ↔ prestataire (durcissement, lot 2, 30/10/2026) ────
+//
+// Un passage compare un export prestataire (normalisé) et l'état de la base ;
+// chaque écart devient un ÉLÉMENT, identifié par une clé stable (`itemKey`) :
+// rejouer le même export ne crée rien, un écart déjà connu est « revu », pas
+// dupliqué. Un élément ne se ferme JAMAIS tout seul : un humain le résout, avec
+// un motif. Les éléments ouverts bloquants arrêtent les versements (vendeur ou
+// global, `blockScope`). Règles : `modules/ledger/reconciliation-rules.ts`.
+
+/// Un passage de rapprochement.
+model ReconciliationRun {
+  id               String                    @id @default(cuid())
+  /// `PROVIDER_EXPORT` (export importé) ou `INTERNAL_SCAN` (base seule).
+  kind             String
+  provider         String                    @default("PAWAPAY")
+  periodStart      DateTime
+  periodEnd        DateTime
+  /// SHA-256 de l'export normalisé : le même export ne s'importe qu'une fois.
+  sourceHash       String?
+  rowCount         Int                       @default(0)
+  /// Solde du wallet déclaré à la fin de la période, s'il est fourni.
+  walletBalanceXaf Int?
+  findingsCount    Int                       @default(0)
+  createdBy        String
+  createdAt        DateTime                  @default(now())
+  events           ReconciliationItemEvent[]
+
+  @@unique([provider, sourceHash])
+  @@index([createdAt])
+}
+
+/// Un écart constaté — ouvert jusqu'à résolution motivée.
+model ReconciliationItem {
+  id             String                    @id @default(cuid())
+  /// `<TYPE>:<clé>` — stable d'un passage à l'autre.
+  itemKey        String                    @unique
+  type           String
+  severity       String
+  /// `VENDOR`, `GLOBAL` ou `NONE` — figé à l'ouverture d'après les règles.
+  blockScope     String
+  /// `OPEN` ou `RESOLVED`.
+  status         String                    @default("OPEN")
+  restaurantId   String?
+  orderId        String?
+  paymentId      String?
+  payoutId       String?
+  refundId       String?
+  externalId     String?
+  expectedXaf    Int?
+  actualXaf      Int?
+  detail         String
+  firstRunId     String?
+  lastRunId      String?
+  firstSeenAt    DateTime                  @default(now())
+  lastSeenAt     DateTime                  @default(now())
+  /// `EXPLAINED`, `CORRECTED` ou `WRITTEN_OFF`.
+  resolutionKind String?
+  resolutionNote String?
+  resolvedAt     DateTime?
+  resolvedBy     String?
+  events         ReconciliationItemEvent[]
+
+  @@index([status, blockScope, restaurantId])
+  @@index([type, status])
+}
+
+/// Journal d'un élément (ouverture, réouverture, résolution, note) — ajout seul.
+model ReconciliationItemEvent {
+  id          String             @id @default(cuid())
+  itemId      String
+  item        ReconciliationItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  /// `OPENED`, `REOPENED`, `RESOLVED` ou `NOTE`.
+  kind        String
+  runId       String?
+  run         ReconciliationRun? @relation(fields: [runId], references: [id], onDelete: Restrict)
+  actorUserId String?
+  note        String?
+  createdAt   DateTime           @default(now())
+
+  @@index([itemId, createdAt])
 }

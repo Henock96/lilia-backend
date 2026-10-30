@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { CreateReviewDto, UpdateReviewDto } from './dto';
+import { PUBLIC_REVIEW_SELECT } from './review-public-projection';
 
 @Injectable()
 export class ReviewsService {
@@ -129,15 +130,8 @@ export class ReviewsService {
     const [reviews, total] = await Promise.all([
       this.prisma.review.findMany({
         where: { restaurantId },
-        include: {
-          user: {
-            select: {
-              id: true,
-              nom: true,
-              imageUrl: true,
-            },
-          },
-        },
+        // F-30 — route publique : liste blanche, jamais `include:`.
+        select: PUBLIC_REVIEW_SELECT,
         orderBy: {
           createdAt: 'desc',
         },
@@ -222,22 +216,13 @@ export class ReviewsService {
    * Récupérer un avis par son ID
    */
   async findOne(id: string) {
-    const review = await this.prisma.review.findUnique({
-      where: { id },
-      include: {
-        user: {
-          select: {
-            id: true,
-            nom: true,
-            imageUrl: true,
-          },
-        },
-        restaurant: {
-          select: {
-            id: true,
-            nom: true,
-          },
-        },
+    // F-30 — route publique : liste blanche, et seulement les avis d'une
+    // boutique visible (un avis d'un vendeur suspendu ne se lit plus par id).
+    const review = await this.prisma.review.findFirst({
+      where: { id, restaurant: PUBLIC_VENDOR_WHERE },
+      select: {
+        ...PUBLIC_REVIEW_SELECT,
+        restaurant: { select: { id: true, nom: true } },
       },
     });
 

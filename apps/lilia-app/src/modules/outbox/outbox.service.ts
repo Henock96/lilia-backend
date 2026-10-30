@@ -126,6 +126,43 @@ export class OutboxService {
     });
   }
 
+  /**
+   * Reporte la prochaine reprise sans compter de tentative.
+   *
+   * Sert au chemin rapide de `order.paid` : un push **accepté par Firebase**
+   * ne prouve pas que le vendeur l'a vu (téléphone éteint, économiseur de
+   * batterie). L'obligation reste donc ouverte jusqu'à ce que la commande
+   * quitte `PAYER` ; on évite seulement un rappel immédiat en doublon.
+   * Conditionné sur `PENDING` : une ligne acquittée entre-temps reste close.
+   */
+  async deferUntil(id: string, at: Date): Promise<void> {
+    await this.prisma.outboxEvent
+      .updateMany({
+        where: { id, status: OutboxEventStatus.PENDING },
+        data: { nextAttemptAt: at },
+      })
+      .catch((err) =>
+        this.logger.error(
+          `Report de l'outbox ${id} échoué : ${(err as Error).message}`,
+        ),
+      );
+  }
+
+  /**
+   * Pose, une seule fois, la marque « vendeur injoignable signalé » dans le
+   * `payload` de l'événement, pour ne pas répéter l'alerte à chaque reprise.
+   *
+   * Rend `true` seulement pour l'appel qui pose la marque : deux reprises
+   * concurrentes n'alertent pas deux fois.
+   */
+  async claimUnreachableAlert(id: string): Promise<boolean> {
+    const updated = await this.prisma.$executeRaw`
+      UPDATE "OutboxEvent"
+      SET payload = payload || jsonb_build_object('unreachableAlertedAt', to_jsonb(now()))
+      WHERE id = ${id} AND NOT (payload ? 'unreachableAlertedAt')`;
+    return updated > 0;
+  }
+
   async markEscalated(id: string) {
     await this.prisma.outboxEvent.update({
       where: { id },

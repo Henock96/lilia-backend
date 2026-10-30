@@ -32,7 +32,9 @@ describe('OutboxDispatcherService', () => {
     markFailed: jest.Mock;
     markEscalated: jest.Mock;
     scheduleRetry: jest.Mock;
+    claimUnreachableAlert: jest.Mock;
   };
+  let adminAlerts: { notify: jest.Mock };
   let notifications: { sendPushNotification: jest.Mock };
   let sms: { send: jest.Mock };
   let invitations: { sendForVendor: jest.Mock };
@@ -62,8 +64,15 @@ describe('OutboxDispatcherService', () => {
       markFailed: jest.fn().mockResolvedValue(undefined),
       markEscalated: jest.fn().mockResolvedValue(undefined),
       scheduleRetry: jest.fn().mockResolvedValue(undefined),
+      claimUnreachableAlert: jest.fn().mockResolvedValue(true),
     };
-    notifications = { sendPushNotification: jest.fn().mockResolvedValue(true) };
+    // Le double rend ce que rend le vrai service : un appareil a accepté.
+    notifications = {
+      sendPushNotification: jest
+        .fn()
+        .mockResolvedValue({ accepted: 1, failed: 0, devices: 1 }),
+    };
+    adminAlerts = { notify: jest.fn().mockResolvedValue(undefined) };
     // Le double rend ce que rend le vrai service : une issue, pas un booléen.
     sms = { send: jest.fn().mockResolvedValue('SENT') };
     invitations = {
@@ -87,6 +96,7 @@ describe('OutboxDispatcherService', () => {
       sms as never,
       lock as never,
       invitations as never,
+      adminAlerts as never,
     );
     // Les effets de commande (lot 4) s'inscrivent auprès du dispatcher, comme
     // au démarrage réel de l'application.
@@ -285,15 +295,16 @@ describe('OutboxDispatcherService', () => {
       expect(outbox.markEscalated).toHaveBeenCalledWith('evt-1');
     });
 
-    it('continue sans SMS si le vendeur n’a pas de téléphone', async () => {
+    it('continue sans SMS si ni le compte ni la boutique n’ont de mobile, et prévient les admins', async () => {
       // Une escalade impossible ne doit pas faire échouer le dispatch : le
-      // push reste programmé.
+      // push reste programmé, et un humain est prévenu (F-02).
       outbox.claimDue.mockResolvedValue([event()]);
       prisma.order.findUnique.mockResolvedValue(
         order({
           createdAt: minutesAgo(20),
           restaurant: {
             nom: 'Chez Awa',
+            phone: '0222 81 00 00', // fixe : pas un mobile congolais
             ownerId: 'owner-1',
             owner: { phone: null },
           },
@@ -303,7 +314,117 @@ describe('OutboxDispatcherService', () => {
       await service.dispatchPending();
 
       expect(sms.send).not.toHaveBeenCalled();
+      expect(adminAlerts.notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { type: 'vendor_unreachable', orderId: 'o-1' },
+        }),
+      );
       expect(outbox.scheduleRetry).toHaveBeenCalled();
+    });
+
+    it('F-02 — compte sans téléphone : le SMS part vers le numéro de la boutique', async () => {
+      outbox.claimDue.mockResolvedValue([event({ type: 'order.paid' })]);
+      prisma.order.findUnique.mockResolvedValue(
+        order({
+          paidAt: minutesAgo(12),
+          restaurant: {
+            nom: 'Chez Awa',
+            phone: '06 555 44 33',
+            ownerId: 'owner-1',
+            owner: { phone: null },
+          },
+        }),
+      );
+
+      await service.dispatchPending();
+
+      expect(sms.send).toHaveBeenCalledWith(
+        '065554433',
+        expect.stringContaining('attend depuis'),
+      );
+      expect(outbox.markEscalated).toHaveBeenCalledWith('evt-1');
+      expect(adminAlerts.notify).not.toHaveBeenCalled();
+    });
+
+    it('F-02 — SMS non configuré : alerte admin, une seule fois par commande', async () => {
+      outbox.claimDue.mockResolvedValue([event({ type: 'order.paid' })]);
+      prisma.order.findUnique.mockResolvedValue(
+        order({ paidAt: minutesAgo(12) }),
+      );
+      sms.send.mockResolvedValue('SKIPPED');
+      outbox.claimUnreachableAlert
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false);
+
+      await service.dispatchPending();
+      await service.dispatchPending();
+
+      expect(outbox.markEscalated).not.toHaveBeenCalled();
+      expect(adminAlerts.notify).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('vendeur injoignable par push (F-01)', () => {
+    const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000);
+
+    it.each([
+      [
+        'aucun token',
+        { accepted: 0, failed: 0, devices: 0, reason: 'NO_TOKEN' },
+      ],
+      [
+        'Firebase non initialisé',
+        { accepted: 0, failed: 0, devices: 0, reason: 'FIREBASE_NOT_READY' },
+      ],
+      [
+        'tous les envois refusés',
+        { accepted: 0, failed: 2, devices: 2, reason: 'ALL_FAILED' },
+      ],
+    ])(
+      '%s : SMS sans attendre les 10 minutes, obligation laissée ouverte',
+      async (_label, result) => {
+        notifications.sendPushNotification.mockResolvedValue(result);
+        outbox.claimDue.mockResolvedValue([event({ type: 'order.paid' })]);
+        prisma.order.findUnique.mockResolvedValue(
+          order({ paidAt: minutesAgo(1) }),
+        );
+
+        await service.dispatchPending();
+
+        expect(sms.send).toHaveBeenCalledTimes(1);
+        expect(outbox.markSent).not.toHaveBeenCalled();
+        expect(outbox.scheduleRetry).toHaveBeenCalled();
+      },
+    );
+
+    it('envoi partiel (1 accepté sur 2) : vaut joignable, pas de SMS anticipé', async () => {
+      notifications.sendPushNotification.mockResolvedValue({
+        accepted: 1,
+        failed: 1,
+        devices: 2,
+      });
+      outbox.claimDue.mockResolvedValue([event({ type: 'order.paid' })]);
+      prisma.order.findUnique.mockResolvedValue(
+        order({ paidAt: minutesAgo(1) }),
+      );
+
+      await service.dispatchPending();
+
+      expect(sms.send).not.toHaveBeenCalled();
+    });
+
+    it('le vendeur a accepté : la commande quitte PAYER, l’obligation est close sans nouveau push', async () => {
+      // C'est ce qui arrête la répétition : plus aucun rappel `new_order` ne
+      // part, et l'app vendeur coupe la sonnerie au rafraîchissement suivant.
+      outbox.claimDue.mockResolvedValue([event({ type: 'order.paid' })]);
+      prisma.order.findUnique.mockResolvedValue(
+        order({ status: OrderStatus.ACCEPTEE, paidAt: minutesAgo(2) }),
+      );
+
+      await service.dispatchPending();
+
+      expect(notifications.sendPushNotification).not.toHaveBeenCalled();
+      expect(outbox.markSent).toHaveBeenCalledWith('evt-1');
     });
   });
 
@@ -492,6 +613,7 @@ describe('OutboxDispatcherService', () => {
 describe('OutboxDispatcherService.registerHandler', () => {
   it('refuse une double inscription pour le même type (collision silencieuse sinon)', () => {
     const d = new OutboxDispatcherService(
+      {} as never,
       {} as never,
       {} as never,
       {} as never,

@@ -34,9 +34,19 @@ import { DEPLOYED_ENVIRONMENTS } from './deployment-environment';
  */
 export const envValidationSchema = Joi.object({
   // ─── Runtime ────────────────────────────────────────────────────────────
+  // ⚠️ Plus de défaut sur un hôte Render (audit du 28/10/2026, F-11). Un
+  // `NODE_ENV` perdu à une migration d'hébergement faisait démarrer la
+  // production en `development` : `REDIS_URL` et `ALLOWED_ORIGINS` devenaient
+  // facultatifs, `PAYMENT_MODE` retombait sur `MANUAL`. Render pose `RENDER`
+  // sur chacun de ses services : là, l'environnement doit être déclaré. Le
+  // poste de développement garde son défaut.
   NODE_ENV: Joi.string()
     .valid('development', 'staging', 'production', 'test')
-    .default('development'),
+    .when('RENDER', {
+      is: Joi.exist(),
+      then: Joi.required(),
+      otherwise: Joi.optional().default('development'),
+    }),
   PORT: Joi.number().port().default(8080),
   // Nombre de proxys de confiance devant l'app (Render en place 1). Sert à
   // `app.set('trust proxy', n)` : sans ça, `req.ip` vaut l'IP du load balancer
@@ -190,9 +200,34 @@ export const envValidationSchema = Joi.object({
   CLOUDINARY_API_SECRET: Joi.string().allow('').optional(),
 
   // ─── Paiements ──────────────────────────────────────────────────────────
+  // ⚠️ Plus de défaut en environnement déployé (audit du 28/10/2026, F-11).
+  // `MANUAL` est le mode où un administrateur déclare lui-même un paiement
+  // reçu : une variable perdue y faisait basculer la plateforme sans un mot.
+  // Ailleurs (poste, tests), `MANUAL` reste le défaut. En production, `MANUAL`
+  // exige en plus `ALLOW_MANUAL_PAYMENTS=true` (cf. `.custom` plus bas).
   PAYMENT_MODE: Joi.string()
     .valid('MANUAL', 'SANDBOX', 'MTN_PRODUCTION', 'PAWAPAY')
-    .default('MANUAL'),
+    .when('NODE_ENV', {
+      is: Joi.valid(...DEPLOYED_ENVIRONMENTS),
+      then: Joi.required(),
+      otherwise: Joi.optional().default('MANUAL'),
+    }),
+  // Dérogation explicite et journalisée au démarrage : production en `MANUAL`
+  // (prestataire en panne prolongée, par exemple). Jamais un défaut.
+  ALLOW_MANUAL_PAYMENTS: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .empty('')
+    .default(false),
+
+  // Lot 2 (30/10/2026) — posteur du grand livre (cron du worker). Éteint par
+  // défaut : l'allumer est une décision d'exploitation, après la reprise
+  // historique (`BACKFILL`) lancée et vérifiée à la main.
+  LEDGER_POSTING_ENABLED: Joi.boolean()
+    .truthy('true')
+    .falsy('false')
+    .empty('')
+    .default(false),
 
   // Nombre de tentatives d'encaissement autorisées par commande. Chaque
   // tentative déclenche une opération facturée ET un message sur le téléphone
@@ -377,6 +412,22 @@ export const envValidationSchema = Joi.object({
    * de démarrer bruyant. On refuse ici la seule configuration qui produit une
    * panne invisible le jour de la mise en service.
    */
+  .custom((value: Record<string, unknown>, helpers) => {
+    if (
+      value.NODE_ENV === 'production' &&
+      value.PAYMENT_MODE === 'MANUAL' &&
+      value.ALLOW_MANUAL_PAYMENTS !== true
+    ) {
+      return helpers.message({
+        custom:
+          'PAYMENT_MODE=MANUAL est refusé en production : les paiements y ' +
+          'seraient déclarés à la main par un administrateur. Choisir ' +
+          'PAYMENT_MODE=PAWAPAY, ou poser ALLOW_MANUAL_PAYMENTS=true pour une ' +
+          'dérogation explicite.',
+      });
+    }
+    return value;
+  }, 'mode de paiement manuel en production')
   .custom((value: Record<string, unknown>, helpers) => {
     if (value.PAYMENT_MODE !== 'PAWAPAY') return value;
 

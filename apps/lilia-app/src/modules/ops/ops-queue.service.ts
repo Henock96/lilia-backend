@@ -1,6 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { IncidentSeverity, IncidentType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { IN_FLIGHT_THRESHOLDS } from './order-stale-rules';
+import {
+  StaleOrder,
+  coveredByLegacyBucket,
+  evaluateStale,
+  loadStaleCandidates,
+} from './stale-orders';
 
 /**
  * Seuils des files « À traiter » (F3-04), en minutes. Valeurs de travail
@@ -36,7 +43,12 @@ export type OpsBucketKey =
   | 'pickup_unconfirmed'
   | 'payouts_failed'
   | 'incidents_open'
-  | 'outbox_failed';
+  | 'outbox_failed'
+  // Audit du 28/10/2026, point 6.
+  | 'order_stale'
+  | 'payouts_in_flight'
+  | 'refunds_in_flight'
+  | 'claims_stalled';
 
 export interface OpsItem {
   /** Identifiant de l'objet à traiter (commande, remboursement, incident…). */
@@ -63,6 +75,11 @@ export const SLA_BUCKETS: readonly OpsBucketKey[] = [
   'no_driver',
   'en_route_long',
   'delivery_failed',
+  // Audit du 28/10/2026, point 6 — tout état non terminal immobile, et
+  // l'argent en vol chez le prestataire.
+  'order_stale',
+  'payouts_in_flight',
+  'refunds_in_flight',
 ];
 
 const ITEMS_PER_BUCKET = 20;
@@ -143,6 +160,24 @@ export class OpsQueueService {
       deliveryProof: 'PICKUP_VENDOR_DECLARED',
       deliveredAt: { lte: minutesAgo(now, t.pickupUnconfirmedMinutes) },
     };
+    // Point 6 — l'argent en vol chez le prestataire n'était surveillé que par
+    // Sentry : un versement ou un remboursement sans issue restait invisible.
+    const inFlight = IN_FLIGHT_THRESHOLDS;
+    const payoutInFlightWhere: Prisma.RestaurantPayoutWhereInput = {
+      status: 'PENDING' as const,
+      requestedAt: { lte: minutesAgo(now, inFlight.payoutPendingMinutes) },
+    };
+    const refundInFlightWhere: Prisma.RefundWhereInput = {
+      status: 'PROCESSING' as const,
+      updatedAt: { lte: minutesAgo(now, inFlight.refundProcessingMinutes) },
+    };
+    // Réclamation prise en charge puis immobile (aucune écriture depuis le
+    // seuil) — `claims_unanswered` ne voit que celles sans première réponse.
+    const claimStalledWhere: Prisma.IncidentWhereInput = {
+      type: IncidentType.CUSTOMER_CLAIM,
+      status: 'IN_PROGRESS' as const,
+      updatedAt: { lte: minutesAgo(now, inFlight.claimStalledMinutes) },
+    };
     const incidentWhere: Prisma.IncidentWhereInput = {
       status: { in: ['OPEN' as const, 'IN_PROGRESS' as const] },
       severity: { in: [IncidentSeverity.HIGH, IncidentSeverity.CRITICAL] },
@@ -163,6 +198,10 @@ export class OpsQueueService {
       payouts,
       incidents,
       outbox,
+      staleCandidates,
+      payoutsInFlight,
+      refundsInFlight,
+      claimsStalled,
     ] = await Promise.all([
       pair(
         this.prisma.order.count({ where: acceptanceWhere }),
@@ -287,7 +326,52 @@ export class OpsQueueService {
           take,
         }),
       ),
+      loadStaleCandidates(this.prisma, now),
+      pair(
+        this.prisma.restaurantPayout.count({ where: payoutInFlightWhere }),
+        this.prisma.restaurantPayout.findMany({
+          where: payoutInFlightWhere,
+          orderBy: { requestedAt: 'asc' },
+          select: {
+            id: true,
+            orderId: true,
+            amount: true,
+            requestedAt: true,
+            restaurant: { select: { nom: true } },
+          },
+          take,
+        }),
+      ),
+      pair(
+        this.prisma.refund.count({ where: refundInFlightWhere }),
+        this.prisma.refund.findMany({
+          where: refundInFlightWhere,
+          orderBy: { updatedAt: 'asc' },
+          select: { id: true, orderId: true, amount: true, updatedAt: true },
+          take,
+        }),
+      ),
+      pair(
+        this.prisma.incident.count({ where: claimStalledWhere }),
+        this.prisma.incident.findMany({
+          where: claimStalledWhere,
+          orderBy: { updatedAt: 'asc' },
+          select: { id: true, orderId: true, title: true, updatedAt: true },
+          take,
+        }),
+      ),
     ]);
+
+    // Point 6 — tout le reste de ce qui est immobile, sauf ce que les files
+    // historiques montrent déjà (une commande n'apparaît qu'une fois).
+    const staleAll = staleCandidates
+      .filter((c) => !coveredByLegacyBucket(c, now, t))
+      .map((c) => evaluateStale(c, now))
+      .filter((s): s is StaleOrder => s !== null);
+    const stale = {
+      count: staleAll.length,
+      rows: staleAll.slice(0, take),
+    };
 
     return [
       bucket(
@@ -413,6 +497,66 @@ export class OpsQueueService {
           title: `${e.type} (${shortId(e.aggregateId)})`,
           detail: e.lastError ? e.lastError.slice(0, 200) : null,
           since: iso(e.updatedAt),
+        }),
+      ),
+      bucket(
+        'order_stale',
+        'Commandes immobiles (tous états)',
+        'HIGH',
+        stale,
+        (s) => ({
+          // L'état fait partie de l'identité : une commande qui passe
+          // d'« acceptée » à « en préparation » immobile est un nouveau cas.
+          id: `${s.orderId}@${s.status}`,
+          orderId: s.orderId,
+          title: `Commande ${shortId(s.orderId)} — ${s.shopName} · ${s.label}`,
+          detail:
+            `${s.action} (seuil ${s.thresholdMinutes} min` +
+            (s.sinceSource === 'UPDATED_AT'
+              ? ', mesuré sur la dernière modification faute d’historique)'
+              : ')'),
+          since: iso(s.since),
+        }),
+      ),
+      bucket(
+        'payouts_in_flight',
+        'Reversements sans issue chez le prestataire',
+        'HIGH',
+        payoutsInFlight,
+        (p) => ({
+          id: p.id,
+          orderId: p.orderId,
+          title: `Reversement de ${p.amount} FCFA — ${p.restaurant.nom}`,
+          detail:
+            'Ne pas relancer : interroger le prestataire (« Réconcilier ») et vérifier le tableau de bord pawaPay.',
+          since: iso(p.requestedAt),
+        }),
+      ),
+      bucket(
+        'refunds_in_flight',
+        'Remboursements sans issue chez le prestataire',
+        'HIGH',
+        refundsInFlight,
+        (r) => ({
+          id: r.id,
+          orderId: r.orderId,
+          title: `Remboursement de ${r.amount} FCFA — commande ${shortId(r.orderId)}`,
+          detail:
+            'Ne pas clôturer à la main : vérifier la transaction chez le prestataire.',
+          since: iso(r.updatedAt),
+        }),
+      ),
+      bucket(
+        'claims_stalled',
+        'Réclamations prises en charge qui n’avancent plus',
+        'MEDIUM',
+        claimsStalled,
+        (c) => ({
+          id: c.id,
+          orderId: c.orderId,
+          title: c.title,
+          detail: 'Aucune activité depuis 24 h.',
+          since: iso(c.updatedAt),
         }),
       ),
     ];
