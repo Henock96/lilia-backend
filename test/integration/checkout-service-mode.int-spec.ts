@@ -51,7 +51,6 @@ describeIfDb('Checkout — modes de service (PostgreSQL réel)', () => {
       new OrderCalculatorService(),
       {} as never, // promo
       new StockService(),
-      { get: () => undefined } as never, // Redis désactivé
       settings as never,
       new PreorderValidatorService(prisma as never),
       {} as never, // quartiers — prix FIXED, jamais sollicité

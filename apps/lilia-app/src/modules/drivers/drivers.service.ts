@@ -23,10 +23,6 @@ import { UserCacheService } from '../auth/services/user-cache.service';
 import { PaginationService } from '../../common/pagination/pagination.service';
 import { lockDriverRow } from './driver-row-lock';
 import {
-  cancelOpenOffers,
-  sweepRevokedOffers,
-} from './driver-offer-revocation';
-import {
   CreateDriverDto,
   DeactivateDriverDto,
   DriverFilterDto,
@@ -515,8 +511,6 @@ export class DriversService {
     //  - `DriverProfile` puis `User` est l'ordre inverse de tout le reste
     //    (acceptation, disponibilité) : interblocage possible.
     await this.prisma.$transaction(async (tx) => {
-      // F3-12.1 — R3 avant R4 : ses offres ouvertes tombent avec lui.
-      await cancelOpenOffers(tx, userId);
       const locked = await lockDriverRow(tx, userId);
       if (!locked) throw new NotFoundException('Livreur non trouvé.');
 
@@ -557,7 +551,6 @@ export class DriversService {
         throw new ConflictException("Ce livreur n'est pas actif.");
       }
     });
-    await sweepRevokedOffers(this.prisma, userId);
 
     await this.audit.record({
       actorId: adminId,

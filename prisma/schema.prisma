@@ -1151,6 +1151,12 @@ model Order {
   /// distinctes.
   payout RestaurantPayout?
 
+  /// Lot 4 — `Idempotency-Key` du checkout qui a créé la commande. La base, et
+  /// non plus Redis, garantit qu'une même clé d'un même client ne crée qu'une
+  /// commande ; un rejeu relit celle-ci. `null` pour les commandes antérieures.
+  idempotencyKey String?
+
+  @@unique([userId, idempotencyKey])
   @@index([restaurantId, status, createdAt(sort: Desc)]) // dashboard resto: commandes par statut, plus recentes (LFD-9)
   @@index([promoCodeId])
   @@index([vendorOfferId])
@@ -3274,6 +3280,12 @@ model PlatformSettings {
   /// Version minimale de l'app vendeurs (`X-Lilia-App: vendor`). `null` =
   /// aucun seuil. En dessous : `426` sur les routes vendeur des commandes.
   minVendorAppVersion          String?
+
+  /// Durcissement lot 4 (D-7) — le vendeur peut-il affecter un livreur ?
+  /// Vrai par défaut : comportement historique, les apps vendeurs installées
+  /// montrent ce geste. À éteindre une fois l'app vendeurs qui le masque
+  /// publiée : l'affectation devient un geste d'opérateur (ADMIN) seul.
+  vendorCanAssignDriver Boolean @default(true)
   /// F3-07 / D5 — délai entre la preuve de remise et le versement automatique
   /// au vendeur, en minutes. Borné 0–1440 par un CHECK.
   vendorPayoutDelayMinutes       Int @default(60)
@@ -4017,4 +4029,39 @@ model ShopMembership {
 
   @@index([userId, status])
   @@index([restaurantId, status])
+}
+
+// ─── Idempotence et verrous en PostgreSQL (durcissement, lot 4, 30/10/2026) ─
+//
+// Redis ne porte plus de garde de justesse : une panne Upstash ne doit ni
+// dédoubler un réapprovisionnement ni lancer deux fois un cron.
+
+/// Bail d'un cron : au plus un détenteur par job tant que `expiresAt` n'est
+/// pas passé. Acquis par `INSERT … ON CONFLICT DO UPDATE … WHERE expiresAt <=
+/// now()`, libéré par le seul détenteur (`common/locks/cron-lock.service.ts`).
+/// Horloge de la base seulement (`timezone('UTC', now())`) : aucun écart
+/// entre instances.
+model CronLease {
+  jobName    String   @id
+  /// Jeton aléatoire du processus qui tient le bail.
+  holder     String
+  acquiredAt DateTime @default(now())
+  expiresAt  DateTime
+}
+
+/// Reçu d'un geste rejouable sans ligne métier propre où poser la clé (lot 4).
+/// Écrit DANS la transaction du geste : la contrainte d'unicité arbitre les
+/// rejeux concurrents. `fingerprint` décrit le geste ; une même clé pour un
+/// autre geste est un conflit, jamais un rejeu.
+model IdempotencyReceipt {
+  /// Vocabulaire évolutif (règle 14) : `stock.restock` aujourd'hui.
+  scope       String
+  /// Appelant qui a posé la clé (`User.id`).
+  ownerId     String
+  key         String
+  fingerprint String
+  createdAt   DateTime @default(now())
+
+  @@id([scope, ownerId, key])
+  @@index([createdAt])
 }

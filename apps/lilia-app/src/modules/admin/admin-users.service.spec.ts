@@ -95,7 +95,7 @@ describe('AdminUsersService — bannissement', () => {
     });
   });
 
-  it('livreur sans course : BLOCKED + OFFLINE, offres retirées avant le verrou', async () => {
+  it('livreur sans course : BLOCKED + OFFLINE, sous le verrou du livreur', async () => {
     prisma.user.findUnique.mockResolvedValue({ ...client, role: 'LIVREUR' });
     locked({ role: 'LIVREUR', driverStatus: 'AVAILABLE' });
 
@@ -105,11 +105,11 @@ describe('AdminUsersService — bannissement', () => {
       where: { id: 'user-1' },
       data: { statusUser: StatusUser.BLOCKED, driverStatus: 'OFFLINE' },
     });
-    const [cancel, sweep] = prisma.$executeRaw.mock.invocationCallOrder;
-    expect(cancel).toBeLessThan(prisma.$queryRaw.mock.invocationCallOrder[0]);
-    expect(sweep).toBeGreaterThan(
+    expect(prisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
       prisma.user.update.mock.invocationCallOrder[0],
     );
+    // Lot 4 : plus d'offres de course (dispatch manuel), rien à révoquer.
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
   });
 
   it('livreur en pleine course : ban différé, compte laissé ACTIVE, incident ouvert', async () => {

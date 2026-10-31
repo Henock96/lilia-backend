@@ -375,6 +375,15 @@ export class UpdatePlatformSettingsDto {
   minVendorAppVersion?: string | null;
 
   /**
+   * Durcissement lot 4 (D-7) — `false` : seul un ADMIN affecte un livreur ;
+   * un vendeur reçoit `403 DRIVER_ASSIGNMENT_OPERATOR_ONLY`. Ne l'éteindre
+   * qu'une fois publiée l'app vendeurs qui masque ce geste.
+   */
+  @IsOptional()
+  @IsBoolean()
+  vendorCanAssignDriver?: boolean;
+
+  /**
    * Verrou optimiste (SET-001) : l'`updatedAt` de la configuration **telle que
    * l'administrateur l'a chargée**.
    *

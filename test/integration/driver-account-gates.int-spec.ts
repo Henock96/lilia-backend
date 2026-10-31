@@ -179,22 +179,6 @@ describeIfDb('F3-12.1 R6/R7 — rôle et ban du livreur (PostgreSQL réel)', () 
     }
   };
 
-  /** Offre ouverte à A sur la course donnée (dispatch allumé en montage). */
-  const openOffer = (
-    delivery: string,
-    db: PrismaClient | Prisma.TransactionClient = prisma,
-  ) =>
-    db.$executeRaw`
-      INSERT INTO "DeliveryOffer"
-        (id, "deliveryId", "driverId", round, "poolSize", "employmentType",
-         "compensationModel", "baseXaf", "sharePercent", "payXaf", "expiresAt")
-      VALUES (${`offer-${delivery}`}, ${delivery}, ${A}, 1, 1, 'LILIA',
-              'PER_DELIVERY', 1000, 35, 350, now() + interval '90 seconds')
-    `;
-
-  const openOffersOfA = () =>
-    prisma.deliveryOffer.count({ where: { driverId: A, status: 'OFFERED' } });
-
   const userA = () => prisma.user.findUniqueOrThrow({ where: { id: A } });
 
   const activeCoursesOfA = () =>
@@ -422,8 +406,7 @@ describeIfDb('F3-12.1 R6/R7 — rôle et ban du livreur (PostgreSQL réel)', () 
       expect(profile.isActive).toBe(true);
     });
 
-    it('sans course : rôle écrit, disponibilité effacée, profil hors service, offre retirée', async () => {
-      await openOffer(Z);
+    it('sans course : rôle écrit, disponibilité effacée, profil hors service', async () => {
       await admins.updateUserRole(A, { role: Role.CLIENT } as never);
       const u = await userA();
       expect(u).toMatchObject({ role: Role.CLIENT, driverStatus: null });
@@ -431,7 +414,6 @@ describeIfDb('F3-12.1 R6/R7 — rôle et ban du livreur (PostgreSQL réel)', () 
         where: { userId: A },
       });
       expect(profile.isActive).toBe(false);
-      expect(await openOffersOfA()).toBe(0);
     });
 
     it('rôle → LIVREUR refusé (Q4 : création par la fiche Livreurs)', async () => {
@@ -500,12 +482,6 @@ describeIfDb('F3-12.1 R6/R7 — rôle et ban du livreur (PostgreSQL réel)', () 
       await expectBusinessRefusal(del, ConflictException);
       expect((await userA()).statusUser).toBe(StatusUser.ACTIVE);
     });
-
-    it('suppression d’un livreur libre : ses offres ouvertes tombent', async () => {
-      await openOffer(Z);
-      await deletion.deleteOwnAccount(A);
-      expect(await openOffersOfA()).toBe(0);
-    });
   });
 
   // ═════════════════════════════════════════════════════════════════════════
@@ -513,8 +489,7 @@ describeIfDb('F3-12.1 R6/R7 — rôle et ban du livreur (PostgreSQL réel)', () 
   // ═════════════════════════════════════════════════════════════════════════
 
   describe('R7 — ban immédiat', () => {
-    it('livreur libre : BLOCKED + OFFLINE, offre retirée, plus assignable', async () => {
-      await openOffer(Z);
+    it('livreur libre : BLOCKED + OFFLINE, plus assignable', async () => {
       const res = await admins.banUser(A, 'fraude', ADMIN);
       expect(res.mode).toBe('immediate');
       expect(await userA()).toMatchObject({
@@ -522,7 +497,6 @@ describeIfDb('F3-12.1 R6/R7 — rôle et ban du livreur (PostgreSQL réel)', () 
         driverStatus: DriverStatus.OFFLINE,
         banPendingAt: null,
       });
-      expect(await openOffersOfA()).toBe(0);
       await expectBusinessRefusal(
         assignment.assignDeliverer(X, A, ADMIN_UID),
         ForbiddenException,
@@ -586,54 +560,9 @@ describeIfDb('F3-12.1 R6/R7 — rôle et ban du livreur (PostgreSQL réel)', () 
       expect(profile.isActive).toBe(false);
     });
 
-    /**
-     * §8.4, cas B : une recherche insère une offre, puis vérifie le livreur
-     * sous R4 FOR SHARE — pas encore commise quand le ban retire les offres.
-     * Mutation tuée : balayage post-commit (tx2) retiré.
-     */
-    it('ban ∥ création d’offre : aucune offre OFFERED ne survit au ban', async () => {
-      const held = await holdTransaction(prisma, async (tx) => {
-        await openOffer(Z, tx);
-        await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${A} FOR SHARE`;
-      });
-      const ban = admins.banUser(A, undefined, ADMIN);
-      await waitUntilBlocked(prisma);
-      await held.commit();
-      await ban;
-      expect(await openOffersOfA()).toBe(0);
-      const offer = await prisma.deliveryOffer.findUniqueOrThrow({
-        where: { id: `offer-${Z}` },
-      });
-      expect(offer.status).toBe('CANCELLED');
-    });
-
-    /**
-     * tx1 retire les offres AVANT d'écrire le ban, dans la même transaction :
-     * aucun lecteur ne voit jamais « banni ∧ offre ouverte ». Sans R3, le ban
-     * commit d'abord et le balayage tx2 n'arrive qu'après — fenêtre pendant
-     * laquelle une offre ouverte appartient à un banni.
-     * Mutation tuée : ban sans R3 (le balayage seul rattrape l'offre, trop tard).
-     */
-    it('ban atomique : jamais « BLOCKED ∧ offre OFFERED » visible, même un instant', async () => {
-      await openOffer(Z);
-      // Une acceptation d'offre en cours tient la ligne de l'offre (R3).
-      const held = await holdTransaction(prisma, async (tx) => {
-        await tx.$queryRaw`SELECT id FROM "DeliveryOffer" WHERE id = ${`offer-${Z}`} FOR UPDATE`;
-      });
-      const ban = admins.banUser(A, undefined, ADMIN);
-      await waitUntilBlocked(prisma);
-      const [u, open] = await Promise.all([userA(), openOffersOfA()]);
-      expect({
-        blocked: u.statusUser === StatusUser.BLOCKED,
-        open,
-      }).not.toEqual({
-        blocked: true,
-        open: 1,
-      });
-      await held.rollback();
-      await ban;
-      expect(await openOffersOfA()).toBe(0);
-    });
+    // Lot 4 : les cas « ban ∥ création d'offre » et « ban atomique » ont été
+    // retirés avec la révocation des offres de course (dispatch manuel, aucun
+    // code ne crée d'offre).
 
     it('débanni : ACTIVE mais OFFLINE et sans capacité d’offres — il doit se redéclarer', async () => {
       await admins.banUser(A, undefined, ADMIN);
@@ -652,10 +581,9 @@ describeIfDb('F3-12.1 R6/R7 — rôle et ban du livreur (PostgreSQL réel)', () 
 
   describe('R7 — ban différé d’un livreur en pleine course (Q3/Q7)', () => {
     it.each([DeliveryStatus.ACCEPTER, DeliveryStatus.EN_TRANSIT])(
-      'course %s : compte laissé ACTIVE, drapeau posé, incident ouvert, offre retirée',
+      'course %s : compte laissé ACTIVE, drapeau posé, incident ouvert',
       async (status) => {
         await give(Z, status);
-        await openOffer(X);
         const res = await admins.banUser(A, 'fraude', ADMIN);
         expect(res.mode).toBe('deferred');
         const u = await userA();
@@ -663,7 +591,6 @@ describeIfDb('F3-12.1 R6/R7 — rôle et ban du livreur (PostgreSQL réel)', () 
         expect(u.driverStatus).toBe(DriverStatus.ON_DELIVERY);
         expect(u.banPendingAt).toBeInstanceOf(Date);
         expect(u.banPendingById).toBe(ADMIN);
-        expect(await openOffersOfA()).toBe(0);
         const incident = await prisma.incident.findFirstOrThrow({
           where: { dedupKey: `ban_pending:${A}` },
         });

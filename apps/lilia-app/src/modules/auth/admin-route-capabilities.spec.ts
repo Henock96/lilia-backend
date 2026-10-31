@@ -52,6 +52,7 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'AdminDeliveryTariffsController.findOne': 'NONE',
   'AdminDeliveryTariffsController.list': 'NONE',
   'AdminDeliveryTariffsController.publish': 'SETTINGS',
+  'AdminDeliveryTariffsController.readiness': 'NONE',
   'AdminDeliveryTariffsController.remove': 'SETTINGS',
   'AdminDeliveryTariffsController.simulate': 'NONE',
   'AdminDeliveryTariffsController.update': 'SETTINGS',

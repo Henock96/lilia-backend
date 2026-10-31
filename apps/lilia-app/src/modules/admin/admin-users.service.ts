@@ -21,10 +21,6 @@ import { UpdateUserRoleDto } from './dto/update-user-role.dto';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import { ACTIVE_DELIVERY_STATUSES } from '../deliveries/delivery-statuses';
 import { lockDriverRow } from '../drivers/driver-row-lock';
-import {
-  cancelOpenOffers,
-  sweepRevokedOffers,
-} from '../drivers/driver-offer-revocation';
 import { banPendingIncidentKey } from '../drivers/driver-release';
 
 /**
@@ -252,8 +248,6 @@ export class AdminUsersService {
    */
   private async leaveDriverRole(userId: string, role: Role) {
     const updated = await this.prisma.$transaction(async (tx) => {
-      await cancelOpenOffers(tx, userId);
-
       const locked = await lockDriverRow(tx, userId);
       if (!locked) throw new NotFoundException('Utilisateur non trouvé');
 
@@ -295,7 +289,6 @@ export class AdminUsersService {
       });
     });
 
-    await sweepRevokedOffers(this.prisma, userId);
     return updated;
   }
 
@@ -329,8 +322,6 @@ export class AdminUsersService {
       throw new BadRequestException('Impossible de bannir un ADMIN.');
 
     const outcome = await this.prisma.$transaction(async (tx) => {
-      await cancelOpenOffers(tx, userId);
-
       const locked = await lockDriverRow(tx, userId);
       if (!locked) throw new NotFoundException('Utilisateur non trouvé');
       if (locked.statusUser === StatusUser.BLOCKED) {
@@ -405,8 +396,6 @@ export class AdminUsersService {
       });
       return { mode: 'immediate' as BanMode, waitingAssignments };
     });
-
-    await sweepRevokedOffers(this.prisma, userId);
 
     // Invalider le cache : le statut est lu par RolesGuard à chaque requête et
     // le TTL Redis est de 5 min — sans invalidation le ban traînerait d'autant.

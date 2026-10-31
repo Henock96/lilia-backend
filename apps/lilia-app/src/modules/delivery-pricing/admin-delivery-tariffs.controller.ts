@@ -43,6 +43,17 @@ export class AdminDeliveryTariffsController {
     return { data: await this.tariffs.list() };
   }
 
+  /**
+   * Durcissement lot 4 — la version peut-elle porter seule la tarification ?
+   * Couples sans prix fixe, quartiers sans centroïde, vendeurs sans quartier.
+   * Lecture seule : la bascule reste un geste sur `deliveryPricingMode`.
+   */
+  @Get(':id/readiness')
+  @ApiOperation({ summary: 'Préparation de la bascule PLATFORM' })
+  async readiness(@Param('id') id: string) {
+    return { data: await this.tariffs.readiness(id) };
+  }
+
   @Get(':id')
   async findOne(@Param('id') id: string) {
     return { data: await this.tariffs.findOne(id) };

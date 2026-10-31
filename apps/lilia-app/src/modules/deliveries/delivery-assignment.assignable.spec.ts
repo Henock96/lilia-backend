@@ -98,9 +98,14 @@ describe('DeliveryAssignmentService — assertAssignable', () => {
         OrderTransitionService,
         // Requis depuis le gel économique de la course : `acceptDelivery` lit
         // les taux plateforme. Non exercé ici, mais le graphe doit résoudre.
+        // Lot 4 (D-7) : l'affectation lit `vendorCanAssignDriver` (défaut).
         {
           provide: PlatformSettingsService,
-          useValue: { getSettings: jest.fn() },
+          useValue: {
+            getSettings: jest
+              .fn()
+              .mockResolvedValue({ vendorCanAssignDriver: true }),
+          },
         },
         DeliveryAssignmentService,
         { provide: PrismaService, useValue: prisma },
@@ -191,5 +196,44 @@ describe('DeliveryAssignmentService — assertAssignable', () => {
 
     withDriver(driver({ driverStatus: 'OFFLINE' }));
     await expect(assign()).rejects.toThrow(/hors ligne/);
+  });
+
+  describe('D-7 — affectation réservée à l’opérateur (lot 4)', () => {
+    const settingsWith = (vendorCanAssignDriver: boolean) =>
+      (
+        service as unknown as { platformSettings: { getSettings: jest.Mock } }
+      ).platformSettings.getSettings.mockResolvedValue({
+        vendorCanAssignDriver,
+      });
+
+    it('réglage éteint : le vendeur reçoit 403 DRIVER_ASSIGNMENT_OPERATOR_ONLY, rien n’est écrit', async () => {
+      withDriver(driver());
+      settingsWith(false);
+
+      await expect(assign()).rejects.toMatchObject({
+        response: { code: 'DRIVER_ASSIGNMENT_OPERATOR_ONLY' },
+      });
+      expect(tx.delivery.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('réglage éteint : un ADMIN affecte toujours', async () => {
+      prisma.user.findUnique.mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          where.firebaseUid ? { id: 'u-admin', role: 'ADMIN' } : driver(),
+        ),
+      );
+      settingsWith(false);
+
+      await expect(
+        service.assignDeliverer('d1', 'liv1', 'admin-uid'),
+      ).resolves.toBeDefined();
+    });
+
+    it('réglage allumé (défaut) : le vendeur garde le geste', async () => {
+      withDriver(driver());
+      settingsWith(true);
+
+      await expect(assign()).resolves.toBeDefined();
+    });
   });
 });

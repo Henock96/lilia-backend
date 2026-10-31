@@ -1,44 +1,36 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { InjectRedis } from '@nestjs-modules/ioredis';
-import Redis from 'ioredis';
+import * as Sentry from '@sentry/nestjs';
 
 import { shouldRunBackgroundJobs } from '../../config/background-jobs';
+import { PrismaService } from '../../prisma/prisma.service';
 
 /**
- * Verrou distribué pour les tâches planifiées (fix M8 — audit du 28/08/2026).
+ * Verrou des tâches planifiées (fix M8 — audit du 28/08/2026).
  *
  * `@nestjs/schedule` exécute les crons dans **chaque** instance. La plupart des
  * jobs sont idempotents (`expireUnpaidOrders`, `handleDailyStockReset`), mais
  * `sendDailyReminders` envoie une notification par instance : le vendeur reçoit
  * le même rappel deux fois dès qu'on passe à deux instances Render.
  *
- * Sans Redis, on n'a aucun moyen de coordonner les instances : on exécute
- * quand même (comportement historique, correct en mono-instance) mais on le
- * signale.
+ * Durcissement lot 4 (30/10/2026) : le verrou est un **bail en base**
+ * (`CronLease`), et non plus une clé Redis. Une panne Upstash laissait chaque
+ * instance tourner sans verrou ; la base, elle, est déjà indispensable au
+ * travail du cron. Pas de `pg_try_advisory_lock` : l'URL poolée de Neon
+ * (PgBouncer en mode transaction) ne garantit pas qu'acquisition et libération
+ * passent par la même session.
  */
 @Injectable()
 export class CronLockService {
-  /**
-   * Libération conditionnelle : ne supprime la clé que si elle porte encore
-   * NOTRE jeton. Exécuté côté serveur Redis, donc atomique.
-   */
-  private static readonly RELEASE_SCRIPT = `
-    if redis.call("get", KEYS[1]) == ARGV[1] then
-      return redis.call("del", KEYS[1])
-    end
-    return 0
-  `;
-
   private readonly logger = new Logger(CronLockService.name);
 
-  constructor(@Optional() @InjectRedis() private readonly redis?: Redis) {}
+  constructor(@Optional() private readonly prisma?: PrismaService) {}
 
   /**
-   * Exécute `task` si et seulement si ce processus obtient le verrou.
+   * Exécute `task` si et seulement si ce processus obtient le bail.
    *
-   * @param jobName  identifiant du job (clé Redis)
-   * @param ttlSeconds durée du verrou — doit dépasser la durée d'exécution
+   * @param jobName  identifiant du job (clé du bail)
+   * @param ttlSeconds durée du bail — doit dépasser la durée d'exécution
    *                   attendue, sinon deux instances peuvent se chevaucher.
    */
   async runExclusively<T>(
@@ -67,40 +59,38 @@ export class CronLockService {
       return undefined;
     }
 
-    const key = `cron_lock:${jobName}`;
-    // ⚠️ Jeton unique, et non la constante `'1'`.
-    //
-    // La libération était un `DEL` inconditionnel dans un `finally`. Si une
-    // tâche dépasse son TTL — expiration des commandes sur une base lente,
-    // réconciliation avec un prestataire qui traîne — une AUTRE instance
-    // acquiert légitimement le verrou pendant qu'elle tourne encore, et le
-    // `DEL` de la première supprime le verrou de la seconde : celle-ci
-    // poursuit son travail sans protection, et une troisième peut démarrer.
-    //
-    // Avec un jeton, la libération ne peut viser que son propre verrou. C'est
-    // le motif standard du verrou distribué, et il ne coûte qu'une chaîne.
-    const token = randomUUID();
-
-    if (!this.redis) {
+    if (!this.prisma) {
       this.logger.warn(
-        `Redis absent — « ${jobName} » s'exécute sans verrou distribué (doublons possibles en multi-instance).`,
+        `Base absente — « ${jobName} » s'exécute sans verrou (doublons possibles en multi-instance).`,
       );
       return task();
     }
 
-    let acquired: string | null = null;
+    // ⚠️ Jeton unique par exécution, et non un identifiant d'instance.
+    //
+    // Si une tâche dépasse son bail, une AUTRE instance le reprend
+    // légitimement pendant qu'elle tourne encore ; la libération de la
+    // première ne doit pas effacer le bail de la seconde. Elle est donc
+    // conditionnée à ce jeton.
+    const holder = randomUUID();
+
+    let acquired: boolean;
     try {
-      acquired = await this.redis.set(key, token, 'EX', ttlSeconds, 'NX');
+      acquired = await this.acquire(jobName, holder, ttlSeconds);
     } catch (err) {
-      // Une panne Redis ne doit pas empêcher les tâches critiques (expiration
-      // des commandes, reset du stock) de tourner.
+      // Même choix qu'avec Redis : l'expiration des commandes et le reset du
+      // stock ne doivent pas s'éteindre sur une erreur de verrou. Le doublon
+      // n'est possible qu'à plusieurs instances, l'absence l'est toujours.
       this.logger.error(
         `Verrou « ${jobName} » indisponible (${(err as Error).message}) — exécution sans verrou.`,
       );
+      Sentry.captureException(err, {
+        tags: { feature: 'cron-lease', job: jobName, degraded: 'true' },
+      });
       return task();
     }
 
-    if (acquired !== 'OK') {
+    if (!acquired) {
       this.logger.debug(
         `« ${jobName} » déjà pris en charge par une autre instance — ignoré.`,
       );
@@ -110,16 +100,56 @@ export class CronLockService {
     try {
       return await task();
     } finally {
-      // On libère explicitement : un job court ne doit pas bloquer le suivant
-      // pendant tout le TTL. Le TTL reste le filet en cas de crash.
-      //
-      // `EVAL` et non `DEL` : la comparaison du jeton et la suppression doivent
-      // être **une seule opération**. Les faire en deux temps (`GET` puis
-      // `DEL`) rouvrirait exactement la fenêtre qu'on ferme — le verrou peut
-      // expirer et être repris entre les deux appels.
-      await this.redis
-        .eval(CronLockService.RELEASE_SCRIPT, 1, key, token)
-        .catch(() => undefined);
+      // Libération explicite : un job court ne doit pas bloquer le suivant
+      // pendant tout le bail. L'échéance reste le filet en cas de crash.
+      await this.release(jobName, holder).catch((err: Error) =>
+        this.logger.warn(
+          `Bail « ${jobName} » non libéré (${err.message}) — il expirera seul.`,
+        ),
+      );
+    }
+  }
+
+  /**
+   * Une seule instruction : crée le bail, ou reprend un bail échu. Deux
+   * instances concurrentes se sérialisent sur la clé primaire ; la seconde
+   * relit le bail frais de la première, la condition `WHERE` échoue et
+   * `RETURNING` ne rend rien.
+   *
+   * ⚠️ `timezone('UTC', now())` et non `now()` : les colonnes sont des
+   * `timestamp` sans fuseau où Prisma écrit de l'UTC. Comparé à `now()`, un
+   * bail frais paraissait échu dès que la session n'était pas en UTC
+   * (`Africa/Brazzaville` en local : une heure d'écart).
+   */
+  private async acquire(
+    jobName: string,
+    holder: string,
+    ttlSeconds: number,
+  ): Promise<boolean> {
+    const rows = await this.prisma!.$queryRaw<{ holder: string }[]>`
+      INSERT INTO "CronLease" ("jobName", "holder", "acquiredAt", "expiresAt")
+      VALUES (${jobName}, ${holder}, timezone('UTC', now()),
+              timezone('UTC', now()) + make_interval(secs => ${ttlSeconds}::int))
+      ON CONFLICT ("jobName") DO UPDATE
+         SET "holder" = EXCLUDED."holder",
+             "acquiredAt" = EXCLUDED."acquiredAt",
+             "expiresAt" = EXCLUDED."expiresAt"
+       WHERE "CronLease"."expiresAt" <= timezone('UTC', now())
+      RETURNING "holder"`;
+    return rows.length === 1 && rows[0].holder === holder;
+  }
+
+  /** Ne libère que son propre bail (comparaison et effacement atomiques). */
+  private async release(jobName: string, holder: string): Promise<void> {
+    const released = await this.prisma!.$executeRaw`
+      DELETE FROM "CronLease"
+       WHERE "jobName" = ${jobName} AND "holder" = ${holder}`;
+    // Plus de bail à notre nom : la tâche a dépassé sa durée et une autre
+    // instance a pu la relancer pendant qu'elle tournait.
+    if (released === 0) {
+      this.logger.warn(
+        `Bail « ${jobName} » perdu avant la fin de la tâche : chevauchement possible, durée à revoir.`,
+      );
     }
   }
 }
