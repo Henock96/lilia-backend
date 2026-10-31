@@ -15,6 +15,7 @@ import { buildOrderSearchWhere } from './order-search';
 
 // Définition d'une commande « bloquée » — source unique, classement testé.
 import { STUCK_ORDER_STATUSES } from './order-status-groups';
+import { accessibleShopIds } from '../vendors/shop-access';
 import {
   OrderAction,
   readActionContext,
@@ -193,11 +194,10 @@ export class OrderQueryService {
       };
     }
 
-    // RESTAURATEUR : ses commandes uniquement
-    const restaurant = await this.prisma.restaurant.findFirst({
-      where: { owner: { firebaseUid } },
-    });
-    if (!restaurant) {
+    // RESTAURATEUR : les commandes des boutiques qu'il possède ou dont il est
+    // membre actif autorisé à les traiter (lot 3, `ShopMembership`).
+    const shopIds = await accessibleShopIds(this.prisma, user.id, 'ORDERS');
+    if (shopIds.length === 0) {
       throw new NotFoundException(
         'Restaurant non trouvé pour cet utilisateur.',
       );
@@ -205,7 +205,7 @@ export class OrderQueryService {
 
     return {
       role: user.role,
-      scope: { restaurantId: restaurant.id },
+      scope: { restaurantId: { in: shopIds } },
       include: {
         ...baseInclude,
         user: { select: { id: true, nom: true, phone: true, imageUrl: true } },
@@ -400,15 +400,21 @@ export class OrderQueryService {
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
     if (!user) throw new NotFoundException('Utilisateur non trouvé.');
 
-    const where =
+    // Lot 3 — boutiques possédées OU dont le compte est membre actif.
+    const scope =
       user.role === 'ADMIN'
-        ? { status: { in: [OrderStatus.EN_ATTENTE, OrderStatus.PAYER] } }
+        ? {}
         : {
-            restaurant: { ownerId: user.id },
-            status: { in: [OrderStatus.EN_ATTENTE, OrderStatus.PAYER] },
+            restaurantId: {
+              in: await accessibleShopIds(this.prisma, user.id, 'ORDERS'),
+            },
           };
+    const where = {
+      ...scope,
+      status: { in: [OrderStatus.EN_ATTENTE, OrderStatus.PAYER] },
+    };
 
-    const [paid, awaitingPayment, oldest] = await Promise.all([
+    const [paid, awaitingPayment, oldest, pendingRequests] = await Promise.all([
       this.prisma.order.count({
         where: { ...where, status: OrderStatus.PAYER },
       }),
@@ -420,6 +426,10 @@ export class OrderQueryService {
         orderBy: { createdAt: 'asc' },
         select: { createdAt: true },
       }),
+      // Lot 3 — demandes à accepter ou refuser (parcours `ACCEPT_FIRST`).
+      this.prisma.order.count({
+        where: { ...scope, status: OrderStatus.DEMANDE_ENVOYEE },
+      }),
     ]);
 
     return {
@@ -428,6 +438,8 @@ export class OrderQueryService {
         unhandledPaid: paid,
         awaitingPayment,
         oldestPendingAt: oldest?.createdAt ?? null,
+        // Lot 3 — champ ajouté : ignoré par les applications installées.
+        pendingRequests,
       },
     };
   }

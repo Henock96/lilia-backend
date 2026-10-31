@@ -21,6 +21,7 @@ import { RefundsCoreModule } from '../refunds/refunds-core.module';
 import { VendorOffersCoreModule } from '../vendor-offers/vendor-offers-core.module';
 import { LedgerCoreModule } from '../ledger/ledger-core.module';
 import { LedgerPostingCron } from '../ledger/ledger-posting.cron';
+import { OrderRequestExpiryService } from './order-request-expiry.service';
 
 @Module({
     imports: [
@@ -59,6 +60,8 @@ import { LedgerPostingCron } from '../ledger/ledger-posting.cron';
         VendorOfferExpiryService,
         // Lot 2 : posteur du grand livre (`LEDGER_POSTING_ENABLED`, éteint).
         LedgerPostingCron,
+        // Lot 3 : demandes `ACCEPT_FIRST` sans réponse (inerte sans elles).
+        OrderRequestExpiryService,
         PrismaService,
     ],
 })

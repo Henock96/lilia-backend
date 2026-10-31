@@ -1,8 +1,5 @@
-import {
-  BadRequestException,
-  ConflictException,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 
 import { ProductCommandService } from './product-command.service';
 
@@ -12,9 +9,12 @@ import { ProductCommandService } from './product-command.service';
  * PATCH perdu en route : un geste commité puis rejoué ajoutait 2N, soit des
  * unités fantômes vendues puis refusées, puis remboursées.
  *
- * Le client porte désormais une `Idempotency-Key` par geste ; le serveur ne
- * compte un `RESTOCK` qu'une fois par clé. Sans clé (applications installées,
- * web), le comportement ne change pas.
+ * Le client porte une `Idempotency-Key` par geste ; le serveur ne compte un
+ * `RESTOCK` qu'une fois par clé. Durcissement lot 4 : la clé est un reçu
+ * `IdempotencyReceipt` écrit dans la transaction du geste (plus de Redis, donc
+ * plus de 503 quand Upstash tombe). Sans clé (applications installées, web),
+ * le comportement ne change pas. La course réelle est rejouée sur PostgreSQL
+ * par `test/integration/stock-restock-idempotency.int-spec.ts`.
  */
 describe('ProductCommandService.updateStock — idempotence de RESTOCK', () => {
   const product = {
@@ -27,16 +27,13 @@ describe('ProductCommandService.updateStock — idempotence de RESTOCK', () => {
     restaurant: { owner: { firebaseUid: 'fb-owner' } },
   };
 
-  function build(
-    opts: {
-      redis?: Record<string, jest.Mock> | null;
-      redisUrl?: string | null;
-    } = {},
-  ) {
+  function build(opts: { prior?: { fingerprint: string } | null } = {}) {
     const executeRaw = jest.fn().mockResolvedValue(1);
+    const receiptCreate = jest.fn().mockResolvedValue({});
     const findUniqueOrThrow = jest
       .fn()
       .mockResolvedValue({ ...product, stockRestant: 15 });
+    const receiptFindUnique = jest.fn().mockResolvedValue(opts.prior ?? null);
     const prisma = {
       product: {
         findUnique: jest.fn().mockResolvedValue(product),
@@ -49,25 +46,13 @@ describe('ProductCommandService.updateStock — idempotence de RESTOCK', () => {
           .fn()
           .mockResolvedValue({ id: 'u1', role: 'RESTAURATEUR' }),
       },
+      idempotencyReceipt: { findUnique: receiptFindUnique },
       $transaction: jest.fn(async (fn: (tx: unknown) => unknown) =>
-        fn({ $executeRaw: executeRaw, product: { findUniqueOrThrow } }),
-      ),
-    };
-    const redis =
-      opts.redis === null
-        ? undefined
-        : (opts.redis ?? {
-            set: jest.fn().mockResolvedValue('OK'),
-            get: jest.fn().mockResolvedValue(null),
-            del: jest.fn().mockResolvedValue(1),
-          });
-    const config = {
-      get: jest.fn((k: string) =>
-        k === 'REDIS_URL'
-          ? opts.redisUrl === undefined
-            ? 'redis://x'
-            : opts.redisUrl
-          : undefined,
+        fn({
+          $executeRaw: executeRaw,
+          product: { findUniqueOrThrow },
+          idempotencyReceipt: { create: receiptCreate },
+        }),
       ),
     };
     const service = new ProductCommandService(
@@ -77,16 +62,14 @@ describe('ProductCommandService.updateStock — idempotence de RESTOCK', () => {
       { record: jest.fn() } as never,
       { emit: jest.fn() } as never,
       {} as never,
-      config as never,
-      redis as never,
     );
-    return { service, prisma, redis, executeRaw };
+    return { service, prisma, executeRaw, receiptCreate, receiptFindUnique };
   }
 
   const restock = { action: 'RESTOCK' as const, units: 10 };
 
-  it('première exécution d’une clé : incrémente une fois et mémorise le geste', async () => {
-    const { service, redis, executeRaw } = build();
+  it('première exécution d’une clé : écrit le reçu AVANT l’incrément, dans la transaction', async () => {
+    const { service, executeRaw, receiptCreate } = build();
 
     const res = await service.updateStock(
       'p1',
@@ -95,30 +78,24 @@ describe('ProductCommandService.updateStock — idempotence de RESTOCK', () => {
       'geste-0001',
     );
 
+    expect(receiptCreate).toHaveBeenCalledWith({
+      data: {
+        scope: 'stock.restock',
+        ownerId: 'u1',
+        key: 'geste-0001',
+        fingerprint: 'p1:10',
+      },
+    });
+    expect(receiptCreate.mock.invocationCallOrder[0]).toBeLessThan(
+      executeRaw.mock.invocationCallOrder[0],
+    );
     expect(executeRaw).toHaveBeenCalledTimes(1);
-    expect(redis!.set).toHaveBeenCalledWith(
-      'stock:restock:u1:p1:geste-0001',
-      'PENDING:10',
-      'EX',
-      120, // court : une clé restée PENDING après un crash ne bloque pas 24 h
-      'NX',
-    );
-    expect(redis!.set).toHaveBeenLastCalledWith(
-      'stock:restock:u1:p1:geste-0001',
-      'DONE:10',
-      'EX',
-      24 * 60 * 60,
-    );
     expect(res).toMatchObject({ data: { stockRestant: 15 } });
   });
 
   it('rejeu d’une clé déjà appliquée : n’incrémente pas, rend l’état courant', async () => {
     const { service, executeRaw, prisma } = build({
-      redis: {
-        set: jest.fn().mockResolvedValue(null),
-        get: jest.fn().mockResolvedValue('DONE:10'),
-        del: jest.fn(),
-      },
+      prior: { fingerprint: 'p1:10' },
     });
 
     const res = await service.updateStock(
@@ -133,29 +110,8 @@ describe('ProductCommandService.updateStock — idempotence de RESTOCK', () => {
     expect(res).toMatchObject({ replayed: true, data: { stockRestant: 15 } });
   });
 
-  it('même clé en cours de traitement : 409, rien n’est écrit', async () => {
-    const { service, executeRaw } = build({
-      redis: {
-        set: jest.fn().mockResolvedValue(null),
-        get: jest.fn().mockResolvedValue('PENDING:10'),
-        del: jest.fn(),
-      },
-    });
-
-    await expect(
-      service.updateStock('p1', restock, 'fb-owner', 'geste-0001'),
-    ).rejects.toBeInstanceOf(ConflictException);
-    expect(executeRaw).not.toHaveBeenCalled();
-  });
-
   it('même clé réutilisée pour une autre quantité : 409, rien n’est écrit', async () => {
-    const { service, executeRaw } = build({
-      redis: {
-        set: jest.fn().mockResolvedValue(null),
-        get: jest.fn().mockResolvedValue('DONE:3'),
-        del: jest.fn(),
-      },
-    });
+    const { service, executeRaw } = build({ prior: { fingerprint: 'p1:3' } });
 
     await expect(
       service.updateStock('p1', restock, 'fb-owner', 'geste-0001'),
@@ -163,50 +119,62 @@ describe('ProductCommandService.updateStock — idempotence de RESTOCK', () => {
     expect(executeRaw).not.toHaveBeenCalled();
   });
 
-  it('échec de la transaction : la clé est libérée pour qu’un rejeu s’applique vraiment', async () => {
-    const { service, redis, prisma } = build();
+  it('requête jumelle qui perd la course (P2002) : rejouée, pas une erreur', async () => {
+    const { service, prisma, receiptFindUnique } = build();
+    receiptFindUnique
+      .mockResolvedValueOnce(null) // avant la transaction : rien encore
+      .mockResolvedValueOnce({ fingerprint: 'p1:10' }); // après la collision
+    prisma.$transaction.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        code: 'P2002',
+        clientVersion: 'test',
+      }),
+    );
+
+    const res = await service.updateStock(
+      'p1',
+      restock,
+      'fb-owner',
+      'geste-0001',
+    );
+
+    expect(res).toMatchObject({ replayed: true });
+  });
+
+  it('P2002 étranger au reçu (aucun reçu relu) : l’erreur réelle remonte, pas un faux 409', async () => {
+    const { service, prisma } = build();
+    const foreign = new Prisma.PrismaClientKnownRequestError(
+      'Unique constraint failed on AuditLog',
+      { code: 'P2002', clientVersion: 'test' },
+    );
+    prisma.$transaction.mockRejectedValueOnce(foreign);
+
+    await expect(
+      service.updateStock('p1', restock, 'fb-owner', 'geste-0001'),
+    ).rejects.toBe(foreign);
+  });
+
+  it('échec de la transaction sans collision : l’erreur remonte, aucun reçu ne survit', async () => {
+    const { service, prisma } = build();
     prisma.$transaction.mockRejectedValueOnce(new Error('db down'));
 
     await expect(
       service.updateStock('p1', restock, 'fb-owner', 'geste-0001'),
     ).rejects.toThrow('db down');
-    expect(redis!.del).toHaveBeenCalledWith('stock:restock:u1:p1:geste-0001');
   });
 
-  it('Redis configuré mais en panne, avec une clé : 503 explicite, aucun incrément non protégé', async () => {
-    const { service, executeRaw } = build({
-      redis: {
-        set: jest.fn().mockRejectedValue(new Error('ECONNRESET')),
-        get: jest.fn(),
-        del: jest.fn(),
-      },
-    });
-
-    await expect(
-      service.updateStock('p1', restock, 'fb-owner', 'geste-0001'),
-    ).rejects.toBeInstanceOf(ServiceUnavailableException);
-    expect(executeRaw).not.toHaveBeenCalled();
-  });
-
-  it('sans clé (applications installées, web) : comportement inchangé, Redis non sollicité', async () => {
-    const { service, redis, executeRaw } = build();
+  it('sans clé (applications installées, web) : comportement inchangé, aucun reçu', async () => {
+    const { service, executeRaw, receiptCreate, receiptFindUnique } = build();
 
     await service.updateStock('p1', restock, 'fb-owner');
 
     expect(executeRaw).toHaveBeenCalledTimes(1);
-    expect(redis!.set).not.toHaveBeenCalled();
+    expect(receiptCreate).not.toHaveBeenCalled();
+    expect(receiptFindUnique).not.toHaveBeenCalled();
   });
 
-  it('Redis non configuré (dev, tests) : la clé est ignorée, le geste s’applique', async () => {
-    const { service, executeRaw } = build({ redis: null, redisUrl: null });
-
-    await service.updateStock('p1', restock, 'fb-owner', 'geste-0001');
-
-    expect(executeRaw).toHaveBeenCalledTimes(1);
-  });
-
-  it('geste sans nombre d’unités (appel hors DTO) : 400, ni Redis ni écriture', async () => {
-    const { service, redis, executeRaw } = build();
+  it('geste sans nombre d’unités (appel hors DTO) : 400, ni reçu ni écriture', async () => {
+    const { service, receiptCreate, executeRaw } = build();
 
     await expect(
       service.updateStock(
@@ -216,7 +184,7 @@ describe('ProductCommandService.updateStock — idempotence de RESTOCK', () => {
         'geste-0001',
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
-    expect(redis!.set).not.toHaveBeenCalled();
+    expect(receiptCreate).not.toHaveBeenCalled();
     expect(executeRaw).not.toHaveBeenCalled();
   });
 

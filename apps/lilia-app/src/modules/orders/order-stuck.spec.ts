@@ -24,7 +24,9 @@ describe('OrderQueryService.countStuckOrders', () => {
   const prisma = {
     user: { findUnique: jest.fn() },
     order: { findMany: jest.fn(), count: jest.fn(), groupBy: jest.fn() },
-    restaurant: { findFirst: jest.fn() },
+    // Lot 3 — boutiques accessibles : possédées ou membre actif.
+    restaurant: { findMany: jest.fn() },
+    shopMembership: { findMany: jest.fn().mockResolvedValue([]) },
   };
 
   beforeEach(async () => {
@@ -52,7 +54,7 @@ describe('OrderQueryService.countStuckOrders', () => {
       id: 'u-1',
       role: 'RESTAURATEUR',
     });
-    prisma.restaurant.findFirst.mockResolvedValue({ id: 'r-1' });
+    prisma.restaurant.findMany.mockResolvedValue([{ id: 'r-1' }]);
   }
 
   /** Le `where` passé au `groupBy` — c'est lui qui définit « bloquée ». */
@@ -114,7 +116,7 @@ describe('OrderQueryService.countStuckOrders', () => {
 
     await service.countStuckOrders('fb-1', 30);
 
-    expect(groupByWhere()).toMatchObject({ restaurantId: 'r-1' });
+    expect(groupByWhere()).toMatchObject({ restaurantId: { in: ['r-1'] } });
   });
 
   it('borne l’admin aux commandes non effacées', async () => {

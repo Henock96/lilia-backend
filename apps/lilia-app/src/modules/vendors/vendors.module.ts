@@ -27,6 +27,8 @@ import { PreorderValidatorService } from './preorder-validator.service';
 import { PlatformSettingsCoreModule } from '../platform-settings/platform-settings-core.module';
 import { AdminVendorReachabilityController } from './vendor-reachability.controller';
 import { VendorReachabilityService } from './vendor-reachability.service';
+import { ShopMembershipController } from './shop-membership.controller';
+import { ShopMembershipService } from './shop-membership.service';
 
 @Module({
   imports: [
@@ -54,9 +56,12 @@ import { VendorReachabilityService } from './vendor-reachability.service';
     VendorClosuresController,
     AdminPublicHolidaysController,
     AdminVendorReachabilityController,
+    // Lot 3 (point 7) — membres de la boutique.
+    ShopMembershipController,
   ],
   providers: [
     VendorReachabilityService,
+    ShopMembershipService,
     VendorsService,
     VendorOpeningService,
     VendorClosuresService,

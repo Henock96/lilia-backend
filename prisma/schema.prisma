@@ -163,6 +163,9 @@ model User {
   delivererReviews        DeliveryReview[] @relation("DelivererReviews")
   customerDeliveryReviews DeliveryReview[] @relation("CustomerDeliveryReviews")
 
+  // Durcissement lot 3 — adhésions aux boutiques (OWNER, MANAGER, STAFF).
+  shopMemberships ShopMembership[]
+
   @@index([referredByCode]) // getReferralStats : 2 count() par ouverture de l'écran (fix M19)
   /// Réutilisation d'un numéro de téléphone = signal anti-abus le plus fort du
   /// parrainage (`ReferralRiskService`). Index simple et **non unique** : voir
@@ -598,6 +601,9 @@ model Restaurant {
   minAgeRequired    Int? // Réservé futur — désactivé côté code (LIL-112)
   maxOrdersPerDay   Int? // null = illimité
   vendorProfile     VendorProfile?
+  // Durcissement lot 3 — membres de la boutique. `ownerId` reste la source de
+  // compatibilité pendant la conversion module par module.
+  memberships       ShopMembership[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1083,6 +1089,15 @@ model Order {
   vendorRejectionReason VendorRejectionReason?
   vendorRejectionNote   String?
 
+  // Parcours de la commande (durcissement lot 3, 30/10/2026). Figé au
+  // checkout : basculer le réglage plateforme ne change pas une commande en
+  // cours. TEXT + CHECK (règle 14) : `PAY_FIRST` (historique) | `ACCEPT_FIRST`.
+  orderFlow        String    @default("PAY_FIRST")
+  /// `ACCEPT_FIRST` : la demande expire (annulée, rien encaissé) au-delà.
+  requestExpiresAt DateTime?
+  /// `ACCEPT_FIRST` : acceptée, la commande doit être payée avant cet instant.
+  paymentDueAt     DateTime?
+
   // Preuve de remise et échéance de versement (F3-07, septembre 2026).
   // Écrites par `OrderTransitionService` au passage à `LIVRER`, et nulle part
   // ailleurs — sauf la montée `PICKUP_VENDOR_DECLARED → PICKUP_CUSTOMER_CONFIRMED`
@@ -1136,6 +1151,12 @@ model Order {
   /// distinctes.
   payout RestaurantPayout?
 
+  /// Lot 4 — `Idempotency-Key` du checkout qui a créé la commande. La base, et
+  /// non plus Redis, garantit qu'une même clé d'un même client ne crée qu'une
+  /// commande ; un rejeu relit celle-ci. `null` pour les commandes antérieures.
+  idempotencyKey String?
+
+  @@unique([userId, idempotencyKey])
   @@index([restaurantId, status, createdAt(sort: Desc)]) // dashboard resto: commandes par statut, plus recentes (LFD-9)
   @@index([promoCodeId])
   @@index([vendorOfferId])
@@ -1146,6 +1167,7 @@ model Order {
   @@index([userId, createdAt(sort: Desc)]) // GET /orders/my — pagination client (fix M19)
   @@index([status, createdAt]) // cron d'expiration des commandes impayées (fix M19)
   @@index([status, acceptDeadlineAt]) // cron d'expiration des commandes non acceptées (F3-01)
+  @@index([status, requestExpiresAt]) // cron d'expiration des demandes sans réponse (lot 3)
   // + index partiel SQL `Order_payoutDueAt_idx` (WHERE "payoutDueAt" IS NOT NULL) : versements automatiques (F3-07)
 }
 
@@ -1888,6 +1910,10 @@ enum PayoutProvider {
 }
 
 enum OrderStatus {
+  /// Durcissement lot 3 (30/10/2026) — parcours « accepter puis payer »
+  /// (`Order.orderFlow = ACCEPT_FIRST`) : la demande attend la réponse du
+  /// vendeur, rien n'est encaissable. Jamais atteint en `PAY_FIRST`.
+  DEMANDE_ENVOYEE
   EN_ATTENTE
   PAYER
   /// Le vendeur a vu et accepté la commande payée ; il n'a pas encore commencé
@@ -3240,6 +3266,26 @@ model PlatformSettings {
 
   /// Délai d'acceptation d'une commande payée (décision D1 du 23/09/2026).
   vendorAcceptanceTimeoutMinutes Int @default(8)
+
+  // ── Parcours « accepter puis payer » (durcissement lot 3, 30/10/2026) ─────
+
+  /// `PAY_FIRST` (défaut, parcours historique) | `ACCEPT_FIRST`. Même allumé,
+  /// une commande n'entre dans le nouveau parcours que si l'application du
+  /// client l'annonce (`X-Lilia-Order-Flow: accept-first`).
+  orderFlow                    String  @default("PAY_FIRST")
+  /// Délai de réponse du vendeur à une demande, en minutes.
+  vendorRequestTimeoutMinutes  Int     @default(5)
+  /// Délai de paiement après acceptation, en minutes.
+  acceptedPaymentWindowMinutes Int     @default(10)
+  /// Version minimale de l'app vendeurs (`X-Lilia-App: vendor`). `null` =
+  /// aucun seuil. En dessous : `426` sur les routes vendeur des commandes.
+  minVendorAppVersion          String?
+
+  /// Durcissement lot 4 (D-7) — le vendeur peut-il affecter un livreur ?
+  /// Vrai par défaut : comportement historique, les apps vendeurs installées
+  /// montrent ce geste. À éteindre une fois l'app vendeurs qui le masque
+  /// publiée : l'affectation devient un geste d'opérateur (ADMIN) seul.
+  vendorCanAssignDriver Boolean @default(true)
   /// F3-07 / D5 — délai entre la preuve de remise et le versement automatique
   /// au vendeur, en minutes. Borné 0–1440 par un CHECK.
   vendorPayoutDelayMinutes       Int @default(60)
@@ -3952,4 +3998,70 @@ model ReconciliationItemEvent {
   createdAt   DateTime           @default(now())
 
   @@index([itemId, createdAt])
+}
+
+// ─── Membres d'une boutique (durcissement lot 3, 30/10/2026) ────────────────
+//
+// Une boutique peut avoir plusieurs comptes : propriétaire (OWNER), responsable
+// (MANAGER), personnel (STAFF). Chaque membre a SA propre identité (et sa MFA).
+// Mode compatibilité : `Restaurant.ownerId` reste valide ; la reprise crée une
+// ligne OWNER ACTIVE par boutique. Les permissions sont dérivées du rôle dans
+// le code (`vendors/shop-access.ts`), jamais stockées.
+// TEXT + CHECK (règle 14) ; index uniques partiels écrits dans la migration
+// (non exprimables en Prisma) : une adhésion vivante par (compte, boutique),
+// un seul propriétaire actif par boutique.
+model ShopMembership {
+  id           String     @id @default(cuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Restrict)
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  /// `OWNER`, `MANAGER` ou `STAFF`.
+  role         String
+  /// `INVITED`, `ACTIVE` ou `REVOKED`.
+  status       String     @default("ACTIVE")
+  invitedBy    String?
+  createdAt    DateTime   @default(now())
+  activatedAt  DateTime?
+  revokedAt    DateTime?
+  revokedBy    String?
+  revokeReason String?
+
+  @@index([userId, status])
+  @@index([restaurantId, status])
+}
+
+// ─── Idempotence et verrous en PostgreSQL (durcissement, lot 4, 30/10/2026) ─
+//
+// Redis ne porte plus de garde de justesse : une panne Upstash ne doit ni
+// dédoubler un réapprovisionnement ni lancer deux fois un cron.
+
+/// Bail d'un cron : au plus un détenteur par job tant que `expiresAt` n'est
+/// pas passé. Acquis par `INSERT … ON CONFLICT DO UPDATE … WHERE expiresAt <=
+/// now()`, libéré par le seul détenteur (`common/locks/cron-lock.service.ts`).
+/// Horloge de la base seulement (`timezone('UTC', now())`) : aucun écart
+/// entre instances.
+model CronLease {
+  jobName    String   @id
+  /// Jeton aléatoire du processus qui tient le bail.
+  holder     String
+  acquiredAt DateTime @default(now())
+  expiresAt  DateTime
+}
+
+/// Reçu d'un geste rejouable sans ligne métier propre où poser la clé (lot 4).
+/// Écrit DANS la transaction du geste : la contrainte d'unicité arbitre les
+/// rejeux concurrents. `fingerprint` décrit le geste ; une même clé pour un
+/// autre geste est un conflit, jamais un rejeu.
+model IdempotencyReceipt {
+  /// Vocabulaire évolutif (règle 14) : `stock.restock` aujourd'hui.
+  scope       String
+  /// Appelant qui a posé la clé (`User.id`).
+  ownerId     String
+  key         String
+  fingerprint String
+  createdAt   DateTime @default(now())
+
+  @@id([scope, ownerId, key])
+  @@index([createdAt])
 }

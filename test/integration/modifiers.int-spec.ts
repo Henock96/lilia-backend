@@ -106,7 +106,6 @@ describeIfDb('F3-09 — options & suppléments (PostgreSQL réel)', () => {
       new OrderCalculatorService(),
       {} as never, // promo — aucun code dans ces tests
       new StockService(),
-      { get: () => undefined } as never, // Redis désactivé
       settingsService as never,
       new PreorderValidatorService(prisma as never),
       {} as never, // quartiers — retrait au comptoir

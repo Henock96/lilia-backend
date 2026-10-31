@@ -14,7 +14,9 @@ import {
   ValidateIf,
   ValidationOptions,
   IsEnum,
+  IsIn,
 } from 'class-validator';
+import { ORDER_FLOWS } from '../../orders/order-flow';
 
 import { MAX_COMMISSION_PERCENT } from '../../payments/money.util';
 import {
@@ -330,6 +332,56 @@ export class UpdatePlatformSettingsDto {
   @Min(0)
   @Max(1440)
   vendorPayoutDelayMinutes?: number;
+
+  // ── Parcours « accepter puis payer » (durcissement lot 3) ────────────────
+
+  /**
+   * `PAY_FIRST` (défaut) | `ACCEPT_FIRST`. ⚠️ Allumer `ACCEPT_FIRST` coupe
+   * (`426`) les applications vendeurs et back-offices qui n'annoncent pas
+   * `X-Lilia-Order-Flow: accept-first` : ne le faire qu'une fois l'app
+   * vendeurs compatible publiée et installée. Les commandes en cours gardent
+   * leur parcours ; les clients qui ne l'annoncent pas restent en `PAY_FIRST`.
+   */
+  @IsOptional()
+  @IsIn(ORDER_FLOWS as unknown as string[], {
+    message: 'orderFlow vaut PAY_FIRST ou ACCEPT_FIRST.',
+  })
+  orderFlow?: string;
+
+  /** Délai de réponse du vendeur à une demande. Bornes du CHECK en base. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(60)
+  vendorRequestTimeoutMinutes?: number;
+
+  /** Délai de paiement après acceptation. Bornes du CHECK en base. */
+  @IsOptional()
+  @IsInt()
+  @Min(2)
+  @Max(120)
+  acceptedPaymentWindowMinutes?: number;
+
+  /**
+   * Version minimale de l'app vendeurs (`X-Lilia-App: vendor`). En dessous :
+   * `426` sur les routes vendeur des commandes. `null` = aucun seuil.
+   */
+  @IsOptional()
+  @ValidateIf((_o, value) => value !== null)
+  @Matches(APP_VERSION_PATTERN, {
+    message:
+      'minVendorAppVersion doit être au format major.minor.patch (ex : 1.0.6 ou 1.0.6+7).',
+  })
+  minVendorAppVersion?: string | null;
+
+  /**
+   * Durcissement lot 4 (D-7) — `false` : seul un ADMIN affecte un livreur ;
+   * un vendeur reçoit `403 DRIVER_ASSIGNMENT_OPERATOR_ONLY`. Ne l'éteindre
+   * qu'une fois publiée l'app vendeurs qui masque ce geste.
+   */
+  @IsOptional()
+  @IsBoolean()
+  vendorCanAssignDriver?: boolean;
 
   /**
    * Verrou optimiste (SET-001) : l'`updatedAt` de la configuration **telle que

@@ -52,6 +52,7 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'AdminDeliveryTariffsController.findOne': 'NONE',
   'AdminDeliveryTariffsController.list': 'NONE',
   'AdminDeliveryTariffsController.publish': 'SETTINGS',
+  'AdminDeliveryTariffsController.readiness': 'NONE',
   'AdminDeliveryTariffsController.remove': 'SETTINGS',
   'AdminDeliveryTariffsController.simulate': 'NONE',
   'AdminDeliveryTariffsController.update': 'SETTINGS',
@@ -63,6 +64,8 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'AdminDriversController.resendInvitation': 'NONE',
   'AdminDriversController.update': 'NONE',
   'AdminDriverSettlementsController.cancel': 'FINANCE_EXECUTE',
+  // Lot 3 — détail des courses (lecture ; le livreur n'y a jamais accès).
+  'AdminDriverSettlementsController.courses': 'NONE',
   'AdminDriverSettlementsController.list': 'NONE',
   'AdminDriverSettlementsController.outstanding': 'NONE',
   'AdminDriverSettlementsController.record': 'FINANCE_EXECUTE',
@@ -100,6 +103,12 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'AdminReconciliationController.resolve': 'FINANCE_EXECUTE',
   'AdminReconciliationController.scan': 'FINANCE_EXECUTE',
   'AdminReconciliationController.summary': 'NONE',
+  // Lot 3 (point 7) — membres d'une boutique. Ajouter ou révoquer donne ou
+  // retire un accès : USER_ROLES pour un administrateur (le propriétaire,
+  // RESTAURATEUR, passe par la permission MEMBERS vérifiée dans le service).
+  'ShopMembershipController.add': 'USER_ROLES',
+  'ShopMembershipController.list': 'NONE',
+  'ShopMembershipController.revoke': 'USER_ROLES',
   'AdminPublicHolidaysController.list': 'NONE',
   'AdminPublicHolidaysController.remove': 'NONE',
   // F3-11 — l'arrêt d'une offre vendeur est un réglage commercial, comme

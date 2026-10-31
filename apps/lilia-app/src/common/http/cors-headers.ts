@@ -65,4 +65,12 @@ export const CORS_ALLOWED_HEADERS = [
    * ici pour qu'une build web de cette app ne casse pas au préflight.
    */
   'X-Lilia-App-Version',
+
+  /**
+   * Lot 3 (30/10/2026) — capacité « accepter puis payer »
+   * (`accept-first`), envoyée par `apiClient` sur toutes les requêtes comme
+   * `X-Lilia-Payment-Flow`. L'omettre ici casserait les deux applications web
+   * au préflight, sans message.
+   */
+  'X-Lilia-Order-Flow',
 ] as const;

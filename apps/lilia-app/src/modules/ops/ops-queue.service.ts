@@ -80,6 +80,10 @@ export const SLA_BUCKETS: readonly OpsBucketKey[] = [
   'order_stale',
   'payouts_in_flight',
   'refunds_in_flight',
+  // Lot 3, point 6 — « réclamation qui n'avance plus » : listée au lot 1E,
+  // elle ouvre désormais aussi son incident (dédupliqué, jamais clos sur la
+  // seule ancienneté).
+  'claims_stalled',
 ];
 
 const ITEMS_PER_BUCKET = 20;

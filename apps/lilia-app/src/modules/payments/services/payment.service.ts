@@ -1232,10 +1232,33 @@ export class PaymentService {
         "Vous n'êtes pas autorisé à payer cette commande",
       );
     }
+    // Lot 3 — « accepter puis payer » : rien ne s'encaisse avant l'accord du
+    // vendeur. Refusé AVANT tout appel au prestataire (aucune demande USSD).
+    if (order.status === OrderStatus.DEMANDE_ENVOYEE) {
+      throw new ConflictException({
+        message:
+          'La boutique n’a pas encore accepté votre commande : vous pourrez payer dès son accord.',
+        code: 'ORDER_AWAITING_VENDOR',
+      });
+    }
     if (order.status !== OrderStatus.EN_ATTENTE) {
       throw new BadRequestException(
         `Commande non payable dans le statut actuel : ${order.status}`,
       );
+    }
+    // Lot 3 — la fenêtre de paiement d'une demande acceptée est close : le
+    // cron annulera la commande et rendra le stock. Encaisser maintenant
+    // payerait une commande que le vendeur ne prépare plus.
+    if (
+      order.orderFlow === 'ACCEPT_FIRST' &&
+      order.paymentDueAt &&
+      order.paymentDueAt <= new Date()
+    ) {
+      throw new ConflictException({
+        message:
+          'Le délai de paiement de cette commande est dépassé : elle va être annulée. Repassez commande si vous le souhaitez.',
+        code: 'PAYMENT_WINDOW_CLOSED',
+      });
     }
     return order;
   }

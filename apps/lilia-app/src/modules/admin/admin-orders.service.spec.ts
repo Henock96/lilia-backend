@@ -132,9 +132,10 @@ describe('AdminOrdersService.list', () => {
 
     const res = await service.list({});
 
-    // Les neuf clés sont présentes : un front ne doit pas avoir à deviner
+    // Toutes les clés sont présentes : un front ne doit pas avoir à deviner
     // qu'une absence vaut zéro.
     expect(res.meta.statusCounts).toEqual({
+      DEMANDE_ENVOYEE: 0,
       EN_ATTENTE: 0,
       PAYER: 0,
       ACCEPTEE: 0,

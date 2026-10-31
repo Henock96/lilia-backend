@@ -10,6 +10,9 @@ import { DriverStatus, Prisma, Role, StatusUser } from '@prisma/client';
  * R1 Order → R2 Delivery → R3 DeliveryOffer → R4 User → R5 DriverProfile
  * ```
  *
+ * R3 n'est plus pris par aucun chemin depuis le retrait des offres de course
+ * (durcissement lot 4, dispatch manuel) ; le rang reste réservé.
+ *
  * Acceptation d'une course, changement de disponibilité, désactivation :
  * tous décident sur l'état d'un même livreur. Ils étaient arbitrés par des
  * lectures faites HORS transaction, suivies d'une écriture sans condition — un
