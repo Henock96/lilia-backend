@@ -92,6 +92,24 @@ export class DeliveryAssignmentService {
   }
 
   /**
+   * D-7 (durcissement lot 4) — l'affectation est un geste d'opérateur. Tant
+   * que `vendorCanAssignDriver` reste vrai (défaut, apps vendeurs installées),
+   * le propriétaire de la boutique garde le geste.
+   */
+  private async assertVendorMayAssign(isAdmin: boolean): Promise<void> {
+    if (isAdmin) return;
+    const { vendorCanAssignDriver } = await this.platformSettings.getSettings();
+    // Seul un `false` explicite retire le geste : le défaut est historique.
+    if (vendorCanAssignDriver === false) {
+      throw new ForbiddenException({
+        message:
+          "L'affectation des livreurs est faite par l'équipe Lilia. Contactez-la si la course tarde.",
+        code: 'DRIVER_ASSIGNMENT_OPERATOR_ONLY',
+      });
+    }
+  }
+
+  /**
    * Le terrain permet-il encore de changer de main ?
    *
    * Trois refus, et chacun protège de l'argent :
@@ -269,6 +287,8 @@ export class DeliveryAssignmentService {
         "Vous n'êtes pas autorisé à assigner un livreur à cette commande.",
       );
     }
+    // Avant de créer la ligne `Delivery` : un refus ne laisse rien derrière lui.
+    await this.assertVendorMayAssign(isAdmin);
 
     // Un livreur ne peut être assigné que sur une commande payée et en cours de
     // traitement — pas sur EN_ATTENTE (non payée) ni sur une commande terminée.
@@ -327,6 +347,7 @@ export class DeliveryAssignmentService {
         "Vous n'êtes pas autorisé à assigner un livreur à cette livraison.",
       );
     }
+    await this.assertVendorMayAssign(isAdmin);
 
     this.assertGroundAllowsAssignment(delivery);
     await this.assertAssignable(delivererId);

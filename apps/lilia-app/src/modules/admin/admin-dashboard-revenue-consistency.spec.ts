@@ -108,8 +108,13 @@ describe('GET /admin/dashboard — un seul périmètre de chiffre d’affaires',
    * exclusions nommées. Ajouter une valeur à l'enum fait échouer ce test tant
    * que quelqu'un n'a pas tranché de quel côté elle tombe.
    */
-  it('couvre tous les statuts de l’enum sauf les deux exclus', () => {
-    const NEVER_PAID = [OrderStatus.EN_ATTENTE, OrderStatus.ANNULER] as const;
+  it('couvre tous les statuts de l’enum sauf les exclus', () => {
+    // Lot 3 — une demande (`DEMANDE_ENVOYEE`) n'est jamais payée.
+    const NEVER_PAID = [
+      OrderStatus.DEMANDE_ENVOYEE,
+      OrderStatus.EN_ATTENTE,
+      OrderStatus.ANNULER,
+    ] as const;
 
     const attendu = Object.values(OrderStatus).filter(
       (status) => !NEVER_PAID.includes(status as (typeof NEVER_PAID)[number]),

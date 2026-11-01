@@ -74,6 +74,9 @@ export const ASSIGNABLE_ORDER_STATUSES: OrderStatus[] = [
  * suppression du compte client (`UserDeletionService`).
  */
 export const IN_FLIGHT_ORDER_STATUSES: readonly OrderStatus[] = [
+  // Lot 3 — une demande attend la réponse du vendeur : la boutique ne ferme
+  // pas, le compte ne se supprime pas, sous elle.
+  OrderStatus.DEMANDE_ENVOYEE,
   OrderStatus.EN_ATTENTE,
   OrderStatus.PAYER,
   OrderStatus.ACCEPTEE,

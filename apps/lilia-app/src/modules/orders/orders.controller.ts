@@ -37,6 +37,8 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { RequireSecondFactor } from '../auth/decorators/require-second-factor.decorator';
 import { MaintenanceGuard } from '../platform-settings/guards/maintenance.guard';
 import { MinAppVersionGuard } from '../platform-settings/guards/min-app-version.guard';
+import { ORDER_FLOW_HEADER, declaresAcceptFirst } from './order-flow';
+import { VendorAppCompatGuard } from '../platform-settings/guards/vendor-app-compat.guard';
 import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
 
 /**
@@ -83,11 +85,15 @@ export class OrdersController {
     @FirebaseUser() firebaseUser: DecodedIdToken,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Body() createOrderDto: CreateOrderDto,
+    // Lot 3 — capacité déclarée (`X-Lilia-Order-Flow: accept-first`). Absente :
+    // parcours historique, quel que soit le réglage plateforme.
+    @Headers(ORDER_FLOW_HEADER) orderFlowHeader?: string,
   ) {
     return this.ordersService.createOrderFromCart(
       firebaseUser.uid,
       createOrderDto,
       idempotencyKey,
+      declaresAcceptFirst(orderFlowHeader),
     );
   }
 
@@ -136,6 +142,7 @@ export class OrdersController {
    */
   @Get('restaurant')
   @Roles('RESTAURATEUR', 'ADMIN')
+  @UseGuards(VendorAppCompatGuard)
   @ApiOperation({ summary: 'Commandes reçues (restaurateur / admin)' })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
@@ -182,6 +189,7 @@ export class OrdersController {
    */
   @Get('restaurant/stuck')
   @Roles('RESTAURATEUR', 'ADMIN')
+  @UseGuards(VendorAppCompatGuard)
   @ApiOperation({
     summary: 'Commandes payées que personne n’a fait avancer',
     description:
@@ -212,6 +220,7 @@ export class OrdersController {
    */
   @Get('restaurant/pending-count')
   @Roles('RESTAURATEUR', 'ADMIN')
+  @UseGuards(VendorAppCompatGuard)
   @ApiOperation({
     summary: 'Nombre de commandes reçues non encore prises en charge',
   })
@@ -230,6 +239,7 @@ export class OrdersController {
    */
   @Get('restaurant/:id')
   @Roles('RESTAURATEUR', 'ADMIN')
+  @UseGuards(VendorAppCompatGuard)
   @ApiOperation({ summary: 'Une commande reçue (restaurateur / admin)' })
   @ApiParam({ name: 'id', description: 'ID de la commande' })
   @ApiResponse({
@@ -327,6 +337,7 @@ export class OrdersController {
    */
   @Patch(':id/status')
   @Roles('RESTAURATEUR', 'ADMIN')
+  @UseGuards(VendorAppCompatGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Mettre à jour le statut (restaurateur / admin)' })
   @ApiParam({ name: 'id', description: 'ID de la commande' })
@@ -383,6 +394,7 @@ export class OrdersController {
    */
   @Post(':id/pickup/handover')
   @Roles('RESTAURATEUR')
+  @UseGuards(VendorAppCompatGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Remettre un retrait avec le code du client (vendeur)',
@@ -413,6 +425,7 @@ export class OrdersController {
    */
   @Post(':id/accept')
   @Roles('RESTAURATEUR', 'ADMIN')
+  @UseGuards(VendorAppCompatGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Accepter une commande payée (vendeur / admin)' })
   @ApiParam({ name: 'id', description: 'ID de la commande' })
@@ -440,6 +453,7 @@ export class OrdersController {
    */
   @Post(':id/reject')
   @Roles('RESTAURATEUR', 'ADMIN')
+  @UseGuards(VendorAppCompatGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Refuser une commande (vendeur / admin)' })
   @ApiParam({ name: 'id', description: 'ID de la commande' })

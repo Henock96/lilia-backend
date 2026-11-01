@@ -11,10 +11,6 @@ import {
   LoyaltyTransactionType,
   Prisma,
 } from '@prisma/client';
-import { ConfigService } from '@nestjs/config';
-import { InjectRedis } from '@nestjs-modules/ioredis';
-import * as Sentry from '@sentry/nestjs';
-import Redis from 'ioredis';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateOrderDto, QuoteOrderDto } from './dto/create-order.dto';
@@ -57,13 +53,19 @@ import {
 } from '../modifiers/modifier-selection';
 import { modifierErrorForCheckout } from '../modifiers/modifier-http';
 import { ORDER_ITEM_OPTIONS_ARGS } from '../modifiers/order-item-options';
+import { OutboxService } from '../outbox/outbox.service';
+import { ORDER_REQUESTED_EVENT } from '../outbox/outbox-events';
+import { chooseOrderFlow, requestExpiry } from './order-flow';
+
+/** Forme de la commande renvoyée par le checkout, et par son rejeu. */
+const CREATED_ORDER_INCLUDE = {
+  items: { include: { options: ORDER_ITEM_OPTIONS_ARGS } },
+  restaurant: { select: { nom: true } },
+} satisfies Prisma.OrderInclude;
 
 /** Commande renvoyée par le checkout (même `include` que la création). */
 type CreatedOrder = Prisma.OrderGetPayload<{
-  include: {
-    items: { include: { options: typeof ORDER_ITEM_OPTIONS_ARGS } };
-    restaurant: { select: { nom: true } };
-  };
+  include: typeof CREATED_ORDER_INCLUDE;
 }>;
 
 export interface CheckoutResult {
@@ -96,22 +98,13 @@ export interface CheckoutQuote {
  * Checkout : création d'une commande à partir du panier (LIL-134).
  *
  * Extrait de `OrdersService` pour isoler le cas d'usage le plus complexe
- * (idempotency Redis, validations, calcul, promo, fidélité, transaction,
+ * (idempotence, validations, calcul, promo, fidélité, transaction,
  * event order.created, récompense parrainage). `OrdersService` y délègue
  * `createOrderFromCart` — l'API publique reste inchangée.
  */
 @Injectable()
 export class OrderCheckoutService {
   private readonly logger = new Logger(OrderCheckoutService.name);
-
-  /** Marqueur d'une clé d'idempotence réservée mais dont le traitement court. */
-  private static readonly PENDING = '__pending__';
-  /** Durée de la réservation : au-delà, on considère le traitement perdu. */
-  private static readonly PENDING_TTL_SECONDS = 120;
-  /** Durée de conservation de la réponse pour rejouer un retry client. */
-  private static readonly RESULT_TTL_SECONDS = 3600;
-
-  private readonly idempotencyEnabled: boolean;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -120,7 +113,6 @@ export class OrderCheckoutService {
     private readonly calculator: OrderCalculatorService,
     private readonly promoService: PromoService,
     private readonly stockService: StockService,
-    private readonly config: ConfigService,
     private readonly platformSettings: PlatformSettingsService,
     private readonly preorderValidator: PreorderValidatorService,
     private readonly quartiersService: QuartiersService,
@@ -133,32 +125,35 @@ export class OrderCheckoutService {
     private readonly stockSignal: StockSignalService,
     // F3-11 — offre boutique : résolue, puis budget réservé sous transaction.
     private readonly vendorOffers: VendorOffersService,
-    // Client partagé fourni par `RedisModule.forRootAsync` (app.module). On
-    // n'ouvre plus une seconde connexion ici : Render plafonne les connexions
-    // Redis et `UserCacheService` utilise déjà ce même pool.
-    @Optional() @InjectRedis() private readonly redis?: Redis,
-  ) {
-    this.idempotencyEnabled = Boolean(
-      this.config.get<string>('REDIS_URL') && this.redis,
-    );
-  }
+    // Lot 3 — demande à présenter au vendeur, écrite avec la commande.
+    // Optionnel et en dernier : ajout sans décaler les autres.
+    @Optional() private readonly outbox?: OutboxService,
+  ) {}
 
   /**
-   * Point d'entrée du checkout, avec garde d'idempotence **atomique**.
+   * Point d'entrée du checkout, avec garde d'idempotence portée par la base
+   * (durcissement lot 4).
    *
-   * La clé est réservée en `SET NX` **avant** tout traitement : deux requêtes
-   * concurrentes portant la même `Idempotency-Key` (double-tap, retry du
-   * `RetryInterceptor` client) ne peuvent plus créer deux commandes. La
-   * seconde reçoit un 409 tant que la première tourne, puis la réponse cachée
-   * une fois celle-ci terminée.
+   * La clé est écrite sur la commande, dans la transaction qui la crée, sous
+   * l'index unique `(userId, idempotencyKey)`. Un rejeu (double-tap, retry du
+   * `RetryInterceptor` client, réponse perdue) relit cette commande et la
+   * renvoie, sans rien recréer.
    *
-   * En cas d'échec du traitement, la réservation est libérée pour qu'un vrai
-   * retry reste possible.
+   * Deux requêtes concurrentes portant la même clé se sérialisent sur le
+   * verrou du panier (fix F-11) : la seconde trouve un panier vidé — ou bute
+   * sur l'index — et échoue ; son échec est alors converti en rejeu de la
+   * commande gagnante. Redis gardait cette garde jusqu'au lot 3 : une panne
+   * Upstash la désactivait, et un retry après succès recevait un 409.
    */
   async createOrderFromCart(
     firebaseUid: string,
     dto: CreateOrderDto,
     idempotencyKey?: string,
+    /**
+     * Lot 3 — l'application du client sait conduire « accepter puis payer »
+     * (`X-Lilia-Order-Flow: accept-first`). Faux par défaut : parcours actuel.
+     */
+    acceptFirstCapable = false,
   ) {
     // Fix H8 : l'en-tête est désormais OBLIGATOIRE. Le mécanisme `SET NX`
     // était correct mais ne s'activait que si le client l'envoyait — un client
@@ -175,46 +170,52 @@ export class OrderCheckoutService {
       throw new BadRequestException("En-tête 'Idempotency-Key' trop long.");
     }
 
-    const cacheKey = this.idempotencyEnabled
-      ? `idempotency:${firebaseUid}:${key}`
-      : null;
-
-    if (!cacheKey) {
-      // Redis non configuré : on n'a pas de garde possible. On le signale
-      // bruyamment plutôt que de le laisser passer en silence — sans quoi une
-      // panne d'infrastructure devient une faille métier invisible.
-      this.logger.error(
-        '⚠️ [IDEMPOTENCY] Redis indisponible — checkout NON protégé contre les doublons',
-      );
-      Sentry.captureMessage(
-        "Checkout sans garde d'idempotence (Redis indisponible)",
-        'warning',
-      );
-      return this.performCheckout(firebaseUid, dto);
-    }
-
-    const claim = await this.claimIdempotencyKey(cacheKey, key);
-    if (claim.replay) {
-      this.logger.log(
-        `📦 [IDEMPOTENCY] Réponse cachée retournée — key: ${idempotencyKey}`,
-      );
-      return claim.replay;
-    }
+    const previous = await this.findIdempotentOrder(firebaseUid, key);
+    if (previous) return this.replay(previous, key);
 
     try {
-      const result = await this.performCheckout(firebaseUid, dto);
-      await this.storeIdempotentResult(cacheKey, result);
-      return result;
+      return await this.performCheckout(firebaseUid, dto, {
+        acceptFirstCapable,
+        idempotencyKey: key,
+      });
     } catch (err) {
-      // Le traitement a échoué : on relâche la réservation, sinon le client
-      // resterait bloqué en 409 pendant 2 min sur une commande jamais créée.
-      if (claim.reserved) {
-        await this.redis
-          ?.del(cacheKey)
-          .catch(() => this.logger.warn('Libération clé idempotence échouée'));
-      }
-      throw err;
+      // La requête jumelle a pu gagner pendant que celle-ci attendait le
+      // verrou du panier : son échec (panier vidé, index unique) n'en est pas
+      // un pour le client, qui reçoit la commande créée. Toute autre erreur
+      // remonte telle quelle — aucune commande ne porte la clé, un vrai retry
+      // reste possible.
+      //
+      // La relecture ne doit jamais masquer l'erreur d'origine : si elle
+      // échoue elle aussi (base saturée), c'est `err` qui remonte.
+      const winner = await this.findIdempotentOrder(firebaseUid, key).catch(
+        (readErr: Error) => {
+          this.logger.error(
+            `📦 [IDEMPOTENCY] Relecture impossible après échec — key: ${key} : ${readErr.message}`,
+          );
+          return null;
+        },
+      );
+      if (!winner) throw err;
+      this.logger.warn(
+        `📦 [IDEMPOTENCY] Échec converti en rejeu de ${winner.id} — key: ${key} : ${(err as Error).message}`,
+      );
+      return this.replay(winner, key);
     }
+  }
+
+  /** Commande déjà créée par ce client avec cette clé, s'il y en a une. */
+  private findIdempotentOrder(firebaseUid: string, key: string) {
+    return this.prisma.order.findFirst({
+      where: { idempotencyKey: key, user: { firebaseUid } },
+      include: CREATED_ORDER_INCLUDE,
+    });
+  }
+
+  private replay(order: CreatedOrder, key: string): CheckoutResult {
+    this.logger.log(
+      `📦 [IDEMPOTENCY] Commande ${order.id} rejouée — key: ${key}`,
+    );
+    return { message: 'Commande créée avec succès.', data: order };
   }
 
   /**
@@ -244,12 +245,20 @@ export class OrderCheckoutService {
   private async performCheckout(
     firebaseUid: string,
     dto: CreateOrderDto,
-    options?: { dryRun?: false },
+    options?: {
+      dryRun?: false;
+      acceptFirstCapable?: boolean;
+      idempotencyKey?: string;
+    },
   ): Promise<CheckoutResult>;
   private async performCheckout(
     firebaseUid: string,
     dto: CreateOrderDto,
-    options: { dryRun?: boolean } = {},
+    options: {
+      dryRun?: boolean;
+      acceptFirstCapable?: boolean;
+      idempotencyKey?: string;
+    } = {},
   ): Promise<CheckoutQuote | CheckoutResult> {
     const {
       adresseId,
@@ -570,6 +579,25 @@ export class OrderCheckoutService {
         total: finalTotal,
       };
     }
+    // Lot 3 — parcours figé sur la commande : « accepter puis payer » seulement
+    // si le réglage l'active ET que l'application du client sait le conduire.
+    const orderFlow = chooseOrderFlow({
+      platformFlow: settings.orderFlow,
+      clientDeclaresAcceptFirst: Boolean(options.acceptFirstCapable),
+      isPreorder: isPreorder ?? Boolean(scheduledForDate),
+      totalXaf: finalTotal,
+    });
+    if (orderFlow === 'ACCEPT_FIRST' && !this.outbox) {
+      // Une demande sans obligation de prévenir le vendeur attendrait une
+      // réponse qui ne viendrait jamais : on refuse plutôt que de la créer.
+      throw new Error(
+        'Parcours ACCEPT_FIRST sans OutboxService : la demande ne peut pas être présentée au vendeur.',
+      );
+    }
+    const createdAt = new Date();
+    const initialStatus =
+      orderFlow === 'ACCEPT_FIRST' ? 'DEMANDE_ENVOYEE' : 'EN_ATTENTE';
+
     // 5. Exécuter la création de la commande et la suppression du panier dans une transaction
     let stockMovements: StockMovement[] = [];
     const { order } = await this.prisma.$transaction(async (tx) => {
@@ -654,9 +682,21 @@ export class OrderCheckoutService {
           deliveryLandmark: destination?.landmark ?? null,
           deliveryQuartierId,
           paymentMethod,
-          status: 'EN_ATTENTE',
+          status: initialStatus,
+          orderFlow,
+          ...(orderFlow === 'ACCEPT_FIRST'
+            ? {
+                requestExpiresAt: requestExpiry(
+                  createdAt,
+                  settings.vendorRequestTimeoutMinutes,
+                ),
+              }
+            : {}),
           isPreorder: isPreorder ?? Boolean(scheduledForDate),
           scheduledFor: scheduledForDate,
+          // Lot 4 — l'index unique `(userId, idempotencyKey)` fait de la
+          // base l'arbitre des rejeux.
+          idempotencyKey: options.idempotencyKey ?? null,
           items: {
             create: itemSnapshots.map((snap) => ({
               productId: snap.productId,
@@ -688,10 +728,7 @@ export class OrderCheckoutService {
             })),
           },
         },
-        include: {
-          items: { include: { options: ORDER_ITEM_OPTIONS_ARGS } },
-          restaurant: { select: { nom: true } }, // Correction: Toujours inclure le restaurant
-        },
+        include: CREATED_ORDER_INCLUDE,
       });
 
       // Ouvre l'historique de la commande (P0-4), dans LA transaction de
@@ -703,11 +740,21 @@ export class OrderCheckoutService {
       // fausserait exactement la mesure pour laquelle cette table existe.
       await this.transitions.recordCreation(tx, {
         orderId: newOrder.id,
-        to: 'EN_ATTENTE',
+        to: initialStatus,
         actor: 'CLIENT',
         actorUserId: user.id,
         source: 'APP',
       });
+
+      // Lot 3 — une demande DOIT atteindre le vendeur : l'obligation naît avec
+      // elle (outbox), comme `order.paid` dans le parcours historique.
+      if (orderFlow === 'ACCEPT_FIRST') {
+        await this.outbox!.enqueueInTransaction(tx, {
+          type: ORDER_REQUESTED_EVENT,
+          aggregateId: newOrder.id,
+          payload: {},
+        });
+      }
 
       // F3-11 — budget de l'offre réservé sous condition : deux checkouts
       // simultanés ne le dépassent jamais, le perdant reçoit 409 et relance
@@ -838,17 +885,6 @@ export class OrderCheckoutService {
   }
 
   /**
-   * Réserve la clé d'idempotence de façon atomique.
-   *
-   * - `SET NX` réussit → on est le premier, on peut traiter (`reserved: true`).
-   * - La clé porte une réponse → c'est un retry légitime, on la rejoue.
-   * - La clé est encore en `__pending__` → un traitement est en cours, 409.
-   *
-   * Si Redis est indisponible, on dégrade en best-effort (traitement sans
-   * garde) plutôt que de refuser la commande : c'était déjà le comportement
-   * historique, et une panne Redis ne doit pas fermer la caisse.
-   */
-  /**
    * F3-09 — résout les options de chaque ligne. Le premier refus devient un
    * 409 qui désigne la ligne (`cartItemId`) et porte le `code` du moteur.
    */
@@ -971,75 +1007,5 @@ export class OrderCheckoutService {
           : 'Votre panier a changé pendant la validation. Vérifiez-le puis recommencez.',
       );
     }
-  }
-
-  private async claimIdempotencyKey(
-    cacheKey: string,
-    idempotencyKey: string,
-  ): Promise<{ reserved: boolean; replay?: unknown }> {
-    try {
-      const reserved = await this.redis!.set(
-        cacheKey,
-        OrderCheckoutService.PENDING,
-        'EX',
-        OrderCheckoutService.PENDING_TTL_SECONDS,
-        'NX',
-      );
-      if (reserved === 'OK') return { reserved: true };
-
-      const existing = await this.redis!.get(cacheKey);
-
-      // Expirée entre le SET et le GET : on retente une fois de la réserver.
-      if (existing === null) {
-        const retry = await this.redis!.set(
-          cacheKey,
-          OrderCheckoutService.PENDING,
-          'EX',
-          OrderCheckoutService.PENDING_TTL_SECONDS,
-          'NX',
-        );
-        if (retry === 'OK') return { reserved: true };
-        throw new ConflictException(
-          'Une commande identique est déjà en cours de traitement.',
-        );
-      }
-
-      if (existing === OrderCheckoutService.PENDING) {
-        this.logger.warn(
-          `📦 [IDEMPOTENCY] Requête concurrente rejetée — key: ${idempotencyKey}`,
-        );
-        throw new ConflictException(
-          'Une commande identique est déjà en cours de traitement.',
-        );
-      }
-
-      return { reserved: false, replay: JSON.parse(existing) };
-    } catch (err) {
-      if (err instanceof ConflictException) throw err;
-      // Dégradation volontaire : une panne Redis ne doit pas fermer la caisse.
-      // Mais elle désactive une garde de sécurité, donc elle remonte en alerte
-      // (fix H8) au lieu de rester une ligne de log parmi d'autres.
-      this.logger.error(
-        `Redis (idempotence checkout) indisponible — checkout non protégé : ${
-          (err as Error).message
-        }`,
-      );
-      Sentry.captureException(err, {
-        tags: { feature: 'checkout-idempotency', degraded: 'true' },
-      });
-      return { reserved: false };
-    }
-  }
-
-  private async storeIdempotentResult(cacheKey: string, result: unknown) {
-    await this.redis
-      ?.setex(
-        cacheKey,
-        OrderCheckoutService.RESULT_TTL_SECONDS,
-        JSON.stringify(result),
-      )
-      .catch(() =>
-        this.logger.warn('Mise en cache du résultat idempotent échouée'),
-      );
   }
 }

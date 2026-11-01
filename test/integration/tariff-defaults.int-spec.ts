@@ -130,7 +130,6 @@ describeIfDb('Réglages tarifaires par défaut (PostgreSQL réel)', () => {
       new OrderCalculatorService(),
       {} as never, // promo
       new StockService(),
-      { get: () => undefined } as never, // Redis désactivé
       // Les réglages RÉELLEMENT enregistrés, pas des valeurs de test.
       { getSettings: async () => settings } as never,
       new PreorderValidatorService(prisma as never),

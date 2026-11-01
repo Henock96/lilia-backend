@@ -10,10 +10,6 @@ import { IN_FLIGHT_ORDER_STATUSES } from '../orders/order-status-groups';
 import { FirebaseService } from '../firebase/firebase.service';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import { ACTIVE_DELIVERY_STATUSES } from '../deliveries/delivery-statuses';
-import {
-  cancelOpenOffers,
-  sweepRevokedOffers,
-} from '../drivers/driver-offer-revocation';
 
 /**
  * Suppression de compte à l'initiative de l'utilisateur (`DELETE /users/me`).
@@ -69,10 +65,6 @@ export class UserDeletionService {
     const firebaseUid = user.firebaseUid;
 
     await this.prisma.$transaction(async (tx) => {
-      // F3-12.1 — R3 avant le verrou du compte (R4) : ses offres de course
-      // ouvertes tombent avec lui.
-      await cancelOpenOffers(tx, userId);
-
       // Purge — ordre sans importance, aucune de ces tables n'est parente
       // d'une autre sauf Cart → CartItem (cascade PostgreSQL depuis Ar1).
       await tx.adresses.deleteMany({ where: { userId } });
@@ -151,8 +143,6 @@ export class UserDeletionService {
         data: this.anonymizedFields(userId),
       });
     });
-
-    await sweepRevokedOffers(this.prisma, userId);
 
     // Hors transaction : Firebase et Redis ne sont pas rollbackables, et on ne
     // veut pas tenir une transaction PostgreSQL ouverte pendant un appel réseau.

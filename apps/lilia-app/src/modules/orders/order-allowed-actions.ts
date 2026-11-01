@@ -45,11 +45,17 @@ export const ORDER_ACTIONS = [
 ] as const;
 export type OrderAction = (typeof ORDER_ACTIONS)[number];
 
-/** Statut d'arrivée d'un geste. */
-export function actionTarget(action: OrderAction): OrderStatus {
+/**
+ * Statut d'arrivée d'un geste. Lot 3 — « Accepter » une DEMANDE ouvre le
+ * paiement (`EN_ATTENTE`) ; « Accepter » une commande payée mène à `ACCEPTEE`.
+ */
+export function actionTarget(
+  action: OrderAction,
+  from?: OrderStatus,
+): OrderStatus {
   switch (action) {
     case 'ACCEPT':
-      return 'ACCEPTEE';
+      return from === 'DEMANDE_ENVOYEE' ? 'EN_ATTENTE' : 'ACCEPTEE';
     case 'START_PREPARATION':
       return 'EN_PREPARATION';
     case 'MARK_READY':
@@ -75,6 +81,8 @@ export function orderAllowedActions(
     status: OrderStatus;
     isDelivery: boolean;
     deliveryProof?: string | null;
+    /** Lot 3 — payée ET déjà acceptée (parcours `ACCEPT_FIRST`). */
+    acceptedAt?: Date | null;
   },
   role: string,
   opts: { acceptanceRequired: boolean },
@@ -100,9 +108,15 @@ export function orderAllowedActions(
     .filter(([, actors]) => actors?.includes(actor))
     .map(([to]) => to as OrderStatus);
 
+  // Une commande `PAYER` du parcours `ACCEPT_FIRST` a été acceptée AVANT le
+  // paiement : « Accepter » n'a plus de sens, « Préparer » est le geste.
+  const alreadyAccepted = from === 'PAYER' && Boolean(order.acceptedAt);
   const actions: OrderAction[] = [];
   for (const to of targets) {
-    const action = actionFor(from, to, actor, order.isDelivery, opts);
+    const action = actionFor(from, to, actor, order.isDelivery, {
+      ...opts,
+      alreadyAccepted,
+    });
     if (action && !actions.includes(action)) actions.push(action);
   }
   return actions;
@@ -113,13 +127,18 @@ function actionFor(
   to: OrderStatus,
   actor: OrderActor,
   isDelivery: boolean,
-  opts: { acceptanceRequired: boolean },
+  opts: { acceptanceRequired: boolean; alreadyAccepted: boolean },
 ): OrderAction | null {
   switch (to) {
+    case 'EN_ATTENTE':
+      // Lot 3 — accepter une demande ouvre son paiement.
+      return from === 'DEMANDE_ENVOYEE' ? 'ACCEPT' : null;
     case 'ACCEPTEE':
-      return 'ACCEPT';
+      return opts.alreadyAccepted ? null : 'ACCEPT';
     case 'EN_PREPARATION':
-      return from === 'PAYER' && opts.acceptanceRequired
+      return from === 'PAYER' &&
+        opts.acceptanceRequired &&
+        !opts.alreadyAccepted
         ? null
         : 'START_PREPARATION';
     case 'PRET':
@@ -128,7 +147,8 @@ function actionFor(
       if (from !== 'PRET' || isDelivery) return null;
       return actor === 'CLIENT' ? 'CONFIRM_PICKUP' : 'HAND_OVER';
     case 'ANNULER':
-      return actor !== 'CLIENT' && (from === 'PAYER' || from === 'ACCEPTEE')
+      return actor !== 'CLIENT' &&
+        (from === 'PAYER' || from === 'ACCEPTEE' || from === 'DEMANDE_ENVOYEE')
         ? 'REJECT'
         : 'CANCEL';
     default:
@@ -164,6 +184,7 @@ export function withAllowedActions<
     status: OrderStatus;
     isDelivery: boolean;
     deliveryProof?: string | null;
+    acceptedAt?: Date | null;
   },
 >(
   orders: T[],

@@ -93,7 +93,6 @@ describeIfDb('F3-11 — offres boutique (PostgreSQL réel)', () => {
       new OrderCalculatorService(),
       promo,
       new StockService(),
-      { get: () => undefined } as never, // Redis désactivé
       settingsService as never,
       new PreorderValidatorService(prisma as never),
       {} as never, // quartiers — retrait au comptoir

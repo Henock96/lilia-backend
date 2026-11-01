@@ -46,7 +46,6 @@ describeIfDb(
         unused, // calculator
         unused, // promo
         unused, // stock
-        { get: () => undefined } as never, // config (Redis désactivé)
         unused, // platformSettings
         unused, // preorderValidator
         unused, // quartiers

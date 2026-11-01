@@ -132,18 +132,15 @@ describe('AdminUsersService — cohérence des changements de rôle', () => {
     expect(prisma.user.updateMany).not.toHaveBeenCalled();
   });
 
-  it('F3-12.1 R6 — la garde est lue SOUS le verrou du livreur, offres retirées avant', async () => {
+  it('F3-12.1 R6 — la garde est lue SOUS le verrou du livreur', async () => {
     prisma.user.findUnique.mockResolvedValue(user({ role: 'LIVREUR' }));
     await service.updateUserRole('u1', { role: 'CLIENT' } as never);
 
-    const [cancel] = prisma.$executeRaw.mock.invocationCallOrder;
     const [lock] = prisma.$queryRaw.mock.invocationCallOrder;
     const [guard] = prisma.delivery.findFirst.mock.invocationCallOrder;
-    // R3 → R4 → garde : l'ordre global des verrous, et la garde sous R4.
-    expect(cancel).toBeLessThan(lock);
     expect(lock).toBeLessThan(guard);
-    // Balayage post-commit (patron §8.4) : un second passage sur les offres.
-    expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+    // Lot 4 : plus d'offres de course (dispatch manuel), rien à révoquer.
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
   });
 
   it('F3-12.1 R6 — ON_DELIVERY sans course lisible → refusé quand même', async () => {

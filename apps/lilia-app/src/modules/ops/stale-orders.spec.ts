@@ -44,6 +44,7 @@ describe('Seuils par état — exhaustivité', () => {
 describe('evaluateStale — un cas par état non terminal', () => {
   // [état, contexte, seuil attendu écrit à la main]
   const cases: Array<[OrderStatus, Partial<StaleCandidate>, number]> = [
+    ['DEMANDE_ENVOYEE', {}, 3], // lot 3 : avant l'expiration automatique
     ['EN_ATTENTE', {}, 20],
     ['PAYER', {}, 5],
     ['ACCEPTEE', {}, 20],

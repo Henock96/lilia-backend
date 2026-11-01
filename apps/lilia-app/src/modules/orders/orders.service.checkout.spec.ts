@@ -38,9 +38,8 @@ import { cartLine } from '../modifiers/testing/cart-line.fixture';
  * orchestration validators → calcul → promo → fidélité → transaction (création
  * commande + applyCode + points + stock + vidage panier) → event order.created.
  *
- * Note : la branche idempotency (Redis) n'est pas couverte ici — `redis` est null
- * sans REDIS_URL (config mock). Caractérisée séparément le jour où Redis sera
- * injecté proprement.
+ * Note : la garde d'idempotence (clé en base, lot 4) a sa propre suite,
+ * `order-checkout.idempotency.spec.ts` ; ici, aucune commande ne porte la clé.
  */
 describe('OrdersService.createOrderFromCart (caractérisation — checkout)', () => {
   let service: OrdersService;
@@ -72,6 +71,7 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
   const prisma = {
     user: { findUnique: jest.fn() },
     adresses: { findUnique: jest.fn() },
+    order: { findFirst: jest.fn().mockResolvedValue(null) },
     $transaction: jest.fn(async (cb: (t: typeof tx) => unknown) => cb(tx)),
   };
   const validator = {

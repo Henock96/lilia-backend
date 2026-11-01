@@ -1,8 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConflictException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { ConfigService } from '@nestjs/config';
-import { getRedisConnectionToken } from '@nestjs-modules/ioredis';
 
 import { OrderCheckoutService } from './order-checkout.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -23,12 +21,12 @@ import { OrderTransitionService } from './order-transition.service';
 import { cartLine } from '../modifiers/testing/cart-line.fixture';
 
 /**
- * Garde d'idempotence du checkout.
+ * Garde d'idempotence du checkout, portée par la base (durcissement lot 4).
  *
- * L'implémentation historique lisait la clé au début et ne l'écrivait qu'après
- * la transaction : deux requêtes concurrentes portant la même clé lisaient
- * toutes deux un cache vide et créaient deux commandes. La réservation `SET NX`
- * ferme cette fenêtre — ces tests la verrouillent.
+ * La clé est écrite sur la commande, sous l'index unique
+ * `(userId, idempotencyKey)` ; un rejeu relit la commande. Ces tests figent le
+ * contrat du service ; la course réelle de deux requêtes est rejouée sur
+ * PostgreSQL par `test/integration/checkout-idempotency.int-spec.ts`.
  */
 describe('OrderCheckoutService — idempotence', () => {
   let service: OrderCheckoutService;
@@ -58,7 +56,7 @@ describe('OrderCheckoutService — idempotence', () => {
   const prisma = {
     user: { findUnique: jest.fn() },
     adresses: { findUnique: jest.fn() },
-    order: { count: jest.fn() },
+    order: { count: jest.fn(), findFirst: jest.fn() },
     $transaction: jest.fn(async (cb: (t: typeof tx) => unknown) => cb(tx)),
   };
   const validator = {
@@ -94,13 +92,6 @@ describe('OrderCheckoutService — idempotence', () => {
   const destinationService = {
     resolveForAddress: jest.fn(),
   };
-  const redis = {
-    set: jest.fn(),
-    get: jest.fn(),
-    setex: jest.fn(),
-    del: jest.fn(),
-  };
-
   const baseDto = {
     adresseId: 'a1',
     paymentMethod: 'MTN_MOMO',
@@ -165,8 +156,8 @@ describe('OrderCheckoutService — idempotence', () => {
       referralRewarded: true,
     });
     tx.order.create.mockResolvedValue(createdOrder);
-    redis.setex.mockResolvedValue('OK');
-    redis.del.mockResolvedValue(1);
+    // Par défaut, aucune commande ne porte encore la clé.
+    prisma.order.findFirst.mockResolvedValue(null);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -209,90 +200,83 @@ describe('OrderCheckoutService — idempotence', () => {
           provide: DeliveryPricingService,
           useValue: { quoteForVendor: jest.fn().mockResolvedValue(null) },
         },
-        {
-          provide: ConfigService,
-          useValue: {
-            get: (k: string) => (k === 'REDIS_URL' ? 'redis://x' : undefined),
-          },
-        },
-        { provide: getRedisConnectionToken(), useValue: redis },
       ],
     }).compile();
 
     service = module.get(OrderCheckoutService);
   });
 
-  it('réserve la clé en SET NX AVANT de créer la commande', async () => {
-    redis.set.mockResolvedValue('OK');
-
+  it('écrit la clé sur la commande, dans la transaction de création', async () => {
     await service.createOrderFromCart('uid', baseDto, 'key-1');
 
-    expect(redis.set).toHaveBeenCalledWith(
-      'idempotency:uid:key-1',
-      '__pending__',
-      'EX',
-      120,
-      'NX',
+    expect(tx.order.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ idempotencyKey: 'key-1' }),
+      }),
     );
-    // La réservation précède la transaction — c'est tout l'objet du correctif.
-    expect(redis.set.mock.invocationCallOrder[0]).toBeLessThan(
-      prisma.$transaction.mock.invocationCallOrder[0],
-    );
-    expect(redis.setex).toHaveBeenCalledWith(
-      'idempotency:uid:key-1',
-      3600,
-      expect.stringContaining('Commande créée avec succès'),
+    // La clé est cherchée pour CE client seulement : la même clé tirée par
+    // deux clients ne doit jamais rejouer la commande de l'autre.
+    expect(prisma.order.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { idempotencyKey: 'key-1', user: { firebaseUid: 'uid' } },
+      }),
     );
   });
 
-  it('rejette en 409 une requête concurrente pendant le traitement', async () => {
-    redis.set.mockResolvedValue(null); // clé déjà prise
-    redis.get.mockResolvedValue('__pending__');
-
-    await expect(
-      service.createOrderFromCart('uid', baseDto, 'key-1'),
-    ).rejects.toThrow(ConflictException);
-
-    expect(prisma.$transaction).not.toHaveBeenCalled();
-  });
-
-  it('rejoue la réponse cachée sur un retry légitime', async () => {
-    const cached = {
-      message: 'Commande créée avec succès.',
-      data: createdOrder,
-    };
-    redis.set.mockResolvedValue(null);
-    redis.get.mockResolvedValue(JSON.stringify(cached));
+  it('rejoue la commande existante sans rien recréer', async () => {
+    prisma.order.findFirst.mockResolvedValue(createdOrder);
 
     const result = await service.createOrderFromCart('uid', baseDto, 'key-1');
 
-    expect(result).toEqual(cached);
+    expect(result).toEqual({
+      message: 'Commande créée avec succès.',
+      data: createdOrder,
+    });
     expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(validator.validateAndGetUser).not.toHaveBeenCalled();
   });
 
-  it('libère la réservation si le checkout échoue', async () => {
-    redis.set.mockResolvedValue('OK');
+  it('convertit en rejeu l’échec d’une requête jumelle qui a perdu la course', async () => {
+    // La jumelle a commité pendant que celle-ci attendait le verrou du
+    // panier : le panier est vide, le checkout lève 409 — mais une commande
+    // porte désormais la clé.
+    prisma.order.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(createdOrder);
+    prisma.$transaction.mockRejectedValueOnce(
+      new ConflictException('Ce panier vient déjà d’être commandé.'),
+    );
+
+    const result = await service.createOrderFromCart('uid', baseDto, 'key-1');
+
+    expect(result.data).toBe(createdOrder);
+  });
+
+  it('laisse remonter un vrai échec quand aucune commande ne porte la clé', async () => {
     validator.validateStock.mockRejectedValue(new Error('stock épuisé'));
 
     await expect(
       service.createOrderFromCart('uid', baseDto, 'key-1'),
     ).rejects.toThrow('stock épuisé');
-
-    // Sans ça, le client resterait bloqué en 409 pendant 2 min sur une
-    // commande qui n'a jamais été créée.
-    expect(redis.del).toHaveBeenCalledWith('idempotency:uid:key-1');
-    expect(redis.setex).not.toHaveBeenCalled();
+    // Rien n'a été créé : un vrai retry reste possible avec la même clé.
+    expect(tx.order.create).not.toHaveBeenCalled();
   });
 
-  it('dégrade en best-effort si Redis est indisponible', async () => {
-    redis.set.mockRejectedValue(new Error('Redis down'));
+  it('une relecture qui échoue ne masque pas l’erreur d’origine', async () => {
+    prisma.order.findFirst
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error('pool saturé'));
+    validator.validateStock.mockRejectedValue(new Error('stock épuisé'));
 
-    const result = await service.createOrderFromCart('uid', baseDto, 'key-1');
+    await expect(
+      service.createOrderFromCart('uid', baseDto, 'key-1'),
+    ).rejects.toThrow('stock épuisé');
+  });
 
-    // Une panne Redis ne doit pas fermer la caisse.
-    expect(result).toEqual({
-      message: 'Commande créée avec succès.',
-      data: createdOrder,
-    });
+  it('exige la clé', async () => {
+    await expect(
+      service.createOrderFromCart('uid', baseDto, '  '),
+    ).rejects.toThrow("En-tête 'Idempotency-Key' requis");
+    expect(prisma.order.findFirst).not.toHaveBeenCalled();
   });
 });

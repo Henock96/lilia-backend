@@ -13,6 +13,8 @@ import {
   ORDER_EXPIRED_EVENT,
   ORDER_REFUND_DUE_EVENT,
   ORDER_ACCEPTANCE_EXPIRED_EVENT,
+  ORDER_REQUEST_ACCEPTED_EVENT,
+  ORDER_REQUEST_EXPIRED_EVENT,
 } from './outbox-events';
 
 /**
@@ -52,6 +54,89 @@ export class OrderOutboxEffectsService implements OnModuleInit {
     this.dispatcher.registerHandler(ORDER_ACCEPTANCE_EXPIRED_EVENT, (e) =>
       this.dispatchOrderAcceptanceExpired(e),
     );
+    this.dispatcher.registerHandler(ORDER_REQUEST_ACCEPTED_EVENT, (e) =>
+      this.dispatchRequestAccepted(e),
+    );
+    this.dispatcher.registerHandler(ORDER_REQUEST_EXPIRED_EVENT, (e) =>
+      this.dispatchRequestExpired(e),
+    );
+  }
+
+  /**
+   * Lot 3 — demande acceptée : le client doit payer maintenant.
+   *
+   * Envoyé une fois : une fois la commande payée, annulée ou expirée, le
+   * message n'a plus de sens et l'entrée est acquittée sans envoi.
+   */
+  async dispatchRequestAccepted(event: OutboxEvent): Promise<void> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: event.aggregateId },
+      select: {
+        id: true,
+        userId: true,
+        status: true,
+        total: true,
+        paymentDueAt: true,
+        restaurant: { select: { nom: true } },
+      },
+    });
+    if (!order || order.status !== OrderStatus.EN_ATTENTE) {
+      await this.outbox.markSent(event.id);
+      return;
+    }
+    const minutes = order.paymentDueAt
+      ? Math.max(
+          1,
+          Math.ceil((order.paymentDueAt.getTime() - Date.now()) / 60_000),
+        )
+      : null;
+    await this.notifications.sendPushNotification(
+      order.userId,
+      '✅ Commande acceptée — payez maintenant',
+      `${order.restaurant.nom} a accepté votre commande. Payez ${Math.round(order.total)} FCFA` +
+        (minutes ? ` dans les ${minutes} min` : '') +
+        ' pour qu’elle soit préparée.',
+      {
+        orderId: order.id,
+        type: 'order_update',
+        status: 'EN_ATTENTE',
+        action: 'pay',
+      },
+    );
+    await this.outbox.markSent(event.id);
+  }
+
+  /**
+   * Lot 3 — demande sans réponse à l'échéance : le client sait que rien n'a
+   * été débité ; le vendeur, qu'il a perdu une commande.
+   */
+  async dispatchRequestExpired(event: OutboxEvent): Promise<void> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: event.aggregateId },
+      select: {
+        id: true,
+        userId: true,
+        status: true,
+        restaurant: { select: { nom: true, ownerId: true } },
+      },
+    });
+    if (!order || order.status !== OrderStatus.ANNULER) {
+      await this.outbox.markSent(event.id);
+      return;
+    }
+    await this.notifications.sendPushNotification(
+      order.userId,
+      '⏱️ Pas de réponse de la boutique',
+      `${order.restaurant.nom} n’a pas répondu à temps : votre demande est annulée. Aucun montant n’a été débité.`,
+      { orderId: order.id, type: 'order_update', status: 'ANNULER' },
+    );
+    await this.notifications.sendPushNotification(
+      order.restaurant.ownerId,
+      '⏱️ Demande perdue',
+      `La demande #${order.id.slice(-6).toUpperCase()} n’a pas reçu de réponse à temps : elle a été annulée.`,
+      { orderId: order.id, type: 'order_request_expired' },
+    );
+    await this.outbox.markSent(event.id);
   }
 
   /**
@@ -199,7 +284,13 @@ export class OrderOutboxEffectsService implements OnModuleInit {
   async dispatchOrderExpired(event: OutboxEvent): Promise<void> {
     const order = await this.prisma.order.findUnique({
       where: { id: event.aggregateId },
-      select: { id: true, userId: true, status: true },
+      select: {
+        id: true,
+        userId: true,
+        status: true,
+        orderFlow: true,
+        restaurant: { select: { ownerId: true } },
+      },
     });
     if (!order || order.status !== OrderStatus.ANNULER) {
       await this.outbox.markSent(event.id);
@@ -211,6 +302,16 @@ export class OrderOutboxEffectsService implements OnModuleInit {
       "Le paiement n'a pas été reçu à temps : votre commande a été annulée. Aucun montant n'a été débité.",
       { orderId: order.id, type: 'order_update', status: 'ANNULER' },
     );
+    // Lot 3 — le vendeur avait accepté cette demande : il doit savoir qu'il
+    // ne la préparera pas.
+    if (order.orderFlow === 'ACCEPT_FIRST') {
+      await this.notifications.sendPushNotification(
+        order.restaurant.ownerId,
+        '⏱️ Commande non payée',
+        `Le client n’a pas payé la commande #${order.id.slice(-6).toUpperCase()} à temps : elle est annulée, ne la préparez pas.`,
+        { orderId: order.id, type: 'status_update_restaurant' },
+      );
+    }
     await this.outbox.markSent(event.id);
   }
 }

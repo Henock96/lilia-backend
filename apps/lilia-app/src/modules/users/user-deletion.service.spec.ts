@@ -197,6 +197,7 @@ describe('UserDeletionService', () => {
           userId: 'u1',
           status: {
             in: [
+              'DEMANDE_ENVOYEE',
               'EN_ATTENTE',
               'PAYER',
               'ACCEPTEE',

@@ -59,7 +59,6 @@ describeIfDb(
         new OrderCalculatorService(),
         {} as never, // promo
         new StockService(),
-        { get: () => undefined } as never, // Redis désactivé
         settings as never,
         new PreorderValidatorService(prisma as never),
         {} as never, // quartiers — retrait

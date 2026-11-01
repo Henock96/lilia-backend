@@ -161,10 +161,15 @@ export class OrderTransitionService {
       select: {
         isPreorder: true,
         scheduledFor: true,
+        orderFlow: true,
         restaurant: { select: { preorderLeadHours: true } },
       },
     });
     if (!order) return null;
+    // Lot 3 — acceptée avant d'être payée : aucune seconde acceptation à
+    // attendre, donc aucune échéance (sinon le cron l'annulerait et la
+    // rembourserait alors que le vendeur s'est déjà engagé).
+    if (order.orderFlow === 'ACCEPT_FIRST') return null;
 
     const paidAt = data?.paidAt instanceof Date ? data.paidAt : new Date();
     return acceptanceDeadline(

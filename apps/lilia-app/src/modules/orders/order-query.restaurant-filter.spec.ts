@@ -25,7 +25,9 @@ describe('OrderQueryService.findRestaurantOrders — filtre et compteurs', () =>
   const prisma = {
     user: { findUnique: jest.fn() },
     order: { findMany: jest.fn(), count: jest.fn(), groupBy: jest.fn() },
-    restaurant: { findFirst: jest.fn() },
+    // Lot 3 — boutiques accessibles : possédées (`ownerId`) ou membre actif.
+    restaurant: { findFirst: jest.fn(), findMany: jest.fn() },
+    shopMembership: { findMany: jest.fn().mockResolvedValue([]) },
     // Aucune ligne de réglages : acceptation vendeur hors service (F3-01).
     platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
   };
@@ -53,7 +55,7 @@ describe('OrderQueryService.findRestaurantOrders — filtre et compteurs', () =>
       id: 'u-1',
       role: 'RESTAURATEUR',
     });
-    prisma.restaurant.findFirst.mockResolvedValue({ id: 'r-1' });
+    prisma.restaurant.findMany.mockResolvedValue([{ id: 'r-1' }]);
   }
 
   /** Un administrateur — pas de boutique, périmètre global. */
@@ -66,7 +68,7 @@ describe('OrderQueryService.findRestaurantOrders — filtre et compteurs', () =>
 
     await service.findRestaurantOrders('fb-1', 1, 20, 'PRET');
 
-    const where = { restaurantId: 'r-1', status: OrderStatus.PRET };
+    const where = { restaurantId: { in: ['r-1'] }, status: OrderStatus.PRET };
     expect(prisma.order.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where }),
     );
@@ -80,12 +82,12 @@ describe('OrderQueryService.findRestaurantOrders — filtre et compteurs', () =>
 
     expect(prisma.order.groupBy).toHaveBeenCalledWith({
       by: ['status'],
-      where: { restaurantId: 'r-1' },
+      where: { restaurantId: { in: ['r-1'] } },
       _count: { status: true },
     });
   });
 
-  it('rend les neuf compteurs, zéro compris', async () => {
+  it('rend les dix compteurs, zéro compris', async () => {
     asVendor();
     prisma.order.groupBy.mockResolvedValue([
       { status: OrderStatus.EN_ATTENTE, _count: { status: 2 } },
@@ -94,6 +96,7 @@ describe('OrderQueryService.findRestaurantOrders — filtre et compteurs', () =>
     const res = await service.findRestaurantOrders('fb-1', 1, 20);
 
     expect(res.meta.statusCounts).toEqual({
+      DEMANDE_ENVOYEE: 0,
       EN_ATTENTE: 2,
       PAYER: 0,
       ACCEPTEE: 0,
@@ -142,7 +145,7 @@ describe('OrderQueryService.findRestaurantOrders — filtre et compteurs', () =>
       string,
       unknown
     >;
-    expect(where).toMatchObject({ restaurantId: 'r-1' });
+    expect(where).toMatchObject({ restaurantId: { in: ['r-1'] } });
     expect(where).toHaveProperty('OR');
   });
 
@@ -155,7 +158,7 @@ describe('OrderQueryService.findRestaurantOrders — filtre et compteurs', () =>
       string,
       unknown
     >;
-    expect(groupByWhere).toMatchObject({ restaurantId: 'r-1' });
+    expect(groupByWhere).toMatchObject({ restaurantId: { in: ['r-1'] } });
     expect(groupByWhere).toHaveProperty('OR');
     expect(groupByWhere).not.toHaveProperty('status');
   });
@@ -175,7 +178,7 @@ describe('OrderQueryService.findRestaurantOrders — filtre et compteurs', () =>
     await service.findRestaurantOrders('fb-1', 1, 20, '');
 
     expect(prisma.order.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { restaurantId: 'r-1' } }),
+      expect.objectContaining({ where: { restaurantId: { in: ['r-1'] } } }),
     );
   });
 });

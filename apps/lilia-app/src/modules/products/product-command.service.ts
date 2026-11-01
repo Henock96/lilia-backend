@@ -6,16 +6,16 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  Optional,
-  ServiceUnavailableException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { InjectRedis } from '@nestjs-modules/ioredis';
-import * as Sentry from '@sentry/nestjs';
-import Redis from 'ioredis';
 import { AdminAuditAction, Prisma, ProductType } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  findPriorReceipt,
+  isReceiptCollision,
+  type IdempotencyReceiptInput,
+  type PriorReceipt,
+} from '../../common/idempotency/idempotency-receipt';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ReorderProductsDto } from './dto/reorder-products.dto';
@@ -62,95 +62,28 @@ export class ProductCommandService {
     private readonly audit: AdminAuditService,
     private readonly eventEmitter: EventEmitter2,
     private readonly platformSettings: PlatformSettingsService,
-    @Optional() private readonly config?: ConfigService,
-    @Optional() @InjectRedis() private readonly redis?: Redis,
   ) {}
 
-  /** Mémoire d'un geste `RESTOCK` appliqué : couvre largement un rejeu réseau. */
-  private static readonly RESTOCK_KEY_TTL_SECONDS = 24 * 60 * 60;
-  /**
-   * Réservation en cours : bien au-delà d'une transaction (5 s par défaut) et
-   * des rejeux automatiques du client (quelques secondes), mais assez courte
-   * pour qu'une clé restée `PENDING` après un crash ne bloque pas le geste
-   * pendant 24 h (même choix qu'au checkout).
-   */
-  private static readonly RESTOCK_PENDING_TTL_SECONDS = 120;
   /** Clé acceptée : celle que les clients génèrent (préfixe, horodatage, hexa). */
   private static readonly IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{8,128}$/;
 
   /**
-   * ADM-01 — réserve la clé d'un `RESTOCK` avant de l'appliquer.
+   * ADM-01 — réponse à un `RESTOCK` dont la clé a déjà un reçu.
    *
    * `RESTOCK` est additif : rejoué après un commit perdu en route, il ajoutait
-   * deux fois les unités. La valeur porte la quantité, si bien qu'une même clé
-   * ne peut pas servir à un autre geste. Rend `replay` quand le geste a déjà été
-   * appliqué : l'appelant renvoie alors l'état courant sans rien réécrire.
-   *
-   * Redis non configuré (dev, tests) : la clé est ignorée, comme au checkout.
-   * Redis configuré mais en panne : refus explicite — contrairement au
-   * checkout, un réapprovisionnement peut attendre, une unité fantôme vendue
-   * coûte un refus et un remboursement.
+   * deux fois les unités. Le reçu (lot 4 : en base, écrit dans la transaction
+   * du geste, et non plus en Redis) porte produit et quantité : la même clé
+   * pour un autre geste est un conflit, jamais un rejeu.
    */
-  private async claimRestockKey(
-    cacheKey: string,
-    units: number,
-  ): Promise<'claimed' | 'replay' | 'disabled'> {
-    if (!this.redis || !this.config?.get<string>('REDIS_URL')) return 'disabled';
-    try {
-      const claimed = await this.redis.set(
-        cacheKey,
-        `PENDING:${units}`,
-        'EX',
-        ProductCommandService.RESTOCK_PENDING_TTL_SECONDS,
-        'NX',
-      );
-      if (claimed === 'OK') return 'claimed';
-      const existing = await this.redis.get(cacheKey);
-      if (existing === `DONE:${units}`) return 'replay';
+  private async answerPriorRestock(productId: string, prior: PriorReceipt) {
+    if (prior !== 'replay') {
       throw new ConflictException({
-        message: existing?.startsWith('PENDING:')
-          ? 'Ce réapprovisionnement est déjà en cours d’enregistrement.'
-          : 'Cette clé a déjà servi à un autre réapprovisionnement.',
+        message: 'Cette clé a déjà servi à un autre réapprovisionnement.',
         code: 'IDEMPOTENCY_KEY_CONFLICT',
       });
-    } catch (err) {
-      if (err instanceof ConflictException) throw err;
-      this.logger.error(
-        `Redis (idempotence du stock) indisponible : ${(err as Error).message}`,
-      );
-      throw new ServiceUnavailableException({
-        message: 'Le stock ne peut pas être enregistré pour l’instant. Réessayez dans un instant.',
-        code: 'IDEMPOTENCY_UNAVAILABLE',
-      });
     }
-  }
-
-  /**
-   * Solde la clé réservée : `DONE:<unités>` après le commit, supprimée après un
-   * échec (`units = null`). Une erreur Redis ici ne défait pas le geste déjà
-   * commité ; au pire la clé reste `PENDING` jusqu'à expiration, et un rejeu de
-   * CE geste reçoit un 409 au lieu d'un second incrément.
-   */
-  private async settleRestockKey(cacheKey: string, units: number | null) {
-    try {
-      if (units === null) {
-        await this.redis!.del(cacheKey);
-      } else {
-        await this.redis!.set(
-          cacheKey,
-          `DONE:${units}`,
-          'EX',
-          ProductCommandService.RESTOCK_KEY_TTL_SECONDS,
-        );
-      }
-    } catch (err) {
-      this.logger.error(
-        `Redis (idempotence du stock) : clé ${cacheKey} non soldée : ${(err as Error).message}`,
-      );
-      Sentry.captureException(err, {
-        tags: { feature: 'stock-restock-idempotency', degraded: 'true' },
-      });
-    }
+    const current = await this.prisma.product.findUniqueOrThrow({ where: { id: productId } });
+    return { message: 'Réapprovisionnement déjà enregistré', data: current, replayed: true };
   }
 
   /**
@@ -827,16 +760,18 @@ export class ProductCommandService {
 
     // ADM-01 — un `RESTOCK` rejoué avec la même clé n'est compté qu'une fois.
     // `COUNT` et l'ancien contrat écrivent une valeur absolue : déjà rejouables.
-    const restockKey =
+    const receipt: IdempotencyReceiptInput | null =
       key && gesture.action === 'RESTOCK'
-        ? `stock:restock:${user.id}:${productId}:${key}`
+        ? {
+            scope: 'stock.restock',
+            ownerId: user.id,
+            key,
+            fingerprint: `${productId}:${gesture.units!}`,
+          }
         : null;
-    const claim = restockKey
-      ? await this.claimRestockKey(restockKey, gesture.units!)
-      : 'disabled';
-    if (claim === 'replay') {
-      const current = await this.prisma.product.findUniqueOrThrow({ where: { id: productId } });
-      return { message: 'Réapprovisionnement déjà enregistré', data: current, replayed: true };
+    if (receipt) {
+      const prior = await findPriorReceipt(this.prisma, receipt);
+      if (prior) return this.answerPriorRestock(productId, prior);
     }
 
     let reservedAtVendor: number | undefined;
@@ -848,6 +783,10 @@ export class ProductCommandService {
             code: 'STOCK_NOT_TRACKED',
           });
         }
+        // Le reçu d'abord : une requête jumelle (même clé) attend ici le
+        // commit de celle-ci, puis échoue sur la clé primaire — avant
+        // d'avoir ajouté la moindre unité.
+        if (receipt) await tx.idempotencyReceipt.create({ data: receipt });
         // Stock réel : le niveau déclaré suit (affiché « restant / déclaré »
         // par les applications installées). Quota du jour : c'est une fournée
         // de plus aujourd'hui, le quota ne change pas.
@@ -899,12 +838,19 @@ export class ProductCommandService {
       }
       return tx.product.findUniqueOrThrow({ where: { id: productId } });
     }).catch(async (err: unknown) => {
-      // Rien n'a été écrit : la clé est rendue, sinon le rejeu légitime de ce
-      // geste serait pris pour un doublon et ignoré.
-      if (claim === 'claimed') await this.settleRestockKey(restockKey!, null);
+      // La jumelle a commité la première : cette transaction a tout annulé, y
+      // compris l'incrément. Tout autre échec ne laisse aucun reçu derrière
+      // lui : un vrai rejeu s'appliquera.
+      if (receipt && isReceiptCollision(err)) {
+        const prior = await findPriorReceipt(this.prisma, receipt);
+        // Un P2002 sans reçu vient d'ailleurs : l'erreur réelle remonte.
+        if (prior) return { prior };
+      }
       throw err;
     });
-    if (claim === 'claimed') await this.settleRestockKey(restockKey!, gesture.units!);
+    if ('prior' in updated) {
+      return this.answerPriorRestock(productId, updated.prior);
+    }
 
     this.logger.log(
       `[STOCK] geste ${gesture.action ?? 'SET'} produit=${productId} ` +

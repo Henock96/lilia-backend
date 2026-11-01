@@ -21,6 +21,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto';
 import {
   CancelSettlementDto,
+  DriverCoursesQueryDto,
   OutstandingQueryDto,
   RecordSettlementDto,
 } from './dto/driver-settlement.dto';
@@ -135,6 +136,23 @@ export class AdminDriverSettlementsController {
     });
 
     return { data: settlement, message: 'Règlement annulé, courses libérées.' };
+  }
+
+  /**
+   * Lot 3 (point 5) — détail par course : paie figée, situation (réglée, à
+   * recevoir, retenue, en litige, montant inconnu) et référence du
+   * règlement. Lecture pure, ADMIN seul (D-PAY).
+   */
+  @Get('courses/:driverId')
+  @ApiOperation({ summary: 'Courses d’un livreur et leur situation de paie' })
+  async courses(
+    @Param('driverId') driverId: string,
+    @Query() query: DriverCoursesQueryDto,
+  ) {
+    return this.settlements.listCourses(driverId, {
+      from: query.from ? new Date(query.from) : undefined,
+      to: query.to ? new Date(query.to) : undefined,
+    });
   }
 
   @Get()

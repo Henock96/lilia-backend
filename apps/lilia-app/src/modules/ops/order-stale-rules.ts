@@ -45,6 +45,15 @@ export type StaleRule = {
 };
 
 export const ORDER_STALE_RULES: Record<OrderStatus, StaleRule | 'TERMINAL'> = {
+  // Lot 3 — signalée AVANT son expiration automatique (5 min par défaut,
+  // `vendorRequestTimeoutMinutes`) : l'opérateur a encore le temps d'appeler.
+  DEMANDE_ENVOYEE: {
+    delivery: 3,
+    pickup: 3,
+    label: 'Demande sans réponse du vendeur',
+    action:
+      'Appeler la boutique : le client attend sa réponse avant de payer. Sans réponse, la demande expire seule (rien n’est encaissé).',
+  },
   EN_ATTENTE: {
     delivery: 20,
     pickup: 20,

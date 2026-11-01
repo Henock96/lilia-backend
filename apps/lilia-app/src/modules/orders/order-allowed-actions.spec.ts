@@ -34,14 +34,17 @@ describe('orderAllowedActions', () => {
     isDelivery: boolean,
     acceptanceRequired: boolean,
   ): boolean {
-    const to = actionTarget(action);
+    const to = actionTarget(action, from);
     if (!machine.canActorTransition(from, to, actor)) return false;
     if (to === 'PAYER' || to === 'EN_ROUTE') return false;
     if (to === 'LIVRER' && from === 'PRET' && isDelivery) return false;
     if (from === 'PAYER' && to === 'EN_PREPARATION' && acceptanceRequired) {
       return false;
     }
-    if (action === 'CANCEL' && actor === 'CLIENT') return from === 'EN_ATTENTE';
+    // Lot 3 — le client renonce aussi à une demande non encore acceptée.
+    if (action === 'CANCEL' && actor === 'CLIENT') {
+      return from === 'EN_ATTENTE' || from === 'DEMANDE_ENVOYEE';
+    }
     // F3-07 — deux routes distinctes vers `LIVRER` pour un retrait : le client
     // confirme (`/pickup/confirm`, @Roles CLIENT), le personnel remet (route de
     // statut, @Roles RESTAURATEUR/ADMIN).
@@ -124,7 +127,7 @@ describe('orderAllowedActions', () => {
       for (const status of STATUSES) {
         for (const role of ROLES) {
           const targets = orderAllowedActions(delivery(status), role, on).map(
-            actionTarget,
+            (action) => actionTarget(action, status),
           );
           expect(targets).not.toContain('EN_ROUTE');
           expect(targets).not.toContain('PAYER');
@@ -133,11 +136,38 @@ describe('orderAllowedActions', () => {
     });
 
     it('le client ne peut annuler qu’avant paiement', () => {
-      expect(orderAllowedActions(delivery('EN_ATTENTE'), 'CLIENT', on)).toEqual(
-        ['CANCEL'],
-      );
-      for (const status of STATUSES.filter((s) => s !== 'EN_ATTENTE')) {
+      for (const status of ['EN_ATTENTE', 'DEMANDE_ENVOYEE'] as const) {
+        expect(orderAllowedActions(delivery(status), 'CLIENT', on)).toEqual([
+          'CANCEL',
+        ]);
+      }
+      for (const status of STATUSES.filter(
+        (s) => s !== 'EN_ATTENTE' && s !== 'DEMANDE_ENVOYEE',
+      )) {
         expect(orderAllowedActions(delivery(status), 'CLIENT', on)).toEqual([]);
+      }
+    });
+
+    it('lot 3 — demande : le vendeur accepte (vers EN_ATTENTE) ou refuse', () => {
+      const actions = orderAllowedActions(
+        delivery('DEMANDE_ENVOYEE'),
+        'RESTAURATEUR',
+        on,
+      );
+      expect([...actions].sort()).toEqual(['ACCEPT', 'REJECT']);
+      expect(actionTarget('ACCEPT', 'DEMANDE_ENVOYEE')).toBe('EN_ATTENTE');
+    });
+
+    it('lot 3 — payée et déjà acceptée : préparer ou refuser, plus « Accepter »', () => {
+      const paidAccepted = {
+        status: 'PAYER' as const,
+        isDelivery: true,
+        acceptedAt: new Date(),
+      };
+      for (const ctx of [on, off]) {
+        expect(
+          [...orderAllowedActions(paidAccepted, 'RESTAURATEUR', ctx)].sort(),
+        ).toEqual(['REJECT', 'START_PREPARATION']);
       }
     });
 

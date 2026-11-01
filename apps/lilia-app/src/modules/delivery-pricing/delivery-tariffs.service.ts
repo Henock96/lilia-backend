@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 import { AdminAuditAction, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
+import { tariffReadiness } from './delivery-tariff-readiness';
 
 export interface TariffDraftInput {
   roadFactor: number;
@@ -99,6 +101,57 @@ export class DeliveryTariffsService {
     if (!tariff) return null;
     const { _count, ...rest } = tariff;
     return { ...rest, overridesCount: _count.overrides };
+  }
+
+  /**
+   * Durcissement lot 4 — cette version peut-elle porter seule la tarification
+   * (bascule `PLATFORM`) ? Vendeurs visibles seulement : une boutique en
+   * configuration ne reçoit pas de commande. Lecture seule.
+   */
+  async readiness(id: string) {
+    const [tariff, quartiers, vendors] = await Promise.all([
+      this.prisma.deliveryTariff.findUnique({
+        where: { id },
+        select: {
+          _count: { select: { bands: true } },
+          overrides: {
+            select: { originQuartierId: true, destQuartierId: true },
+          },
+        },
+      }),
+      this.prisma.quartier.findMany({
+        select: { id: true, nom: true, latitude: true, longitude: true },
+        orderBy: { nom: 'asc' },
+      }),
+      this.prisma.restaurant.findMany({
+        where: PUBLIC_VENDOR_WHERE,
+        select: {
+          id: true,
+          nom: true,
+          quartierId: true,
+          latitude: true,
+          longitude: true,
+        },
+      }),
+    ]);
+    if (!tariff) throw new NotFoundException('Grille introuvable.');
+    return tariffReadiness({
+      quartiers: quartiers.map((q) => ({
+        id: q.id,
+        nom: q.nom,
+        hasCentroid: q.latitude != null && q.longitude != null,
+      })),
+      vendors: vendors.map((v) => ({
+        id: v.id,
+        nom: v.nom,
+        quartierId: v.quartierId,
+        hasGps: v.latitude != null && v.longitude != null,
+      })),
+      tariff: {
+        bandsCount: tariff._count.bands,
+        overrides: tariff.overrides,
+      },
+    });
   }
 
   async findOne(id: string) {

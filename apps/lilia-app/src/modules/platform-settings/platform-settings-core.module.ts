@@ -3,6 +3,7 @@ import { PrismaModule } from '../../prisma/prisma.module';
 import { PlatformSettingsService } from './platform-settings.service';
 import { MaintenanceGuard } from './guards/maintenance.guard';
 import { MinAppVersionGuard } from './guards/min-app-version.guard';
+import { VendorAppCompatGuard } from './guards/vendor-app-compat.guard';
 
 /**
  * Lecture/écriture des réglages de plateforme, **sans les controllers**.
@@ -19,7 +20,18 @@ import { MinAppVersionGuard } from './guards/min-app-version.guard';
  */
 @Module({
   imports: [PrismaModule],
-  providers: [PlatformSettingsService, MaintenanceGuard, MinAppVersionGuard],
-  exports: [PlatformSettingsService, MaintenanceGuard, MinAppVersionGuard],
+  providers: [
+    PlatformSettingsService,
+    MaintenanceGuard,
+    MinAppVersionGuard,
+    // Lot 3 — compatibilité de l'app vendeurs (version, parcours).
+    VendorAppCompatGuard,
+  ],
+  exports: [
+    PlatformSettingsService,
+    MaintenanceGuard,
+    MinAppVersionGuard,
+    VendorAppCompatGuard,
+  ],
 })
 export class PlatformSettingsCoreModule {}

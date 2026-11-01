@@ -56,7 +56,9 @@ describe('OrdersService (caractérisation — lectures)', () => {
       // le périmètre entier (audit du 09/09/2026).
       groupBy: jest.fn(),
     },
-    restaurant: { findFirst: jest.fn() },
+    // Lot 3 — boutiques accessibles : possédées (`ownerId`) ou membre actif.
+    restaurant: { findFirst: jest.fn(), findMany: jest.fn() },
+    shopMembership: { findMany: jest.fn().mockResolvedValue([]) },
     // Aucune ligne de réglages : acceptation vendeur hors service (F3-01).
     platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
     // F3-07 / D-P5 — code de retrait au comptoir.
@@ -288,7 +290,7 @@ describe('OrdersService (caractérisation — lectures)', () => {
       expect(res.data).toEqual([
         { id: 'o1', allowedActions: expect.any(Array) },
       ]);
-      expect(prisma.restaurant.findFirst).not.toHaveBeenCalled();
+      expect(prisma.restaurant.findMany).not.toHaveBeenCalled();
       // Depuis le fix P1, le `count()` admin n'est plus sans filtre (scan
       // séquentiel complet à chaque page) : il exclut les soft-deletes, et le
       // findMany applique le même `where`.
@@ -305,7 +307,7 @@ describe('OrdersService (caractérisation — lectures)', () => {
         id: 'r1',
         role: 'RESTAURATEUR',
       });
-      prisma.restaurant.findFirst.mockResolvedValue(null);
+      prisma.restaurant.findMany.mockResolvedValue([]);
       await expect(
         service.findRestaurantOrders('uid', 1, 20),
       ).rejects.toBeInstanceOf(NotFoundException);
@@ -316,7 +318,7 @@ describe('OrdersService (caractérisation — lectures)', () => {
         id: 'r1',
         role: 'RESTAURATEUR',
       });
-      prisma.restaurant.findFirst.mockResolvedValue({ id: 'resto1' });
+      prisma.restaurant.findMany.mockResolvedValue([{ id: 'resto1' }]);
       prisma.order.findMany.mockResolvedValue([{ id: 'o1' }]);
       prisma.order.count.mockResolvedValue(1);
 
@@ -326,7 +328,7 @@ describe('OrdersService (caractérisation — lectures)', () => {
         { id: 'o1', allowedActions: expect.any(Array) },
       ]);
       expect(prisma.order.findMany.mock.calls[0][0].where).toEqual({
-        restaurantId: 'resto1',
+        restaurantId: { in: ['resto1'] },
       });
     });
   });

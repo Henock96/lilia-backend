@@ -31,11 +31,14 @@ export class OrdersService {
     firebaseUid: string,
     dto: CreateOrderDto,
     idempotencyKey?: string,
+    /** Lot 3 — capacité « accepter puis payer » annoncée par l'app. */
+    acceptFirstCapable = false,
   ) {
     return this.checkoutService.createOrderFromCart(
       firebaseUid,
       dto,
       idempotencyKey,
+      acceptFirstCapable,
     );
   }
 

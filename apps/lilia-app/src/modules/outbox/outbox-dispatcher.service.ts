@@ -19,6 +19,7 @@ import {
 } from './vendor-contact';
 import { VendorInvitationService } from '../vendors/vendor-invitation.service';
 import { VENDOR_INVITATION_EVENT } from '../vendors/events/vendor-events';
+import { ORDER_REQUESTED_EVENT } from './outbox-events';
 
 /**
  * Dépilage de la boîte d'envoi (fix H7 — audit du 28/08/2026).
@@ -212,6 +213,9 @@ export class OutboxDispatcherService {
       case 'order.paid':
         await this.dispatchOrderPaid(event);
         return;
+      case ORDER_REQUESTED_EVENT:
+        await this.dispatchOrderRequested(event);
+        return;
       case VENDOR_INVITATION_EVENT:
         await this.dispatchVendorInvitation(event);
         return;
@@ -321,6 +325,7 @@ export class OutboxDispatcherService {
         createdAt: true,
         paidAt: true,
         acceptDeadlineAt: true,
+        acceptedAt: true,
         restaurant: {
           select: {
             nom: true,
@@ -344,10 +349,14 @@ export class OutboxDispatcherService {
       return;
     }
 
+    // Lot 3 — acceptée avant d'être payée : le vendeur s'est engagé, il ne
+    // reste qu'à préparer. Le rappel et le SMS restent dus tant qu'elle n'a
+    // pas quitté `PAYER`, avec le bon verbe.
+    const alreadyAccepted = Boolean(order.acceptedAt);
     const push = await this.notifications.sendPushNotification(
       order.restaurant.ownerId,
-      '🔔 Commande payée en attente',
-      `${Math.round(order.total)} FCFA — à accepter`,
+      alreadyAccepted ? '✅ Commande payée — à préparer' : '🔔 Commande payée en attente',
+      `${Math.round(order.total)} FCFA — ${alreadyAccepted ? 'à préparer' : 'à accepter'}`,
       { orderId: order.id, type: 'new_order', source: 'outbox' },
     );
 
@@ -390,6 +399,81 @@ export class OutboxDispatcherService {
       // Tant que le rappel n'est pas parti, la relance suivante ne tombe pas
       // après lui.
       !event.escalatedAt && reminderAt ? reminderAt : undefined,
+    );
+  }
+
+  /**
+   * Lot 3 — présente une DEMANDE au vendeur (parcours `ACCEPT_FIRST`).
+   *
+   * Même garantie que `order.paid` (lot 1A) : l'obligation ne se ferme que
+   * quand la demande quitte `DEMANDE_ENVOYEE` (acceptée, refusée ou
+   * expirée). La fenêtre est courte (5 min par défaut) :
+   *  - push à chaque reprise, la première dès la création ;
+   *  - SMS dès qu'aucun appareil n'a accepté le push, ou à mi-fenêtre ;
+   *  - reprise suivante au plus tard dans une minute, jamais après l'échéance.
+   */
+  private async dispatchOrderRequested(event: OutboxEvent): Promise<void> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: event.aggregateId },
+      select: {
+        id: true,
+        status: true,
+        total: true,
+        createdAt: true,
+        requestExpiresAt: true,
+        restaurant: {
+          select: {
+            nom: true,
+            phone: true,
+            ownerId: true,
+            owner: { select: { phone: true } },
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      await this.outbox.markFailed(event.id, 'Commande introuvable');
+      return;
+    }
+    if (order.status !== OrderStatus.DEMANDE_ENVOYEE) {
+      // Acceptée, refusée ou expirée : le signal a atteint sa cible, ou n'a
+      // plus lieu d'être.
+      await this.outbox.markSent(event.id);
+      return;
+    }
+
+    const now = Date.now();
+    const expiresAt = order.requestExpiresAt?.getTime() ?? now;
+    const push = await this.notifications.sendPushNotification(
+      order.restaurant.ownerId,
+      '📨 Nouvelle demande de commande',
+      `${Math.round(order.total)} FCFA — acceptez ou refusez dans ${Math.max(1, Math.ceil((expiresAt - now) / 60_000))} min`,
+      { orderId: order.id, type: 'new_order', kind: 'request', source: 'outbox' },
+    );
+
+    const ageMinutes = (now - order.createdAt.getTime()) / 60_000;
+    const halfWindowAt =
+      order.createdAt.getTime() + (expiresAt - order.createdAt.getTime()) / 2;
+    const shouldEscalate =
+      !event.escalatedAt && (!pushWasAccepted(push) || now >= halfWindowAt);
+
+    if (shouldEscalate) {
+      await this.escalateBySms(event, {
+        orderId: order.id,
+        message: `Lilia Food : nouvelle demande de ${Math.round(order.total)} FCFA. Ouvrez l'application pour l'accepter ou la refuser, sinon elle expire.`,
+        ageMinutes,
+        shopName: order.restaurant.nom,
+        ownerPhone: order.restaurant.owner?.phone,
+        shopPhone: order.restaurant.phone,
+      });
+    }
+
+    await this.outbox.scheduleRetry(
+      event.id,
+      event.attempts,
+      'Demande toujours sans réponse',
+      new Date(Math.min(now + 60_000, Math.max(now, expiresAt))),
     );
   }
 
