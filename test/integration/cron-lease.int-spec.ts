@@ -7,7 +7,9 @@ import { CronLockService } from '../../apps/lilia-app/src/common/locks/cron-lock
  * Durcissement lot 4 — bail des crons (`CronLease`) sur PostgreSQL réel.
  *
  * Deux instances simulées (deux clients Prisma, donc deux pools) :
- *  - une seule exécute un job lancé au même instant ;
+ *  - tant qu'une instance tient le bail, l'autre n'exécute pas, et deux
+ *    exécutions ne se chevauchent jamais (exclusion, pas « une fois par
+ *    tick ») ;
  *  - un bail échu (crash) est repris ;
  *  - une tâche qui a dépassé son bail ne libère pas celui de son successeur.
  */
@@ -42,28 +44,59 @@ describeIfDb('Bail des crons (PostgreSQL réel)', () => {
     else process.env.RUN_BACKGROUND_JOBS = originalFlag;
   });
 
-  it('deux instances au même instant : une seule exécute', async () => {
+  it('bail tenu par une instance : l’autre est refusée tant qu’il court', async () => {
     const lockA = new CronLockService(a as never);
     const lockB = new CronLockService(b as never);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let started!: () => void;
+    const aStarted = new Promise<void>((r) => (started = r));
+
+    // A prend le bail et ne rend la main qu'à notre signal : la tentative de
+    // B tombe forcément pendant que A tourne (aucune hypothèse de durée).
+    const runA = lockA.runExclusively(JOB, 60, async () => {
+      started();
+      await held;
+      return 'A';
+    });
+    await aStarted;
+    const taskB = jest.fn().mockResolvedValue('B');
+    await expect(lockB.runExclusively(JOB, 60, taskB)).resolves.toBeUndefined();
+    expect(taskB).not.toHaveBeenCalled();
+
+    release();
+    await expect(runA).resolves.toBe('A');
+    // Libéré en fin de tâche : le tick suivant n'attend pas l'échéance.
+    expect(await a.cronLease.count({ where: { jobName: JOB } })).toBe(0);
+  });
+
+  it('course réelle ×8 sur deux instances : jamais deux exécutions simultanées', async () => {
+    const locks = [
+      new CronLockService(a as never),
+      new CronLockService(b as never),
+    ];
+    let running = 0;
+    let maxRunning = 0;
     let runs = 0;
-    // La tâche dure : la seconde instance arrive pendant qu'elle tourne.
     const task = async () => {
+      running += 1;
       runs += 1;
-      await new Promise((r) => setTimeout(r, 200));
+      maxRunning = Math.max(maxRunning, running);
+      await new Promise((r) => setTimeout(r, 50));
+      running -= 1;
       return 'fait';
     };
 
-    const results = await Promise.all([
-      lockA.runExclusively(JOB, 60, task),
-      lockB.runExclusively(JOB, 60, task),
-      lockA.runExclusively(JOB, 60, task),
-      lockB.runExclusively(JOB, 60, task),
-    ]);
+    await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        locks[i % 2].runExclusively(JOB, 60, task),
+      ),
+    );
 
-    expect(runs).toBe(1);
-    expect(results.filter((r) => r === 'fait')).toHaveLength(1);
-    // Libéré en fin de tâche : le tick suivant n'attend pas l'échéance.
-    expect(await a.cronLease.count({ where: { jobName: JOB } })).toBe(0);
+    // Le bail garantit l'exclusion, pas « une fois par tick » : un appel
+    // arrivé après la libération exécute à nouveau, à la suite (cf. backlog).
+    expect(runs).toBeGreaterThanOrEqual(1);
+    expect(maxRunning).toBe(1);
   });
 
   it('un bail échu (instance tombée) est repris', async () => {
