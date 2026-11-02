@@ -56,6 +56,8 @@ import { ORDER_ITEM_OPTIONS_ARGS } from '../modifiers/order-item-options';
 import { OutboxService } from '../outbox/outbox.service';
 import { ORDER_REQUESTED_EVENT } from '../outbox/outbox-events';
 import { chooseOrderFlow, requestExpiry } from './order-flow';
+import { quoteFingerprint } from './quote-fingerprint';
+import { orderPaymentAllowed } from './order-payment-policy';
 
 /** Forme de la commande renvoyée par le checkout, et par son rejeu. */
 const CREATED_ORDER_INCLUDE = {
@@ -70,7 +72,7 @@ type CreatedOrder = Prisma.OrderGetPayload<{
 
 export interface CheckoutResult {
   message: string;
-  data: CreatedOrder;
+  data: CreatedOrder & { paymentAllowed: boolean };
 }
 
 /**
@@ -78,6 +80,7 @@ export interface CheckoutResult {
  * `total = subTotal + deliveryFee + serviceFee − offre − code − fidélité`.
  */
 export interface CheckoutQuote {
+  quoteFingerprint: string;
   restaurantId: string;
   subTotal: number;
   /** Après un éventuel code « livraison offerte ». */
@@ -215,7 +218,10 @@ export class OrderCheckoutService {
     this.logger.log(
       `📦 [IDEMPOTENCY] Commande ${order.id} rejouée — key: ${key}`,
     );
-    return { message: 'Commande créée avec succès.', data: order };
+    return {
+      message: 'Commande créée avec succès.',
+      data: { ...order, paymentAllowed: orderPaymentAllowed(order) },
+    };
   }
 
   /**
@@ -466,6 +472,7 @@ export class OrderCheckoutService {
     // (ou en voyait une autre), le total qu'il a accepté n'existe plus.
     if (
       !options.dryRun &&
+      dto.quoteFingerprint === undefined &&
       dto.vendorOfferId !== undefined &&
       (appliedOffer?.offer.id ?? null) !== dto.vendorOfferId
     ) {
@@ -551,33 +558,70 @@ export class OrderCheckoutService {
         loyaltyDiscount,
     );
 
-    if (options.dryRun) {
-      return {
-        restaurantId,
-        subTotal: amounts.subTotal,
-        deliveryFee: finalDeliveryFee,
-        // Avant code promo : sert à afficher la livraison barrée.
-        deliveryFeeBeforePromo: isDelivery ? amounts.deliveryFee : 0,
-        serviceFee: amounts.serviceFee,
-        vendorOffer: appliedOffer
-          ? { ...appliedOffer.offer, discountXaf: offerDiscount }
-          : null,
-        promo: promoResult
-          ? {
-              code: promoResult.code,
-              discountXaf: discountAmount,
-              deliveryDiscountXaf: Math.max(
-                0,
-                amounts.deliveryFee - finalDeliveryFee,
-              ),
-            }
-          : null,
-        loyalty: {
-          pointsUsed: loyaltyPointsUsed,
-          discountXaf: loyaltyDiscount,
-        },
-        total: finalTotal,
-      };
+    const financialQuote = {
+      restaurantId,
+      subTotal: amounts.subTotal,
+      deliveryFee: finalDeliveryFee,
+      // Avant code promo : sert à afficher la livraison barrée.
+      deliveryFeeBeforePromo: isDelivery ? amounts.deliveryFee : 0,
+      serviceFee: amounts.serviceFee,
+      vendorOffer: appliedOffer
+        ? { ...appliedOffer.offer, discountXaf: offerDiscount }
+        : null,
+      promo: promoResult
+        ? {
+            code: promoResult.code,
+            discountXaf: discountAmount,
+            deliveryDiscountXaf: Math.max(
+              0,
+              amounts.deliveryFee - finalDeliveryFee,
+            ),
+          }
+        : null,
+      loyalty: {
+        pointsUsed: loyaltyPointsUsed,
+        discountXaf: loyaltyDiscount,
+      },
+      total: finalTotal,
+    };
+    const fingerprint = quoteFingerprint({
+      userId: user.id,
+      restaurantId,
+      choices: {
+        isDelivery,
+        adresseId: isDelivery ? (adresseId ?? null) : null,
+        destination: isDelivery ? destination : null,
+        isPreorder: isPreorder ?? Boolean(scheduledForDate),
+        scheduledFor: scheduledForDate,
+        useLoyaltyPoints: Boolean(useLoyaltyPoints),
+        promoCode: promoResult?.code ?? promoCode ?? null,
+      },
+      // Canonical priced lines avoid menu snapshot attribution depending on
+      // database row order (the first menu item carries its whole price).
+      items: priced
+        .map(({ line, selection }) => ({
+          id: line.id,
+          productId: line.productId,
+          variantId: line.variantId,
+          menuId: line.menuId,
+          quantite: line.quantite,
+          menuPrice: line.menu?.prix ?? null,
+          selection,
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+      amounts: financialQuote,
+    });
+    if (options.dryRun)
+      return { ...financialQuote, quoteFingerprint: fingerprint };
+    if (
+      dto.quoteFingerprint !== undefined &&
+      dto.quoteFingerprint !== fingerprint
+    ) {
+      throw new ConflictException({
+        code: 'QUOTE_CHANGED',
+        message:
+          'Le panier ou son montant a changé. Vérifiez le nouveau devis avant de confirmer.',
+      });
     }
     // Lot 3 — parcours figé sur la commande : « accepter puis payer » seulement
     // si le réglage l'active ET que l'application du client sait le conduire.
@@ -881,7 +925,10 @@ export class OrderCheckoutService {
     // paiement. Elle est désormais déclenchée par `order.payment.confirmed`
     // → PaymentListener → ReferralService.rewardIfFirstPaidOrder().
 
-    return { message: 'Commande créée avec succès.', data: order };
+    return {
+      message: 'Commande créée avec succès.',
+      data: { ...order, paymentAllowed: orderPaymentAllowed(order) },
+    };
   }
 
   /**

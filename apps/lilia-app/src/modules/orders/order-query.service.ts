@@ -145,7 +145,9 @@ export class OrderQueryService {
   >(
     orders: T[],
     role: string,
-  ): Promise<Array<T & { allowedActions: OrderAction[] }>> {
+  ): Promise<
+    Array<T & { allowedActions: OrderAction[]; paymentAllowed: boolean }>
+  > {
     return withAllowedActions(
       orders,
       role,

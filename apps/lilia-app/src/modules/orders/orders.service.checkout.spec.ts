@@ -270,7 +270,7 @@ describe('OrdersService.createOrderFromCart (caractérisation — checkout)', ()
 
     expect(res).toEqual({
       message: 'Commande créée avec succès.',
-      data: createdOrder,
+      data: { ...createdOrder, paymentAllowed: false },
     });
     expect(eventEmitter.emit).toHaveBeenCalledWith(
       'order.created',

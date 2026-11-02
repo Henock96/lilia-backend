@@ -138,6 +138,35 @@ describe('PaymentService — encaissement', () => {
     service = module.get(PaymentService);
   });
 
+  it('refuse ACCEPT_FIRST sans acceptedAt même dans EN_ATTENTE avant toute écriture ou encaissement', async () => {
+    prisma.order.findUnique.mockResolvedValue(
+      payableOrder({
+        orderFlow: 'ACCEPT_FIRST',
+        acceptedAt: null,
+        paymentDueAt: new Date(Date.now() + 60_000),
+      }),
+    );
+
+    await expect(
+      service.createPayment(
+        { orderId: 'o1', phoneNumber: '061234567' } as never,
+        'uid-1',
+        'provider',
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { code: 'ORDER_AWAITING_VENDOR' },
+    });
+
+    expect(prisma.payment.create).not.toHaveBeenCalled();
+    expect(prisma.payment.updateMany).not.toHaveBeenCalled();
+    expect(prisma.order.updateMany).not.toHaveBeenCalled();
+    expect(provider.createCollection).not.toHaveBeenCalled();
+    expect(provider.getCollectionStatus).not.toHaveBeenCalled();
+    expect(events.record).not.toHaveBeenCalled();
+    expect(outbox.enqueueInTransaction).not.toHaveBeenCalled();
+  });
+
   // ══════════════════════════════════════════════════════════════════════════
   describe('montant — le serveur fait foi', () => {
     it('ignore un montant envoyé par le client', async () => {

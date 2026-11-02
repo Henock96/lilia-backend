@@ -36,6 +36,7 @@ import {
 } from './payment-event.service';
 import { OrderTransitionService } from '../../orders/order-transition.service';
 import { OrderTransitionSource } from '../../orders/order-transition.types';
+import { orderPaymentAllowed } from '../../orders/order-payment-policy';
 
 /**
  * Traduction `PaymentEventSource` → `OrderTransitionSource`.
@@ -1258,6 +1259,12 @@ export class PaymentService {
         message:
           'Le délai de paiement de cette commande est dépassé : elle va être annulée. Repassez commande si vous le souhaitez.',
         code: 'PAYMENT_WINDOW_CLOSED',
+      });
+    }
+    if (!orderPaymentAllowed(order)) {
+      throw new ConflictException({
+        message: 'La boutique n’a pas encore accepté votre commande.',
+        code: 'ORDER_AWAITING_VENDOR',
       });
     }
     return order;

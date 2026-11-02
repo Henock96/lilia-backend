@@ -52,3 +52,30 @@ describe('CreateOrderDto — contactPhone', () => {
     },
   );
 });
+
+describe('CreateOrderDto — quoteFingerprint additif', () => {
+  it.each([undefined, `v1:${'a'.repeat(64)}`])(
+    'accepte ancien client ou empreinte v1',
+    (quoteFingerprint) => {
+      const dto = plainToInstance(CreateOrderDto, {
+        paymentMethod: PaymentMethod.MTN_MOMO,
+        quoteFingerprint,
+      });
+      expect(validateSync(dto)).toHaveLength(0);
+    },
+  );
+  it.each(['', 'abc', `v2:${'a'.repeat(64)}`, 123])(
+    'refuse une empreinte mal formée',
+    (quoteFingerprint) => {
+      const dto = plainToInstance(CreateOrderDto, {
+        paymentMethod: PaymentMethod.MTN_MOMO,
+        quoteFingerprint,
+      });
+      expect(
+        validateSync(dto).some(
+          (error) => error.property === 'quoteFingerprint',
+        ),
+      ).toBe(true);
+    },
+  );
+});

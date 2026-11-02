@@ -185,6 +185,7 @@ describe('OrdersService (caractérisation — lectures)', () => {
       // La commande, plus les gestes permis à CE rôle (R1).
       await expect(service.findOrderById('o1', 'uid')).resolves.toEqual({
         ...order,
+        paymentAllowed: false,
         allowedActions: expect.any(Array),
       });
     });
@@ -240,6 +241,7 @@ describe('OrdersService (caractérisation — lectures)', () => {
       // La commande, plus les gestes permis à CE rôle (R1).
       await expect(service.findOrderById('o1', 'uid')).resolves.toEqual({
         ...order,
+        paymentAllowed: false,
         allowedActions: expect.any(Array),
       });
     });
@@ -262,7 +264,11 @@ describe('OrdersService (caractérisation — lectures)', () => {
       const res = await service.findOrdersClient(2, 5, 'uid');
 
       expect(res.data).toEqual([
-        { ...orders[0], allowedActions: expect.any(Array) },
+        {
+          ...orders[0],
+          paymentAllowed: false,
+          allowedActions: expect.any(Array),
+        },
       ]);
       expect(pagination.getPaginationMeta).toHaveBeenCalledWith(2, 5, 1);
       const findArgs = prisma.order.findMany.mock.calls[0][0];
@@ -288,7 +294,7 @@ describe('OrdersService (caractérisation — lectures)', () => {
       const res = await service.findRestaurantOrders('uid', 1, 20);
 
       expect(res.data).toEqual([
-        { id: 'o1', allowedActions: expect.any(Array) },
+        { id: 'o1', paymentAllowed: false, allowedActions: expect.any(Array) },
       ]);
       expect(prisma.restaurant.findMany).not.toHaveBeenCalled();
       // Depuis le fix P1, le `count()` admin n'est plus sans filtre (scan
@@ -325,7 +331,7 @@ describe('OrdersService (caractérisation — lectures)', () => {
       const res = await service.findRestaurantOrders('uid', 1, 20);
 
       expect(res.data).toEqual([
-        { id: 'o1', allowedActions: expect.any(Array) },
+        { id: 'o1', paymentAllowed: false, allowedActions: expect.any(Array) },
       ]);
       expect(prisma.order.findMany.mock.calls[0][0].where).toEqual({
         restaurantId: { in: ['resto1'] },
