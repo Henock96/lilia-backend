@@ -14,7 +14,13 @@ import { OrderQueryService } from './order-query.service';
 describe('OrderQueryService — allowedActions publié avec la commande', () => {
   function build(
     role: string,
-    orders: Array<{ status: OrderStatus; isDelivery: boolean }>,
+    orders: Array<{
+      status: OrderStatus;
+      isDelivery: boolean;
+      orderFlow?: string;
+      acceptedAt?: Date;
+      paymentDueAt?: Date;
+    }>,
     acceptance = true,
   ) {
     const rows = orders.map((o, i) => ({ id: `o-${i}`, userId: 'u-1', ...o }));
@@ -50,6 +56,38 @@ describe('OrderQueryService — allowedActions publié avec la commande', () => 
     const res = await service.findRestaurantOrders('fb-v');
 
     expect(res.data[0].allowedActions).toEqual(['ACCEPT', 'REJECT']);
+  });
+
+  it('détail et liste client publient le même verdict de paiement', async () => {
+    const { service } = build('CLIENT', [
+      {
+        status: 'EN_ATTENTE',
+        isDelivery: true,
+        orderFlow: 'ACCEPT_FIRST',
+        acceptedAt: new Date(),
+        paymentDueAt: new Date(Date.now() + 60_000),
+      },
+    ]);
+    expect(
+      (await service.findOrderById('o-0', 'fb-client')).paymentAllowed,
+    ).toBe(true);
+    expect(
+      (await service.findOrdersClient(1, 20, 'fb-client')).data[0]
+        .paymentAllowed,
+    ).toBe(true);
+  });
+
+  it('une demande non acceptée ne propose jamais le paiement', async () => {
+    const { service } = build('CLIENT', [
+      {
+        status: 'DEMANDE_ENVOYEE',
+        isDelivery: true,
+        orderFlow: 'ACCEPT_FIRST',
+      },
+    ]);
+    expect(
+      (await service.findOrderById('o-0', 'fb-client')).paymentAllowed,
+    ).toBe(false);
   });
 
   it('suit l’interrupteur : « préparer » reste proposé tant que l’acceptation n’est pas en service', async () => {

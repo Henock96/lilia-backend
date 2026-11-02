@@ -7,6 +7,7 @@ import { OrderValidatorService } from '../../apps/lilia-app/src/modules/orders/o
 import { OrderCalculatorService } from '../../apps/lilia-app/src/modules/orders/order-calculator.service';
 import { StockService } from '../../apps/lilia-app/src/modules/orders/stock.service';
 import { PreorderValidatorService } from '../../apps/lilia-app/src/modules/vendors/preorder-validator.service';
+import { CreateOrderDto } from '../../apps/lilia-app/src/modules/orders/dto/create-order.dto';
 
 /**
  * Durcissement lot 4 — idempotence du checkout portée par PostgreSQL, sans
@@ -139,6 +140,49 @@ describeIfDb('Checkout — idempotence en base (PostgreSQL réel)', () => {
     expect(again.data.items).toHaveLength(1);
     expect(again.data.restaurant.nom).toBe('Chez Clé');
     expect(await prisma.order.count()).toBe(1);
+  });
+
+  it('devis accepté puis réponse perdue : même commande malgré le panier vidé', async () => {
+    const quote = await checkout.quote('fb-ik-a', { isDelivery: false });
+    const confirmed = {
+      ...(dto as CreateOrderDto),
+      quoteFingerprint: quote.data.quoteFingerprint,
+    };
+    const first = await checkout.createOrderFromCart(
+      'fb-ik-a',
+      confirmed,
+      'quoted-retry',
+    );
+    const again = await checkout.createOrderFromCart(
+      'fb-ik-a',
+      confirmed,
+      'quoted-retry',
+    );
+    expect(again.data.id).toBe(first.data.id);
+    expect(first.data.total).toBe(quote.data.total);
+    expect(await prisma.order.count()).toBe(1);
+  });
+
+  it('prix modifié après devis : 409, panier conservé et aucune commande créée', async () => {
+    const quote = await checkout.quote('fb-ik-a', { isDelivery: false });
+    await prisma.productVariant.update({
+      where: { id: 'ik-vp' },
+      data: { prix: 3000 },
+    });
+    await expect(
+      checkout.createOrderFromCart(
+        'fb-ik-a',
+        {
+          ...(dto as CreateOrderDto),
+          quoteFingerprint: quote.data.quoteFingerprint,
+        },
+        'changed-quote',
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'QUOTE_CHANGED' }),
+    });
+    expect(await prisma.order.count()).toBe(0);
+    expect(await prisma.cartItem.count()).toBe(2);
   });
 
   it('la même clé chez un autre client crée sa propre commande', async () => {

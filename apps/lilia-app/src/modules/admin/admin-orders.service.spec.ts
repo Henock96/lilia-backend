@@ -63,7 +63,9 @@ describe('AdminOrdersService.list', () => {
 
     const res = await service.list({ page: 2, limit: 20 });
 
-    expect(res.data).toEqual([{ id: 'o1', allowedActions: expect.any(Array) }]);
+    expect(res.data).toEqual([
+      { id: 'o1', paymentAllowed: false, allowedActions: expect.any(Array) },
+    ]);
     expect(res.meta).toMatchObject({
       total: 148,
       page: 2,

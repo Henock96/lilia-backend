@@ -19,6 +19,7 @@ import { DeliveryPricingService } from '../delivery-pricing/delivery-pricing.ser
 import { OutboxService } from '../outbox/outbox.service';
 import { OrderTransitionService } from './order-transition.service';
 import { cartLine } from '../modifiers/testing/cart-line.fixture';
+import { CreateOrderDto, QuoteOrderDto } from './dto/create-order.dto';
 
 /**
  * Garde d'idempotence du checkout, portée par la base (durcissement lot 4).
@@ -223,6 +224,87 @@ describe('OrderCheckoutService — idempotence', () => {
     );
   });
 
+  it('devis puis checkout inchangé : empreinte acceptée sans écriture au devis', async () => {
+    const quote = await service.quote('uid', baseDto as QuoteOrderDto);
+    expect(quote.data.quoteFingerprint).toMatch(/^v1:[a-f0-9]{64}$/);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    const result = await service.createOrderFromCart(
+      'uid',
+      {
+        ...(baseDto as CreateOrderDto),
+        quoteFingerprint: quote.data.quoteFingerprint,
+      },
+      'quoted-1',
+    );
+    expect(result.data.id).toBe('o1');
+    expect(tx.order.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('montant modifié depuis le devis : QUOTE_CHANGED avant transaction', async () => {
+    const quote = await service.quote('uid', baseDto as QuoteOrderDto);
+    calculator.calculate.mockReturnValue({
+      subTotal: 10000,
+      deliveryFee: 1000,
+      serviceFee: 1500,
+    });
+    try {
+      await service.createOrderFromCart(
+        'uid',
+        {
+          ...(baseDto as CreateOrderDto),
+          quoteFingerprint: quote.data.quoteFingerprint,
+        },
+        'quoted-2',
+      );
+      throw new Error('Checkout aurait dû être refusé');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConflictException);
+      expect((error as ConflictException).getResponse()).toEqual(
+        expect.objectContaining({ code: 'QUOTE_CHANGED' }),
+      );
+    }
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(tx.order.create).not.toHaveBeenCalled();
+    expect(stockService.decrementInTransaction).not.toHaveBeenCalled();
+  });
+
+  it('lignes différentes au même total : le devis est périmé', async () => {
+    const quote = await service.quote('uid', baseDto as QuoteOrderDto);
+    validator.validateAndGetUser.mockResolvedValue({
+      id: 'u1',
+      cart: {
+        id: 'cart1',
+        items: [cartLine({ id: 'ci2', quantite: 1 })],
+      },
+    });
+    await expect(
+      service.createOrderFromCart(
+        'uid',
+        {
+          ...(baseDto as CreateOrderDto),
+          quoteFingerprint: quote.data.quoteFingerprint,
+        },
+        'quoted-3',
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('réponse perdue : rejoue avant de contrôler une empreinte devenue ancienne', async () => {
+    prisma.order.findFirst.mockResolvedValue(createdOrder);
+    const result = await service.createOrderFromCart(
+      'uid',
+      {
+        ...(baseDto as CreateOrderDto),
+        quoteFingerprint: `v1:${'0'.repeat(64)}`,
+      },
+      'already-created',
+    );
+    expect(result.data.id).toBe('o1');
+    expect(validator.validateAndGetUser).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it('rejoue la commande existante sans rien recréer', async () => {
     prisma.order.findFirst.mockResolvedValue(createdOrder);
 
@@ -230,7 +312,7 @@ describe('OrderCheckoutService — idempotence', () => {
 
     expect(result).toEqual({
       message: 'Commande créée avec succès.',
-      data: createdOrder,
+      data: { ...createdOrder, paymentAllowed: false },
     });
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(validator.validateAndGetUser).not.toHaveBeenCalled();
@@ -249,7 +331,7 @@ describe('OrderCheckoutService — idempotence', () => {
 
     const result = await service.createOrderFromCart('uid', baseDto, 'key-1');
 
-    expect(result.data).toBe(createdOrder);
+    expect(result.data).toEqual({ ...createdOrder, paymentAllowed: false });
   });
 
   it('laisse remonter un vrai échec quand aucune commande ne porte la clé', async () => {

@@ -1,6 +1,7 @@
 import { OrderStatus } from '@prisma/client';
 
 import { ORDER_TRANSITION_MATRIX, OrderActor } from './order-state.machine';
+import { orderPaymentAllowed } from './order-payment-policy';
 
 /**
  * Gestes qu'une interface peut proposer sur une commande — publiés par le
@@ -185,14 +186,18 @@ export function withAllowedActions<
     isDelivery: boolean;
     deliveryProof?: string | null;
     acceptedAt?: Date | null;
+    orderFlow?: string | null;
+    paymentDueAt?: Date | null;
   },
 >(
   orders: T[],
   role: string,
   context: OrderActionContext,
-): Array<T & { allowedActions: OrderAction[] }> {
+): Array<T & { allowedActions: OrderAction[]; paymentAllowed: boolean }> {
   return orders.map((order) => ({
     ...order,
     allowedActions: orderAllowedActions(order, role, context),
+    paymentAllowed:
+      (role === 'CLIENT' || role === 'ADMIN') && orderPaymentAllowed(order),
   }));
 }

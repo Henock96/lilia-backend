@@ -9,6 +9,7 @@ import {
   Max,
   MaxLength,
   Min,
+  Matches,
 } from 'class-validator';
 import { PaymentMethod } from '@prisma/client';
 import { Transform } from 'class-transformer';
@@ -16,6 +17,12 @@ import { OmitType } from '@nestjs/swagger';
 import { IsCongoMobilePhone } from '../../../common/validation/congo-phone.decorator';
 
 export class CreateOrderDto {
+  /** Optional for installed clients. New web checks the displayed quote at checkout. */
+  @IsOptional()
+  @IsString()
+  @Matches(/^v1:[a-f0-9]{64}$/)
+  quoteFingerprint?: string;
+
   @IsString()
   @IsOptional()
   adresseId?: string;
@@ -103,6 +110,7 @@ export class QuoteOrderDto extends OmitType(CreateOrderDto, [
   'notes',
   'contactPhone',
   'vendorOfferId',
+  'quoteFingerprint',
 ] as const) {
   /**
    * Livraison vers une adresse **pas encore enregistrée** : l'app mobile ne
