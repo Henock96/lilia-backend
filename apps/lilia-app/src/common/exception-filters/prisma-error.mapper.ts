@@ -19,10 +19,26 @@ export interface MappedPrismaError {
   message: string;
 }
 
-/** Le message d'erreur Prisma expose le nom des colonnes — jamais au client. */
+/**
+ * Le message d'erreur Prisma expose le nom des colonnes — jamais au client.
+ *
+ * ⚠️ Sous `@prisma/adapter-pg`, `meta.target` n'existe pas : les colonnes sont
+ * dans `driverAdapterError.cause.constraint.fields`, copiées du texte de
+ * PostgreSQL, donc entre guillemets dès qu'elles portent une majuscule
+ * (`"userId"`). Sans ce repli, aucun message de `UNIQUE_MESSAGES` ne s'applique.
+ */
 function fieldsOf(err: Prisma.PrismaClientKnownRequestError): string[] {
-  const target = (err.meta as { target?: unknown } | undefined)?.target;
-  if (Array.isArray(target)) return target.map(String);
+  const meta = err.meta as
+    | {
+        target?: unknown;
+        driverAdapterError?: { cause?: { constraint?: { fields?: unknown } } };
+      }
+    | undefined;
+  const target =
+    meta?.target ?? meta?.driverAdapterError?.cause?.constraint?.fields;
+  if (Array.isArray(target)) {
+    return target.map((field) => String(field).replaceAll('"', ''));
+  }
   if (typeof target === 'string') return [target];
   return [];
 }
