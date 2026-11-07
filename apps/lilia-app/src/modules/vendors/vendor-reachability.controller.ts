@@ -23,9 +23,12 @@ export class AdminVendorReachabilityController {
   })
   async list() {
     const rows = await this.reachability.list();
+    // `meta` et non une autre clé : l'intercepteur global ne laisse passer
+    // que `data` / `message` / `meta` et ré-enveloppe tout le reste — l'admin
+    // web recevait alors un objet au lieu de la liste.
     return {
       data: rows,
-      summary: {
+      meta: {
         total: rows.length,
         needsAction: rows.filter((r) => r.needsAction).length,
       },
