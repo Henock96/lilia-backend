@@ -74,3 +74,18 @@ export const CORS_ALLOWED_HEADERS = [
    */
   'X-Lilia-Order-Flow',
 ] as const;
+
+/**
+ * Durée pendant laquelle le navigateur garde la réponse d'un préflight
+ * (`Access-Control-Max-Age`).
+ *
+ * Absente, Chrome la ramène à 5 secondes. Or les deux applications web
+ * envoient des en-têtes personnalisés sur **toutes** leurs requêtes : chacune
+ * déclenchait donc un `OPTIONS` de plus, un aller-retour supplémentaire vers
+ * le serveur sur la 4G de Brazzaville (audit du 06/11/2026, PERF-06).
+ *
+ * 7 200 s est le plafond de Chrome ; une valeur plus haute y serait ramenée
+ * sans erreur. Le cache est propre à chaque couple URL et en-têtes : il ne
+ * change rien aux droits, seulement au nombre d'allers-retours.
+ */
+export const CORS_PREFLIGHT_MAX_AGE_SECONDS = 7200;

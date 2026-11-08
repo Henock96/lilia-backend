@@ -15,7 +15,10 @@ import { existsSync } from 'fs';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/exception-filters/http-exception.filter';
 import { RedisIoAdapter } from './common/adapters/redis-io.adapter';
-import { CORS_ALLOWED_HEADERS } from './common/http/cors-headers';
+import {
+  CORS_ALLOWED_HEADERS,
+  CORS_PREFLIGHT_MAX_AGE_SECONDS,
+} from './common/http/cors-headers';
 import {
   isDeployedEnvironment,
   resolveCorsOrigin,
@@ -137,6 +140,7 @@ async function bootstrap() {
      */
     allowedHeaders: CORS_ALLOWED_HEADERS.join(','),
     credentials: true,
+    maxAge: CORS_PREFLIGHT_MAX_AGE_SECONDS,
   });
 
   // ─── Swagger ────────────────────────────────────────────────────────────────

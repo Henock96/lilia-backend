@@ -1,4 +1,7 @@
-import { CORS_ALLOWED_HEADERS } from '../src/common/http/cors-headers';
+import {
+  CORS_ALLOWED_HEADERS,
+  CORS_PREFLIGHT_MAX_AGE_SECONDS,
+} from '../src/common/http/cors-headers';
 
 /**
  * Correspondance entre les en-têtes que le client web **envoie** et ceux que
@@ -72,5 +75,17 @@ describe('CORS — en-têtes autorisés', () => {
   it('autorise X-Lilia-Platform', () => {
     const allowed = CORS_ALLOWED_HEADERS.map((h) => h.toLowerCase());
     expect(allowed).toContain('x-lilia-platform');
+  });
+});
+
+/**
+ * Sans `Access-Control-Max-Age`, Chrome ne garde un préflight que 5 secondes :
+ * chaque appel du site (qui porte toujours `X-Lilia-Payment-Flow`) payait un
+ * aller-retour de plus vers le serveur (audit du 06/11/2026, PERF-06). Chrome
+ * plafonne la durée à 7 200 s ; au-delà, la valeur est ramenée sans erreur.
+ */
+describe('CORS — mise en cache du préflight', () => {
+  it('garde un préflight deux heures, le plafond de Chrome', () => {
+    expect(CORS_PREFLIGHT_MAX_AGE_SECONDS).toBe(7200);
   });
 });
