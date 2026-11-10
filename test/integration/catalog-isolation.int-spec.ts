@@ -7,6 +7,7 @@ import {
   catalogProductWhere,
 } from '../../apps/lilia-app/src/modules/products/product-availability';
 import { slugifyCategoryName } from '../../apps/lilia-app/src/modules/categories/category-slug';
+import { RestaurantAccessService } from '../../apps/lilia-app/src/modules/restaurants/restaurant-access.service';
 
 /**
  * Isolation du catalogue entre vendeurs, sur un **vrai PostgreSQL**.
@@ -193,6 +194,37 @@ describeIfDb('Catalogue — isolation entre vendeurs (PostgreSQL réel)', () => 
       expect(desA.map((c) => c.id)).not.toEqual(
         expect.arrayContaining(desB.map((c) => c.id)),
       );
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Arbitre de propriété — la requête réelle, pas un mock
+  // ═══════════════════════════════════════════════════════════════════════════
+  describe('resolveTargetRestaurant — un vendeur peut nommer sa propre boutique', () => {
+    const access = () => new RestaurantAccessService(prisma as never);
+
+    it('A nomme la sienne → A, sans agir pour un tiers', async () => {
+      // Ce que le back-office web envoie pour lire `/products/manage` : le
+      // vendeur recevait « Seul un administrateur… » sur sa page Produits.
+      await expect(
+        access().resolveTargetRestaurant(`fb-${A.owner}`, A.resto),
+      ).resolves.toEqual({
+        id: A.resto,
+        vendorType: VendorType.RESTAURANT,
+        onBehalfOf: false,
+      });
+    });
+
+    it('B nomme celle de A → 403', async () => {
+      await expect(
+        access().resolveTargetRestaurant(`fb-${B.owner}`, A.resto),
+      ).rejects.toThrow(/Seul un administrateur/);
+    });
+
+    it('A nomme un identifiant inexistant → 403, comme pour une boutique étrangère', async () => {
+      await expect(
+        access().resolveTargetRestaurant(`fb-${A.owner}`, 'iso-resto-inconnu'),
+      ).rejects.toThrow(/Seul un administrateur/);
     });
   });
 

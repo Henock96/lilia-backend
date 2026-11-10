@@ -57,8 +57,14 @@ export class RestaurantAccessService {
    * admin ne pouvait donc pas amorcer la boutique qu'il venait de créer, ni
    * dépanner un vendeur en difficulté.
    *
-   * Sans `restaurantId`, rien ne change. Avec, seul un ADMIN passe — et
-   * l'appelant est chargé de tracer le geste dans `AdminAuditLog`.
+   * Sans `restaurantId`, rien ne change. Avec, un ADMIN passe — et l'appelant
+   * est chargé de tracer le geste dans `AdminAuditLog` — ou le propriétaire de
+   * la boutique désignée, qui n'agit alors pour personne d'autre que lui.
+   *
+   * ⚠️ Refuser aussi ce second cas cassait la LECTURE du catalogue : le
+   * back-office web et l'app vendeurs passent l'identifiant de la boutique à
+   * `GET /products/manage` et `GET /categories`, et un vendeur recevait
+   * « Seul un administrateur… » en ouvrant sa propre page Produits.
    */
   async resolveTargetRestaurant(
     firebaseUid: string,
@@ -82,9 +88,18 @@ export class RestaurantAccessService {
       select: { role: true },
     });
     if (caller?.role !== 'ADMIN') {
-      throw new ForbiddenException(
-        "Seul un administrateur peut écrire dans le catalogue d'un autre vendeur.",
-      );
+      // Propriété vérifiée en base, en une requête : un identifiant étranger ou
+      // inexistant reçoit le même 403, sans révéler quels vendeurs existent.
+      const own = await this.prisma.restaurant.findFirst({
+        where: { id: restaurantId, owner: { firebaseUid } },
+        select: { id: true, vendorType: true },
+      });
+      if (!own) {
+        throw new ForbiddenException(
+          "Seul un administrateur peut écrire dans le catalogue d'un autre vendeur.",
+        );
+      }
+      return { ...own, onBehalfOf: false };
     }
 
     const target = await this.prisma.restaurant.findUnique({
