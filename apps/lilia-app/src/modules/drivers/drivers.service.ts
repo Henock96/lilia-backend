@@ -357,6 +357,26 @@ export class DriversService {
     return { ...(await this.findMe(userId)), message: 'Profil mis à jour.' };
   }
 
+  /**
+   * FCFS — l'app déclare (et renouvelle) sa capacité à recevoir des offres.
+   * Écrit `offersEnabledAt = now` sur le profil s'il existe ; un compte sans
+   * profil n'est pas candidat et le reste (`count === 0`, pas d'erreur :
+   * l'app n'a rien à faire de ce cas, l'administration le voit).
+   */
+  async declareDispatchCapability(userId: string) {
+    const now = new Date();
+    const updated = await this.prisma.driverProfile.updateMany({
+      where: { userId },
+      data: { offersEnabledAt: now },
+    });
+    return {
+      data: {
+        offersEnabledAt: updated.count > 0 ? now.toISOString() : null,
+        hasProfile: updated.count > 0,
+      },
+    };
+  }
+
   // ─── Écriture (admin) ──────────────────────────────────────────────────────
 
   async updateDriver(userId: string, dto: UpdateDriverDto, adminId: string) {

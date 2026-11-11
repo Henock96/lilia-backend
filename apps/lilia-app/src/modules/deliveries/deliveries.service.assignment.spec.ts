@@ -72,8 +72,11 @@ describe('DeliveriesService (caractérisation — assignation)', () => {
     // Journal d'assignation : ouvert et clos dans la même transaction que le
     // statut de la livraison.
     deliveryAssignment: { create: jest.fn(), updateMany: jest.fn() },
+    // FCFS — l'interrupteur, relu en base sous transaction (éteint ici).
+    platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
   };
   const prisma = {
+    platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
     delivery: {
       findUnique: jest.fn(),
       create: jest.fn(),

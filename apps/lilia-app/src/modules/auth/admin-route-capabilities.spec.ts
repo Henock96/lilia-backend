@@ -158,6 +158,11 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'DashboardController.getRevenueChart': 'NONE',
   'DashboardController.getTopProducts': 'NONE',
   'DashboardController.getVendorStats': 'NONE',
+  // FCFS — supervision et relance (jamais d'attribution) : exploitation
+  // courante, comme le cockpit.
+  'AdminDispatchController.redispatch': 'NONE',
+  'AdminDispatchController.redispatchOrder': 'NONE',
+  'AdminDispatchController.supervision': 'NONE',
   'DeliveriesController.assignDeliverer': 'NONE',
   'DeliveriesController.assignDelivererToOrder': 'NONE',
   'DeliveriesController.findAllForRestaurant': 'NONE',
@@ -165,6 +170,7 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'DeliveriesController.findByOrderId': 'NONE',
   'DeliveriesController.findOne': 'NONE',
   'DeliveriesController.getAvailableDeliverers': 'NONE',
+  'DeliveriesController.getOrderDispatch': 'NONE',
   'DeliveriesController.updateStatus': 'NONE',
   'DeliveryFailureController.declare': 'NONE',
   'DeliveryReviewsController.create': 'NONE',
@@ -315,6 +321,8 @@ const SECOND_FACTOR_ROUTES: readonly string[] = [
   'AdminDriversController.resendInvitation',
   'AdminDriversController.update',
   // Livraisons
+  'AdminDispatchController.redispatch',
+  'AdminDispatchController.redispatchOrder',
   'DeliveriesController.assignDeliverer',
   'DeliveriesController.assignDelivererToOrder',
   'DeliveriesController.updateStatus',

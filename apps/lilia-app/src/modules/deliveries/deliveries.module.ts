@@ -9,6 +9,9 @@ import { DeliveriesService } from './deliveries.service';
 import { DeliveryQueryService } from './delivery-query.service';
 import { DeliveryAssignmentService } from './delivery-assignment.service';
 import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
+import { DeliveryClaimService } from './delivery-claim.service';
+import { DispatchCoreModule } from './dispatch/dispatch-core.module';
+import { AdminDispatchController } from './dispatch/admin-dispatch.controller';
 import { DeliveriesController } from './deliveries.controller';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { NotificationsModule } from '../notifications/notifications.module';
@@ -28,12 +31,15 @@ import { ReferralCoreModule } from '../users/referral-core.module';
     LoyaltyModule,
     ReferralCoreModule,
     SmsModule,
+    // Dispatch FCFS (10/11/2026) — claim, liste, supervision, relance.
+    DispatchCoreModule,
   ],
   providers: [
     DeliveriesService,
     DeliveryQueryService,
     DeliveryAssignmentService,
     DeliveryAssignmentLogService,
+    DeliveryClaimService,
     OrderStateMachine,
     OrderTransitionService,
     DeliveryFailureService,
@@ -43,6 +49,7 @@ import { ReferralCoreModule } from '../users/referral-core.module';
     // F3-05 — échec de livraison : protocole, déclaration, arbitrage.
     DeliveryFailureController,
     AdminDeliveryFailureController,
+    AdminDispatchController,
   ],
   // `DeliveryAssignmentLogService` est exporté parce que `DeliveriesListener`
   // — déclaré dans `AppModule`, pas ici — ferme le journal quand une commande

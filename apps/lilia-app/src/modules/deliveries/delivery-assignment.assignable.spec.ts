@@ -39,11 +39,14 @@ describe('DeliveryAssignmentService — assertAssignable', () => {
     user: {
       findUnique: jest.fn((args: unknown) => prisma.user.findUnique(args)),
     },
+    // FCFS — l'interrupteur, relu en base sous transaction (éteint ici).
+    platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
   };
   const prisma = {
     delivery: { findUnique: jest.fn(), update: jest.fn() },
     user: { findUnique: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
     order: { findUnique: jest.fn() },
+    platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
     $transaction: jest.fn((fn: (t: unknown) => unknown) => fn(tx)),
   };
 

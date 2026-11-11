@@ -1,6 +1,7 @@
 import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { OrderStatus, Prisma } from '@prisma/client';
 import { acceptanceDeadline } from './order-acceptance-policy';
+import { closeOpenDispatchForOrder } from '../deliveries/dispatch/dispatch-policy';
 
 import {
   DEFAULT_VENDOR_PAYOUT_DELAY_MINUTES,
@@ -105,6 +106,15 @@ export class OrderTransitionService {
     });
 
     if (claimed.count === 0) return { moved: false };
+
+    // Dispatch FCFS (10/11/2026) — une commande qui quitte `PRET` (annulée,
+    // en échec, remise, récupérée) ne peut plus être proposée aux livreurs.
+    // La recherche se ferme ICI, dans la transaction de la transition, et non
+    // dans un listener : elle vit ou meurt avec elle. Sans effet quand aucune
+    // recherche n'est ouverte (claim déjà gagné, interrupteur éteint).
+    if (from === OrderStatus.PRET) {
+      await closeOpenDispatchForOrder(tx, orderId);
+    }
 
     await this.writeHistory(tx, { ...params, from });
     return { moved: true };

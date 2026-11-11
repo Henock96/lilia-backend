@@ -20,9 +20,16 @@ import { projectDeliveryForDriver } from './delivery-driver-projection';
  */
 const LIVREUR_ROUTE_EXPOSURE: Record<string, string> = {
   'CloudinaryController.uploadImage': 'NO_DELIVERY_DATA',
+  // FCFS — rend l'identifiant et le statut, rien d'autre.
+  'DeliveriesController.abandonDelivery': 'NO_DELIVERY_DATA',
   'DeliveriesController.acceptDelivery': 'PROJECTED',
+  // FCFS — course gagnée : même projection que l'acceptation.
+  'DeliveriesController.claimDelivery': 'PROJECTED',
   'DeliveriesController.confirmPickup': 'PROJECTED',
   'DeliveriesController.declineDelivery': 'NO_DELIVERY_DATA',
+  // FCFS — projection d'OFFRE (`projectOfferForDriver`) : boutique, quartiers,
+  // nombre d'articles ; ni client, ni adresse, ni montant.
+  'DeliveriesController.listAvailable': 'PROJECTED',
   'DeliveriesController.findByOrderId': 'SELECT',
   'DeliveriesController.findMyDeliveries': 'PROJECTED',
   'DeliveriesController.findOne': 'PROJECTED',
@@ -38,6 +45,8 @@ const LIVREUR_ROUTE_EXPOSURE: Record<string, string> = {
   'DeliveryReviewsController.findByDelivery': 'SELECT',
   'DeliveryReviewsController.findMine': 'SELECT',
   'DeliveryReviewsController.getDelivererStats': 'NO_DELIVERY_DATA',
+  // FCFS — rend `offersEnabledAt` et `hasProfile`, rien d'autre.
+  'DriversController.declareDispatchCapability': 'NO_DELIVERY_DATA',
   'DriversController.findMe': 'SELECT',
   'DriversController.updateMe': 'SELECT',
   'TrackingController.batchPositions': 'NO_DELIVERY_DATA',

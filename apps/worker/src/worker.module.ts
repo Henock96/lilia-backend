@@ -1,6 +1,7 @@
 import { OrderOutboxEffectsModule } from '../../lilia-app/src/modules/outbox/order-outbox-effects.module';
 import { PayoutOutboxEffectsModule } from '../../lilia-app/src/modules/outbox/payout-outbox-effects.module';
 import { AccountOutboxEffectsModule } from '../../lilia-app/src/modules/outbox/account-outbox-effects.module';
+import { DispatchCoreModule } from '../../lilia-app/src/modules/deliveries/dispatch/dispatch-core.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { SentryModule } from '@sentry/nestjs/setup';
@@ -104,6 +105,7 @@ import { WorkerService } from './worker.service';
     OrderOutboxEffectsModule, // lot 4 : effets de commande rejoués par l'outbox
     PayoutOutboxEffectsModule, // F3-07 : notifications de versement par l'outbox
     AccountOutboxEffectsModule, // F3-12.1 R7 : coupure du compte au ban différé
+    DispatchCoreModule, // FCFS : tours de diffusion (cron) et reprise outbox
     AppScheduleModule, // expiration, horaires, stock, rappels
   ],
   controllers: [WorkerController],

@@ -7,14 +7,20 @@ import {
   HttpStatus,
   Param,
   Patch,
+  Post,
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
+import { User } from '@prisma/client';
 import { DecodedIdToken } from 'firebase-admin/auth';
 
 import { DeliveriesService } from './deliveries.service';
-import { AssignDeliveryDto, DeclineDeliveryDto, DeliveryStatus, SetDriverStatusDto, UpdateDeliveryStatusDto } from './dto/update-delivery.dto';
+import { DeliveryClaimService } from './delivery-claim.service';
+import { DeliveryDispatchService } from './dispatch/delivery-dispatch.service';
+import { AbandonDeliveryDto, AssignDeliveryDto, DeclineDeliveryDto, DeliveryStatus, SetDriverStatusDto, UpdateDeliveryStatusDto } from './dto/update-delivery.dto';
 import { UpdateLocationDto } from './dto/update-location.dto';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { FirebaseUser } from '../auth/decorators/firebase-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RequireSecondFactor } from '../auth/decorators/require-second-factor.decorator';
@@ -24,7 +30,11 @@ import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto
 @ApiBearerAuth()
 @Controller('deliveries')
 export class DeliveriesController {
-  constructor(private readonly deliveriesService: DeliveriesService) {}
+  constructor(
+    private readonly deliveriesService: DeliveriesService,
+    private readonly claims: DeliveryClaimService,
+    private readonly dispatch: DeliveryDispatchService,
+  ) {}
 
   /**
    * GET /deliveries/restaurant
@@ -85,6 +95,39 @@ export class DeliveriesController {
   @Roles('LIVREUR')
   getMyMissions(@FirebaseUser() fbUser: DecodedIdToken) {
     return this.deliveriesService.getMyAssignedDeliveries(fbUser.uid);
+  }
+
+  /**
+   * GET /deliveries/available — dispatch FCFS (10/11/2026).
+   *
+   * Les courses ouvertes que CE livreur peut accepter, de la plus ancienne à
+   * la plus récente. Projection d'offre : ni client, ni adresse, ni montant.
+   */
+  @Get('available')
+  @Roles('LIVREUR')
+  @ApiOperation({ summary: 'Commandes prêtes à prendre (premier arrivé, premier servi)' })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  listAvailable(
+    @FirebaseUser() fbUser: DecodedIdToken,
+    @Query() pagination: PaginationQueryDto,
+  ) {
+    return this.claims.listAvailable(fbUser.uid, pagination.page, pagination.limit);
+  }
+
+  /**
+   * GET /deliveries/by-order/:orderId/dispatch — verdict serveur pour les
+   * écrans vendeur et admin : état de la recherche et droit d'assigner.
+   */
+  @Get('by-order/:orderId/dispatch')
+  @Roles('RESTAURATEUR', 'ADMIN')
+  @ApiOperation({ summary: 'État de la recherche de livreur d’une commande' })
+  @ApiParam({ name: 'orderId' })
+  getOrderDispatch(
+    @Param('orderId') orderId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.dispatch.orderDispatchView(orderId, user.id);
   }
 
   @Patch('driver-status')
@@ -205,6 +248,43 @@ export class DeliveriesController {
     @FirebaseUser() fbUser: DecodedIdToken,
   ) {
     return this.deliveriesService.assignDeliverer(id, dto.delivererId, fbUser.uid);
+  }
+
+  /**
+   * POST /deliveries/:id/claim — dispatch FCFS. Le premier claim validé par
+   * PostgreSQL gagne ; les autres reçoivent 409 `DELIVERY_ALREADY_TAKEN`.
+   */
+  @Post(':id/claim')
+  @Roles('LIVREUR')
+  // Un appui, pas une rafale : le rejeu du gagnant reste possible (200).
+  @Throttle({ short: { limit: 3, ttl: 1000 }, long: { limit: 30, ttl: 60000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Accepter une commande prête (premier arrivé, premier servi)' })
+  @ApiParam({ name: 'id' })
+  claimDelivery(
+    @Param('id') id: string,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return this.claims.claim(id, fbUser.uid);
+  }
+
+  /**
+   * POST /deliveries/:id/abandon — « Je ne peux plus effectuer cette
+   * livraison », avant la récupération seulement ; motif obligatoire.
+   */
+  @Post(':id/abandon')
+  @Roles('LIVREUR')
+  // Chaque désistement rediffuse la course à tous les livreurs : borné.
+  @Throttle({ short: { limit: 1, ttl: 1000 }, long: { limit: 5, ttl: 3600000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Rendre une mission acceptée, avant la récupération' })
+  @ApiParam({ name: 'id' })
+  abandonDelivery(
+    @Param('id') id: string,
+    @Body() dto: AbandonDeliveryDto,
+    @FirebaseUser() fbUser: DecodedIdToken,
+  ) {
+    return this.claims.abandon(id, fbUser.uid, dto.reason);
   }
 
   @Patch(':id/accept')

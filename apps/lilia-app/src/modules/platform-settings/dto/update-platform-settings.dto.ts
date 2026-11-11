@@ -384,6 +384,18 @@ export class UpdatePlatformSettingsDto {
   vendorCanAssignDriver?: boolean;
 
   /**
+   * Dispatch FCFS (10/11/2026) — `true` : une commande à livrer qui passe
+   * `PRET` est proposée à tous les livreurs disponibles, le premier qui
+   * accepte la prend, et l'affectation manuelle (vendeur ET admin) est
+   * refusée. `false` (défaut) : comportement historique. Lu en base, jamais
+   * en cache, par les décisions qui comptent (ouverture, claim, affectation).
+   * À n'allumer qu'une fois l'app livreur compatible installée.
+   */
+  @IsOptional()
+  @IsBoolean()
+  dispatchEnabled?: boolean;
+
+  /**
    * Verrou optimiste (SET-001) : l'`updatedAt` de la configuration **telle que
    * l'administrateur l'a chargée**.
    *

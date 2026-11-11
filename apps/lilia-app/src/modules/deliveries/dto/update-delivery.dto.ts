@@ -4,7 +4,9 @@ import {
   IsString,
   Matches,
   MaxLength,
+  MinLength,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { DriverStatus } from '@prisma/client';
 
 export class SetDriverStatusDto {
@@ -74,4 +76,20 @@ export class DeclineDeliveryDto {
   @MaxLength(300, { message: 'Le motif est limité à 300 caractères' })
   @IsOptional()
   reason?: string;
+}
+
+/**
+ * FCFS — « Je ne peux plus effectuer cette livraison » (course acceptée, pas
+ * encore récupérée). Le motif est OBLIGATOIRE : il est journalisé et lu par
+ * le vendeur et l'administration.
+ */
+export class AbandonDeliveryDto {
+  // Rogné AVANT la longueur : « ␣␣␣ » ne doit pas passer pour un motif.
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsString()
+  @MinLength(3, { message: 'Indiquez la raison de votre désistement' })
+  @MaxLength(300, { message: 'Le motif est limité à 300 caractères' })
+  reason!: string;
 }

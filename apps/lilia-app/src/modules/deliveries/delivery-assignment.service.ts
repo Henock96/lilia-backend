@@ -8,6 +8,7 @@ import {
 import {
   DeliveryAssignmentOutcome,
   DeliveryStatus,
+  DispatchOutcome,
   DriverStatus,
   OrderStatus,
   Prisma,
@@ -53,6 +54,12 @@ import {
 import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
 import { TrackingService } from '../tracking/tracking.service';
 import { ASSIGNABLE_ORDER_STATUSES } from '../orders/order-status-groups';
+import {
+  MANUAL_ASSIGNMENT_DISABLED,
+  closedDispatchData,
+  isDispatchOpen,
+  readDispatchEnabled,
+} from './dispatch/dispatch-policy';
 
 // Source unique : `orders/order-status-groups.ts` (classement exhaustif testé).
 export { ASSIGNABLE_ORDER_STATUSES };
@@ -105,6 +112,25 @@ export class DeliveryAssignmentService {
         message:
           "L'affectation des livreurs est faite par l'équipe Lilia. Contactez-la si la course tarde.",
         code: 'DRIVER_ASSIGNMENT_OPERATOR_ONLY',
+      });
+    }
+  }
+
+  /**
+   * FCFS (10/11/2026) — `dispatchEnabled = true` ferme l'ancienne porte avec
+   * une réponse explicite (409, code stable) : une app installée qui
+   * l'appelle encore comprend, et aucune attribution manuelle ne passe, pour
+   * PERSONNE — les livreurs prennent eux-mêmes les courses. Lecture fraîche
+   * en base, sous transaction : jamais le cache de 60 s.
+   */
+  private async assertManualAssignmentOpen(
+    db: Prisma.TransactionClient,
+  ): Promise<void> {
+    if (await readDispatchEnabled(db)) {
+      throw new ConflictException({
+        code: MANUAL_ASSIGNMENT_DISABLED,
+        message:
+          'Les livreurs acceptent eux-mêmes les commandes prêtes : l’affectation manuelle n’est plus possible. Suivez la recherche depuis la commande.',
       });
     }
   }
@@ -314,6 +340,8 @@ export class DeliveryAssignmentService {
       `;
       if (!locked) throw new NotFoundException('Commande non trouvée.');
       this.assertOrderAssignable(locked.status);
+      // FCFS — avant de créer la course : un refus ne laisse rien derrière.
+      await this.assertManualAssignmentOpen(tx);
 
       await tx.delivery.createMany({
         data: [{ orderId, status: DeliveryStatus.EN_ATTENTE }],
@@ -387,6 +415,9 @@ export class DeliveryAssignmentService {
       `;
       if (!order) throw new NotFoundException('Commande non trouvée.');
       this.assertOrderAssignable(order.status);
+      // FCFS — relu sous transaction : l'interrupteur a pu être allumé entre
+      // la garde hors transaction et cet instant.
+      await this.assertManualAssignmentOpen(tx);
 
       // ── Verrou optimiste ───────────────────────────────────────────────
       //
@@ -417,6 +448,11 @@ export class DeliveryAssignmentService {
           // lirait comme un montant dû. Le prochain livreur réécrira la sienne
           // en acceptant.
           ...CLEARED_DRIVER_ECONOMICS,
+          // FCFS — une recherche restée ouverte (interrupteur éteint entre
+          // temps) se clôt par ce geste humain : les livreurs ne la voient plus.
+          ...(isDispatchOpen(delivery)
+            ? closedDispatchData(new Date(), DispatchOutcome.MANUAL_OVERRIDE)
+            : {}),
         },
       });
 

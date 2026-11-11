@@ -26,6 +26,7 @@ import { lockDriverRow } from '../drivers/driver-row-lock';
 import { releaseDriverIfIdle } from '../drivers/driver-release';
 import { lockOrderRow } from '../orders/order-row-lock';
 import { DeliveryAssignmentService } from './delivery-assignment.service';
+import { DeliveryDispatchService } from './dispatch/delivery-dispatch.service';
 import {
   AdminAuditAction,
   DeliveryAssignmentOutcome,
@@ -104,6 +105,9 @@ export class DeliveriesService {
     // Optionnel : absent (tests, outils), le code n'est pas EXIGÉ — il reste
     // vérifié dès qu'il est fourni.
     @Optional() private readonly config?: ConfigService,
+    // FCFS — optionnel et EN DERNIER : les tests d'intégration construisent
+    // ce service par position, `config` compris.
+    @Optional() private readonly dispatch?: DeliveryDispatchService,
   ) {}
 
   /**
@@ -688,6 +692,17 @@ export class DeliveriesService {
 
       return tx.user.findUniqueOrThrow({ where: { id: user.id } });
     });
+    // FCFS — redevenu disponible : on lui propose tout de suite les courses
+    // déjà ouvertes de ses zones (best effort, après le commit).
+    if (status === DriverStatus.AVAILABLE && this.dispatch) {
+      this.dispatch
+        .offerOpenDeliveriesTo(user.id)
+        .catch((err) =>
+          this.logger.warn(
+            `[DISPATCH] offres au retour en ligne non envoyées (${user.id}) : ${err}`,
+          ),
+        );
+    }
     return updated;
   }
 
