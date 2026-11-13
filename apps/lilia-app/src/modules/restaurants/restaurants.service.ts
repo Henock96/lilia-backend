@@ -21,6 +21,7 @@ import { RestaurantAccessService } from './restaurant-access.service';
 import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { RestaurantQueryService } from './restaurant-query.service';
 import { RestaurantHoursService } from './restaurant-hours.service';
+import { RestaurantOpenStatusService } from './restaurant-open-status.service';
 import { assertZoneCoverage } from '../../common/delivery/zone-coverage';
 
 /**
@@ -43,6 +44,7 @@ export class RestaurantsService {
         private readonly access: RestaurantAccessService,
         private readonly query: RestaurantQueryService,
         private readonly hours: RestaurantHoursService,
+        private readonly openStatus: RestaurantOpenStatusService,
     ) {}
 
     // ─── CRÉATION ──────────────────────────────────────────────────────────────
@@ -143,21 +145,10 @@ export class RestaurantsService {
         return { data: updated, message: 'Restaurant mis à jour' };
     }
     /**
-     * Met à jour le statut d'ouverture du restaurant
+     * Bouton Ouvrir/Fermer — les horaires priment (voir RestaurantOpenStatusService).
      */
-    async updateOpenStatus(restaurantId: string, firebaseUid: string, dto: UpdateOpenStatusDto) {
-        const restaurant = await this.access.verifyOwnership(restaurantId, firebaseUid);
-
-        const updated = await this.prisma.restaurant.update({
-            where: { id: restaurant.id },
-            data: { isOpen: dto.isOpen, manualOverride: true },
-            include: RESTAURANT_INCLUDE,
-        });
-
-        return {
-            data: updated,
-            message: dto.isOpen ? 'Restaurant ouvert (mode manuel)' : 'Restaurant fermé (mode manuel)',
-        };
+    updateOpenStatus(restaurantId: string, firebaseUid: string, dto: UpdateOpenStatusDto) {
+        return this.openStatus.update(restaurantId, firebaseUid, dto);
     }
 
     /**

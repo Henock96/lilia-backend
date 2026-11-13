@@ -3,6 +3,8 @@ import { RestaurantsService } from './restaurants.service';
 import { RestaurantAccessService } from './restaurant-access.service';
 import { RestaurantQueryService } from './restaurant-query.service';
 import { RestaurantHoursService } from './restaurant-hours.service';
+import { RestaurantOpenStatusService } from './restaurant-open-status.service';
+import { VendorOpeningService } from '../vendors/vendor-opening.service';
 import { RestaurantsController } from './restaurants.controller';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PlatformSettingsCoreModule } from '../platform-settings/platform-settings-core.module';
@@ -15,6 +17,9 @@ import { PlatformSettingsCoreModule } from '../platform-settings/platform-settin
     RestaurantAccessService,
     RestaurantQueryService,
     RestaurantHoursService,
+    RestaurantOpenStatusService,
+    // Sans dépendance autre que Prisma : chaque module l'instancie (F3-03).
+    VendorOpeningService,
     PrismaService,
   ],
   controllers: [RestaurantsController],

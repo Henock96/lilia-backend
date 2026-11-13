@@ -101,6 +101,7 @@ describeIfDb('Zones de livraison — tarification réelle (PostgreSQL)', () => {
       new RestaurantAccessService(prisma as never) as never,
       {} as never,
       {} as never,
+      {} as never,
     );
 
     await prisma.$executeRawUnsafe(`
