@@ -1540,6 +1540,13 @@ model Delivery {
   dispatchOutcome   DispatchOutcome?
   /// Seulement quand `dispatchOutcome = EXHAUSTED` (CHECK).
   dispatchEndReason DispatchEndReason?
+  /// FCFS (10/11/2026) — diffusions déjà faites pour la recherche en cours
+  /// (0 à 5). Revendiqué en CAS (`WHERE "dispatchRound" = lu`) : une seule
+  /// diffusion par tour, même si le cron, l'outbox et le chemin rapide
+  /// arrivent ensemble.
+  dispatchRound         Int?
+  /// FCFS — livreurs visés par la dernière diffusion (supervision).
+  dispatchNotifiedCount Int?
   /// Offres de livreurs pour cette course.
   offers            DeliveryOffer[]
 

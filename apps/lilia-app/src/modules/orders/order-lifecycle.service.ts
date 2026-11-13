@@ -55,6 +55,10 @@ import {
   ORDER_REQUEST_EXPIRED_EVENT,
 } from '../outbox/outbox-events';
 import { paymentDeadline } from './order-flow';
+import {
+  DeliveryDispatchService,
+  OpenedDispatch,
+} from '../deliveries/dispatch/delivery-dispatch.service';
 import { assertShopAccess } from '../vendors/shop-access';
 
 /**
@@ -104,6 +108,10 @@ export class OrderLifecycleService {
     // 1B — interrupteur `ADMIN_PICKUP_ARBITRATION_ENFORCED`. Optionnel et en
     // dernier, pour la même raison.
     @Optional() private readonly config?: ConfigService,
+    // Dispatch FCFS (10/11/2026) — optionnel et en dernier, comme `config` :
+    // les tests construisent ce service par position. Fourni par
+    // `OrdersCoreModule` (`DispatchCoreModule`) en production.
+    @Optional() private readonly dispatch?: DeliveryDispatchService,
   ) {}
 
   /** 1B — l'ancien chemin de remise ADMIN d'un retrait est-il fermé ? */
@@ -643,6 +651,7 @@ export class OrderLifecycleService {
     const historySource = sourceFromRole(user.role);
 
     let restored: StockMovement[] = [];
+    let openedDispatch: OpenedDispatch | null = null;
     const updatedOrder =
       newStatus === 'ANNULER'
         ? await this.prisma.$transaction(async (tx) => {
@@ -793,6 +802,21 @@ export class OrderLifecycleService {
                 update: {},
               });
             }
+            // Dispatch FCFS (10/11/2026) — livraison prête : la course et
+            // l'obligation de la proposer aux livreurs naissent AVEC `PRET`.
+            // Sans effet tant que `dispatchEnabled` est éteint (lu en base).
+            if (newStatus === 'PRET' && order.isDelivery) {
+              if (this.dispatch) {
+                openedDispatch = await this.dispatch.openInTransaction(
+                  tx,
+                  orderId,
+                );
+              } else {
+                this.logger.error(
+                  `[DISPATCH] service absent — aucune recherche ouverte pour ${orderId}`,
+                );
+              }
+            }
             // Lot 4 — retrait au comptoir livré : fidélité et parrainage
             // deviennent une obligation durable, écrite avec la transition.
             if (newStatus === 'LIVRER') {
@@ -812,6 +836,22 @@ export class OrderLifecycleService {
           });
 
     void this.stockSignal.announce(restored, 'restored');
+    // Après le commit : premier tour de diffusion. Jamais bloquant, jamais
+    // remonté — l'outbox écrite avec `PRET` reprendra si ce processus meurt.
+    if (openedDispatch && this.dispatch) {
+      void this.dispatch.afterOpen(openedDispatch);
+    }
+    // Une annulation qui vient de fermer une recherche : les livreurs qui la
+    // voyaient retirent la carte (best effort, le claim reste l'arbitre).
+    if (newStatus === 'ANNULER' && order.status === 'PRET' && this.dispatch) {
+      this.dispatch
+        .announceClosedForOrder(orderId)
+        .catch((err) =>
+          this.logger.warn(
+            `[DISPATCH] annonce de retrait non envoyée (${orderId}) : ${err}`,
+          ),
+        );
+    }
     await this.announceStatusChange(
       updatedOrder,
       order.status,

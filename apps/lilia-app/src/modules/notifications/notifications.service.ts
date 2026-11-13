@@ -1,6 +1,7 @@
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FirebaseService } from '../firebase/firebase.service';
+import type { MulticastMessage } from 'firebase-admin/messaging';
 
 // Structure de message pour les événements SSE
 export interface SseMessage {
@@ -24,6 +25,72 @@ export function pushChannelFor(data?: Record<string, string>): {
     return { channelId: 'new_orders_channel', sound: 'new_order' };
   }
   return { channelId: 'high_importance_channel', sound: 'default' };
+}
+
+/**
+ * Options de diffusion (dispatch FCFS, 10/11/2026). Toutes facultatives : sans
+ * elles, le message est exactement celui d'avant.
+ */
+export interface BroadcastPushOptions {
+  /**
+   * Regroupe les envois d'un même sujet : chaque nouvel envoi REMPLACE le
+   * précédent au lieu de s'empiler (Android `collapseKey` + `tag`, iOS
+   * `apns-collapse-id`). 64 octets au plus (limite APNs).
+   */
+  collapseKey?: string;
+  /**
+   * Message de données seul, sans bandeau : l'app se met à jour en silence
+   * (« course déjà prise »). Priorité normale côté iOS, comme l'exige Apple
+   * pour un `content-available`.
+   */
+  dataOnly?: boolean;
+}
+
+/** Message multicast de `sendPushToUsers`, extrait pour être testé seul. */
+export function broadcastMessage(
+  tokens: string[],
+  title: string,
+  body: string,
+  data: Record<string, string>,
+  options: BroadcastPushOptions = {},
+): MulticastMessage {
+  const { collapseKey, dataOnly } = options;
+  if (dataOnly) {
+    return {
+      tokens,
+      data,
+      android: { priority: 'high', ...(collapseKey ? { collapseKey } : {}) },
+      apns: {
+        headers: {
+          'apns-push-type': 'background',
+          'apns-priority': '5',
+          ...(collapseKey ? { 'apns-collapse-id': collapseKey } : {}),
+        },
+        payload: { aps: { contentAvailable: true } },
+      },
+    };
+  }
+  return {
+    tokens,
+    notification: { title, body },
+    data,
+    android: {
+      priority: 'high',
+      ...(collapseKey ? { collapseKey } : {}),
+      notification: {
+        channelId: 'high_importance_channel',
+        sound: 'default',
+        ...(collapseKey ? { tag: collapseKey } : {}),
+      },
+    },
+    apns: {
+      headers: {
+        'apns-priority': '10',
+        ...(collapseKey ? { 'apns-collapse-id': collapseKey } : {}),
+      },
+      payload: { aps: { sound: 'default', badge: 1 } },
+    },
+  };
 }
 
 @Injectable()
@@ -125,6 +192,7 @@ export class NotificationsService {
     title: string,
     body: string,
     data?: Record<string, string>,
+    options: BroadcastPushOptions = {},
   ): Promise<{ sent: number; failed: number; devices: number }> {
     const empty = { sent: 0, failed: 0, devices: 0 };
     if (userIds.length === 0) return empty;
@@ -156,22 +224,11 @@ export class NotificationsService {
       i += NotificationsService.FCM_BATCH_SIZE
     ) {
       const batch = tokens.slice(i, i + NotificationsService.FCM_BATCH_SIZE);
-      const result = await this.firebase.getMessaging().sendEachForMulticast({
-        tokens: batch,
-        notification: { title, body },
-        data: data ?? {},
-        android: {
-          priority: 'high',
-          notification: {
-            channelId: 'high_importance_channel',
-            sound: 'default',
-          },
-        },
-        apns: {
-          headers: { 'apns-priority': '10' },
-          payload: { aps: { sound: 'default', badge: 1 } },
-        },
-      });
+      const result = await this.firebase
+        .getMessaging()
+        .sendEachForMulticast(
+          broadcastMessage(batch, title, body, data ?? {}, options),
+        );
 
       sent += result.successCount;
       failed += result.failureCount;

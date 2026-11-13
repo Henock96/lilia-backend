@@ -42,7 +42,7 @@ describe('OpsQueueService', () => {
     });
   });
 
-  it('quatorze files, dans l’ordre de l’écran', async () => {
+  it('seize files, dans l’ordre de l’écran', async () => {
     const { service } = build();
     const buckets = await service.queue(NOW);
     expect(buckets.map((b) => b.key)).toEqual([
@@ -61,6 +61,9 @@ describe('OpsQueueService', () => {
       'payouts_in_flight',
       'refunds_in_flight',
       'claims_stalled',
+      // Dispatch FCFS (10/11/2026).
+      'dispatch_open',
+      'dispatch_exhausted',
     ]);
   });
 

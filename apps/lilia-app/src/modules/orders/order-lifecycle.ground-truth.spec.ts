@@ -44,6 +44,8 @@ describe('OrderLifecycleService — le statut ne ment pas sur le terrain', () =>
     const tx = {
       // F3-07 : la transition vers LIVRER lit le délai de versement (aucune ligne = défaut).
       platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
+      // FCFS — toute sortie de `PRET` ferme une recherche de livreur ouverte.
+      delivery: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
       order: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findUniqueOrThrow: jest.fn().mockResolvedValue(order),
@@ -51,6 +53,8 @@ describe('OrderLifecycleService — le statut ne ment pas sur le terrain', () =>
       // Depuis P0-4, toute transition écrit sa ligne d'historique dans la même
       // transaction : le client de transaction doit donc l'exposer.
       orderHistory: { create: jest.fn().mockResolvedValue({}) },
+      // F3-07 — un retrait prêt tire son code de remise.
+      pickupHandover: { upsert: jest.fn().mockResolvedValue({}) },
     };
 
     const prisma = {
@@ -74,6 +78,16 @@ describe('OrderLifecycleService — le statut ne ment pas sur le terrain', () =>
       rewardForDeliveredOrder: jest.fn().mockResolvedValue(undefined),
     };
     const refunds = { openForCancelledOrder: jest.fn() };
+    // Dispatch FCFS — la recherche ouverte dans la transaction du PRET.
+    const dispatch = {
+      openInTransaction: jest.fn().mockResolvedValue({
+        deliveryId: 'd-1',
+        orderId: 'o-1',
+        outboxId: 'ob-1',
+      }),
+      afterOpen: jest.fn().mockResolvedValue(undefined),
+      announceClosedForOrder: jest.fn().mockResolvedValue(undefined),
+    };
 
     const service = new OrderLifecycleService(
       prisma as any,
@@ -87,10 +101,59 @@ describe('OrderLifecycleService — le statut ne ment pas sur le terrain', () =>
       { record: jest.fn() } as never, // AdminAuditService (F-07)
       { enqueueInTransaction: jest.fn() } as never, // OutboxService (lot 4),
       { announce: async () => undefined } as never, // StockSignalService (F3-10)
+      undefined, // ConfigService (1B)
+      dispatch as never, // DeliveryDispatchService (FCFS)
     );
 
-    return { service, prisma, eventEmitter, loyalty, order };
+    return { service, prisma, tx, eventEmitter, loyalty, order, dispatch };
   }
+
+  describe('PRET — ouverture de la recherche de livreur (FCFS)', () => {
+    it('une livraison qui passe PRET ouvre la recherche DANS la transaction, puis diffuse', async () => {
+      const { service, tx, dispatch } = buildService({
+        order: { status: 'EN_PREPARATION', isDelivery: true },
+      });
+      await service.updateOrderStatusByRestaurateur(
+        'o-1',
+        VENDOR.firebaseUid,
+        'PRET',
+      );
+      expect(dispatch.openInTransaction).toHaveBeenCalledWith(tx, 'o-1');
+      expect(dispatch.afterOpen).toHaveBeenCalledWith({
+        deliveryId: 'd-1',
+        orderId: 'o-1',
+        outboxId: 'ob-1',
+      });
+      expect(tx.pickupHandover.upsert).not.toHaveBeenCalled();
+    });
+
+    it('un retrait qui passe PRET tire son code, sans aucune recherche', async () => {
+      const { service, tx, dispatch } = buildService({
+        order: { status: 'EN_PREPARATION', isDelivery: false },
+      });
+      await service.updateOrderStatusByRestaurateur(
+        'o-1',
+        VENDOR.firebaseUid,
+        'PRET',
+      );
+      expect(dispatch.openInTransaction).not.toHaveBeenCalled();
+      expect(dispatch.afterOpen).not.toHaveBeenCalled();
+      expect(tx.pickupHandover.upsert).toHaveBeenCalled();
+    });
+
+    it('recherche non ouverte (interrupteur éteint, course déjà tenue) : rien après le commit', async () => {
+      const { service, dispatch } = buildService({
+        order: { status: 'EN_PREPARATION', isDelivery: true },
+      });
+      dispatch.openInTransaction.mockResolvedValue(null);
+      await service.updateOrderStatusByRestaurateur(
+        'o-1',
+        VENDOR.firebaseUid,
+        'PRET',
+      );
+      expect(dispatch.afterOpen).not.toHaveBeenCalled();
+    });
+  });
 
   describe('EN_ROUTE — « votre livreur est en chemin »', () => {
     it("refuse le passage quand aucun livreur n'a récupéré la commande", async () => {

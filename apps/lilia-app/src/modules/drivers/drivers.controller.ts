@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
 } from '@nestjs/common';
 import {
@@ -180,5 +181,24 @@ export class DriversController {
   @ApiOperation({ summary: 'Corriger mon nom, mon téléphone ou ma photo' })
   updateMe(@CurrentUser() user: User, @Body() dto: UpdateMyDriverProfileDto) {
     return this.drivers.updateMe(user.id, dto);
+  }
+
+  /**
+   * PUT /drivers/me/dispatch-capability — dispatch FCFS (10/11/2026).
+   *
+   * L'app déclare qu'elle sait recevoir et accepter des propositions de
+   * course (`offersEnabledAt`). Appelée au démarrage, après connexion et au
+   * retour au premier plan : elle sert aussi de signe de vie (fenêtre de
+   * présence de la diffusion). Une app qui ne l'appelle pas n'est jamais
+   * candidate, même « Disponible ».
+   */
+  @Put('me/dispatch-capability')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Déclarer que l’application sait recevoir des propositions de course',
+  })
+  declareDispatchCapability(@CurrentUser() user: User) {
+    return this.drivers.declareDispatchCapability(user.id);
   }
 }

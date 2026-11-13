@@ -5,6 +5,7 @@ import { PrismaModule } from '../../prisma/prisma.module';
 import { LoyaltyModule } from '../loyalty/loyalty.module';
 import { RefundsCoreModule } from '../refunds/refunds-core.module';
 import { ReferralCoreModule } from '../users/referral-core.module';
+import { DispatchCoreModule } from '../deliveries/dispatch/dispatch-core.module';
 import { OrderLifecycleService } from './order-lifecycle.service';
 import { OrderStateMachine } from './order-state.machine';
 import { OrderTransitionService } from './order-transition.service';
@@ -37,6 +38,9 @@ import { StockSignalService } from './stock-signal.service';
     RefundsCoreModule,
     ReferralCoreModule,
     AdminAuditModule,
+    // Dispatch FCFS — la recherche de livreur s'ouvre dans la transaction
+    // du passage à `PRET`.
+    DispatchCoreModule,
   ],
   providers: [
     OrderStateMachine,

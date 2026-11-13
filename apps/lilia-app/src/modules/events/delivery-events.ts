@@ -165,7 +165,15 @@ export class DeliveryUnassignedEvent extends BaseDeliveryEvent {
     orderId: string,
     restaurantId: string,
     public readonly delivererId: string,
-    public readonly cause: 'reassigned' | 'order_cancelled' | 'declined',
+    /**
+     * `abandoned` (FCFS, 10/11/2026) : le livreur a rendu une course DÉJÀ
+     * acceptée, avant de la récupérer ; elle est remise en recherche.
+     */
+    public readonly cause:
+      | 'reassigned'
+      | 'order_cancelled'
+      | 'declined'
+      | 'abandoned',
     public readonly reason?: string | null,
     timestamp?: Date,
   ) {

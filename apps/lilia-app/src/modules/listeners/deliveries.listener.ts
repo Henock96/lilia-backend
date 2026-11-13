@@ -524,6 +524,43 @@ export class DeliveriesListener {
       return;
     }
 
+    if (event.cause === 'abandoned') {
+      // FCFS — le livreur a rendu une course acceptée. Le vendeur n'a rien à
+      // faire si la recherche est rouverte (interrupteur allumé) ; sinon il
+      // lui faut un autre livreur, comme après un refus.
+      const [restaurant, delivery] = await Promise.all([
+        this.prisma.restaurant.findUnique({
+          where: { id: event.restaurantId },
+          select: { ownerId: true },
+        }),
+        this.prisma.delivery.findUnique({
+          where: { id: event.deliveryId },
+          select: { dispatchStartedAt: true, dispatchEndedAt: true },
+        }),
+      ]);
+      if (!restaurant) return;
+      const searching =
+        !!delivery?.dispatchStartedAt && !delivery.dispatchEndedAt;
+      await Promise.allSettled([
+        this.notifications.sendPushNotification(
+          restaurant.ownerId,
+          '↩️ Livreur désisté',
+          `Le livreur ne peut plus livrer la commande #${shortId}` +
+            `${event.reason ? ` (${event.reason})` : ''}. ` +
+            (searching
+              ? 'Un autre livreur est recherché automatiquement.'
+              : 'Assignez un autre livreur.'),
+          {
+            type: 'delivery_abandoned',
+            deliveryId: event.deliveryId,
+            orderId: event.orderId,
+            ...(searching ? {} : { requiresAction: 'true' }),
+          },
+        ),
+      ]);
+      return;
+    }
+
     // cause === 'order_cancelled' — libéré dans `closeCancelledDelivery`.
     await Promise.allSettled([
       this.notifications.sendPushNotification(

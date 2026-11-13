@@ -48,7 +48,10 @@ export type OpsBucketKey =
   | 'order_stale'
   | 'payouts_in_flight'
   | 'refunds_in_flight'
-  | 'claims_stalled';
+  | 'claims_stalled'
+  // Dispatch FCFS (10/11/2026).
+  | 'dispatch_open'
+  | 'dispatch_exhausted';
 
 export interface OpsItem {
   /** Identifiant de l'objet à traiter (commande, remboursement, incident…). */
@@ -84,6 +87,9 @@ export const SLA_BUCKETS: readonly OpsBucketKey[] = [
   // elle ouvre désormais aussi son incident (dédupliqué, jamais clos sur la
   // seule ancienneté).
   'claims_stalled',
+  // FCFS — cinq diffusions sans preneur : un humain relance ou appelle.
+  // (`dispatch_open` n'ouvre rien : la recherche se déroule normalement.)
+  'dispatch_exhausted',
 ];
 
 const ITEMS_PER_BUCKET = 20;
@@ -132,9 +138,52 @@ export class OpsQueueService {
       updatedAt: { lte: minutesAgo(now, t.noDriverMinutes) },
       OR: [
         { delivery: { is: null } },
-        { delivery: { is: { delivererId: null } } },
+        {
+          // FCFS — une course en recherche (`dispatch_open`) ou épuisée
+          // (`dispatch_exhausted`) a sa propre file : pas deux cartes.
+          delivery: {
+            is: {
+              delivererId: null,
+              AND: [
+                {
+                  OR: [
+                    { dispatchStartedAt: null },
+                    { dispatchEndedAt: { not: null } },
+                  ],
+                },
+                {
+                  OR: [
+                    { dispatchOutcome: null },
+                    { dispatchOutcome: { not: 'EXHAUSTED' } },
+                  ],
+                },
+              ],
+            },
+          },
+        },
       ],
     };
+    // FCFS — recherche ouverte : mesurée sur `dispatchStartedAt`, pas sur
+    // `Order.updatedAt` (que toute écriture sans rapport remettrait à zéro).
+    const dispatchOpenWhere: Prisma.DeliveryWhereInput = {
+      dispatchStartedAt: { not: null },
+      dispatchEndedAt: null,
+      order: { status: 'PRET' as const },
+    };
+    const dispatchExhaustedWhere: Prisma.DeliveryWhereInput = {
+      dispatchOutcome: 'EXHAUSTED' as const,
+      status: 'EN_ATTENTE' as const,
+      delivererId: null,
+      order: { status: 'PRET' as const },
+    };
+    const dispatchSelect = {
+      id: true,
+      orderId: true,
+      dispatchStartedAt: true,
+      dispatchRound: true,
+      dispatchNotifiedCount: true,
+      order: { select: { restaurant: { select: { nom: true } } } },
+    } as const;
     const enRouteWhere: Prisma.OrderWhereInput = {
       status: 'EN_ROUTE' as const,
       delivery: {
@@ -206,6 +255,8 @@ export class OpsQueueService {
       payoutsInFlight,
       refundsInFlight,
       claimsStalled,
+      dispatchOpen,
+      dispatchExhausted,
     ] = await Promise.all([
       pair(
         this.prisma.order.count({ where: acceptanceWhere }),
@@ -361,6 +412,24 @@ export class OpsQueueService {
           where: claimStalledWhere,
           orderBy: { updatedAt: 'asc' },
           select: { id: true, orderId: true, title: true, updatedAt: true },
+          take,
+        }),
+      ),
+      pair(
+        this.prisma.delivery.count({ where: dispatchOpenWhere }),
+        this.prisma.delivery.findMany({
+          where: dispatchOpenWhere,
+          orderBy: { dispatchStartedAt: 'asc' },
+          select: dispatchSelect,
+          take,
+        }),
+      ),
+      pair(
+        this.prisma.delivery.count({ where: dispatchExhaustedWhere }),
+        this.prisma.delivery.findMany({
+          where: dispatchExhaustedWhere,
+          orderBy: { dispatchStartedAt: 'asc' },
+          select: dispatchSelect,
           take,
         }),
       ),
@@ -561,6 +630,32 @@ export class OpsQueueService {
           title: c.title,
           detail: 'Aucune activité depuis 24 h.',
           since: iso(c.updatedAt),
+        }),
+      ),
+      bucket(
+        'dispatch_open',
+        'Recherche de livreur en cours',
+        'MEDIUM',
+        dispatchOpen,
+        (d) => ({
+          id: d.id,
+          orderId: d.orderId,
+          title: `Commande ${shortId(d.orderId)} — ${d.order.restaurant.nom}`,
+          detail: `Diffusion ${d.dispatchRound ?? 0} — ${d.dispatchNotifiedCount ?? 0} livreur(s) notifié(s).`,
+          since: iso(d.dispatchStartedAt ?? now),
+        }),
+      ),
+      bucket(
+        'dispatch_exhausted',
+        'Aucun livreur n’a accepté — relance requise',
+        'HIGH',
+        dispatchExhausted,
+        (d) => ({
+          id: d.id,
+          orderId: d.orderId,
+          title: `Commande ${shortId(d.orderId)} — ${d.order.restaurant.nom}`,
+          detail: `${d.dispatchRound ?? 0} diffusion(s) sans preneur. Relancer la recherche ou appeler un livreur.`,
+          since: iso(d.dispatchStartedAt ?? now),
         }),
       ),
     ];

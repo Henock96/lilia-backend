@@ -21,6 +21,7 @@ describe('OrderTransitionService', () => {
     order: { updateMany: jest.Mock };
     orderHistory: { create: jest.Mock };
     platformSettings: { findUnique: jest.Mock };
+    delivery: { updateMany: jest.Mock };
   };
 
   beforeEach(() => {
@@ -30,6 +31,8 @@ describe('OrderTransitionService', () => {
       orderHistory: { create: jest.fn().mockResolvedValue({}) },
       // Aucune ligne de réglages = acceptation vendeur non mise en service.
       platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
+      // FCFS — toute sortie de `PRET` ferme une recherche de livreur ouverte.
+      delivery: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
     };
   });
 

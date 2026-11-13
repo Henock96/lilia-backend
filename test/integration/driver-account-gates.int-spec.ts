@@ -309,9 +309,11 @@ describeIfDb('F3-12.1 R6/R7 — rôle et ban du livreur (PostgreSQL réel)', () 
                      "DriverProfile", "Restaurant", "PlatformSettings", "User"
       RESTART IDENTITY CASCADE
     `);
-    // Offres autorisées : les tests de révocation en ouvrent.
+    // FCFS (10/11/2026) — `dispatchEnabled = true` interdit désormais
+    // l'affectation manuelle, que cette suite exerce : comportement
+    // historique (éteint). Aucune offre F3-12 n'est insérée ici.
     await prisma.platformSettings.create({
-      data: { id: 'singleton', dispatchEnabled: true },
+      data: { id: 'singleton', dispatchEnabled: false },
     });
     await prisma.user.createMany({
       data: [
