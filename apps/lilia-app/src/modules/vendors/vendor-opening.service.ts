@@ -15,7 +15,6 @@ const OPENING_SELECT = {
   id: true,
   nom: true,
   isOpen: true,
-  manualOverride: true,
   pausedUntil: true,
   closedOnHolidays: true,
   operatingHours: {
@@ -107,8 +106,6 @@ export class VendorOpeningService {
       decision: decideOpening({
         now,
         hours: vendor.operatingHours,
-        manualOverride: vendor.manualOverride,
-        currentIsOpen: vendor.isOpen,
         pausedUntil: vendor.pausedUntil,
         closures: closures.filter((c) => c.restaurantId === vendor.id),
         isHoliday,
@@ -123,8 +120,7 @@ export class VendorOpeningService {
    * jours fériés de l'horizon — quel que soit le nombre de vendeurs.
    *
    * Seule une **date** en sort : ni motif de congé, ni note de pause.
-   * Un vendeur ouvert, fermé à la main ou sans ouverture sur l'horizon vaut
-   * `null`.
+   * Un vendeur ouvert ou sans ouverture sur l'horizon vaut `null`.
    */
   async nextOpeningMany(
     restaurantIds: readonly string[],
@@ -175,8 +171,6 @@ export class VendorOpeningService {
           {
             now,
             hours: vendor.operatingHours,
-            manualOverride: vendor.manualOverride,
-            currentIsOpen: vendor.isOpen,
             pausedUntil: vendor.pausedUntil,
             closures: own,
             isHoliday: holidaySet.has(firstDay),
@@ -213,25 +207,15 @@ export class VendorOpeningService {
     return result.decision;
   }
 
-  /**
-   * Écrit la décision. Une fermeture **datée** (pause, congé, férié) relâche
-   * aussi l'interrupteur manuel : sans cela, la colonne `isOpen` passée à
-   * `false` par la fermeture deviendrait, une fois celle-ci terminée, l'« état
-   * posé à la main » — et la boutique resterait fermée pour toujours.
-   */
+  /** Écrit la décision dans la colonne `isOpen` (cache des listes publiques). */
   async write(
-    vendor: { id: string; isOpen: boolean; manualOverride: boolean },
+    vendor: { id: string; isOpen: boolean },
     decision: OpeningDecision,
   ): Promise<boolean> {
-    const dated = ['PAUSED', 'CLOSURE', 'HOLIDAY'].includes(decision.reason);
-    const releaseManual = dated && vendor.manualOverride;
-    if (decision.open === vendor.isOpen && !releaseManual) return false;
+    if (decision.open === vendor.isOpen) return false;
     await this.prisma.restaurant.update({
       where: { id: vendor.id },
-      data: {
-        isOpen: decision.open,
-        ...(releaseManual ? { manualOverride: false } : {}),
-      },
+      data: { isOpen: decision.open },
     });
     return true;
   }

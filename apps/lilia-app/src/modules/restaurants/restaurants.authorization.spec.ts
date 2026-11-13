@@ -5,6 +5,7 @@ import { RestaurantsService } from './restaurants.service';
 import { RestaurantAccessService } from './restaurant-access.service';
 import { RestaurantQueryService } from './restaurant-query.service';
 import { RestaurantHoursService } from './restaurant-hours.service';
+import { RestaurantOpenStatusService } from './restaurant-open-status.service';
 import { PrismaService } from '../../prisma/prisma.service';
 
 /**
@@ -55,6 +56,7 @@ describe('Restaurants — autorisation des analytics (C1)', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: RestaurantQueryService, useValue: query },
         { provide: RestaurantHoursService, useValue: {} },
+        { provide: RestaurantOpenStatusService, useValue: {} },
       ],
     }).compile();
 

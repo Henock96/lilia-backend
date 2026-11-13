@@ -36,10 +36,9 @@ export class RestaurantScheduleService {
 
     /**
      * F3-03 — la décision vient de `decideOpening` (horaires, pause datée,
-     * congés, jours fériés, interrupteur manuel), la même règle que le
-     * checkout. Les vendeurs en `manualOverride` sont chargés aussi : une
-     * pause ou un congé les ferme malgré l'interrupteur, qui garde la main
-     * sinon (la règle rend alors l'état posé à la main, inchangé).
+     * congés, jours fériés), la même règle que le checkout. Les horaires
+     * priment sur le bouton Ouvrir/Fermer : celui-ci ne pose qu'une pause qui
+     * s'arrête à la fin du service.
      *
      * Sans horaires, un vendeur est fermé : il n'est plus exclu de
      * l'évaluation comme il l'était autrefois, où il gardait `isOpen = true`
@@ -54,18 +53,8 @@ export class RestaurantScheduleService {
 
         const toOpen: string[] = [];
         const toClose: string[] = [];
-        const releaseManual: string[] = [];
 
         for (const { vendor, decision } of decisions) {
-            // Une fermeture datée relâche l'interrupteur manuel : sinon, à sa
-            // fin, l'état « fermé » qu'elle a posé passerait pour un choix du
-            // vendeur et la boutique ne rouvrirait jamais.
-            if (
-                vendor.manualOverride &&
-                ['PAUSED', 'CLOSURE', 'HOLIDAY'].includes(decision.reason)
-            ) {
-                releaseManual.push(vendor.id);
-            }
             if (decision.open === vendor.isOpen) continue;
             (decision.open ? toOpen : toClose).push(vendor.id);
             this.logger.log(
@@ -86,12 +75,13 @@ export class RestaurantScheduleService {
                 data: { isOpen: false },
             });
         }
-        if (releaseManual.length) {
-            await this.prisma.restaurant.updateMany({
-                where: { id: { in: releaseManual } },
-                data: { manualOverride: false },
-            });
-        }
+        // `manualOverride` n'est plus lu par la règle ; on l'éteint pour que les
+        // apps vendeurs installées cessent d'afficher « Mode manuel actif ».
+        // Aucune ligne touchée en régime établi.
+        await this.prisma.restaurant.updateMany({
+            where: { manualOverride: true },
+            data: { manualOverride: false },
+        });
     }
 
     /**

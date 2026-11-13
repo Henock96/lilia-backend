@@ -44,6 +44,7 @@ describe('Zones de livraison — les garde-fous d’écriture', () => {
         access as never,
         {} as never,
         {} as never,
+        {} as never,
       );
       return { service, update };
     }

@@ -8,8 +8,8 @@ import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 /**
  * Gestion des horaires d'ouverture (extrait de RestaurantsService — LIL-145).
  *
- * CRUD sur OperatingHours. Le calcul ouvert/fermé selon ces horaires +
- * manualOverride vit dans le cron du module schedule, pas ici.
+ * CRUD sur OperatingHours. Le calcul ouvert/fermé selon ces horaires vit
+ * dans `decideOpening` (vendors/vendor-opening.policy), pas ici.
  */
 @Injectable()
 export class RestaurantHoursService {
@@ -52,7 +52,7 @@ export class RestaurantHoursService {
         ),
       );
 
-      // Désactive le manualOverride — le cron reprend la main
+      // `manualOverride` n'est plus lu (les horaires priment) ; on l'éteint.
       await tx.restaurant.update({
         where: { id: restaurant.id },
         data: { manualOverride: false },

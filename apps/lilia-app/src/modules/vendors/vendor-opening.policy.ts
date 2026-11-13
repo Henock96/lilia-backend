@@ -14,12 +14,17 @@
  *  1. pause datée (`pausedUntil > now`) — « fermé jusqu'à 14:30 » ;
  *  2. congé déclaré couvrant `now` ;
  *  3. jour férié, si le vendeur ferme les jours fériés ;
- *  4. interrupteur manuel historique (`manualOverride`) : l'état posé à la
- *     main est conservé tel quel ;
- *  5. horaires hebdomadaires, traversée de minuit comprise.
+ *  4. horaires hebdomadaires, traversée de minuit comprise.
  *
- * Les trois premières sont **datées** : elles se terminent seules. C'est ce
- * qui manquait à `manualOverride`, qu'un vendeur oubliait de relâcher.
+ * Les trois premières sont **datées** : elles se terminent seules.
+ *
+ * ## Les horaires priment sur le bouton Ouvrir/Fermer
+ *
+ * L'ancien interrupteur `manualOverride` passait avant les horaires : un
+ * vendeur ouvert à la main restait ouvert après sa fermeture, jusqu'à ce qu'il
+ * touche à ses horaires. Il n'est plus lu. Le bouton « Fermer » pose une pause
+ * qui s'arrête à la fin de la plage en cours (`currentSlotEnd`), et « Ouvrir »
+ * ne peut rien hors horaires.
  *
  * Heure de Brazzaville = UTC+1, sans heure d'été : le décalage est fixe.
  */
@@ -47,9 +52,6 @@ export interface OpeningHoursRow {
 export interface OpeningInput {
   now: Date;
   hours: readonly OpeningHoursRow[];
-  manualOverride: boolean;
-  /** Colonne `isOpen` : n'est lue que si `manualOverride` (état posé à la main). */
-  currentIsOpen: boolean;
   pausedUntil: Date | null;
   /** Congés du vendeur ; ceux qui ne couvrent pas `now` sont ignorés. */
   closures: ReadonlyArray<{ startsAt: Date; endsAt: Date }>;
@@ -62,7 +64,6 @@ export type OpeningReason =
   | 'PAUSED'
   | 'CLOSURE'
   | 'HOLIDAY'
-  | 'MANUAL'
   | 'OUTSIDE_HOURS';
 
 export interface OpeningDecision {
@@ -107,14 +108,6 @@ export function decideOpening(input: OpeningInput): OpeningDecision {
 
   if (input.isHoliday && input.closedOnHolidays) {
     return { open: false, reason: 'HOLIDAY', until: null };
-  }
-
-  if (input.manualOverride) {
-    return {
-      open: input.currentIsOpen,
-      reason: input.currentIsOpen ? 'OPEN' : 'MANUAL',
-      until: null,
-    };
   }
 
   return withinHours(input.hours, now)
@@ -162,6 +155,33 @@ export function withinHoursAt(
     matchesToday(minutes, today) ||
     matchesOvernightFromYesterday(minutes, yesterday)
   );
+}
+
+/**
+ * Fin de la plage horaire qui couvre `now` — plage du jour ou débord nocturne
+ * de la veille (20:00 → 02:00) —, ou `null` hors horaires. C'est l'échéance de
+ * la fermeture manuelle : le bouton « Fermer » vaut jusqu'à la fin du service.
+ */
+export function currentSlotEnd(
+  hours: readonly OpeningHoursRow[],
+  now: Date,
+): Date | null {
+  const clock = brazzavilleClock(now);
+  const midnight = now.getTime() - clock.minutes * 60_000;
+  const minuteStart = midnight - (now.getTime() % 60_000);
+  const at = (minutes: number) => new Date(minuteStart + minutes * 60_000);
+  const today = hours.find((h) => h.dayOfWeek === clock.day);
+  const yesterday = hours.find((h) => h.dayOfWeek === clock.previousDay);
+
+  if (matchesOvernightFromYesterday(clock.minutes, yesterday)) {
+    return at(toMinutes(yesterday!.closeTime));
+  }
+  if (matchesToday(clock.minutes, today)) {
+    const open = toMinutes(today!.openTime);
+    const close = toMinutes(today!.closeTime);
+    return at(close > open ? close : close + 24 * 60);
+  }
+  return null;
 }
 
 function matchesToday(minutes: number, hours?: OpeningHoursRow): boolean {
@@ -254,8 +274,8 @@ export function openingCandidates(
 }
 
 /**
- * Prochaine ouverture d'un vendeur fermé, ou `null` (déjà ouvert, décision
- * manuelle, ou aucune ouverture dans l'horizon).
+ * Prochaine ouverture d'un vendeur fermé, ou `null` (déjà ouvert, ou aucune
+ * ouverture dans l'horizon).
  *
  * Il n'y a **pas** de seconde règle d'ouverture ici : chaque candidat est jugé
  * par `decideOpening` elle-même, avec le férié et les congés de sa date.
@@ -266,8 +286,6 @@ export function nextOpeningAt(
   days = NEXT_OPENING_HORIZON_DAYS,
 ): Date | null {
   if (decideOpening(input).open) return null;
-  // Fermé à la main : c'est le vendeur qui rouvrira, à une heure inconnue.
-  if (input.manualOverride && !input.currentIsOpen) return null;
 
   for (const t of openingCandidates(input, horizon, days)) {
     const decision = decideOpening({

@@ -20,7 +20,6 @@ describe('VendorOpeningService.nextOpeningMany', () => {
     id,
     nom: id,
     isOpen: false,
-    manualOverride: false,
     pausedUntil: null,
     closedOnHolidays: true,
     operatingHours: WEEK,
@@ -64,13 +63,13 @@ describe('VendorOpeningService.nextOpeningMany', () => {
     expect(result.get('v0')).toEqual(new Date('2026-09-29T09:00:00.000Z'));
   });
 
-  it('férié mardi : mercredi 10:00 ; fermé à la main : null', async () => {
+  it('férié mardi : mercredi 10:00 ; l’ancien drapeau manuel est ignoré', async () => {
     const { service } = build(
       [vendor('a'), vendor('b', { manualOverride: true })],
       ['2026-09-29'],
     );
     const result = await service.nextOpeningMany(['a', 'b'], now);
     expect(result.get('a')).toEqual(new Date('2026-09-30T09:00:00.000Z'));
-    expect(result.get('b')).toBeNull();
+    expect(result.get('b')).toEqual(new Date('2026-09-30T09:00:00.000Z'));
   });
 });

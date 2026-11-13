@@ -1,5 +1,6 @@
 import {
   brazzavilleClock,
+  currentSlotEnd,
   datedClosureAt,
   decideOpening,
   nextOpeningAt,
@@ -38,8 +39,6 @@ function input(overrides: Partial<OpeningInput> = {}): OpeningInput {
   return {
     now: at('12:00'),
     hours: HOURS,
-    manualOverride: false,
-    currentIsOpen: false,
     pausedUntil: null,
     closures: [],
     isHoliday: false,
@@ -120,28 +119,12 @@ describe('decideOpening', () => {
     ).toBe(true);
   });
 
-  it('interrupteur manuel : l’état posé à la main, hors horaires compris', () => {
-    expect(
-      decideOpening(
-        input({ now: at('23:30'), manualOverride: true, currentIsOpen: true }),
-      ),
-    ).toEqual({ open: true, reason: 'OPEN', until: null });
-    expect(
-      decideOpening(input({ manualOverride: true, currentIsOpen: false }))
-        .reason,
-    ).toBe('MANUAL');
-  });
-
-  it('une pause ferme malgré l’interrupteur manuel ouvert', () => {
-    expect(
-      decideOpening(
-        input({
-          manualOverride: true,
-          currentIsOpen: true,
-          pausedUntil: at('13:00'),
-        }),
-      ).reason,
-    ).toBe('PAUSED');
+  it('les horaires priment : plus aucun état manuel ne garde ouvert hors horaires', () => {
+    expect(decideOpening(input({ now: at('23:30') }))).toEqual({
+      open: false,
+      reason: 'OUTSIDE_HOURS',
+      until: null,
+    });
   });
 
   it('priorité : pause > congé > férié', () => {
@@ -368,26 +351,20 @@ describe('nextOpeningAt', () => {
     ).toEqual(at('10:00', TUESDAY));
   });
 
-  it('fermé à la main (manualOverride) : null, jamais une heure devinée', () => {
-    expect(
-      nextOpeningAt(
-        input({ hours: WEEK, manualOverride: true, currentIsOpen: false }),
-        NONE,
-      ),
-    ).toBeNull();
-  });
-
-  it('ouvert à la main mais en pause : la fin de la pause', () => {
+  it('fermé à la main (pause jusqu’à la fin du service) : la réouverture suivante', () => {
+    // Fermé à 12:00 jusqu'à 22:00 : on rouvre au prochain openTime, mardi 10:00.
     expect(
       expectConsistent(
-        input({
-          hours: [],
-          manualOverride: true,
-          currentIsOpen: true,
-          pausedUntil: at('13:00'),
-        }),
+        input({ hours: WEEK, now: at('12:00'), pausedUntil: at('22:00') }),
+        NONE,
       ),
-    ).toEqual(at('13:00'));
+    ).toEqual(at('10:00', TUESDAY));
+  });
+
+  it('en pause sans horaires : null (la fin de pause ne suffit pas à ouvrir)', () => {
+    expect(
+      expectConsistent(input({ hours: [], pausedUntil: at('13:00') })),
+    ).toBeNull();
   });
 
   it('aucun horaire : null', () => {
@@ -440,5 +417,33 @@ describe('nextOpeningAt', () => {
       [...new Set(c.map(Number))].sort((a, b) => a - b),
     );
     expect(c[0]).toEqual(at('10:00', TUESDAY));
+  });
+});
+
+describe('currentSlotEnd', () => {
+  it('plage du jour : sa fermeture', () => {
+    expect(currentSlotEnd(HOURS, at('12:00'))).toEqual(at('22:00'));
+  });
+
+  it('hors plage : null', () => {
+    expect(currentSlotEnd(HOURS, at('07:59'))).toBeNull();
+    expect(currentSlotEnd(HOURS, at('22:00'))).toBeNull();
+  });
+
+  it('plage nocturne avant minuit : 02:00 le lendemain', () => {
+    // Dimanche 27/09 20:00 → lundi 28/09 02:00.
+    expect(currentSlotEnd(HOURS, at('21:00', '2026-09-27'))).toEqual(
+      at('02:00'),
+    );
+  });
+
+  it('débord nocturne de la veille après minuit : 02:00 le jour même', () => {
+    expect(currentSlotEnd(HOURS, at('01:00'))).toEqual(at('02:00'));
+  });
+
+  it('jour fermé (isClosed) : null', () => {
+    expect(
+      currentSlotEnd([{ ...HOURS[0], isClosed: true }], at('12:00')),
+    ).toBeNull();
   });
 });
