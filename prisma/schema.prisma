@@ -1862,6 +1862,12 @@ model DeliveryReview {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  // Modération (lot B) : une note masquée sort de la moyenne du livreur et de
+  // son historique.
+  hiddenAt     DateTime?
+  hiddenById   String?
+  hiddenReason String?   @db.Text
+
   @@index([delivererId, createdAt(sort: Desc)]) // historique + moyenne du livreur
   @@index([delivererId, rating]) // agrégats (groupBy) sans charger les lignes
   @@index([userId])
@@ -2455,6 +2461,17 @@ model Review {
   orderId      String?    @unique // Optionnel: lié à une commande spécifique
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
+
+  // Modération (lot B, 15/11/2026) : masquer plutôt que supprimer. Un avis
+  // masqué sort de la liste publique et des moyennes ; l'acteur et le motif
+  // sont aussi dans AdminAuditLog.
+  hiddenAt     DateTime?
+  hiddenById   String? // User.id de l'administrateur, sans clé étrangère (trace dans l'audit)
+  hiddenReason String?   @db.Text
+  // Réponse publique du vendeur : une seule, modifiable, masquable par l'admin.
+  vendorReply         String?   @db.Text
+  vendorReplyAt       DateTime?
+  vendorReplyHiddenAt DateTime?
 
   // `@@unique([userId, restaurantId])` a été RETIRÉ (audit du 28/08/2026) : il
   // interdisait structurellement plus d'un avis par vendeur et par client, ce
@@ -3111,6 +3128,10 @@ enum AdminAuditAction {
   // le révoquer retire un droit payé. Deux décisions nominatives.
   SUBSCRIPTION_GRANTED
   SUBSCRIPTION_REVOKED
+  // Lot B (15/11/2026) — modération des avis : avis, réponse du vendeur ou
+  // note de livreur (targetType + metadata.kind).
+  REVIEW_HIDDEN
+  REVIEW_UNHIDDEN
 }
 
 model Incident {

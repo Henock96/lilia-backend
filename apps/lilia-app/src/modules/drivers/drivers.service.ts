@@ -283,7 +283,7 @@ export class DriversService {
         select: { deliveredAt: true },
       }),
       this.prisma.deliveryReview.aggregate({
-        where: { delivererId: userId },
+        where: { delivererId: userId, hiddenAt: null },
         _avg: { rating: true },
         _count: { _all: true },
       }),

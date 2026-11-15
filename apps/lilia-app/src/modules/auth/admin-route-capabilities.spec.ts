@@ -115,6 +115,16 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'ShopMembershipController.revoke': 'USER_ROLES',
   'AdminPublicHolidaysController.list': 'NONE',
   'AdminPublicHolidaysController.remove': 'NONE',
+  // Lot B — modération des avis : masquer est réversible et audité, aucun
+  // argent ne part (comme la lecture et la suppression d'avis existantes).
+  'AdminReviewModerationController.hideDeliveryReview': 'NONE',
+  'AdminReviewModerationController.hideReply': 'NONE',
+  'AdminReviewModerationController.hideReview': 'NONE',
+  'AdminReviewModerationController.listDeliveryReviews': 'NONE',
+  'AdminReviewModerationController.listReviews': 'NONE',
+  'AdminReviewModerationController.unhideDeliveryReview': 'NONE',
+  'AdminReviewModerationController.unhideReply': 'NONE',
+  'AdminReviewModerationController.unhideReview': 'NONE',
   // F3-11 — l'arrêt d'une offre vendeur est un réglage commercial, comme
   // activer ou désactiver un code promo : aucun argent ne part.
   'AdminVendorOffersController.list': 'NONE',

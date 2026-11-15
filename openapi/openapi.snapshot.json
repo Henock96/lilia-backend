@@ -575,6 +575,19 @@
         ],
         "type": "object"
       },
+      "HideReviewDto": {
+        "properties": {
+          "reason": {
+            "maxLength": 300,
+            "minLength": 5,
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "type": "object"
+      },
       "ImportReconciliationDto": {
         "properties": {},
         "type": "object"
@@ -1467,6 +1480,19 @@
           "commissionPercent"
         ],
         "type": "object"
+      },
+      "VendorReplyDto": {
+        "properties": {
+          "text": {
+            "maxLength": 1000,
+            "minLength": 2,
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -1674,7 +1700,9 @@
                 "CAPABILITY_CHANGED",
                 "VENDOR_OFFER_STOPPED",
                 "SUBSCRIPTION_GRANTED",
-                "SUBSCRIPTION_REVOKED"
+                "SUBSCRIPTION_REVOKED",
+                "REVIEW_HIDDEN",
+                "REVIEW_UNHIDDEN"
               ],
               "type": "string"
             }
@@ -4464,6 +4492,378 @@
         "summary": "Créer un restaurant avec son propriétaire",
         "tags": [
           "Admin"
+        ]
+      }
+    },
+    "/admin/review-moderation/delivery-reviews": {
+      "get": {
+        "operationId": "AdminReviewModerationController_listDeliveryReviews",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "rating",
+            "required": false,
+            "schema": {
+              "maximum": 5,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Avis d’une boutique",
+            "in": "query",
+            "name": "restaurantId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Notes d’un livreur",
+            "in": "query",
+            "name": "delivererId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "visibility",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "visible",
+                "hidden",
+                "all"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Notes livreurs (filtres note, livreur, masquées)",
+        "tags": [
+          "Reviews"
+        ]
+      }
+    },
+    "/admin/review-moderation/delivery-reviews/{id}/hide": {
+      "post": {
+        "operationId": "AdminReviewModerationController_hideDeliveryReview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HideReviewDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Masquer une note de livreur (motif obligatoire)",
+        "tags": [
+          "Reviews"
+        ]
+      }
+    },
+    "/admin/review-moderation/delivery-reviews/{id}/unhide": {
+      "post": {
+        "operationId": "AdminReviewModerationController_unhideDeliveryReview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Rétablir une note de livreur",
+        "tags": [
+          "Reviews"
+        ]
+      }
+    },
+    "/admin/review-moderation/reviews": {
+      "get": {
+        "operationId": "AdminReviewModerationController_listReviews",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "rating",
+            "required": false,
+            "schema": {
+              "maximum": 5,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Avis d’une boutique",
+            "in": "query",
+            "name": "restaurantId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Notes d’un livreur",
+            "in": "query",
+            "name": "delivererId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "visibility",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "visible",
+                "hidden",
+                "all"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Avis vendeurs (filtres note, boutique, masqués)",
+        "tags": [
+          "Reviews"
+        ]
+      }
+    },
+    "/admin/review-moderation/reviews/{id}/hide": {
+      "post": {
+        "operationId": "AdminReviewModerationController_hideReview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HideReviewDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Masquer un avis (motif obligatoire)",
+        "tags": [
+          "Reviews"
+        ]
+      }
+    },
+    "/admin/review-moderation/reviews/{id}/reply/hide": {
+      "post": {
+        "operationId": "AdminReviewModerationController_hideReply",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HideReviewDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Masquer la réponse du vendeur (motif obligatoire)",
+        "tags": [
+          "Reviews"
+        ]
+      }
+    },
+    "/admin/review-moderation/reviews/{id}/reply/unhide": {
+      "post": {
+        "operationId": "AdminReviewModerationController_unhideReply",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Rétablir la réponse du vendeur",
+        "tags": [
+          "Reviews"
+        ]
+      }
+    },
+    "/admin/review-moderation/reviews/{id}/unhide": {
+      "post": {
+        "operationId": "AdminReviewModerationController_unhideReview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Rétablir un avis masqué",
+        "tags": [
+          "Reviews"
         ]
       }
     },
@@ -12725,6 +13125,96 @@
         "summary": "Valider un brouillon sans l’enregistrer (Premium non requis)",
         "tags": [
           "Réservations sur place (vendeur)"
+        ]
+      }
+    },
+    "/vendors/me/reviews": {
+      "get": {
+        "operationId": "VendorReviewsController_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Limiter à une boutique",
+            "in": "query",
+            "name": "restaurantId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Avis reçus par mes boutiques (auteur anonyme)",
+        "tags": [
+          "Reviews"
+        ]
+      }
+    },
+    "/vendors/me/reviews/{id}/reply": {
+      "put": {
+        "operationId": "VendorReviewsController_reply",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VendorReplyDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Répondre publiquement à un avis (modifiable)",
+        "tags": [
+          "Reviews"
         ]
       }
     },
