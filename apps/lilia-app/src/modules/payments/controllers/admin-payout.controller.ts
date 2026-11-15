@@ -35,6 +35,7 @@ import { PaymentEventService } from '../services/payment-event.service';
 import { maskPhone } from '../services/payment.service';
 import {
   ListPayoutsQueryDto,
+  OrderMarginsQueryDto,
   RequestPayoutDto,
   UpdatePayoutAccountDto,
 } from '../dto/payout.dto';
@@ -89,6 +90,22 @@ export class AdminPayoutController {
   @ApiOperation({ summary: "Récapitulatif financier d'une commande" })
   async getFinancials(@Param('orderId') orderId: string) {
     return this.payouts.getOrderFinancials(orderId);
+  }
+
+  /**
+   * Durcissement lot 5 — marge par commande livrée, avec la qualité de chaque
+   * poste (`CONFIRMED`, `ESTIMATED`, `UNKNOWN`). Lecture seule. Les taux du
+   * contrat viennent d'ici : `RestaurantPayoutService` ne lit aucun réglage
+   * courant, pour qu'aucun taux ne réécrive jamais un reversement.
+   */
+  @Get('margins')
+  @ApiOperation({ summary: 'Marge par commande livrée, avec sa qualité' })
+  async getOrderMargins(@Query() query: OrderMarginsQueryDto) {
+    const settings = await this.settingsService.getSettings();
+    return this.payouts.listOrderMargins(query, {
+      collectionFeeBps: settings.estimatedCollectionFeeBps,
+      payoutFeeBps: settings.estimatedPayoutFeeBps,
+    });
   }
 
   /**

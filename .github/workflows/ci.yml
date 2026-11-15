@@ -44,6 +44,12 @@ jobs:
       - name: Types
         run: npx tsc -p tsconfig.json --noEmit
 
+      # Durcissement lot 5 (5A) : tout changement du contrat HTTP doit
+      # apparaître dans la PR (openapi/openapi.snapshot.json), là où les cinq
+      # clients peuvent être évalués. Aucune base ni secret : mode `preview`.
+      - name: Contrat OpenAPI à jour
+        run: npm run openapi:check
+
       - name: Tests unitaires
         run: npm test
 

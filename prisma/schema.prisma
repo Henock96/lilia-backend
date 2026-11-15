@@ -3293,6 +3293,12 @@ model PlatformSettings {
   /// montrent ce geste. À éteindre une fois l'app vendeurs qui le masque
   /// publiée : l'affectation devient un geste d'opérateur (ADMIN) seul.
   vendorCanAssignDriver Boolean @default(true)
+
+  /// Durcissement lot 5 (D-3) — frais pawaPay de la grille du contrat, en
+  /// points de base. Vue de marge seulement (qualité `ESTIMATED`), jamais le
+  /// grand livre ni un prix. `null` : pas de taux, le poste reste `UNKNOWN`.
+  estimatedCollectionFeeBps Int?
+  estimatedPayoutFeeBps     Int?
   /// F3-07 / D5 — délai entre la preuve de remise et le versement automatique
   /// au vendeur, en minutes. Borné 0–1440 par un CHECK.
   vendorPayoutDelayMinutes       Int @default(60)

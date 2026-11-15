@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  IsDateString,
   IsEnum,
   IsInt,
   IsOptional,
@@ -61,6 +62,27 @@ export class ListPayoutsQueryDto {
   @Max(100)
   @IsOptional()
   limit: number = 20;
+}
+
+/** `GET /admin/margins` — commandes livrées créées dans la période. */
+export class OrderMarginsQueryDto {
+  @ApiPropertyOptional({ description: 'Début de période (ISO 8601).' })
+  @IsOptional()
+  @IsDateString()
+  from?: string;
+
+  @ApiPropertyOptional({ description: 'Fin de période (ISO 8601).' })
+  @IsOptional()
+  @IsDateString()
+  to?: string;
+
+  @ApiPropertyOptional({ minimum: 1, maximum: 100, default: 50 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @IsOptional()
+  limit: number = 50;
 }
 
 /**
