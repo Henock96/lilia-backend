@@ -43,6 +43,10 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
     delivery: { findMany: jest.fn(), count: jest.fn(), findUnique: jest.fn() },
     user: { findUnique: jest.fn(), findMany: jest.fn() },
     deliveryHandover: { findUnique: jest.fn() },
+    quartier: {
+      findMany: jest.fn().mockResolvedValue([{ id: 'q1', nom: 'Poto-Poto' }]),
+      findUnique: jest.fn().mockResolvedValue({ nom: 'Poto-Poto' }),
+    },
   };
 
   beforeEach(async () => {
@@ -101,7 +105,21 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
 
     it('retourne { data, meta } filtré sur le restaurant + statut', async () => {
       prisma.restaurant.findFirst.mockResolvedValue({ id: 'r1' });
-      prisma.delivery.findMany.mockResolvedValue([{ id: 'd1' }]);
+      prisma.delivery.findMany.mockResolvedValue([
+        {
+          id: 'd1',
+          order: {
+            id: 'cmdabcd1234',
+            userId: 'client1',
+            contactPhone: '066000000',
+            deliveryAddress: '12 rue des Manguiers',
+            deliveryLandmark: 'Portail bleu',
+            deliveryLatitude: -4.26,
+            deliveryLongitude: 15.24,
+            deliveryQuartierId: 'q1',
+          },
+        },
+      ]);
       prisma.delivery.count.mockResolvedValue(1);
 
       const res = await service.findAllForRestaurant(
@@ -118,6 +136,16 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
       });
       expect(args.skip).toBe(10);
       expect(res.meta).toEqual({ total: 1, page: 2, limit: 10, totalPages: 1 });
+      // Lot C (D2) — route vendeur : le quartier, jamais le client.
+      expect(res.data[0].order).toMatchObject({
+        userId: null,
+        contactPhone: null,
+        deliveryAddress: 'Poto-Poto',
+        deliveryLandmark: null,
+        deliveryLatitude: null,
+        deliveryLongitude: null,
+        user: { id: null, nom: 'Client #CMDABCD1', phone: null },
+      });
     });
   });
 
@@ -155,7 +183,12 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
       id: 'd1',
       delivererId: 'liv1',
       order: {
+        id: 'cmdabcd1234',
         userId: 'client1',
+        contactPhone: '066000000',
+        deliveryAddress: '12 rue des Manguiers',
+        deliveryQuartierId: null,
+        user: { nom: 'Awa Mabiala', phone: '066000000' },
         restaurant: { nom: 'Resto', owner: { firebaseUid: 'ownerUid' } },
       },
     };
@@ -175,6 +208,13 @@ describe('DeliveriesService (caractérisation — lectures)', () => {
       // branche livreur, elle, est une liste blanche faiblement typée)
       const order = res.data.order as { restaurant: object };
       expect(order.restaurant).not.toHaveProperty('owner');
+      // Lot C (D2) — ni nom, ni téléphone, ni adresse du client.
+      expect(res.data.order).toMatchObject({
+        userId: null,
+        contactPhone: null,
+        deliveryAddress: null,
+        user: { id: null, nom: 'Client #CMDABCD1', phone: null },
+      });
     });
 
     it('autorise le client propriétaire de la commande', async () => {

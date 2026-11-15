@@ -149,11 +149,8 @@ export class OrdersListener {
             ? '✅ Commande payée — à préparer'
             : '🔔 Nouvelle commande payée',
           `${Math.round(order.total)} FCFA — ${order._count.items} article(s). ${order.acceptedAt ? 'À préparer.' : 'À accepter.'}`,
-          {
-            orderId: event.orderId,
-            type: 'new_order',
-            customerId: event.userId,
-          },
+          // Lot C (D2) — pas d'identifiant client dans le push vendeur.
+          { orderId: event.orderId, type: 'new_order' },
         )
         .catch((err: Error) => {
           this.logger.error(`Push vendeur échoué : ${err.message}`);

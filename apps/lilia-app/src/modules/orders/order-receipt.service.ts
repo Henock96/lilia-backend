@@ -8,6 +8,7 @@ import { User } from '@prisma/client';
 import type { TDocumentDefinitions } from 'pdfmake/interfaces';
 import { PrismaService } from '../../prisma/prisma.service';
 import { renderPdf } from './order-receipt-pdf.util';
+import { vendorCustomerLabel } from './vendor-order-projection';
 import {
   optionLabel,
   ORDER_ITEM_OPTIONS_ARGS,
@@ -72,7 +73,12 @@ export class OrderReceiptService {
     }
 
     const numero = this.buildNumero(order.id, order.createdAt);
-    const buffer = await renderPdf(this.buildDoc(order, numero));
+    // Lot C (D2) — le reçu du vendeur désigne le client par le numéro.
+    const shown =
+      isClientOwner || isAdmin
+        ? order
+        : { ...order, user: { nom: vendorCustomerLabel(order.id) } };
+    const buffer = await renderPdf(this.buildDoc(shown, numero));
     return { buffer, numero };
   }
 

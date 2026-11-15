@@ -49,8 +49,9 @@ export class DashboardClientsStatsService {
       distinct: ['userId'],
     });
 
-    // Top clients (par nombre de commandes)
-    const topClients = await this.prisma.order.groupBy({
+    // Top clients (par nombre de commandes). Lot C (D2) : l'ADMIN seulement —
+    // le vendeur garde les compteurs, sans identité (`restaurant` non nul).
+    const topClients = restaurant ? [] : await this.prisma.order.groupBy({
       by: ['userId'],
       where: {
         ...restaurantFilter,

@@ -55,6 +55,7 @@ import {
   ORDER_REQUEST_EXPIRED_EVENT,
 } from '../outbox/outbox-events';
 import { paymentDeadline } from './order-flow';
+import { projectOrdersForVendor } from './vendor-order-projection';
 import {
   DeliveryDispatchService,
   OpenedDispatch,
@@ -287,7 +288,7 @@ export class OrderLifecycleService {
       'ACCEPTEE',
       user,
     );
-    return updatedOrder;
+    return this.shownTo(updatedOrder, user.role);
   }
 
   /**
@@ -360,7 +361,7 @@ export class OrderLifecycleService {
       'EN_ATTENTE',
       user,
     );
-    return updatedOrder;
+    return this.shownTo(updatedOrder, user.role);
   }
 
   /**
@@ -895,7 +896,19 @@ export class OrderLifecycleService {
         );
     }
 
-    return updatedOrder;
+    return this.shownTo(updatedOrder, user.role);
+  }
+
+  /**
+   * Lot C (D2) — la commande rendue au vendeur après un geste ne porte pas
+   * plus d'identité client que sa liste : ni téléphone, ni adresse.
+   */
+  private async shownTo<
+    T extends { id: string; deliveryQuartierId: string | null },
+  >(order: T, role: string) {
+    return role === 'ADMIN'
+      ? order
+      : (await projectOrdersForVendor(this.prisma, [order]))[0];
   }
 
   // ─── Retrait au comptoir : preuve de remise (F3-07) ────────────────────────

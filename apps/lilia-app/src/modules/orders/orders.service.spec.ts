@@ -383,9 +383,23 @@ describe('OrdersService (caractérisation — lectures)', () => {
 
       const res = await service.findRestaurantOrders('uid', 1, 20);
 
+      // Lot C (D2) — le vendeur reçoit la commande sans son client.
       expect(res.data).toEqual([
         {
           id: 'o1',
+          userId: null,
+          contactPhone: null,
+          deliveryAddress: null,
+          deliveryLandmark: null,
+          deliveryLatitude: null,
+          deliveryLongitude: null,
+          user: {
+            id: null,
+            nom: 'Client #O1',
+            phone: null,
+            email: null,
+            imageUrl: null,
+          },
           paymentAllowed: false,
           deliveryArbitrable: false,
           allowedActions: expect.any(Array),
@@ -394,6 +408,9 @@ describe('OrdersService (caractérisation — lectures)', () => {
       expect(prisma.order.findMany.mock.calls[0][0].where).toEqual({
         restaurantId: { in: ['resto1'] },
       });
+      expect(prisma.order.findMany.mock.calls[0][0].include).not.toHaveProperty(
+        'user',
+      );
     });
   });
 

@@ -111,16 +111,106 @@ describeIfDb(
       });
     });
 
-    it('le vendeur lit sa commande, avec le client et les gestes publiés', async () => {
+    it('le vendeur lit sa commande et ses gestes, le client désigné par le numéro (lot C)', async () => {
       const order = await query.findRestaurantOrderById('fb-own-a', 'ord-a');
 
       expect(order).toMatchObject({
         id: 'ord-a',
         status: 'PRET',
-        user: { nom: 'Awa', phone: '060000099' },
+        userId: null,
+        contactPhone: null,
+        user: { id: null, nom: 'Client #ORD-A', phone: null, imageUrl: null },
         restaurant: { nom: 'Chez A' },
       });
+      expect(JSON.stringify(order)).not.toContain('060000099');
+      expect(JSON.stringify(order)).not.toContain('"cli"');
       expect(order.allowedActions).toContain('HAND_OVER');
+    });
+
+    it('l’ADMIN voit toujours le client (lot C)', async () => {
+      const order = await query.findRestaurantOrderById('fb-adm', 'ord-a');
+
+      expect(order).toMatchObject({
+        userId: 'cli',
+        user: { id: 'cli', nom: 'Awa', phone: '060000099' },
+      });
+    });
+
+    it('livraison : le vendeur voit le quartier, ni l’adresse ni le téléphone saisi (lot C)', async () => {
+      // `nom` est unique et la table n'est pas vidée entre deux exécutions.
+      const quartier = await prisma.quartier.upsert({
+        where: { nom: 'Poto-Poto (test lot C)' },
+        create: { nom: 'Poto-Poto (test lot C)' },
+        update: {},
+      });
+      await prisma.order.create({
+        data: {
+          id: 'ord-liv',
+          restaurantId: 'resto-a',
+          userId: 'cli',
+          subTotal: 4000,
+          deliveryFee: 1000,
+          deliveryFeeGross: 1000,
+          total: 5000,
+          paymentMethod: 'MTN_MOMO',
+          isDelivery: true,
+          status: OrderStatus.EN_PREPARATION,
+          deliveryAddress: '12 rue des Manguiers',
+          deliveryLandmark: 'Portail bleu',
+          deliveryLatitude: -4.2634,
+          deliveryLongitude: 15.2429,
+          deliveryQuartierId: quartier.id,
+          contactPhone: '066123456',
+        },
+      });
+
+      const order = await query.findRestaurantOrderById('fb-own-a', 'ord-liv');
+      expect(order).toMatchObject({
+        deliveryAddress: 'Poto-Poto (test lot C)',
+        deliveryLandmark: null,
+        deliveryLatitude: null,
+        deliveryLongitude: null,
+        contactPhone: null,
+      });
+      const json = JSON.stringify(order);
+      for (const secret of ['Manguiers', 'Portail', '066123456', '060000099']) {
+        expect(json).not.toContain(secret);
+      }
+
+      // L'ADMIN garde l'adresse complète.
+      const asAdmin = await query.findRestaurantOrderById('fb-adm', 'ord-liv');
+      expect(asAdmin).toMatchObject({
+        deliveryAddress: '12 rue des Manguiers',
+        contactPhone: '066123456',
+      });
+    });
+
+    it('recherche : le vendeur ne retrouve pas une commande par le téléphone du client (lot C)', async () => {
+      const asVendor = await query.findRestaurantOrders(
+        'fb-own-a',
+        1,
+        20,
+        undefined,
+        '060000099',
+      );
+      const asAdmin = await query.findRestaurantOrders(
+        'fb-adm',
+        1,
+        20,
+        undefined,
+        '060000099',
+      );
+      const byNumber = await query.findRestaurantOrders(
+        'fb-own-a',
+        1,
+        20,
+        undefined,
+        '#ORD-A',
+      );
+
+      expect(asVendor.data).toHaveLength(0);
+      expect(asAdmin.data.map((o) => o.id)).toEqual(['ord-a']);
+      expect(byNumber.data.map((o) => o.id)).toEqual(['ord-a']);
     });
 
     it('jamais le code de retrait, ni pour le vendeur ni pour l’ADMIN', async () => {
