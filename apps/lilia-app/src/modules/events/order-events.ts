@@ -51,6 +51,12 @@ export class OrderStatusUpdatedEvent extends BaseOrderEvent {
       estimatedDeliveryTime?: Date;
     },
     timestamp?: Date,
+    /**
+     * Clôture décidée par l'ADMIN sans remise constatée (client qui refuse,
+     * livreur qui n'a pas confirmé…) : les notifications ne doivent pas
+     * annoncer « livrée, bon appétit ».
+     */
+    public readonly closure?: 'DELIVERY_ARBITRATION',
   ) {
     super(orderId, userId, restaurantId, timestamp);
 }

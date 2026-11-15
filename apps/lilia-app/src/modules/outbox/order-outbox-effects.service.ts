@@ -15,6 +15,7 @@ import {
   ORDER_ACCEPTANCE_EXPIRED_EVENT,
   ORDER_REQUEST_ACCEPTED_EVENT,
   ORDER_REQUEST_EXPIRED_EVENT,
+  ORDER_VOUCHER_ISSUED_EVENT,
 } from './outbox-events';
 
 /**
@@ -60,6 +61,48 @@ export class OrderOutboxEffectsService implements OnModuleInit {
     this.dispatcher.registerHandler(ORDER_REQUEST_EXPIRED_EVENT, (e) =>
       this.dispatchRequestExpired(e),
     );
+    this.dispatcher.registerHandler(ORDER_VOUCHER_ISSUED_EVENT, (e) =>
+      this.dispatchVoucherIssued(e),
+    );
+  }
+
+  /**
+   * Arbitrage de livraison (15/11/2026) — le client reçoit le code de l'avoir
+   * qu'on lui offre. Aucune autre surface ne le lui montre aujourd'hui : sans
+   * ce message, l'avoir existerait sans que son bénéficiaire le sache.
+   */
+  async dispatchVoucherIssued(event: OutboxEvent): Promise<void> {
+    const payload = event.payload as { promoCodeId?: unknown } | null;
+    const promoCodeId =
+      typeof payload?.promoCodeId === 'string' ? payload.promoCodeId : null;
+    const promo = promoCodeId
+      ? await this.prisma.promoCode.findUnique({
+          where: { id: promoCodeId },
+          select: {
+            code: true,
+            discountValue: true,
+            expiresAt: true,
+            assignedUserId: true,
+          },
+        })
+      : null;
+    if (!promo?.assignedUserId) {
+      await this.outbox.markFailed(event.id, 'Avoir introuvable ou anonyme');
+      return;
+    }
+    const expires = promo.expiresAt
+      ? ` (valable jusqu’au ${promo.expiresAt.toLocaleDateString('fr-FR', {
+          timeZone: 'Africa/Brazzaville',
+        })})`
+      : '';
+    await this.notifications.sendPushNotification(
+      promo.assignedUserId,
+      '🎁 Un avoir vous attend',
+      `Nous vous offrons ${Math.round(promo.discountValue)} FCFA : saisissez le code ` +
+        `${promo.code} à votre prochaine commande${expires}.`,
+      { orderId: event.aggregateId, type: 'voucher_issued' },
+    );
+    await this.outbox.markSent(event.id);
   }
 
   /**

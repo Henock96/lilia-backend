@@ -234,7 +234,11 @@ export class OrdersListener {
             select: { deliveryProof: true },
           })
         : null;
-    const msg = pickup
+    const shortId = event.orderId.slice(-6).toUpperCase();
+    const arbitrated = event.closure === 'DELIVERY_ARBITRATION';
+    const msg = arbitrated
+      ? arbitratedClientMessage(shortId)
+      : pickup
       ? pickupClientMessage(event.newStatus, pickup.deliveryProof)
       : event.previousStatus === 'DEMANDE_ENVOYEE' &&
           event.newStatus === 'ANNULER'
@@ -267,9 +271,9 @@ export class OrdersListener {
         select: { ownerId: true },
       });
       if (restaurant) {
-        const shortId = event.orderId.slice(-6).toUpperCase();
-        const restaurantMsg =
-          event.newStatus === 'LIVRER' && pickup
+        const restaurantMsg = arbitrated
+          ? arbitratedVendorMessage(shortId)
+          : event.newStatus === 'LIVRER' && pickup
             ? pickupVendorMessage(shortId, pickup.deliveryProof)
             : event.newStatus === 'LIVRER'
             ? {
@@ -395,6 +399,32 @@ export class OrdersListener {
     };
     return map[status] ?? { title: 'Mise à jour', body: `Statut : ${status}` };
   }
+}
+
+/**
+ * Livraison clôturée par l'ADMIN : la commande est `LIVRER` sans remise
+ * constatée (souvent un client qui a refusé). Ni « bon appétit » au client,
+ * ni « livrée au client » au vendeur. Un éventuel avoir part dans son propre
+ * push (`order.voucher_issued`).
+ */
+export function arbitratedClientMessage(shortId: string): {
+  title: string;
+  body: string;
+} {
+  return {
+    title: '📦 Commande clôturée',
+    body: `Votre commande #${shortId} a été clôturée par le service client Lilia. Une question ? Contactez-nous depuis l’application.`,
+  };
+}
+
+export function arbitratedVendorMessage(shortId: string): {
+  title: string;
+  body: string;
+} {
+  return {
+    title: '📦 Commande clôturée',
+    body: `La commande #${shortId} a été clôturée par Lilia. Votre paiement suit le circuit habituel.`,
+  };
 }
 
 /** Message client d'un retrait au comptoir (F3-07). */

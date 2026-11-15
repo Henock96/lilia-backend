@@ -7,20 +7,18 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
-  DiscountType,
   IncidentSeverity,
   IncidentStatus,
   IncidentType,
   MessageVisibility,
   OrderStatus,
   Prisma,
-  PromoFunding,
   RefundBearer,
   RefundStatus,
   Role,
   User,
 } from '@prisma/client';
-import { randomInt } from 'node:crypto';
+import { createNominativeVoucher, voucherCode } from '../promo/voucher';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import {
@@ -607,20 +605,11 @@ export class ClaimsService {
         // Une violation d'unicité avorte la transaction PostgreSQL : pas de
         // nouvel essai ici. 31⁸ codes possibles, la collision est théorique —
         // et, le cas échéant, l'administrateur reclique.
-        const promo = await tx.promoCode.create({
-          data: {
-            code: voucherCode(),
-            description: `Avoir — réclamation sur la commande #${orderRef(claim.orderId!)}`,
-            discountType: DiscountType.FIXED,
-            discountValue: dto.amountXaf,
-            minOrderAmount: 0,
-            maxUsageTotal: 1,
-            maxUsagePerUser: 1,
-            assignedUserId: claim.reportedBy,
-            fundingSource: PromoFunding.PLATFORM,
-            expiresAt,
-          },
-          select: { id: true, code: true },
+        const promo = await createNominativeVoucher(tx, {
+          userId: claim.reportedBy!,
+          amountXaf: dto.amountXaf,
+          expiresAt,
+          description: `Avoir — réclamation sur la commande #${orderRef(claim.orderId!)}`,
         });
 
         const expires = expiresAt.toLocaleDateString('fr-FR', {
@@ -742,12 +731,5 @@ function authorLabel(role: Role, mine: boolean): string {
   }
 }
 
-/** Alphabet sans caractères ambigus (0/O, 1/I/L) : le code se dicte au téléphone. */
-const VOUCHER_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-export function voucherCode(): string {
-  let s = '';
-  for (let i = 0; i < 8; i++) {
-    s += VOUCHER_ALPHABET[randomInt(VOUCHER_ALPHABET.length)];
-  }
-  return `AVOIR-${s}`;
-}
+/** Déplacé dans `promo/voucher.ts` (partagé avec l'arbitrage de livraison). */
+export { voucherCode };

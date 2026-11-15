@@ -186,6 +186,7 @@ describe('OrdersService (caractérisation — lectures)', () => {
       await expect(service.findOrderById('o1', 'uid')).resolves.toEqual({
         ...order,
         paymentAllowed: false,
+        deliveryArbitrable: false,
         allowedActions: expect.any(Array),
       });
     });
@@ -267,6 +268,7 @@ describe('OrdersService (caractérisation — lectures)', () => {
         {
           ...orders[0],
           paymentAllowed: false,
+          deliveryArbitrable: false,
           allowedActions: expect.any(Array),
         },
       ]);
@@ -331,7 +333,12 @@ describe('OrdersService (caractérisation — lectures)', () => {
       const res = await service.findRestaurantOrders('uid', 1, 20);
 
       expect(res.data).toEqual([
-        { id: 'o1', paymentAllowed: false, allowedActions: expect.any(Array) },
+        {
+          id: 'o1',
+          paymentAllowed: false,
+          deliveryArbitrable: false,
+          allowedActions: expect.any(Array),
+        },
       ]);
       expect(prisma.order.findMany.mock.calls[0][0].where).toEqual({
         restaurantId: { in: ['resto1'] },

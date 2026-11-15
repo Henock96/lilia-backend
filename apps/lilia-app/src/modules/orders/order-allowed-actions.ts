@@ -2,6 +2,7 @@ import { OrderStatus } from '@prisma/client';
 
 import { ORDER_TRANSITION_MATRIX, OrderActor } from './order-state.machine';
 import { orderPaymentAllowed } from './order-payment-policy';
+import { deliveryArbitrable } from './delivery-arbitration';
 
 /**
  * Gestes qu'une interface peut proposer sur une commande — publiés par le
@@ -193,11 +194,20 @@ export function withAllowedActions<
   orders: T[],
   role: string,
   context: OrderActionContext,
-): Array<T & { allowedActions: OrderAction[]; paymentAllowed: boolean }> {
+): Array<
+  T & {
+    allowedActions: OrderAction[];
+    paymentAllowed: boolean;
+    deliveryArbitrable: boolean;
+  }
+> {
   return orders.map((order) => ({
     ...order,
     allowedActions: orderAllowedActions(order, role, context),
     paymentAllowed:
       (role === 'CLIENT' || role === 'ADMIN') && orderPaymentAllowed(order),
+    // 15/11/2026 — « Clôturer la livraison » (ADMIN). Hors `allowedActions` :
+    // les applications installées y lisent un vocabulaire fermé.
+    deliveryArbitrable: deliveryArbitrable(order, role),
   }));
 }

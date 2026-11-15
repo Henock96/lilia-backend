@@ -16,6 +16,12 @@
 /** Commande livrée → points de fidélité + récompense de parrainage. */
 export const ORDER_DELIVERED_EVENT = 'order.delivered';
 
+/**
+ * Arbitrage de livraison (15/11/2026) — un avoir a été offert au client : il
+ * doit en recevoir le code. Écrit avec l'avoir ; payload `{ promoCodeId }`.
+ */
+export const ORDER_VOUCHER_ISSUED_EVENT = 'order.voucher_issued';
+
 /** Commande payée annulée → ouverture de la ligne de remboursement. */
 export const ORDER_REFUND_DUE_EVENT = 'order.refund_due';
 
