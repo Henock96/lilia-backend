@@ -121,7 +121,10 @@ export class DashboardSalesStatsService {
         },
       }),
       this.prisma.review.aggregate({
-        where: restaurant ? { restaurantId: restaurant.id } : {},
+        // Lot B : même moyenne que la fiche publique, avis masqués exclus.
+        where: restaurant
+          ? { restaurantId: restaurant.id, hiddenAt: null }
+          : { hiddenAt: null },
         _avg: { rating: true },
         _count: { rating: true },
       }),

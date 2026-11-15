@@ -5,10 +5,17 @@ import {
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
+import { accessibleShopIds, canAccessShop } from '../vendors/shop-access';
 import { CreateReviewDto, UpdateReviewDto } from './dto';
-import { PUBLIC_REVIEW_SELECT } from './review-public-projection';
+import {
+  PUBLIC_REVIEW_SELECT,
+  VISIBLE_REVIEW_WHERE,
+  toPublicReview,
+} from './review-public-projection';
+import { REVIEWABLE_ORDER_WHERE } from './review-eligibility';
 
 @Injectable()
 export class ReviewsService {
@@ -34,7 +41,9 @@ export class ReviewsService {
           id: dto.orderId,
           userId: user.id,
           restaurantId: dto.restaurantId,
-          status: 'LIVRER',
+          // Lot B (D4.a) : remise prouvée seulement. Une clôture admin ou une
+          // remise déclarée par le vendeur seul n'ouvrent pas d'avis.
+          ...REVIEWABLE_ORDER_WHERE,
         },
       });
       if (!order) {
@@ -58,7 +67,7 @@ export class ReviewsService {
         where: {
           userId: user.id,
           restaurantId: dto.restaurantId,
-          status: 'LIVRER',
+          ...REVIEWABLE_ORDER_WHERE,
         },
       });
       if (!hasDelivered) {
@@ -87,19 +96,32 @@ export class ReviewsService {
       }
     }
 
-    const review = await this.prisma.review.create({
-      data: {
-        rating: dto.rating,
-        comment: dto.comment,
-        userId: user.id,
-        restaurantId: dto.restaurantId,
-        orderId: dto.orderId ?? null,
-      },
-      include: {
-        user: { select: { id: true, nom: true, imageUrl: true } },
-        restaurant: { select: { id: true, nom: true } },
-      },
-    });
+    const review = await this.prisma.review
+      .create({
+        data: {
+          rating: dto.rating,
+          comment: dto.comment,
+          userId: user.id,
+          restaurantId: dto.restaurantId,
+          orderId: dto.orderId ?? null,
+        },
+        include: {
+          user: { select: { id: true, nom: true, imageUrl: true } },
+          restaurant: { select: { id: true, nom: true } },
+        },
+      })
+      .catch((error: unknown) => {
+        // Double envoi : `orderId @unique` tranche, la seconde requête perd.
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        ) {
+          throw new ConflictException(
+            'Vous avez déjà laissé un avis pour cette commande.',
+          );
+        }
+        throw error;
+      });
 
     return { message: 'Avis créé avec succès', data: review };
   }
@@ -129,7 +151,7 @@ export class ReviewsService {
 
     const [reviews, total] = await Promise.all([
       this.prisma.review.findMany({
-        where: { restaurantId },
+        where: { restaurantId, ...VISIBLE_REVIEW_WHERE },
         // F-30 — route publique : liste blanche, jamais `include:`.
         select: PUBLIC_REVIEW_SELECT,
         orderBy: {
@@ -138,7 +160,9 @@ export class ReviewsService {
         skip: (page - 1) * limit,
         take: limit,
       }),
-      this.prisma.review.count({ where: { restaurantId } }),
+      this.prisma.review.count({
+        where: { restaurantId, ...VISIBLE_REVIEW_WHERE },
+      }),
     ]);
 
     // Calculer les statistiques
@@ -146,7 +170,7 @@ export class ReviewsService {
 
     return {
       message: 'Avis récupérés avec succès',
-      data: reviews,
+      data: reviews.map(toPublicReview),
       stats,
       meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
@@ -177,7 +201,8 @@ export class ReviewsService {
     // PostgreSQL, avec l'index (restaurantId, rating).
     const grouped = await this.prisma.review.groupBy({
       by: ['rating'],
-      where: { restaurantId },
+      // Lot B : un avis masqué par la modération ne compte plus.
+      where: { restaurantId, ...VISIBLE_REVIEW_WHERE },
       _count: { rating: true },
     });
 
@@ -219,7 +244,7 @@ export class ReviewsService {
     // F-30 — route publique : liste blanche, et seulement les avis d'une
     // boutique visible (un avis d'un vendeur suspendu ne se lit plus par id).
     const review = await this.prisma.review.findFirst({
-      where: { id, restaurant: PUBLIC_VENDOR_WHERE },
+      where: { id, ...VISIBLE_REVIEW_WHERE, restaurant: PUBLIC_VENDOR_WHERE },
       select: {
         ...PUBLIC_REVIEW_SELECT,
         restaurant: { select: { id: true, nom: true } },
@@ -232,7 +257,7 @@ export class ReviewsService {
 
     return {
       message: 'Avis récupéré avec succès',
-      data: review,
+      data: toPublicReview(review),
     };
   }
 
@@ -263,22 +288,45 @@ export class ReviewsService {
       );
     }
 
-    const updatedReview = await this.prisma.review.update({
-      where: { id },
-      data: {
-        rating: dto.rating,
-        comment: dto.comment,
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            nom: true,
-            imageUrl: true,
+    // Lot B : un avis masqué ne se réécrit pas — l'admin le rétablirait sans
+    // savoir que le texte jugé a changé. Le filtre `hiddenAt: null` porte
+    // aussi la course « masqué entre la lecture et l'écriture ».
+    const hiddenConflict = new ConflictException(
+      'Cet avis a été masqué par la modération : il ne peut plus être modifié.',
+    );
+    if (review.hiddenAt) throw hiddenConflict;
+
+    const updatedReview = await this.prisma.review
+      .update({
+        where: { id, hiddenAt: null },
+        data: {
+          rating: dto.rating,
+          comment: dto.comment,
+        },
+        omit: {
+          hiddenById: true,
+          hiddenReason: true,
+          vendorReplyHiddenAt: true,
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              nom: true,
+              imageUrl: true,
+            },
           },
         },
-      },
-    });
+      })
+      .catch((error: unknown) => {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2025'
+        ) {
+          throw hiddenConflict;
+        }
+        throw error;
+      });
 
     return {
       message: 'Avis mis à jour avec succès',
@@ -341,6 +389,8 @@ export class ReviewsService {
     const review = await this.prisma.review.findFirst({
       where: { userId: user.id, restaurantId },
       orderBy: { createdAt: 'desc' },
+      // Lot B : l'identifiant de l'admin modérateur ne sort pas.
+      omit: { hiddenById: true, hiddenReason: true, vendorReplyHiddenAt: true },
       include: {
         user: {
           select: {
@@ -390,7 +440,7 @@ export class ReviewsService {
       where: {
         userId: user.id,
         restaurantId,
-        status: 'LIVRER',
+        ...REVIEWABLE_ORDER_WHERE,
       },
     });
 
@@ -402,5 +452,145 @@ export class ReviewsService {
     }
 
     return { canReview: true };
+  }
+
+  /**
+   * Lot B — avis reçus par les boutiques du vendeur (propriétaire ou membre
+   * qui traite les commandes). Le vendeur voit la note, le commentaire et sa
+   * réponse, jamais l'identité du client (D4.d) : la commande est désignée par
+   * sa référence courte, comme ailleurs côté vendeur.
+   */
+  async listForVendor(
+    userId: string,
+    opts: { restaurantId?: string; page?: number; limit?: number } = {},
+  ) {
+    const page = opts.page ?? 1;
+    const limit = opts.limit ?? 20;
+    const shopIds = await accessibleShopIds(this.prisma, userId, 'ORDERS');
+    if (opts.restaurantId && !shopIds.includes(opts.restaurantId)) {
+      throw new ForbiddenException("Cette boutique n'est pas la vôtre.");
+    }
+    const ids = opts.restaurantId ? [opts.restaurantId] : shopIds;
+    const where: Prisma.ReviewWhereInput = {
+      restaurantId: { in: ids },
+      ...VISIBLE_REVIEW_WHERE,
+    };
+
+    const [rows, total, grouped] = await Promise.all([
+      this.prisma.review.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          rating: true,
+          comment: true,
+          createdAt: true,
+          restaurantId: true,
+          orderId: true,
+          vendorReply: true,
+          vendorReplyAt: true,
+          vendorReplyHiddenAt: true,
+          restaurant: { select: { nom: true } },
+        },
+      }),
+      this.prisma.review.count({ where }),
+      this.prisma.review.groupBy({
+        by: ['rating'],
+        where,
+        _count: { rating: true },
+      }),
+    ]);
+
+    const ratingDistribution: Record<1 | 2 | 3 | 4 | 5, number> = {
+      1: 0,
+      2: 0,
+      3: 0,
+      4: 0,
+      5: 0,
+    };
+    let sum = 0;
+    let count = 0;
+    for (const row of grouped) {
+      count += row._count.rating;
+      sum += row.rating * row._count.rating;
+      if (row.rating >= 1 && row.rating <= 5) {
+        ratingDistribution[row.rating as 1 | 2 | 3 | 4 | 5] = row._count.rating;
+      }
+    }
+
+    return {
+      data: rows.map(({ orderId, vendorReplyHiddenAt, restaurant, ...r }) => ({
+        ...r,
+        restaurantName: restaurant.nom,
+        orderRef: orderId ? orderId.slice(-6).toUpperCase() : null,
+        author: 'Client',
+        vendorReplyHidden: vendorReplyHiddenAt != null,
+      })),
+      stats: {
+        averageRating: count > 0 ? Math.round((sum / count) * 10) / 10 : 0,
+        totalReviews: count,
+        ratingDistribution,
+      },
+      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  /**
+   * Lot B (D4.c) — réponse publique du vendeur : une seule par avis,
+   * modifiable. Réservée à qui gère la boutique (`SETTINGS` : propriétaire ou
+   * gérant), puisqu'elle parle au nom de la boutique.
+   */
+  async replyAsVendor(userId: string, reviewId: string, text: string) {
+    const review = await this.prisma.review.findUnique({
+      where: { id: reviewId },
+      select: {
+        restaurantId: true,
+        hiddenAt: true,
+        vendorReplyHiddenAt: true,
+      },
+    });
+    // Même réponse pour « inexistant » et « pas votre boutique » : un vendeur
+    // ne sonde pas les avis des autres.
+    if (
+      !review ||
+      !(await canAccessShop(
+        this.prisma,
+        userId,
+        review.restaurantId,
+        'SETTINGS',
+      ))
+    ) {
+      throw new NotFoundException('Avis non trouvé');
+    }
+    if (review.hiddenAt) {
+      throw new ConflictException(
+        'Cet avis a été masqué par la modération : il ne peut plus recevoir de réponse.',
+      );
+    }
+    if (review.vendorReplyHiddenAt) {
+      throw new ConflictException(
+        'Votre réponse a été masquée par la modération. Contactez le support Lilia.',
+      );
+    }
+
+    // Écriture conditionnelle : un masquage admin entre la lecture et
+    // l'écriture n'est pas écrasé par la réponse.
+    const vendorReply = text.trim();
+    const vendorReplyAt = new Date();
+    const { count } = await this.prisma.review.updateMany({
+      where: { id: reviewId, hiddenAt: null, vendorReplyHiddenAt: null },
+      data: { vendorReply, vendorReplyAt },
+    });
+    if (count === 0) {
+      throw new ConflictException(
+        "L'avis vient d'être modéré : rechargez la liste.",
+      );
+    }
+    return {
+      message: 'Réponse publiée',
+      data: { id: reviewId, vendorReply, vendorReplyAt },
+    };
   }
 }

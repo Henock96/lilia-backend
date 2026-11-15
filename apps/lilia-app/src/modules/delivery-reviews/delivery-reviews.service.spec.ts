@@ -35,7 +35,7 @@ describe('DeliveryReviewsService', () => {
     status: 'LIVRER',
     orderId: 'o1',
     delivererId: 'liv1',
-    order: { userId: 'c1' },
+    order: { userId: 'c1', deliveryProof: 'DELIVERY_CODE' },
   };
 
   beforeEach(async () => {
@@ -111,6 +111,21 @@ describe('DeliveryReviewsService', () => {
         ConflictException,
       );
     });
+
+    // Lot B (D1.c, D4.a) : clôture admin ou course sans code = pas de note.
+    it.each(['DELIVERY_ADMIN_OVERRIDE', 'DELIVERY_UNVERIFIED', null])(
+      'remise non prouvée (%s) → 400, rien n’est écrit',
+      async (deliveryProof) => {
+        prisma.delivery.findUnique.mockResolvedValue({
+          ...delivered,
+          order: { userId: 'c1', deliveryProof },
+        });
+        await expect(service.create(dto, 'uid-c1')).rejects.toBeInstanceOf(
+          BadRequestException,
+        );
+        expect(prisma.deliveryReview.create).not.toHaveBeenCalled();
+      },
+    );
 
     it('livraison introuvable → 404', async () => {
       prisma.delivery.findUnique.mockResolvedValue(null);

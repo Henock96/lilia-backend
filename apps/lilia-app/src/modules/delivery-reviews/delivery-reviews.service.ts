@@ -10,6 +10,7 @@ import { DeliveryStatus, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateDeliveryReviewDto } from './dto/create-delivery-review.dto';
+import { isReviewableProof } from '../reviews/review-eligibility';
 
 /**
  * Notation du livreur par le client, après livraison.
@@ -41,7 +42,7 @@ export class DeliveryReviewsService {
         status: true,
         orderId: true,
         delivererId: true,
-        order: { select: { userId: true } },
+        order: { select: { userId: true, deliveryProof: true } },
       },
     });
 
@@ -58,6 +59,14 @@ export class DeliveryReviewsService {
     if (delivery.status !== DeliveryStatus.LIVRER) {
       throw new BadRequestException(
         'Vous pourrez noter le livreur une fois la commande livrée.',
+      );
+    }
+
+    // Lot B (D4.a, D1.c) : une course close par l'admin ou conclue sans code
+    // ne prouve pas la remise ; elle n'ouvre pas de note.
+    if (!isReviewableProof(delivery.order.deliveryProof)) {
+      throw new BadRequestException(
+        'Cette livraison n’a pas été confirmée : elle ne peut pas être notée.',
       );
     }
 
@@ -110,7 +119,8 @@ export class DeliveryReviewsService {
   async getDelivererStats(delivererId: string) {
     const grouped = await this.prisma.deliveryReview.groupBy({
       by: ['rating'],
-      where: { delivererId },
+      // Lot B : une note masquée par la modération ne compte plus.
+      where: { delivererId, hiddenAt: null },
       _count: { rating: true },
     });
 
@@ -160,7 +170,10 @@ export class DeliveryReviewsService {
       select: {
         delivererId: true,
         order: { select: { userId: true } },
-        review: true,
+        // Lot B : la modération (acteur, motif) reste côté admin.
+        review: {
+          omit: { hiddenAt: true, hiddenById: true, hiddenReason: true },
+        },
       },
     });
     if (!delivery) throw new NotFoundException('Livraison introuvable.');
@@ -182,7 +195,7 @@ export class DeliveryReviewsService {
     const user = await this.prisma.user.findUnique({ where: { firebaseUid } });
     if (!user) throw new NotFoundException('Utilisateur non trouvé.');
 
-    const where = { delivererId: user.id };
+    const where = { delivererId: user.id, hiddenAt: null };
     const [reviews, total] = await Promise.all([
       this.prisma.deliveryReview.findMany({
         where,

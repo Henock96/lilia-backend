@@ -22,6 +22,10 @@ import {
   withAllowedActions,
 } from './order-allowed-actions';
 import { ORDER_ITEM_OPTIONS_ARGS } from '../modifiers/order-item-options';
+import {
+  OrderReviewVerdict,
+  orderReviewVerdict,
+} from '../reviews/review-eligibility';
 
 /**
  * Lectures de commandes (queries) extraites de `OrdersService` (LIL-134).
@@ -62,7 +66,13 @@ export class OrderQueryService {
 
     const [withActions] = await this.withAllowedActions([order], user.role);
     if (user.role === 'ADMIN') return withActions;
-    if (order.isDelivery) return withoutPayoutSchedule(withActions);
+
+    // Lot B — verdict d'avis pour le client : les apps affichent l'invite
+    // « Notez votre commande » sans recopier la règle de preuve.
+    const review = await this.reviewVerdictFor(order);
+    if (order.isDelivery) {
+      return { ...withoutPayoutSchedule(withActions), review };
+    }
 
     // F3-07 / D-P5 — le code de retrait n'est lu que pour le CLIENT
     // propriétaire, tant que sa commande attend au comptoir (I-18). L'admin
@@ -76,7 +86,30 @@ export class OrderQueryService {
             })
           )?.code ?? null)
         : null;
-    return { ...withoutPayoutSchedule(withActions), pickupCode };
+    return { ...withoutPayoutSchedule(withActions), pickupCode, review };
+  }
+
+  /** Deux lectures par index unique, seulement pour une commande livrée. */
+  private async reviewVerdictFor(order: {
+    id: string;
+    status: string;
+    deliveryProof: string | null;
+    isDelivery: boolean;
+    delivery: { id: string; status: string; delivererId: string | null } | null;
+  }): Promise<OrderReviewVerdict> {
+    if (order.status !== 'LIVRER') return { vendor: 'NO', driver: 'NO' };
+    const [vendor, driver] = await Promise.all([
+      this.prisma.review.count({ where: { orderId: order.id } }),
+      order.delivery
+        ? this.prisma.deliveryReview.count({
+            where: { deliveryId: order.delivery.id },
+          })
+        : Promise.resolve(0),
+    ]);
+    return orderReviewVerdict(order, {
+      vendor: vendor > 0,
+      driver: driver > 0,
+    });
   }
 
   /**

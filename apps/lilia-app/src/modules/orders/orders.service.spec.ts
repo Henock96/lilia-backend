@@ -63,6 +63,9 @@ describe('OrdersService (caractérisation — lectures)', () => {
     platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
     // F3-07 / D-P5 — code de retrait au comptoir.
     pickupHandover: { findUnique: jest.fn().mockResolvedValue(null) },
+    // Lot B — verdict d'avis du détail client.
+    review: { count: jest.fn().mockResolvedValue(0) },
+    deliveryReview: { count: jest.fn().mockResolvedValue(0) },
   };
   const pagination = {
     getPaginationMeta: jest.fn(
@@ -182,13 +185,61 @@ describe('OrdersService (caractérisation — lectures)', () => {
       const order = { id: 'o1', userId: 'u1', isDelivery: true };
       prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'CLIENT' });
       prisma.order.findUnique.mockResolvedValue(order);
-      // La commande, plus les gestes permis à CE rôle (R1).
+      // La commande, plus les gestes permis à CE rôle (R1), plus le verdict
+      // d'avis (lot B) : pas livrée, rien à noter.
       await expect(service.findOrderById('o1', 'uid')).resolves.toEqual({
         ...order,
         paymentAllowed: false,
         deliveryArbitrable: false,
         allowedActions: expect.any(Array),
+        review: { vendor: 'NO', driver: 'NO' },
       });
+    });
+
+    describe('verdict d’avis (lot B, D4.a)', () => {
+      const delivered = (deliveryProof: string) => ({
+        id: 'o1',
+        userId: 'u1',
+        isDelivery: true,
+        status: 'LIVRER',
+        deliveryProof,
+        delivery: { id: 'd1', status: 'LIVRER', delivererId: 'liv1' },
+      });
+
+      beforeEach(() =>
+        prisma.user.findUnique.mockResolvedValue({ id: 'u1', role: 'CLIENT' }),
+      );
+
+      it('remise prouvée par code : invite à noter vendeur et livreur', async () => {
+        prisma.order.findUnique.mockResolvedValue(delivered('DELIVERY_CODE'));
+        prisma.review.count.mockResolvedValueOnce(0);
+        prisma.deliveryReview.count.mockResolvedValueOnce(0);
+        const result = await service.findOrderById('o1', 'uid');
+        expect(result).toMatchObject({
+          review: { vendor: 'CAN', driver: 'CAN' },
+        });
+      });
+
+      it('déjà noté : DONE', async () => {
+        prisma.order.findUnique.mockResolvedValue(delivered('DELIVERY_CODE'));
+        prisma.review.count.mockResolvedValueOnce(1);
+        prisma.deliveryReview.count.mockResolvedValueOnce(1);
+        const result = await service.findOrderById('o1', 'uid');
+        expect(result).toMatchObject({
+          review: { vendor: 'DONE', driver: 'DONE' },
+        });
+      });
+
+      it.each(['DELIVERY_ADMIN_OVERRIDE', 'DELIVERY_UNVERIFIED'])(
+        'remise non prouvée (%s) : aucune invite',
+        async (proof) => {
+          prisma.order.findUnique.mockResolvedValue(delivered(proof));
+          const result = await service.findOrderById('o1', 'uid');
+          expect(result).toMatchObject({
+            review: { vendor: 'NO', driver: 'NO' },
+          });
+        },
+      );
     });
 
     describe('code de retrait (F3-07, I-18)', () => {

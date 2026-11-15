@@ -28,7 +28,8 @@ export async function aggregateRatings(
 
   const grouped = await prisma.review.groupBy({
     by: ['restaurantId'],
-    where: { restaurantId: { in: restaurantIds } },
+    // Lot B : un avis masqué par la modération ne compte plus.
+    where: { restaurantId: { in: restaurantIds }, hiddenAt: null },
     _avg: { rating: true },
     _count: { rating: true },
   });
