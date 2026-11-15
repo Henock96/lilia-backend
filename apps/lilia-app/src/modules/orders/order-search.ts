@@ -48,9 +48,14 @@ const MIN_PHONE_DIGITS = 4;
  * Renvoie `undefined` quand il n'y a rien à chercher : l'appelant n'ajoute
  * alors aucune clause, plutôt qu'un `OR` vide qui ne filtrerait rien tout en
  * coûtant une jointure.
+ *
+ * Lot C (D2.d) — `customerFields: false` pour le vendeur : il ne connaît pas
+ * son client, il ne le cherche donc ni par nom ni par téléphone. Le numéro de
+ * commande reste cherchable.
  */
 export function buildOrderSearchWhere(
   search?: string,
+  { customerFields = true }: { customerFields?: boolean } = {},
 ): Prisma.OrderWhereInput | undefined {
   // Le `#` vient de l'écran : sélectionner « #A1B2C3D4 » l'emporte avec le
   // reste. Le laisser filer ne ramènerait jamais rien, sans que rien
@@ -58,10 +63,18 @@ export function buildOrderSearchWhere(
   const term = search?.trim().replace(/^#/, '').trim();
   if (!term) return undefined;
 
+  const byId: Prisma.OrderWhereInput = {
+    id: { contains: term, mode: 'insensitive' },
+  };
+  const byShop: Prisma.OrderWhereInput = {
+    restaurant: { nom: { contains: term, mode: 'insensitive' } },
+  };
+  if (!customerFields) return { OR: [byId, byShop] };
+
   const branches: Prisma.OrderWhereInput[] = [
-    { id: { contains: term, mode: 'insensitive' } },
+    byId,
     { user: { nom: { contains: term, mode: 'insensitive' } } },
-    { restaurant: { nom: { contains: term, mode: 'insensitive' } } },
+    byShop,
   ];
 
   const phone = toPhoneNeedle(term);

@@ -255,4 +255,36 @@ describeIfDb('Acceptation vendeur (PostgreSQL réel)', () => {
     expect(refund.status).toBe('PENDING');
     expect(providerCalls).toHaveLength(0);
   });
+
+  it('4 — lot C (D2) : la commande rendue au vendeur qui accepte ne porte pas le client', async () => {
+    await resetOrder(OrderStatus.PAYER, new Date(Date.now() + 600_000));
+    await prisma.order.update({
+      where: { id: ORDER },
+      data: {
+        contactPhone: '066123456',
+        deliveryAddress: '12 rue des Manguiers',
+        deliveryLandmark: 'Portail bleu',
+      },
+    });
+
+    const shown = await lifecycle.acceptOrder(ORDER, 'fb-acc-o', 20);
+
+    expect(shown).toMatchObject({
+      id: ORDER,
+      status: OrderStatus.ACCEPTEE,
+      userId: null,
+      contactPhone: null,
+      deliveryLandmark: null,
+    });
+    const json = JSON.stringify(shown);
+    for (const secret of [CLIENT, '066123456', 'Manguiers', 'Portail']) {
+      expect(json).not.toContain(secret);
+    }
+    // Rien n'est effacé en base : le livreur en aura besoin.
+    const stored = await prisma.order.findUniqueOrThrow({
+      where: { id: ORDER },
+    });
+    expect(stored.contactPhone).toBe('066123456');
+    expect(stored.deliveryAddress).toBe('12 rue des Manguiers');
+  });
 });

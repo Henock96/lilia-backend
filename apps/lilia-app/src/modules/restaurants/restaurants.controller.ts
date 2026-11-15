@@ -260,9 +260,10 @@ export class RestaurantsController {
     countOrders(@Param('id') id: string, @FirebaseUser() fbUser: DecodedIdToken) {
         return this.service.countOrders(id, fbUser.uid);
     }
-    // Endpoint pour récupérer les clients d'un restaurant spécifique
+    // Endpoint pour récupérer les clients d'un restaurant spécifique.
+    // Lot C (D2.c) : réservé à l'ADMIN — le vendeur ne connaît pas ses clients.
     @Get(':id/clients')
-    @Roles('ADMIN', 'RESTAURATEUR')
+    @Roles('ADMIN')
     @ApiOperation({ summary: 'Clients distincts du restaurant (paginés)' })
     findClients(
         @Param('id') id: string,
@@ -273,7 +274,7 @@ export class RestaurantsController {
     }
 
     @Get(':id/clients/:userId/orders')
-    @Roles('ADMIN', 'RESTAURATEUR')
+    @Roles('ADMIN')
     @ApiOperation({ summary: 'Commandes d\'un client pour ce restaurant' })
     async getClientOrders(
         @Param('id') restaurantId: string,

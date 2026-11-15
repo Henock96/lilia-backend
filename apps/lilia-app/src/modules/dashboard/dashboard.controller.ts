@@ -83,7 +83,9 @@ export class DashboardController {
     return this.dashboardService.getClientStats(fbUser.uid);
   }
 
+  // Lot C (D2.c) : fiche client réservée à l'ADMIN.
   @Get('clients/:clientId')
+  @Roles('ADMIN')
   @ApiOperation({ summary: 'Détail complet d\'un client (commandes, dépenses, adresses)' })
   getClientDetail(
     @FirebaseUser() fbUser: DecodedIdToken,

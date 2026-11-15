@@ -12,6 +12,7 @@ import {
   toOrderStatusCounts,
 } from './order-status-filter';
 import { buildOrderSearchWhere } from './order-search';
+import { projectOrdersForVendor } from './vendor-order-projection';
 
 // Définition d'une commande « bloquée » — source unique, classement testé.
 import { STUCK_ORDER_STATUSES } from './order-status-groups';
@@ -161,9 +162,10 @@ export class OrderQueryService {
    * cloisonnement : c'est ce qui a produit l'IDOR des analytics vendeur en
    * août, où le rôle était contrôlé mais pas l'objet.
    *
-   * Minimisation des données (fix L12) : le vendeur reçoit ce qu'il lui faut
-   * pour préparer et livrer — nom, téléphone, photo. Pas l'e-mail, qui n'a
-   * aucun usage opérationnel et alimente les exports sauvages.
+   * Minimisation des données (fix L12, puis lot C du 15/11/2026, D2) : le
+   * vendeur ne reçoit aucune identité client — ni nom, ni téléphone, ni
+   * e-mail, ni photo, ni adresse. La commande lui est désignée par son numéro
+   * (`vendor-order-projection.ts`).
    */
   /**
    * Ajoute à chaque commande les gestes que CE rôle peut y faire (règle R1).
@@ -238,14 +240,22 @@ export class OrderQueryService {
       );
     }
 
+    // Lot C (D2) — aucune identité client chargée pour le vendeur : la
+    // réponse passe par `projectOrdersForVendor` (« Client #<numéro> »).
     return {
       role: user.role,
       scope: { restaurantId: { in: shopIds } },
-      include: {
-        ...baseInclude,
-        user: { select: { id: true, nom: true, phone: true, imageUrl: true } },
-      },
+      include: baseInclude,
     };
+  }
+
+  /** Lot C — l'admin voit la commande telle quelle, le vendeur sans client. */
+  private async forRole<
+    T extends { id: string; deliveryQuartierId: string | null },
+  >(orders: T[], role: string) {
+    return role === 'ADMIN'
+      ? orders
+      : projectOrdersForVendor(this.prisma, orders);
   }
 
   /**
@@ -354,13 +364,16 @@ export class OrderQueryService {
     // Le refus d'un statut inconnu vient avant toute requête : inutile de
     // solliciter la base pour une demande qu'on sait invalide.
     const statusFilter = parseOrderStatusFilter(status);
-    const searchFilter = buildOrderSearchWhere(search);
 
     const {
       scope: baseScope,
       include,
       role,
     } = await this.resolveOrderScope(firebaseUid);
+    // Lot C (D2.d) — le vendeur cherche par numéro, jamais par client.
+    const searchFilter = buildOrderSearchWhere(search, {
+      customerFields: role === 'ADMIN',
+    });
 
     // ⚠️ La recherche s'ajoute au cloisonnement, elle ne s'y substitue jamais :
     // elle ne doit pas devenir une porte vers les commandes d'un concurrent.
@@ -390,7 +403,10 @@ export class OrderQueryService {
     ]);
 
     return {
-      data: await this.withAllowedActions(orders, role),
+      data: await this.withAllowedActions(
+        await this.forRole(orders, role),
+        role,
+      ),
       meta: {
         ...this.pagination.getPaginationMeta(page, limit, total),
         statusCounts: toOrderStatusCounts(grouped),
@@ -422,7 +438,10 @@ export class OrderQueryService {
     });
     if (!order) throw new NotFoundException('Commande introuvable.');
 
-    const [withActions] = await this.withAllowedActions([order], role);
+    const [withActions] = await this.withAllowedActions(
+      await this.forRole([order], role),
+      role,
+    );
     return withActions;
   }
 

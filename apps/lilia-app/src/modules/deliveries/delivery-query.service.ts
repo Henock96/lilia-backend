@@ -8,6 +8,7 @@ import { DeliveryStatus } from './dto/update-delivery.dto';
 import { ACTIVE_DELIVERY_STATUSES } from './delivery-statuses';
 import { projectDeliveryForClient } from './delivery-client-projection';
 import { projectDeliveryForDriver } from './delivery-driver-projection';
+import { projectOrdersForVendor } from '../orders/vendor-order-projection';
 import { DeliveryAssignmentLogService } from './delivery-assignment-log.service';
 
 /**
@@ -23,6 +24,16 @@ export class DeliveryQueryService {
     private readonly prisma: PrismaService,
     private readonly assignmentLog: DeliveryAssignmentLogService,
   ) {}
+
+  /** Lot C — nom du quartier de livraison, montré au vendeur. */
+  private async quartierName(id: string | null): Promise<string | null> {
+    if (!id) return null;
+    const q = await this.prisma.quartier.findUnique({
+      where: { id },
+      select: { nom: true },
+    });
+    return q?.nom ?? null;
+  }
 
   /**
    * Contrôle de propriété pour la consultation d'une livraison (anti-IDOR).
@@ -115,8 +126,14 @@ export class DeliveryQueryService {
       this.prisma.delivery.count({ where }),
     ]);
 
+    // Lot C (D2) — route vendeur : la commande sans son client.
+    const orders = await projectOrdersForVendor(
+      this.prisma,
+      deliveries.map((d) => d.order),
+    );
+
     return {
-      data: deliveries,
+      data: deliveries.map((d, i) => ({ ...d, order: orders[i] })),
       meta: {
         total,
         page,
@@ -338,7 +355,17 @@ export class DeliveryQueryService {
     // F3-12.0 — même projection que `by-order` : cette route est ouverte au
     // client propriétaire, elle ne doit pas servir ce que l'autre lui retire.
     const visible =
-      viewer === 'CLIENT' ? projectDeliveryForClient(delivery) : delivery;
+      viewer === 'CLIENT'
+        ? projectDeliveryForClient(delivery)
+        : viewer === 'VENDOR'
+          ? {
+              ...delivery,
+              // Lot C (D2) — le vendeur ne voit pas le client.
+              order: (
+                await projectOrdersForVendor(this.prisma, [delivery.order])
+              )[0],
+            }
+          : delivery;
 
     // On retire le firebaseUid du propriétaire avant de répondre (champ interne)
     const { owner: _owner, ...restaurant } = visible.order.restaurant;
@@ -492,6 +519,8 @@ export class DeliveryQueryService {
             deliveryPrecision: true,
             deliveryAddress: true,
             deliveryLandmark: true,
+            // Lot C — quartier montré au vendeur à la place de l'adresse.
+            deliveryQuartierId: true,
             restaurant: {
               select: {
                 id: true,
@@ -540,7 +569,23 @@ export class DeliveryQueryService {
 
     // Retire les champs internes (delivererId, userId, owner.firebaseUid)
     const { delivererId: _delivererId, order, ...rest } = visible;
-    const { userId: _userId, restaurant, ...orderRest } = order;
+    const {
+      userId: _userId,
+      restaurant,
+      deliveryQuartierId,
+      ...orderFields
+    } = order;
+    // Lot C (D2) — au vendeur, le quartier à la place du domicile.
+    const orderRest =
+      viewer === 'VENDOR'
+        ? {
+            ...orderFields,
+            deliveryAddress: await this.quartierName(deliveryQuartierId),
+            deliveryLandmark: null,
+            deliveryLatitude: null,
+            deliveryLongitude: null,
+          }
+        : orderFields;
     const { owner: _owner, ...publicRestaurant } = restaurant;
 
     return {
