@@ -7,6 +7,9 @@ import { OrderReorderService } from './order-reorder.service';
 import { OrderReceiptService } from './order-receipt.service';
 import { OrdersController } from './orders.controller';
 import { AdminPickupArbitrationController } from './admin-pickup-arbitration.controller';
+import { AdminDeliveryArbitrationController } from './admin-delivery-arbitration.controller';
+import { DeliveryArbitrationService } from './delivery-arbitration.service';
+import { DeliveryAssignmentLogService } from '../deliveries/delivery-assignment-log.service';
 import { PrismaModule } from '../../prisma/prisma.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PaginationService } from '../../common/pagination/pagination.service';
@@ -38,7 +41,11 @@ import { VendorOffersCoreModule } from '../vendor-offers/vendor-offers-core.modu
     // F3-11 — offre boutique au checkout et au devis.
     VendorOffersCoreModule,
   ],
-  controllers: [OrdersController, AdminPickupArbitrationController],
+  controllers: [
+    OrdersController,
+    AdminPickupArbitrationController,
+    AdminDeliveryArbitrationController,
+  ],
   providers: [
     OrdersService,
     OrderQueryService,
@@ -52,6 +59,10 @@ import { VendorOffersCoreModule } from '../vendor-offers/vendor-offers-core.modu
     DeliveryDestinationService,
     PromoService,
     OrderReceiptService,
+    // 15/11/2026 — arbitrage de livraison. Le journal des mains n'a aucune
+    // dépendance : le fournir ici évite d'importer tout `DeliveriesModule`.
+    DeliveryArbitrationService,
+    DeliveryAssignmentLogService,
   ],
   // `OrderExpiryService` (module schedule) réutilise le chemin d'annulation
   // avec ses compensations plutôt que de le réimplémenter.

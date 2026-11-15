@@ -173,7 +173,9 @@ export class DeliveryUnassignedEvent extends BaseDeliveryEvent {
       | 'reassigned'
       | 'order_cancelled'
       | 'declined'
-      | 'abandoned',
+      | 'abandoned'
+      /** Arbitrage de livraison : l'ADMIN a clôturé la commande sans lui. */
+      | 'order_closed_by_admin',
     public readonly reason?: string | null,
     timestamp?: Date,
   ) {

@@ -561,6 +561,23 @@ export class DeliveriesListener {
       return;
     }
 
+    if (event.cause === 'order_closed_by_admin') {
+      // Course fermée et livreur libéré dans la transaction de l'arbitrage.
+      await Promise.allSettled([
+        this.notifications.sendPushNotification(
+          event.delivererId,
+          '❌ Mission retirée',
+          `La commande #${shortId} a été clôturée par l’administration — ne vous déplacez pas.`,
+          {
+            type: 'delivery_cancelled',
+            deliveryId: event.deliveryId,
+            orderId: event.orderId,
+          },
+        ),
+      ]);
+      return;
+    }
+
     // cause === 'order_cancelled' — libéré dans `closeCancelledDelivery`.
     await Promise.allSettled([
       this.notifications.sendPushNotification(

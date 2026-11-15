@@ -46,6 +46,9 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'AdminController.unbanUser': 'USER_ROLES',
   'AdminController.unsuspendVendor': 'NONE',
   'AdminController.updateUserRole': 'USER_ROLES',
+  // 15/11/2026 — clôturer une livraison sans le livreur ouvre un versement
+  // vendeur et peut émettre un avoir.
+  'AdminDeliveryArbitrationController.arbitrate': 'FINANCE_EXECUTE',
   'AdminDeliveryFailureController.conclude': 'FINANCE_EXECUTE',
   'AdminDeliveryFailureController.evidence': 'NONE',
   'AdminDeliveryTariffsController.create': 'SETTINGS',
