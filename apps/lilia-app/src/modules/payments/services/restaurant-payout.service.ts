@@ -28,6 +28,11 @@ import {
 } from '../providers/payment-provider.interface';
 import { computePayoutBreakdown, toXaf } from '../money.util';
 import {
+  orderMargin,
+  resolveProviderFee,
+  summarizeMargins,
+} from '../order-margin';
+import {
   PAYOUT_BLOCKING_STATUSES,
   PayoutStateMachine,
 } from '../payout-state.machine';
@@ -1165,6 +1170,142 @@ export class RestaurantPayoutService {
     ]);
 
     return { data: rows, meta: { page, limit, total } };
+  }
+
+  /** Plafond de commandes lues par appel : au-delà, la période est à réduire. */
+  private static readonly MARGINS_MAX_ORDERS = 2000;
+
+  /**
+   * Durcissement lot 5 — marge des commandes livrées de la période.
+   *
+   * Même calcul que la fiche (`buildContribution`), plus les frais prestataire
+   * avec leur qualité (`order-margin.ts`). Lecture seule. La synthèse couvre
+   * toute la période lue ; `rows` n'en rend que les `limit` plus récentes.
+   */
+  async listOrderMargins(
+    query: { from?: string; to?: string; limit: number },
+    rates: { collectionFeeBps: number | null; payoutFeeBps: number | null },
+  ) {
+    const orders = await this.prisma.order.findMany({
+      where: {
+        status: 'LIVRER',
+        ...(query.from || query.to
+          ? {
+              createdAt: {
+                ...(query.from ? { gte: new Date(query.from) } : {}),
+                ...(query.to ? { lte: new Date(query.to) } : {}),
+              },
+            }
+          : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: RestaurantPayoutService.MARGINS_MAX_ORDERS + 1,
+      select: {
+        id: true,
+        createdAt: true,
+        total: true,
+        subTotal: true,
+        deliveryFee: true,
+        serviceFee: true,
+        discountAmount: true,
+        loyaltyDiscount: true,
+        isDelivery: true,
+        commissionPercent: true,
+        vendorDeliverySubsidyXaf: true,
+        vendorFundedDiscountXaf: true,
+        restaurant: { select: { nom: true } },
+        Payment: {
+          where: { status: PaymentStatus.SUCCESS },
+          select: { collectionFeeXaf: true, provider: true },
+          take: 1,
+        },
+        payout: true,
+        refunds: {
+          select: {
+            id: true,
+            status: true,
+            amount: true,
+            bearer: true,
+            reasonCode: true,
+            incidentId: true,
+            createdAt: true,
+            processedAt: true,
+          },
+        },
+        delivery: {
+          select: {
+            driverBaseXaf: true,
+            driverPayXaf: true,
+            driverSharePercent: true,
+            driverEmploymentType: true,
+            driverCompensationModel: true,
+            driverEconomicsFrozenAt: true,
+          },
+        },
+      },
+    });
+
+    const truncated =
+      orders.length > RestaurantPayoutService.MARGINS_MAX_ORDERS;
+    const rows = orders
+      .slice(0, RestaurantPayoutService.MARGINS_MAX_ORDERS)
+      .map((order) => {
+        const breakdown = order.payout
+          ? {
+              commissionAmount: order.payout.commissionAmount,
+              deliverySubsidyAmount: order.payout.deliverySubsidyAmount,
+              vendorOfferAmount: order.payout.vendorOfferAmount,
+              refundDeductionAmount: order.payout.refundDeductionAmount,
+              payoutAmount: order.payout.amount,
+            }
+          : this.buildBreakdown(
+              order,
+              refundGateForPayout(order.refunds).deductionXaf,
+            );
+        const contribution = this.buildContribution(order, breakdown, {
+          collectionFee: order.Payment[0]?.collectionFeeXaf ?? null,
+          payoutFee: order.payout?.payoutFeeXaf ?? null,
+        });
+        return {
+          orderId: order.id,
+          orderRef: this.orderRef(order.id),
+          createdAt: order.createdAt,
+          vendor: order.restaurant.nom,
+          totalPaidXaf: order.total,
+          ...orderMargin({
+            marginBeforeProviderFeesXaf:
+              contribution.contributionMarginBeforeProviderFees,
+            // Le taux du contrat est celui de pawaPay : il ne s'applique qu'à
+            // un encaissement pawaPay réussi. Un virement MANUAL, ou une
+            // commande sans paiement réussi, reste INCONNU — jamais 0.
+            collectionFee: resolveProviderFee(
+              order.Payment[0]?.collectionFeeXaf ?? null,
+              order.total,
+              order.Payment[0]?.provider === 'PAWAPAY'
+                ? rates.collectionFeeBps
+                : null,
+            ),
+            // Versement pas encore parti : il partira par pawaPay (défaut du
+            // modèle). Parti par un autre canal : pas de taux applicable.
+            payoutFee: resolveProviderFee(
+              order.payout?.payoutFeeXaf ?? null,
+              breakdown.payoutAmount,
+              !order.payout || order.payout.provider === 'PAWAPAY'
+                ? rates.payoutFeeBps
+                : null,
+            ),
+          }),
+        };
+      });
+
+    return {
+      data: {
+        rates,
+        truncated,
+        summary: summarizeMargins(rows),
+        rows: rows.slice(0, query.limit),
+      },
+    };
   }
 
   /**

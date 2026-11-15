@@ -85,6 +85,7 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'AdminOrderRefundsController.create': 'FINANCE_EXECUTE',
   'AdminOrderRefundsController.quote': 'NONE',
   'AdminPayoutController.getFinancials': 'NONE',
+  'AdminPayoutController.getOrderMargins': 'NONE',
   'AdminPayoutController.listPayouts': 'NONE',
   'AdminPayoutController.payoutEvents': 'NONE',
   'AdminPayoutController.pendingSummary': 'NONE',

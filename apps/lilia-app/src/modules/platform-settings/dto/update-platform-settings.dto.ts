@@ -396,6 +396,24 @@ export class UpdatePlatformSettingsDto {
   dispatchEnabled?: boolean;
 
   /**
+   * Durcissement lot 5 (D-3) — frais pawaPay du contrat, en points de base
+   * (175 = 1,75 %). Vue de marge seulement. `null` : poste inconnu.
+   */
+  @IsOptional()
+  @ValidateIf((_o, value) => value !== null)
+  @IsInt()
+  @Min(0)
+  @Max(10000)
+  estimatedCollectionFeeBps?: number | null;
+
+  @IsOptional()
+  @ValidateIf((_o, value) => value !== null)
+  @IsInt()
+  @Min(0)
+  @Max(10000)
+  estimatedPayoutFeeBps?: number | null;
+
+  /**
    * Verrou optimiste (SET-001) : l'`updatedAt` de la configuration **telle que
    * l'administrateur l'a chargée**.
    *
