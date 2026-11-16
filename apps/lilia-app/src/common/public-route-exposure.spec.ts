@@ -45,6 +45,8 @@ const PUBLIC_ROUTES: Record<string, string> = {
   'QuartiersController.calculateDeliveryFee': 'MAPPED',
   'QuartiersController.findAll': 'TO_AUDIT',
   'QuartiersController.getRestaurantDeliveryZones': 'MAPPED',
+  // Lot 4 : bornes + heures libres, ni table ni client (`PUBLIC_VENDOR_WHERE`).
+  'ReservationAvailabilityController.availability': 'MAPPED',
   'RestaurantsController.findAll': 'VENDOR_PROJECTION',
   'RestaurantsController.findOne': 'VENDOR_PROJECTION',
   'RestaurantsController.findPopular': 'VENDOR_PROJECTION',

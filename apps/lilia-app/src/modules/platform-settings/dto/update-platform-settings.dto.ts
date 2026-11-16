@@ -323,6 +323,18 @@ export class UpdatePlatformSettingsDto {
   vendorOffersEnabled?: boolean;
 
   /**
+   * Premium Lot 3 / Lot 4 — réservation sur place. À allumer **seulement**
+   * sur accord explicite, après publication de l'app vendeurs (configuration
+   * et gestion) et de l'app client (réservation), et une fois le paiement qui
+   * confirme la table livré (4B-2). L'éteindre retire toute disponibilité et
+   * refuse toute nouvelle demande ; les réservations existantes restent
+   * gérables par le restaurant.
+   */
+  @IsOptional()
+  @IsBoolean()
+  reservationsEnabled?: boolean;
+
+  /**
    * F3-07 / D5 — délai entre la preuve de remise et le versement, en minutes.
    * Ne réécrit pas les échéances déjà posées : il s'applique aux remises
    * suivantes. Bornes identiques au CHECK en base.

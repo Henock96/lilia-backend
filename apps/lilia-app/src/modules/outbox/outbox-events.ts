@@ -90,3 +90,12 @@ export const VENDOR_OFFER_NOTICE_EVENT = 'vendor.offer.notice';
  * révoque ses jetons et purge le cache de session.
  */
 export const USER_BAN_APPLIED_EVENT = 'user.ban.applied';
+
+/**
+ * Lot 4 — une réservation sur place change d'état : prévenir le client ou le
+ * restaurant (demande, acceptation, refus, expiration, annulation,
+ * réattribution, absence, rappel, récapitulatif du jour). Écrit dans la
+ * transaction de la transition — geste HTTP ou cron du worker — et dépilé par
+ * `ReservationOutboxEffectsService`.
+ */
+export const RESERVATION_NOTICE_EVENT = 'reservation.notice';

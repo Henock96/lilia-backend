@@ -46,6 +46,11 @@ describe('UserDeletionService', () => {
     $executeRaw: jest.fn().mockResolvedValue(0),
     // F3-12.1 R6 — la garde « livraison en cours » est relue sous le verrou.
     delivery: { count: jest.fn().mockResolvedValue(0) },
+    // Lot 4 — réservations : garde relue sous verrou, puis anonymisation.
+    reservation: {
+      count: jest.fn().mockResolvedValue(0),
+      updateMany: jest.fn(),
+    },
   };
 
   const prisma = {
@@ -53,6 +58,7 @@ describe('UserDeletionService', () => {
     order: { count: jest.fn() },
     restaurant: { findFirst: jest.fn() },
     delivery: { count: jest.fn() },
+    reservation: { count: jest.fn() },
     $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     // Balayage post-commit des offres (patron §8.4).
     $executeRaw: jest.fn().mockResolvedValue(0),
@@ -67,6 +73,8 @@ describe('UserDeletionService', () => {
     prisma.restaurant.findFirst.mockResolvedValue(null);
     prisma.delivery.count.mockResolvedValue(0);
     tx.delivery.count.mockResolvedValue(0);
+    prisma.reservation.count.mockResolvedValue(0);
+    tx.reservation.count.mockResolvedValue(0);
     tx.$executeRaw.mockResolvedValue(0);
     prisma.$executeRaw.mockResolvedValue(0);
 
@@ -177,6 +185,32 @@ describe('UserDeletionService', () => {
       );
       expect(tx.user.update).not.toHaveBeenCalled();
       expect(firebase.deleteUserSafe).not.toHaveBeenCalled();
+    });
+
+    it('réservation en cours → 409, rien n’est écrit (lot 4)', async () => {
+      prisma.reservation.count.mockResolvedValue(1);
+      await expect(service.deleteOwnAccount('u1')).rejects.toThrow(
+        /réservation\(s\) en cours/,
+      );
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(firebase.deleteUserSafe).not.toHaveBeenCalled();
+    });
+
+    it('réservation créée entre-temps : relue sous le verrou → 409, rien écrit', async () => {
+      tx.reservation.count.mockResolvedValue(1);
+      await expect(service.deleteOwnAccount('u1')).rejects.toThrow(
+        /réservation\(s\) en cours/,
+      );
+      expect(tx.reservation.updateMany).not.toHaveBeenCalled();
+      expect(tx.user.update).not.toHaveBeenCalled();
+    });
+
+    it('réservations passées : numéro et note du client effacés', async () => {
+      await service.deleteOwnAccount('u1');
+      expect(tx.reservation.updateMany).toHaveBeenCalledWith({
+        where: { userId: 'u1' },
+        data: { contactPhone: '000000', note: null },
+      });
     });
 
     it('commande en cours → refus, rien n’est écrit', async () => {

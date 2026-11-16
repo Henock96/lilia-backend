@@ -165,6 +165,8 @@ model User {
 
   // Durcissement lot 3 — adhésions aux boutiques (OWNER, MANAGER, STAFF).
   shopMemberships ShopMembership[]
+  // Lot 4 — réservations sur place demandées par ce client
+  reservations Reservation[]
 
   @@index([referredByCode]) // getReferralStats : 2 count() par ouverture de l'écran (fix M19)
   /// Réutilisation d'un numéro de téléphone = signal anti-abus le plus fort du
@@ -523,6 +525,8 @@ model Restaurant {
   reservationSettings ReservationSettings?
   reservationSpaces   ReservationSpace[]
   reservationWindows  ReservationWindow[]
+  /// Lot 4 — réservations des clients.
+  reservations        Reservation[]
 
   /// F3-12 — le dispatch automatique propose-t-il les courses de ce vendeur ?
   /// `MANUAL` par défaut : l'assignation reste humaine tant qu'un ADMIN n'a
@@ -3841,6 +3845,8 @@ model ReservationSpace {
   archivedAt         DateTime?
   createdAt          DateTime   @default(now())
   updatedAt          DateTime   @updatedAt
+  /// Lot 4 — réservations attribuées à cette ressource.
+  reservations       Reservation[]
 
   @@index([restaurantId, archivedAt])
 }
@@ -4098,4 +4104,131 @@ model IdempotencyReceipt {
 
   @@id([scope, ownerId, key])
   @@index([createdAt])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Lot 4 — réservations sur place, parcours client (4B-1 : sans argent).
+// Décisions : `lilia-engineering/features/2026-10-17-reservations-parcours-
+// client/03-approval.md`. Machine d'états : `reservation-state.machine.ts`
+// (le code est la vérité, règle 4). Statuts et motifs en TEXT + CHECK
+// (règle 14), listes miroirs dans `reservation-booking-vocab.ts`.
+//
+// Le paiement (4B-2) passera par une `Order` liée ; aucune colonne d'argent
+// ici : la réservation ne porte ni prix, ni frais, ni versement.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Une demande de réservation d'un client, avec sa précommande de plats.
+model Reservation {
+  id                 String           @id @default(cuid())
+  restaurantId       String
+  /// Restrict : une réservation est une pièce de l'historique du restaurant.
+  restaurant         Restaurant       @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  userId             String
+  user               User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  /// Ressource attribuée par le serveur (Q6) ; changée par une réattribution.
+  spaceId            String
+  space              ReservationSpace @relation(fields: [spaceId], references: [id], onDelete: Restrict)
+  /// CHECK : liste `RESERVATION_STATUSES`.
+  status             String           @default("PENDING")
+  /// Personnes attendues. CHECK 1–50.
+  partySize          Int
+  /// Instant d'arrivée (heure de Brazzaville à la saisie, stockée en UTC).
+  arrivalAt          DateTime
+  /// Fin de l'occupation = arrivée + durée figée à la demande. Un changement
+  /// ultérieur de la configuration ne déplace pas une réservation existante.
+  endsAt             DateTime
+  /// Fin du blocage de la ressource = `endsAt` + marge figée à la demande.
+  occupiedUntil      DateTime
+  /// Téléphone de contact normalisé, obligatoire (Q8).
+  contactPhone       String
+  /// Mot du client au restaurant (≤ 280).
+  note               String?
+  /// Clé d'idempotence de la demande (`Idempotency-Key`), unique par client.
+  requestKey         String
+  /// Le vendeur doit répondre avant (B3) : min(demande + 30 min, arrivée).
+  responseDeadlineAt DateTime
+  /// Le client doit payer avant (C4) : min(acceptation + 15 min, arrivée).
+  paymentDeadlineAt  DateTime?
+  acceptedAt         DateTime?
+  declinedAt         DateTime?
+  /// CHECK : liste `RESERVATION_DECLINE_REASONS`, obligatoire en DECLINED.
+  declineReason      String?
+  expiredAt          DateTime?
+  cancelledAt        DateTime?
+  /// CHECK : liste `RESERVATION_VENDOR_CANCEL_REASONS`, obligatoire en CANCELLED_BY_VENDOR.
+  cancelReason       String?
+  confirmedAt        DateTime?
+  honoredAt          DateTime?
+  noShowAt           DateTime?
+  /// Rappel client posé une seule fois (B7).
+  reminderSentAt     DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  items  ReservationItem[]
+  events ReservationEvent[]
+
+  @@unique([userId, requestKey])
+  @@index([restaurantId, arrivalAt])
+  @@index([spaceId, arrivalAt])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status, responseDeadlineAt])
+  @@index([status, paymentDeadlineAt])
+  @@index([userId, status, noShowAt])
+}
+
+/// Un plat précommandé (C1, D4), copié du panier serveur à la demande. Aucun
+/// prix : le montant sera calculé au paiement (4B-2), par le checkout.
+/// Produit, menu, variante et options restent des **identifiants simples**,
+/// sans clé étrangère : une réservation ne doit pas bloquer l'édition du
+/// catalogue — un menu du jour se supprime (`menu-lifecycle.service.ts`), un
+/// produit jamais vendu aussi (`product-command.service.ts`). Le paiement les
+/// revalidera ; ce qui a disparu est indisponible.
+model ReservationItem {
+  id               String      @id @default(cuid())
+  reservationId    String
+  reservation      Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  productId        String
+  menuId           String?
+  variantId        String
+  quantite         Int
+  /// Signature canonique des options (`modifier-selection.ts`), comme le panier.
+  optionsSignature String      @default("")
+  /// Libellés figés à la demande, pour l'écran du vendeur.
+  productName      String
+  variantLabel     String?
+  createdAt        DateTime    @default(now())
+
+  options ReservationItemOption[]
+
+  @@index([reservationId])
+}
+
+/// Option choisie sur un plat précommandé (identifiant simple, voir plus haut).
+model ReservationItemOption {
+  itemId   String
+  item     ReservationItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  optionId String
+  quantity Int             @default(1)
+
+  @@id([itemId, optionId])
+}
+
+/// Journal des transitions d'une réservation (03 §3) : chaque changement
+/// d'état ou de ressource, avec son acteur et son motif.
+model ReservationEvent {
+  id            String      @id @default(cuid())
+  reservationId String
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  fromStatus    String?
+  toStatus      String
+  /// CHECK : 'CLIENT' | 'RESTAURATEUR' | 'SYSTEM' | 'ADMIN'.
+  actorRole     String
+  actorId       String?
+  reason        String?
+  fromSpaceId   String?
+  toSpaceId     String?
+  createdAt     DateTime    @default(now())
+
+  @@index([reservationId, createdAt])
 }

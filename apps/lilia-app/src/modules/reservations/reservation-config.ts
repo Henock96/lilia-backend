@@ -41,6 +41,11 @@ const MINUTES_PER_DAY = 24 * 60;
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 /** `Cc` (C0, DEL, C1) et `Cf` (largeur nulle, BOM, bidi). */
 const INVISIBLE_CHARS = /[\p{Cc}\p{Cf}]/u;
+/**
+ * P-07 — texte libre d'une demande (note) : même règle, sauf le retour à la
+ * ligne, que le champ accepte déjà. U+200B, BOM, bidi, tabulation : refusés.
+ */
+export const VISIBLE_TEXT_WITH_NEWLINES = /^(?:\n|[^\p{Cc}\p{Cf}])*$/u;
 
 export interface DraftSpace {
   /** Absent = ressource nouvelle. Présent = ressource existante de la boutique. */

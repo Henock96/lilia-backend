@@ -405,6 +405,41 @@
         "properties": {},
         "type": "object"
       },
+      "CreateReservationDto": {
+        "properties": {
+          "contactPhone": {
+            "description": "Téléphone de contact ; absent = celui du compte (obligatoire au final)",
+            "type": "string"
+          },
+          "date": {
+            "description": "Jour civil de Brazzaville (AAAA-MM-JJ)",
+            "type": "string"
+          },
+          "note": {
+            "maxLength": 280,
+            "type": "string"
+          },
+          "partySize": {
+            "maximum": 50,
+            "minimum": 1,
+            "type": "number"
+          },
+          "restaurantId": {
+            "type": "string"
+          },
+          "time": {
+            "description": "Heure d’arrivée proposée par le serveur (HH:mm)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "restaurantId",
+          "date",
+          "time",
+          "partySize"
+        ],
+        "type": "object"
+      },
       "CreateRestaurantDto": {
         "properties": {},
         "type": "object"
@@ -535,6 +570,24 @@
         "properties": {},
         "type": "object"
       },
+      "DeclineReservationDto": {
+        "properties": {
+          "reason": {
+            "enum": [
+              "FULLY_BOOKED",
+              "CLOSED",
+              "ITEMS_UNAVAILABLE",
+              "PARTY_TOO_LARGE",
+              "OTHER"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "type": "object"
+      },
       "DeliveryTariffDraftDto": {
         "properties": {},
         "type": "object"
@@ -652,6 +705,18 @@
       },
       "QuoteOrderDto": {
         "properties": {},
+        "type": "object"
+      },
+      "ReassignReservationDto": {
+        "properties": {
+          "spaceId": {
+            "description": "Ressource de VOTRE restaurant, du même type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "spaceId"
+        ],
         "type": "object"
       },
       "ReconciliationNoteDto": {
@@ -1466,6 +1531,24 @@
       },
       "ValidatePromoDto": {
         "properties": {},
+        "type": "object"
+      },
+      "VendorCancelReservationDto": {
+        "properties": {
+          "reason": {
+            "enum": [
+              "CLOSED_UNEXPECTEDLY",
+              "ITEMS_UNAVAILABLE",
+              "OVERBOOKED",
+              "CLIENT_REQUEST",
+              "OTHER"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
         "type": "object"
       },
       "VendorCommissionChangeDto": {
@@ -11594,6 +11677,145 @@
         ]
       }
     },
+    "/reservations": {
+      "post": {
+        "operationId": "ReservationsController_create",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "idempotency-key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateReservationDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Demander une table avec sa précommande (le panier) — Idempotency-Key requis",
+        "tags": [
+          "Réservations sur place (client)"
+        ]
+      }
+    },
+    "/reservations/me": {
+      "get": {
+        "operationId": "ReservationsController_mine",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Mes réservations",
+        "tags": [
+          "Réservations sur place (client)"
+        ]
+      }
+    },
+    "/reservations/{id}": {
+      "get": {
+        "operationId": "ReservationsController_one",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Une de mes réservations",
+        "tags": [
+          "Réservations sur place (client)"
+        ]
+      }
+    },
+    "/reservations/{id}/cancel": {
+      "post": {
+        "operationId": "ReservationsController_cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Annuler ma demande (si `allowedActions` le permet)",
+        "tags": [
+          "Réservations sur place (client)"
+        ]
+      }
+    },
     "/restaurants": {
       "get": {
         "operationId": "RestaurantsController_findAll",
@@ -13128,6 +13350,309 @@
         ]
       }
     },
+    "/vendors/me/reservations": {
+      "get": {
+        "operationId": "VendorReservationsController_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Jour civil de Brazzaville (AAAA-MM-JJ)",
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "PENDING",
+                "AWAITING_PAYMENT",
+                "CONFIRMED",
+                "DECLINED",
+                "EXPIRED",
+                "CANCELLED_BY_CLIENT",
+                "CANCELLED_BY_VENDOR",
+                "HONORED",
+                "NO_SHOW"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Mes réservations, par jour et par statut",
+        "tags": [
+          "Réservations sur place (vendeur)"
+        ]
+      }
+    },
+    "/vendors/me/reservations/{id}": {
+      "get": {
+        "operationId": "VendorReservationsController_one",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Une réservation de mon restaurant",
+        "tags": [
+          "Réservations sur place (vendeur)"
+        ]
+      }
+    },
+    "/vendors/me/reservations/{id}/accept": {
+      "post": {
+        "operationId": "VendorReservationsController_accept",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Accepter la demande (le client a 15 min pour payer)",
+        "tags": [
+          "Réservations sur place (vendeur)"
+        ]
+      }
+    },
+    "/vendors/me/reservations/{id}/cancel": {
+      "post": {
+        "operationId": "VendorReservationsController_cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VendorCancelReservationDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Annuler une réservation (motif obligatoire)",
+        "tags": [
+          "Réservations sur place (vendeur)"
+        ]
+      }
+    },
+    "/vendors/me/reservations/{id}/decline": {
+      "post": {
+        "operationId": "VendorReservationsController_decline",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeclineReservationDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Refuser la demande (motif obligatoire)",
+        "tags": [
+          "Réservations sur place (vendeur)"
+        ]
+      }
+    },
+    "/vendors/me/reservations/{id}/no-show": {
+      "post": {
+        "operationId": "VendorReservationsController_noShow",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Déclarer le client absent",
+        "tags": [
+          "Réservations sur place (vendeur)"
+        ]
+      }
+    },
+    "/vendors/me/reservations/{id}/reassign": {
+      "post": {
+        "operationId": "VendorReservationsController_reassign",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReassignReservationDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Déplacer vers une autre table du même type",
+        "tags": [
+          "Réservations sur place (vendeur)"
+        ]
+      }
+    },
+    "/vendors/me/reservations/{id}/undo-no-show": {
+      "post": {
+        "operationId": "VendorReservationsController_undoNoShow",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Retirer une absence déclarée par erreur (24 h)",
+        "tags": [
+          "Réservations sur place (vendeur)"
+        ]
+      }
+    },
     "/vendors/me/reviews": {
       "get": {
         "operationId": "VendorReviewsController_list",
@@ -13882,6 +14407,50 @@
         "summary": "Mettre à jour son profil vendeur (story, certifications, etc.)",
         "tags": [
           "Vendors"
+        ]
+      }
+    },
+    "/vendors/{id}/reservation-availability": {
+      "get": {
+        "operationId": "ReservationAvailabilityController_availability",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Jour civil de Brazzaville (AAAA-MM-JJ). Absent = seulement les bornes.",
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "partySize",
+            "required": false,
+            "schema": {
+              "default": 2,
+              "maximum": 50,
+              "minimum": 1,
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Heures d’arrivée libres pour une date et un groupe (sans date : les bornes)",
+        "tags": [
+          "Réservations sur place (client)"
         ]
       }
     },

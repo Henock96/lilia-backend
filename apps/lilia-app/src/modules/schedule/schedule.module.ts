@@ -22,6 +22,8 @@ import { VendorOffersCoreModule } from '../vendor-offers/vendor-offers-core.modu
 import { LedgerCoreModule } from '../ledger/ledger-core.module';
 import { LedgerPostingCron } from '../ledger/ledger-posting.cron';
 import { OrderRequestExpiryService } from './order-request-expiry.service';
+import { ReservationsCoreModule } from '../reservations/reservations-core.module';
+import { ReservationScheduleService } from './reservation-schedule.service';
 
 @Module({
     imports: [
@@ -36,6 +38,7 @@ import { OrderRequestExpiryService } from './order-request-expiry.service';
         RefundsCoreModule,
         VendorOffersCoreModule, // F3-11 : échéance des offres
         LedgerCoreModule, // lot 2 : posteur du grand livre (interrupteur éteint)
+        ReservationsCoreModule, // Lot 4 : expirations, rappels, récapitulatif
     ],
     providers: [
         // Les 5 crons sont toujours enregistrés. Le choix « ce processus
@@ -62,6 +65,8 @@ import { OrderRequestExpiryService } from './order-request-expiry.service';
         LedgerPostingCron,
         // Lot 3 : demandes `ACCEPT_FIRST` sans réponse (inerte sans elles).
         OrderRequestExpiryService,
+        // Lot 4 : échéances, rappels et récapitulatif des réservations.
+        ReservationScheduleService,
         PrismaService,
     ],
 })
