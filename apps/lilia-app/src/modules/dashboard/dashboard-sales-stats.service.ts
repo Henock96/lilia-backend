@@ -322,6 +322,11 @@ export class DashboardSalesStatsService {
    */
   async getPeakHours(firebaseUid: string, period?: string) {
     const restaurant = await this.common.getRestaurant(firebaseUid);
+    // Lot D (D3) — réservé au Premium, même dégradation que les produits
+    // phares : `200`, rien à afficher.
+    if (!(await this.common.hasAdvancedAnalytics(restaurant))) {
+      return { data: [], peakHour: null, premiumRequired: true };
+    }
     const restaurantFilter = restaurant ? { restaurantId: restaurant.id } : {};
 
     const dateFilter = this.common.getDateFilter(period);
@@ -354,6 +359,7 @@ export class DashboardSalesStatsService {
       peakHour: hourlyStats.reduce((max, current) =>
         current.count > max.count ? current : max
       ),
+      premiumRequired: false,
     };
   }
 

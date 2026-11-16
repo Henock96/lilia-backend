@@ -60,6 +60,8 @@ describe('Dashboard vendeur — un seul périmètre de chiffre d’affaires', ()
     const common = {
       getRestaurant: jest.fn().mockResolvedValue({ id: 'r1' }),
       getDateFilter: jest.fn().mockReturnValue(undefined),
+      // Lot D — ce test porte sur le périmètre du CA, pas sur le Premium.
+      hasAdvancedAnalytics: jest.fn().mockResolvedValue(true),
     } as unknown as DashboardCommonService;
 
     return {

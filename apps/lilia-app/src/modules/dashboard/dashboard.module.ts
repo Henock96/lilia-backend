@@ -6,9 +6,11 @@ import { DashboardClientsStatsService } from './dashboard-clients-stats.service'
 import { DashboardCatalogStatsService } from './dashboard-catalog-stats.service';
 import { DashboardController } from './dashboard.controller';
 import { PrismaModule } from '../../prisma/prisma.module';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
 @Module({
-  imports: [PrismaModule],
+  // Lot D (retours produit) : verdict Premium des statistiques avancées.
+  imports: [PrismaModule, SubscriptionsModule],
   providers: [
     DashboardService,
     DashboardCommonService,
