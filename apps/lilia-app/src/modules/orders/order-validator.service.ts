@@ -157,7 +157,18 @@ export class OrderValidatorService {
   }
 
   // Clé du fix : on récupère TOUS les produits d'un coup, pas en boucle
-  async validateStock(cartItems: readonly StockLine[]) {
+  //
+  // Réservations (Lot 4, OD-12 / OD-11) : `at` = heure d'arrivée — on mange à
+  // cette heure-là, la fenêtre horaire d'un plat et d'un menu s'y juge ;
+  // `dailyStock: false` quand l'arrivée tombe un autre jour : `stockRestant`
+  // est le quota d'aujourd'hui, rechargé chaque matin. Sans options (checkout),
+  // le comportement est inchangé : maintenant, quota du jour.
+  async validateStock(
+    cartItems: readonly StockLine[],
+    options: { at?: Date; dailyStock?: boolean } = {},
+  ) {
+    const at = options.at ?? new Date();
+    const dailyStock = options.dailyStock ?? true;
     const productIds = [...new Set(cartItems.map((i) => i.productId))];
     const menuIds = [...new Set(cartItems.filter((i) => i.menuId).map((i) => i.menuId))];
 
@@ -200,7 +211,7 @@ export class OrderValidatorService {
 
       // Fixes M1 + M2 : produit retiré du catalogue, marqué indisponible, ou
       // hors de sa fenêtre horaire. Un panier peut avoir été rempli avant.
-      const reason = productStateReason(product, new Date());
+      const reason = productStateReason(product, at);
       if (reason) {
         errors.push(reason);
         continue;
@@ -208,7 +219,7 @@ export class OrderValidatorService {
       // Fix S-2 + F3-10 : stock insuffisant, dit dans l'unité du format le
       // plus « gros » de la commande (c'est lui qui manque).
       const stock = product.stockRestant;
-      if (stock !== null && stock !== undefined && units > stock) {
+      if (dailyStock && stock !== null && stock !== undefined && units > stock) {
         stockShort = true;
         const lines = cartItems.filter((l) => l.productId === productId);
         const line = lines.reduce((a, b) =>
@@ -227,7 +238,6 @@ export class OrderValidatorService {
       }
     }
 
-    const now = new Date();
     for (const [menuId, quantite] of qtyByMenu) {
       const menu = menuMap.get(menuId);
       if (!menu) {
@@ -245,13 +255,13 @@ export class OrderValidatorService {
           .filter((i) => i.menuId === menuId)
           .map((i) => ({ productId: i.productId, variantId: i.variantId })),
         cartRestaurantId(cartItems),
-        now,
+        at,
       );
       if (reason) {
         errors.push(reason);
         continue;
       }
-      if (menu.stockRestant !== null && menu.stockRestant !== undefined) {
+      if (dailyStock && menu.stockRestant !== null && menu.stockRestant !== undefined) {
         if (menu.stockRestant < quantite) {
           stockShort = true;
           errors.push(

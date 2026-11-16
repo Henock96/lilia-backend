@@ -22,9 +22,12 @@ export type SubscriptionPaymentMethod =
   (typeof SUBSCRIPTION_PAYMENT_METHODS)[number];
 
 /**
- * Droits accordés par chaque formule. Noms de travail du Lot 0, consommés à
- * partir du Lot 3 (statistiques) et du Lot 5 (réservations). Rien en base :
- * ajouter un droit à une formule ne demande aucune migration.
+ * Droits accordés par chaque formule. Noms de travail du Lot 0.
+ * `ON_SITE_RESERVATIONS` est consommé par le Lot 3 (configuration des
+ * réservations) et le Lot 4 (parcours client) — numérotation redéfinie par le
+ * propriétaire produit les 12 et 17/10/2026 ; `ANALYTICS_ADVANCED` attend un
+ * lot de statistiques à replanifier. Rien en base : ajouter un droit à une
+ * formule ne demande aucune migration.
  */
 export const PLAN_ENTITLEMENTS = {
   PREMIUM: ['ANALYTICS_ADVANCED', 'ON_SITE_RESERVATIONS'],

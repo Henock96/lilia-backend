@@ -44,4 +44,6 @@ export const RESERVATION_ERROR_CODES = {
   conflict: 'RESERVATION_SETTINGS_CONFLICT',
   premiumRequired: 'PREMIUM_REQUIRED',
   vendorType: 'RESERVATIONS_NOT_AVAILABLE_FOR_VENDOR_TYPE',
+  /** P-02 (OD-17) — une ressource porte une réservation active à venir. */
+  spaceInUse: 'RESERVATION_SPACE_IN_USE',
 } as const;

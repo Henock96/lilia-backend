@@ -4,6 +4,7 @@ import { NotificationsCoreModule } from '../notifications/notifications-core.mod
 import { PayoutOutboxEffectsService } from './payout-outbox-effects.service';
 import { ApprovalOutboxEffectsService } from './approval-outbox-effects.service';
 import { VendorOfferOutboxEffectsService } from '../vendor-offers/vendor-offer-outbox-effects.service';
+import { ReservationOutboxEffectsService } from '../reservations/reservation-outbox-effects.service';
 
 /**
  * Notifications de versement dépilées par l'outbox (F3-07).
@@ -15,10 +16,12 @@ import { VendorOfferOutboxEffectsService } from '../vendor-offers/vendor-offer-o
   imports: [PrismaModule, NotificationsCoreModule],
   // F3-08 — les demandes d'approbation, même mécanique.
   // F3-11 — les avis d'offre boutique au vendeur, même mécanique.
+  // Lot 4 — les avis de réservation au client et au restaurant, même mécanique.
   providers: [
     PayoutOutboxEffectsService,
     ApprovalOutboxEffectsService,
     VendorOfferOutboxEffectsService,
+    ReservationOutboxEffectsService,
   ],
 })
 export class PayoutOutboxEffectsModule {}

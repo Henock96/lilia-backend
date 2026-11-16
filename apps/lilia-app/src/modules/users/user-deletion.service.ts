@@ -10,6 +10,7 @@ import { IN_FLIGHT_ORDER_STATUSES } from '../orders/order-status-groups';
 import { FirebaseService } from '../firebase/firebase.service';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import { ACTIVE_DELIVERY_STATUSES } from '../deliveries/delivery-statuses';
+import { CAPACITY_HOLDING_STATUSES } from '../reservations/reservation-booking-vocab';
 
 /**
  * Suppression de compte à l'initiative de l'utilisateur (`DELETE /users/me`).
@@ -119,6 +120,15 @@ export class UserDeletionService {
             'Terminez-la avant de supprimer votre compte.',
         );
       }
+      // Lot 4 — relu sous le verrou `User` : une réservation créée entre-temps
+      // prend un `KEY SHARE` sur cette ligne (clé étrangère), elle attend.
+      await this.assertNoActiveReservation(tx, userId);
+      // Les réservations passées gardent leur historique, sans le numéro ni
+      // la note du client (données personnelles).
+      await tx.reservation.updateMany({
+        where: { userId },
+        data: { contactPhone: '000000', note: null },
+      });
       if (balance.loyaltyPoints !== 0) {
         await tx.loyaltyTransaction.create({
           data: {
@@ -213,6 +223,32 @@ export class UserDeletionService {
       throw new ConflictException(
         'Vous avez une livraison en cours. ' +
           'Terminez-la avant de supprimer votre compte.',
+      );
+    }
+
+    await this.assertNoActiveReservation(this.prisma, user.id);
+  }
+
+  /**
+   * Lot 4 — une réservation en cours (demande, attente de paiement, table
+   * confirmée) laisserait au restaurant une table tenue pour un compte
+   * disparu : refusée comme une commande en cours.
+   */
+  private async assertNoActiveReservation(
+    db: Pick<Prisma.TransactionClient, 'reservation'>,
+    userId: string,
+  ): Promise<void> {
+    const active = await db.reservation.count({
+      where: {
+        userId,
+        status: { in: [...CAPACITY_HOLDING_STATUSES] },
+        occupiedUntil: { gt: new Date() },
+      },
+    });
+    if (active > 0) {
+      throw new ConflictException(
+        `Vous avez ${active} réservation(s) en cours. ` +
+          'Annulez-les avant de supprimer votre compte.',
       );
     }
   }

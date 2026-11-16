@@ -16,13 +16,20 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
 import { hasEntitlement } from '../subscriptions/entitlements';
 import { VendorSubscriptionService } from '../subscriptions/vendor-subscription.service';
-import { OpeningHoursRow } from '../vendors/vendor-opening.policy';
+import {
+  brazzavilleClock,
+  OpeningHoursRow,
+} from '../vendors/vendor-opening.policy';
 import {
   ReservationDraftDto,
   SaveReservationSettingsDto,
 } from './dto/reservation-settings.dto';
+import { untenableReservation } from './reservation-availability';
+import { CAPACITY_HOLDING_STATUSES } from './reservation-booking-vocab';
 import {
   evaluateReservationDraft,
+  fromMinutes,
+  PlannedSpace,
   ReservationDraft,
   WEEK_DAYS,
 } from './reservation-config';
@@ -269,6 +276,16 @@ export class ReservationSettingsService {
         });
       }
 
+      // P-02 (OD-17) — avant toute écriture : aucune ressource retirée ou
+      // réduite ne doit porter une réservation active à venir. Le verrou
+      // `Restaurant` tenu ici est celui de toute création de réservation.
+      await assertSpacesStillHoldReservations(
+        tx,
+        vendor.id,
+        evaluation.plannedSpaces,
+        now,
+      );
+
       const settingsData = {
         enabled: dto.enabled,
         slotDurationMin: dto.slotDurationMin,
@@ -438,6 +455,56 @@ function conflict(): ConflictException {
       'La configuration a été modifiée entre-temps. Rechargez-la avant d’enregistrer.',
     code: CODES.conflict,
   });
+}
+
+/**
+ * P-02 (OD-17) — refuse (409, rien d'écrit) l'archivage d'une ressource qui
+ * porte une réservation active à venir, et toute réduction de capacité qui la
+ * rendrait intenable. Le vendeur annule ou déplace d'abord la réservation.
+ */
+async function assertSpacesStillHoldReservations(
+  tx: Prisma.TransactionClient,
+  restaurantId: string,
+  planned: readonly PlannedSpace[],
+  now: Date,
+): Promise<void> {
+  const touched = planned.filter(
+    (s) => s.id && (s.action === 'ARCHIVE' || s.action === 'UPDATE'),
+  );
+  if (touched.length === 0) return;
+  const held = await tx.reservation.findMany({
+    where: {
+      restaurantId,
+      spaceId: { in: touched.map((s) => s.id!) },
+      status: { in: [...CAPACITY_HOLDING_STATUSES] },
+      occupiedUntil: { gt: now },
+    },
+    select: {
+      id: true,
+      spaceId: true,
+      partySize: true,
+      arrivalAt: true,
+      occupiedUntil: true,
+    },
+  });
+  if (held.length === 0) return;
+  const occupancies = held.map((r) => ({ ...r, reservationId: r.id }));
+  for (const space of touched) {
+    const blocked =
+      space.action === 'ARCHIVE'
+        ? occupancies.find((o) => o.spaceId === space.id)
+        : untenableReservation({ ...space, id: space.id! }, occupancies);
+    if (blocked) {
+      const at = brazzavilleClock(blocked.arrivalAt);
+      throw new ConflictException({
+        message: `« ${space.label} » porte une réservation à venir (le ${at.isoDate} à ${fromMinutes(at.minutes)}). Annulez-la ou changez-la de table avant de ${space.action === 'ARCHIVE' ? 'retirer' : 'réduire'} cette ressource.`,
+        code: CODES.spaceInUse,
+        spaceId: space.id,
+        spaceLabel: space.label,
+        reservationId: blocked.reservationId,
+      });
+    }
+  }
 }
 
 function spaceData(s: {

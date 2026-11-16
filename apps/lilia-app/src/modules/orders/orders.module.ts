@@ -66,6 +66,8 @@ import { VendorOffersCoreModule } from '../vendor-offers/vendor-offers-core.modu
   ],
   // `OrderExpiryService` (module schedule) réutilise le chemin d'annulation
   // avec ses compensations plutôt que de le réimplémenter.
-  exports: [OrdersCoreModule],
+  // Lot 4 — la demande de réservation valide sa précommande (panier, stock)
+  // avec le validateur du checkout, sans le recopier.
+  exports: [OrdersCoreModule, OrderValidatorService],
 })
 export class OrdersModule {}
