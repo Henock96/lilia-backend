@@ -18,6 +18,11 @@ export class DashboardCatalogStatsService {
    */
   async getTopProducts(firebaseUid: string, limit = 10, period?: string) {
     const restaurant = await this.common.getRestaurant(firebaseUid);
+    // Lot D (D3) — réservé au Premium. `200` et liste vide, pas `403` : une
+    // app vendeurs installée lit une liste et affiche « aucun produit ».
+    if (!(await this.common.hasAdvancedAnalytics(restaurant))) {
+      return { data: [], premiumRequired: true };
+    }
     const restaurantFilter = restaurant ? { restaurantId: restaurant.id } : {};
 
     const dateFilter = this.common.getDateFilter(period);
@@ -59,6 +64,7 @@ export class DashboardCatalogStatsService {
         totalRevenue: tp._sum.prix || 0,
         orderCount: tp._count.productId,
       })),
+      premiumRequired: false,
     };
   }
 

@@ -27,7 +27,8 @@ describeIfDb('Lot 5 — revenus payés et livrés (PostgreSQL réel)', () => {
       adapter: new PrismaPg({ connectionString: DATABASE_URL }),
     });
     await prisma.$connect();
-    const common = new DashboardCommonService(prisma as never);
+    // Lot D : le verdict Premium ne sert pas aux chiffres d'affaires testés ici.
+    const common = new DashboardCommonService(prisma as never, null as never);
     sales = new DashboardSalesStatsService(prisma as never, common);
   });
 
