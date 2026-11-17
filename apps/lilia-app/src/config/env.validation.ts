@@ -77,6 +77,16 @@ export const envValidationSchema = Joi.object({
   DATABASE_URL: Joi.string()
     .uri({ scheme: ['postgres', 'postgresql'] })
     .required(),
+  // Pool `pg` : voir `prisma/pool-config.ts`. Lues via `config.get(key,
+  // défaut)` ; vides = défaut du code (2 connexions gardées, 5 min).
+  // `min` reste sous le `max` de 10 de `pg-pool`.
+  DATABASE_POOL_MIN: Joi.number().integer().min(0).max(10).empty('').optional(),
+  DATABASE_POOL_IDLE_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(1000)
+    .max(3600000)
+    .empty('')
+    .optional(),
 
   // ─── Firebase Admin SDK (requis) ──────────────────────────────────────────
   FIREBASE_PROJECT_ID: Joi.string().required(),
