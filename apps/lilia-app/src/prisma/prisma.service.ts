@@ -3,14 +3,14 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 
+import { buildPoolConfig } from './pool-config';
+
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit {
   private readonly logger = new Logger(PrismaService.name);
 
   constructor(config: ConfigService) {
-    const adapter = new PrismaPg({
-      connectionString: config.get<string>('DATABASE_URL'),
-    });
+    const adapter = new PrismaPg(buildPoolConfig(config));
     super({ adapter });
   }
 
