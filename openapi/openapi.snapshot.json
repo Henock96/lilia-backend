@@ -682,6 +682,31 @@
         "properties": {},
         "type": "object"
       },
+      "PayReservationDto": {
+        "properties": {
+          "expectedTotal": {
+            "description": "Total affiché au client (XAF entiers)",
+            "type": "number"
+          },
+          "method": {
+            "enum": [
+              "MTN_MOMO",
+              "AIRTEL_MONEY"
+            ],
+            "type": "string"
+          },
+          "phoneNumber": {
+            "description": "Numéro mobile money qui paie",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expectedTotal",
+          "phoneNumber",
+          "method"
+        ],
+        "type": "object"
+      },
       "PickupHandoverDto": {
         "properties": {
           "code": {
@@ -11811,6 +11836,53 @@
           }
         ],
         "summary": "Annuler ma demande (si `allowedActions` le permet)",
+        "tags": [
+          "Réservations sur place (client)"
+        ]
+      }
+    },
+    "/reservations/{id}/pay": {
+      "post": {
+        "operationId": "ReservationsController_pay",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-lilia-payment-flow",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PayReservationDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Payer ma précommande acceptée — montant de la commande liée, `expectedTotal` = total affiché",
         "tags": [
           "Réservations sur place (client)"
         ]

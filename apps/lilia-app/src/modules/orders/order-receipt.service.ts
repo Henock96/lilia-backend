@@ -15,6 +15,26 @@ import {
 } from '../modifiers/order-item-options';
 
 /**
+ * Moyen de paiement imprimé : l'opérateur de la tentative **réussie**
+ * (`Payment.method`), et non celui choisi au checkout (`Order.paymentMethod`).
+ * Un client peut payer en Airtel Money après un checkout MTN
+ * (`CreatePaymentDto.method`) : le reçu imprimait alors « MTN MoMo ». Une
+ * commande réglée intégralement en points n'a pas d'opérateur — elle
+ * s'imprimait « Airtel Money », tout ce qui n'était pas MTN l'étant.
+ */
+export function paidWithLabel(order: {
+  total: number;
+  paymentMethod: string;
+  Payment?: ReadonlyArray<{ method: string | null }>;
+}): string {
+  if (order.total <= 0) return 'points de fidélité';
+  const method = order.Payment?.[0]?.method ?? order.paymentMethod;
+  if (method === 'MTN_MOMO') return 'MTN MoMo';
+  if (method === 'AIRTEL_MONEY') return 'Airtel Money';
+  return 'mobile money';
+}
+
+/**
  * Libellé des frais de service, taux compris.
  *
  * Le taux annoncé était **écrit en dur à 8 %** à côté d'un montant calculé au
@@ -52,6 +72,13 @@ export class OrderReceiptService {
             product: { select: { nom: true } },
             options: ORDER_ITEM_OPTIONS_ARGS,
           },
+        },
+        // L'opérateur réellement encaissé (`paidWithLabel`).
+        Payment: {
+          where: { status: 'SUCCESS' },
+          select: { method: true },
+          orderBy: { completedAt: 'desc' },
+          take: 1,
         },
       },
     });
@@ -95,10 +122,6 @@ export class OrderReceiptService {
 
   private fmt(n: number): string {
     return `${Math.round(n)}`;
-  }
-
-  private paymentLabel(method: string): string {
-    return method === 'MTN_MOMO' ? 'MTN MoMo' : 'Airtel Money';
   }
 
   private buildDoc(order: any, numero: string): TDocumentDefinitions {
@@ -230,7 +253,7 @@ export class OrderReceiptService {
         },
         { text: '', margin: [0, 0, 0, 6] },
         {
-          text: `Payé par ${this.paymentLabel(order.paymentMethod)} - PAYÉ`,
+          text: `Payé par ${paidWithLabel(order)} - PAYÉ`,
           fontSize: 8,
           alignment: 'center',
         },

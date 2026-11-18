@@ -16,6 +16,7 @@ import { ProviderUnavailableError } from './providers/payment-provider.interface
 import { OutboxService } from '../outbox/outbox.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderTransitionService } from '../orders/order-transition.service';
+import { returningUpdate } from '../../../test/order-update-returning';
 
 /**
  * Encaissement client — idempotence, sécurité, transitions.
@@ -37,7 +38,11 @@ describe('PaymentService — encaissement', () => {
     orderHistory: { create: jest.fn() },
     // Aucune ligne de réglages : acceptation vendeur non mise en service.
     platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
-    order: { findUnique: jest.fn(), updateMany: jest.fn() },
+    order: {
+      findUnique: jest.fn(),
+      updateMany: jest.fn(),
+      updateManyAndReturn: returningUpdate(),
+    },
     // D-3 : le paiement relit les articles ; ici, tous disponibles.
     orderItem: { findMany: jest.fn().mockResolvedValue([]) },
     payment: {

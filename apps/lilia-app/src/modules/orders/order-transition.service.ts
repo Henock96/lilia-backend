@@ -2,6 +2,7 @@ import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { OrderStatus, Prisma } from '@prisma/client';
 import { acceptanceDeadline } from './order-acceptance-policy';
 import { closeOpenDispatchForOrder } from '../deliveries/dispatch/dispatch-policy';
+import { confirmLinkedReservation } from '../reservations/reservation-payment-link';
 
 import {
   DEFAULT_VENDOR_PAYOUT_DELAY_MINUTES,
@@ -95,7 +96,7 @@ export class OrderTransitionService {
         ? await this.deliveryProofData(tx, params.proof)
         : null;
 
-    const claimed = await tx.order.updateMany({
+    const claim = {
       where: { id: orderId, status: from },
       data: {
         status: to,
@@ -103,9 +104,28 @@ export class OrderTransitionService {
         ...(deadline ? { acceptDeadlineAt: deadline } : {}),
         ...(delivered ?? {}),
       },
-    });
+    };
 
-    if (claimed.count === 0) return { moved: false };
+    // Lot 4 (4B-2) — au passage à `PAYER`, le même `UPDATE` rend la
+    // réservation liée (`RETURNING`) : aucun aller-retour de plus pour une
+    // commande ordinaire.
+    if (from === OrderStatus.EN_ATTENTE && to === OrderStatus.PAYER) {
+      const rows = await tx.order.updateManyAndReturn({
+        ...claim,
+        select: { reservationId: true },
+      });
+      if (rows.length === 0) return { moved: false };
+      const reservationId = rows[0].reservationId;
+      if (
+        reservationId &&
+        !(await this.confirmReservation(tx, orderId, reservationId))
+      ) {
+        return { moved: false };
+      }
+    } else {
+      const claimed = await tx.order.updateMany(claim);
+      if (claimed.count === 0) return { moved: false };
+    }
 
     // Dispatch FCFS (10/11/2026) — une commande qui quitte `PRET` (annulée,
     // en échec, remise, récupérée) ne peut plus être proposée aux livreurs.
@@ -118,6 +138,48 @@ export class OrderTransitionService {
 
     await this.writeHistory(tx, { ...params, from });
     return { moved: true };
+  }
+
+  /**
+   * Lot 4 (4B-2) — la commande liée vient de passer `PAYER` sous son verrou :
+   * sa réservation est confirmée dans la même transaction.
+   *
+   * Elle attend forcément son paiement : tout chemin qui la fait sortir
+   * d'`AWAITING_PAYMENT` (expiration, annulations) verrouille d'abord la
+   * commande et la fait sortir d'`EN_ATTENTE` dans la même transaction
+   * (`ReservationOrderRelease`). Si ce n'est pas le cas — base modifiée à la
+   * main —, la commande est remise `EN_ATTENTE` et l'appelant reçoit
+   * `moved: false` : le paiement suit le chemin « orphelin » (incident),
+   * rien n'est forcé. Ordre des verrous : paiement → commande → réservation.
+   */
+  private async confirmReservation(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    reservationId: string,
+  ): Promise<boolean> {
+    if (await confirmLinkedReservation(tx, reservationId, new Date())) {
+      return true;
+    }
+    const { count } = await tx.order.updateMany({
+      where: { id: orderId, status: OrderStatus.PAYER },
+      data: {
+        status: OrderStatus.EN_ATTENTE,
+        paidAt: null,
+        acceptDeadlineAt: null,
+      },
+    });
+    // La ligne vient d'être écrite dans cette transaction : 0 est impossible.
+    // Si c'était le cas, lever annule tout (paiement compris) plutôt que de
+    // laisser une commande PAYER sur une réservation non confirmée.
+    if (count !== 1) {
+      throw new Error(
+        `Commande ${orderId} : remise en EN_ATTENTE impossible (${count} ligne)`,
+      );
+    }
+    this.logger.error(
+      `📓 [RÉSERVATION] ${orderId} : réservation ${reservationId} n'attend plus son paiement — invariant rompu, la commande reste EN_ATTENTE`,
+    );
+    return false;
   }
 
   /**

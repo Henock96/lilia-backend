@@ -1160,6 +1160,13 @@ model Order {
   /// commande ; un rejeu relit celle-ci. `null` pour les commandes antérieures.
   idempotencyKey String?
 
+  /// Lot 4 (4B-2) — commande d'une précommande de réservation, créée à
+  /// l'acceptation du restaurant (parcours `ACCEPT_FIRST`). Une commande par
+  /// réservation au plus : l'index unique arbitre deux acceptations
+  /// simultanées. `null` pour toute autre commande.
+  reservationId String?      @unique
+  reservation   Reservation? @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+
   @@unique([userId, idempotencyKey])
   @@index([restaurantId, status, createdAt(sort: Desc)]) // dashboard resto: commandes par statut, plus recentes (LFD-9)
   @@index([promoCodeId])
@@ -4162,11 +4169,22 @@ model Reservation {
   noShowAt           DateTime?
   /// Rappel client posé une seule fois (B7).
   reminderSentAt     DateTime?
+  /// 4B-2 — sous-total **indicatif** de la précommande, figé à la demande
+  /// (XAF entiers, jamais facturé) : le montant réel est calculé à
+  /// l'acceptation, sur la commande liée. `null` avant 4B-2.
+  indicativeSubTotal Int?
+  /// 4B-2 — annulée par le client à moins de la borne d'annulation de
+  /// l'arrivée. En V1 elle est remboursée comme les autres (OD-08, option E).
+  lateCancellation   Boolean          @default(false)
+  /// 4B-2 — rappel « à payer » envoyé une seule fois avant l'échéance.
+  paymentDueNoticeAt DateTime?
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
 
   items  ReservationItem[]
   events ReservationEvent[]
+  /// 4B-2 — la commande liée, née à l'acceptation du restaurant.
+  order  Order?
 
   @@unique([userId, requestKey])
   @@index([restaurantId, arrivalAt])
@@ -4177,8 +4195,9 @@ model Reservation {
   @@index([userId, status, noShowAt])
 }
 
-/// Un plat précommandé (C1, D4), copié du panier serveur à la demande. Aucun
-/// prix : le montant sera calculé au paiement (4B-2), par le checkout.
+/// Un plat précommandé (C1, D4), copié du panier serveur à la demande, avec
+/// un prix **indicatif** : le montant facturé est calculé à l'acceptation du
+/// restaurant (4B-2), par les fonctions de prix du checkout.
 /// Produit, menu, variante et options restent des **identifiants simples**,
 /// sans clé étrangère : une réservation ne doit pas bloquer l'édition du
 /// catalogue — un menu du jour se supprime (`menu-lifecycle.service.ts`), un
@@ -4197,6 +4216,12 @@ model ReservationItem {
   /// Libellés figés à la demande, pour l'écran du vendeur.
   productName      String
   variantLabel     String?
+  /// 4B-2 (P-04) — part **indicative** de la ligne dans le sous-total, figée
+  /// à la demande (options comprises ; menu : la première ligne porte le prix
+  /// du menu, les suivantes 0). Jamais facturée. `null` avant 4B-2.
+  indicativeLineTotal Int?
+  /// 4B-2 (P-04) — nom du menu à la demande, lisible même s'il est supprimé.
+  menuName         String?
   createdAt        DateTime    @default(now())
 
   options ReservationItemOption[]
@@ -4210,6 +4235,9 @@ model ReservationItemOption {
   item     ReservationItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
   optionId String
   quantity Int             @default(1)
+  /// 4B-2 (P-04) — libellé et supplément à la demande (indicatifs).
+  optionName String?
+  priceDelta Int?
 
   @@id([itemId, optionId])
 }

@@ -7,6 +7,7 @@ import {
   actorFromRole,
   sourceFromRole,
 } from './order-transition.types';
+import { returningUpdate } from '../../../test/order-update-returning';
 
 /**
  * Point d'écriture unique de `Order.status` (P0-4).
@@ -18,7 +19,7 @@ import {
 describe('OrderTransitionService', () => {
   let service: OrderTransitionService;
   let tx: {
-    order: { updateMany: jest.Mock };
+    order: { updateMany: jest.Mock; updateManyAndReturn: jest.Mock };
     orderHistory: { create: jest.Mock };
     platformSettings: { findUnique: jest.Mock };
     delivery: { updateMany: jest.Mock };
@@ -27,7 +28,10 @@ describe('OrderTransitionService', () => {
   beforeEach(() => {
     service = new OrderTransitionService();
     tx = {
-      order: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      order: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        updateManyAndReturn: returningUpdate(),
+      },
       orderHistory: { create: jest.fn().mockResolvedValue({}) },
       // Aucune ligne de réglages = acceptation vendeur non mise en service.
       platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },

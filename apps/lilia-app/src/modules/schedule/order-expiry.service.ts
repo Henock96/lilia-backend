@@ -86,6 +86,11 @@ export class OrderExpiryService {
     const stale = await this.prisma.order.findMany({
       where: {
         status: 'EN_ATTENTE',
+        // 4B-2 — la précommande d'une réservation expire AVEC sa réservation
+        // (`ReservationLifecycleService.expireOverdue`, même transaction) ;
+        // l'annuler seule laisserait une réservation qui attend un paiement
+        // sur une commande close (revue sécurité du 18/11).
+        reservationId: null,
         // Un paiement encaissé protège la commande, quel que soit le délai.
         Payment: { none: { status: 'SUCCESS' } },
         // Une commande programmée n'a pas la même urgence : la cliente peut

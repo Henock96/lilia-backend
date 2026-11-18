@@ -12,6 +12,7 @@ import {
   RESERVATION_TIMINGS,
 } from './reservation-booking-vocab';
 import { enqueueReservationNotice } from './reservation-notices';
+import { ReservationOrderRelease } from './reservation-order-release';
 import { applyTransition } from './reservation-records';
 
 const MINUTE_MS = 60_000;
@@ -41,15 +42,46 @@ export class ReservationLifecycleService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxService,
+    private readonly linkedOrders: ReservationOrderRelease,
   ) {}
 
-  /** B3 / C4 — demande sans réponse, ou acceptée mais non payée, à échéance. */
+  /**
+   * B3 / C4 — demande sans réponse, ou acceptée mais non payée, à échéance.
+   *
+   * 4B-2 — une réservation non payée emporte sa commande liée (annulée, stock
+   * rendu) dans la même transaction. Délai de grâce (OD-05) : une tentative
+   * de paiement en cours la retient jusqu'à 17 min, jamais après l'arrivée ;
+   * la requête l'écarte déjà, pour qu'une ligne en grâce n'occupe pas une
+   * place du lot à chaque passe.
+   */
   async expireOverdue(now: Date = new Date()): Promise<number> {
+    const graceStart = new Date(
+      now.getTime() - RESERVATION_TIMINGS.paymentGraceMin * MINUTE_MS,
+    );
     const due = await this.prisma.reservation.findMany({
       where: {
         OR: [
           { status: 'PENDING', responseDeadlineAt: { lte: now } },
-          { status: 'AWAITING_PAYMENT', paymentDeadlineAt: { lte: now } },
+          {
+            status: 'AWAITING_PAYMENT',
+            paymentDeadlineAt: { lte: now },
+            OR: [
+              { arrivalAt: { lte: now } },
+              { order: { is: null } },
+              {
+                order: {
+                  is: {
+                    Payment: {
+                      none: {
+                        status: 'PENDING',
+                        createdAt: { gt: graceStart },
+                      },
+                    },
+                  },
+                },
+              },
+            ],
+          },
         ],
       },
       select: {
@@ -68,7 +100,17 @@ export class ReservationLifecycleService {
     for (const r of due) {
       const from = r.status as 'PENDING' | 'AWAITING_PAYMENT';
       try {
-        await this.prisma.$transaction(async (tx) => {
+        const done = await this.prisma.$transaction(async (tx) => {
+          // La commande d'abord, puis la réservation (ordre des verrous de la
+          // confirmation d'un paiement).
+          const linked =
+            from === 'AWAITING_PAYMENT'
+              ? await this.linkedOrders.lock(tx, r.id)
+              : null;
+          // Relu sous verrou : une tentative a pu naître depuis la requête.
+          if (this.linkedOrders.inGrace(linked, r.arrivalAt, now)) {
+            return false;
+          }
           await applyTransition(tx, {
             id: r.id,
             from,
@@ -81,6 +123,14 @@ export class ReservationLifecycleService {
                 : 'PAYMENT_NOT_RECEIVED',
             data: { expiredAt: now },
           });
+          if (linked) {
+            await this.linkedOrders.release(tx, linked, {
+              actor: 'SYSTEM',
+              actorUserId: null,
+              source: 'CRON',
+              reason: 'Réservation expirée : paiement non reçu à temps',
+            });
+          }
           const common = {
             notice: 'EXPIRED' as const,
             restaurantName: r.restaurant.nom,
@@ -102,12 +152,33 @@ export class ReservationLifecycleService {
               recipientUserId: r.restaurant.ownerId,
             });
           }
+          return true;
         });
-        expired++;
+        if (done) expired++;
       } catch (error) {
-        // Le vendeur a répondu entre la lecture et l'écriture : rien à faire.
-        // Toute autre erreur est remontée au journal, la passe continue.
-        if (!isStateConflict(error)) {
+        // Le vendeur a répondu, ou le client a payé, entre la lecture et
+        // l'écriture : rien à faire. Toute autre erreur est remontée au
+        // journal, la passe continue.
+        if (
+          isStateConflict(error) &&
+          from === 'AWAITING_PAYMENT' &&
+          (await this.stillAwaitingPayment(r.id))
+        ) {
+          // Revue du 18/11 : la commande liée n'est plus EN_ATTENTE alors que
+          // la réservation attend toujours (invariant rompu, base modifiée à
+          // la main) — elle serait ignorée à chaque passe et tiendrait sa
+          // table sans trace.
+          this.logger.error(
+            `Réservation ${r.id} AWAITING_PAYMENT dont la commande liée n'est plus EN_ATTENTE : invariant rompu, expiration impossible`,
+          );
+          Sentry.captureMessage(
+            `reservation.invariant — ${r.id} attend un paiement, sa commande non`,
+            {
+              level: 'error',
+              tags: { job: 'expire-reservations', reservationId: r.id },
+            },
+          );
+        } else if (!isStateConflict(error)) {
           // Une ligne qui échoue à chaque passe tient sa table indéfiniment :
           // elle doit se voir ailleurs que dans un journal (revue du 16/11).
           this.logger.error(
@@ -121,6 +192,14 @@ export class ReservationLifecycleService {
       }
     }
     return expired;
+  }
+
+  private async stillAwaitingPayment(id: string): Promise<boolean> {
+    const row = await this.prisma.reservation.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+    return row?.status === 'AWAITING_PAYMENT';
   }
 
   /**

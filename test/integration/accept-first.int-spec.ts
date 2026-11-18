@@ -375,5 +375,13 @@ describeIfDb('Accepter puis payer (PostgreSQL réel)', () => {
     });
     expect(incident.severity).toBe('CRITICAL');
     expect(incident.description).toMatch(/ouvrir un remboursement/);
+    // 4B-2 (OD-06) ne vaut que pour une commande liée à une réservation :
+    // une commande ordinaire garde son paiement clos et l'incident seul.
+    expect(incident.description).not.toMatch(/ouvert automatiquement/);
+    expect(
+      (await prisma.payment.findUniqueOrThrow({ where: { id: 'af-pay' } }))
+        .status,
+    ).toBe('CANCELLED');
+    expect(await refundObligations()).toBe(0);
   });
 });

@@ -7,6 +7,10 @@ import {
   ReservationsController,
 } from './reservation-booking.controller';
 import { ReservationBookingService } from './reservation-booking.service';
+import { ReservationOrderService } from './reservation-order.service';
+import { ReservationPaymentService } from './reservation-payment.service';
+import { PaymentCoreModule } from '../payments/payment-core.module';
+import { ReservationsCoreModule } from './reservations-core.module';
 import { ReservationSettingsController } from './reservation-settings.controller';
 import { ReservationSettingsService } from './reservation-settings.service';
 import { ReservationVendorService } from './reservation-vendor.service';
@@ -21,7 +25,14 @@ import { VendorReservationsController } from './vendor-reservations.controller';
  * exécute vit dans `ReservationsCoreModule` (sans controller).
  */
 @Module({
-  imports: [PlatformSettingsCoreModule, SubscriptionsModule, OrdersModule],
+  imports: [
+    PlatformSettingsCoreModule,
+    SubscriptionsModule,
+    OrdersModule,
+    ReservationsCoreModule,
+    // 4B-2 — l'encaissement de la précommande (services seuls, sans route).
+    PaymentCoreModule,
+  ],
   controllers: [
     ReservationSettingsController,
     ReservationAvailabilityController,
@@ -32,6 +43,8 @@ import { VendorReservationsController } from './vendor-reservations.controller';
     ReservationSettingsService,
     ReservationBookingService,
     ReservationVendorService,
+    ReservationOrderService,
+    ReservationPaymentService,
   ],
 })
 export class ReservationsModule {}

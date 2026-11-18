@@ -712,4 +712,79 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
       });
     });
   });
+
+  describe('4B-2 (OD-20) — commande liée à une réservation', () => {
+    const linked = {
+      id: 'o1',
+      userId: 'u1',
+      restaurantId: 'rid',
+      status: 'PAYER',
+      total: 5000,
+      isDelivery: false,
+      reservationId: 'res-1',
+      items: [],
+      restaurant: { ownerId: 'r1', nom: 'Resto' },
+    };
+    const managed = {
+      response: { code: 'ORDER_MANAGED_BY_RESERVATION' },
+    };
+
+    it('le client ne l’annule pas par la route de commande', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'u1' });
+      prisma.order.findUnique.mockResolvedValue({
+        ...linked,
+        status: 'EN_ATTENTE',
+      });
+      await expect(service.cancelOrder('o1', 'uid')).rejects.toMatchObject(
+        managed,
+      );
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['RESTAURATEUR', 'ANNULER'],
+      ['ADMIN', 'ANNULER'],
+      ['RESTAURATEUR', 'LIVRER'],
+      ['ADMIN', 'LIVRER'],
+    ])('%s → %s : 409, rien n’est écrit', async (role, to) => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'r1', role });
+      prisma.order.findUnique.mockResolvedValue(linked);
+      await expect(
+        service.updateOrderStatusByRestaurateur('o1', 'uid', to as any),
+      ).rejects.toMatchObject(managed);
+      expect(stateMachine.assertTransition).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('la préparation reste ouverte au restaurant', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'r1',
+        role: 'RESTAURATEUR',
+      });
+      prisma.order.findUnique.mockResolvedValue(linked);
+      tx.order.findUniqueOrThrow.mockResolvedValue({
+        ...linked,
+        subTotal: 4000,
+      });
+      await service.updateOrderStatusByRestaurateur(
+        'o1',
+        'uid',
+        'EN_PREPARATION' as any,
+      );
+      expect(stateMachine.assertTransition).toHaveBeenCalledWith(
+        'PAYER',
+        'EN_PREPARATION',
+        'RESTAURATEUR',
+      );
+    });
+
+    it('« j’ai récupéré » : 409 (le versement exige le code)', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'u1' });
+      prisma.order.findUnique.mockResolvedValue({ ...linked, status: 'PRET' });
+      await expect(service.confirmPickup('o1', 'uid')).rejects.toMatchObject(
+        managed,
+      );
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+  });
 });

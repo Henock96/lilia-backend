@@ -21,6 +21,9 @@ export type ReservationNotice =
   | 'NO_SHOW'
   | 'NO_SHOW_UNDONE'
   | 'REMINDER'
+  // 4B-2 — le paiement de la précommande est reçu.
+  | 'CONFIRMED'
+  | 'PAID'
   | 'DAILY_SUMMARY';
 
 export interface ReservationNoticePayload {
@@ -39,6 +42,15 @@ export interface ReservationNoticePayload {
   expiredFrom?: 'PENDING' | 'AWAITING_PAYMENT';
   /** Délai de paiement, à l'acceptation. */
   paymentDeadlineAt?: string;
+  /** 4B-2 — montant réel à payer, figé à l'acceptation (XAF). */
+  totalXaf?: number;
+  /** 4B-2 — le sous-total réel diffère de l'indicatif de la demande (OD-04). */
+  priceChanged?: boolean;
+  /**
+   * J5 — réservation payée annulée : montant du remboursement intégral dû
+   * (XAF). Le message dit « en cours », jamais « remboursé » (OD-07).
+   */
+  refundXaf?: number;
   /** Récapitulatif : jour civil et nombre de réservations. */
   date?: string;
   count?: number;
@@ -97,9 +109,13 @@ export function reservationNoticeText(p: ReservationNoticePayload): {
     case 'ACCEPTED':
       return {
         title: '✅ Le restaurant a accepté votre demande',
-        body: `${p.restaurantName}, ${when}. Payez votre précommande avant ${
+        body: `${p.restaurantName}, ${when}. Payez votre précommande${
+          p.totalXaf !== undefined ? ` (${p.totalXaf} FCFA)` : ''
+        } avant ${
           p.paymentDeadlineAt ? formatTime(p.paymentDeadlineAt) : 'l’échéance'
-        } pour confirmer la table.`,
+        } pour confirmer la table.${
+          p.priceChanged ? ' Le montant a changé depuis votre demande.' : ''
+        }`,
       };
     case 'DECLINED':
       return {
@@ -125,12 +141,20 @@ export function reservationNoticeText(p: ReservationNoticePayload): {
     case 'CANCELLED_BY_CLIENT':
       return {
         title: 'Réservation annulée par le client',
-        body: `${people(p.partySize)}, ${when} : la table est libérée.`,
+        body: `${people(p.partySize)}, ${when} : la table est libérée.${
+          p.refundXaf !== undefined
+            ? ' La précommande payée est annulée : ne la préparez pas.'
+            : ''
+        }`,
       };
     case 'CANCELLED_BY_VENDOR':
       return {
         title: 'Réservation annulée par le restaurant',
-        body: `${p.restaurantName} a annulé votre réservation ${when}.`,
+        body: `${p.restaurantName} a annulé votre réservation ${when}.${
+          p.refundXaf !== undefined
+            ? ` Votre remboursement de ${p.refundXaf} FCFA est en cours.`
+            : ''
+        }`,
       };
     case 'REASSIGNED':
       return {
@@ -148,6 +172,16 @@ export function reservationNoticeText(p: ReservationNoticePayload): {
       return {
         title: 'Absence retirée',
         body: `${p.restaurantName} a retiré l’absence enregistrée pour ${when}.`,
+      };
+    case 'CONFIRMED':
+      return {
+        title: '✅ Table confirmée',
+        body: `Paiement reçu : ${p.restaurantName} vous attend ${when}, ${people(p.partySize)}.`,
+      };
+    case 'PAID':
+      return {
+        title: '💳 Réservation payée',
+        body: `${people(p.partySize)}, ${when} : la précommande est payée. Préparez-la pour l’arrivée.`,
       };
     case 'REMINDER':
       return {

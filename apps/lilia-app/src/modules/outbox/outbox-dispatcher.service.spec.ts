@@ -283,6 +283,24 @@ describe('OutboxDispatcherService', () => {
       expect(outbox.markEscalated).not.toHaveBeenCalled();
     });
 
+    it('4B-2 — précommande d’une réservation payée : acquittée sans push ni SMS (l’avis « réservation payée » part ailleurs)', async () => {
+      outbox.claimDue.mockResolvedValue([event({ type: 'order.paid' })]);
+      prisma.order.findUnique.mockResolvedValue(
+        order({
+          paidAt: minutesAgo(20),
+          createdAt: minutesAgo(40),
+          reservationId: 'res-1',
+        }),
+      );
+
+      await service.dispatchPending();
+
+      expect(outbox.markSent).toHaveBeenCalledWith('evt-1');
+      expect(notifications.sendPushNotification).not.toHaveBeenCalled();
+      expect(sms.send).not.toHaveBeenCalled();
+      expect(outbox.scheduleRetry).not.toHaveBeenCalled();
+    });
+
     it('acquitte une escalade réellement partie sur une commande payée', async () => {
       outbox.claimDue.mockResolvedValue([event({ type: 'order.paid' })]);
       prisma.order.findUnique.mockResolvedValue(

@@ -3,7 +3,11 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
-import { OrderReceiptService, serviceFeeLabel } from './order-receipt.service';
+import {
+  OrderReceiptService,
+  paidWithLabel,
+  serviceFeeLabel,
+} from './order-receipt.service';
 
 // Construit une commande payée valide ; surcharge possible via `over`.
 function makeOrder(over: Record<string, any> = {}) {
@@ -135,5 +139,40 @@ describe('serviceFeeLabel (J-6)', () => {
   it('omet le taux quand il n’est pas calculable', () => {
     expect(serviceFeeLabel(0, 0)).toBe('Frais service');
     expect(serviceFeeLabel(10_000, 0)).toBe('Frais service');
+  });
+});
+
+describe('paidWithLabel — l’opérateur réellement encaissé', () => {
+  it('suit la tentative réussie, pas le choix du checkout', () => {
+    expect(
+      paidWithLabel({
+        total: 4780,
+        paymentMethod: 'MTN_MOMO',
+        Payment: [{ method: 'AIRTEL_MONEY' }],
+      }),
+    ).toBe('Airtel Money');
+  });
+
+  it('retombe sur la commande quand la tentative ne porte pas d’opérateur', () => {
+    expect(
+      paidWithLabel({
+        total: 4780,
+        paymentMethod: 'MTN_MOMO',
+        Payment: [{ method: null }],
+      }),
+    ).toBe('MTN MoMo');
+    expect(paidWithLabel({ total: 4780, paymentMethod: 'AIRTEL_MONEY' })).toBe(
+      'Airtel Money',
+    );
+  });
+
+  it('commande réglée en points : aucun opérateur', () => {
+    expect(
+      paidWithLabel({
+        total: 0,
+        paymentMethod: 'MTN_MOMO',
+        Payment: [{ method: null }],
+      }),
+    ).toBe('points de fidélité');
   });
 });

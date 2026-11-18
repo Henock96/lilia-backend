@@ -37,6 +37,12 @@ import {
 import { OrderTransitionService } from '../../orders/order-transition.service';
 import { OrderTransitionSource } from '../../orders/order-transition.types';
 import { orderPaymentAllowed } from '../../orders/order-payment-policy';
+import { lateReservationRefundDue } from '../../reservations/reservation-payment-link';
+
+/** Ajouté à l'incident orphelin quand OD-06 a ouvert le remboursement. */
+const LATE_RESERVATION_REFUND_NOTE =
+  ' Commande liée à une réservation close : le remboursement intégral a été ' +
+  'ouvert automatiquement (file des remboursements) — ne pas en ouvrir un second.';
 
 /**
  * Traduction `PaymentEventSource` → `OrderTransitionSource`.
@@ -596,6 +602,7 @@ export class PaymentService {
   ): Promise<ApplyOutcome> {
     let outboxId: string | null = null;
     let orderMoved = false;
+    let refundQueued = false;
 
     const claimed = await this.prisma.$transaction(async (tx) => {
       // Seul le premier signal terminal transite. `count === 0` ⇒ rejeu.
@@ -646,6 +653,14 @@ export class PaymentService {
           payment.id,
           payment.amount,
         );
+      } else {
+        // Lot 4 (OD-06) — réservation close entre-temps : remboursement dû,
+        // écrit avec l'encaissement.
+        const due = await lateReservationRefundDue(tx, payment.orderId);
+        if (due) {
+          await this.outbox.enqueueInTransaction(tx, due);
+          refundQueued = true;
+        }
       }
       return true;
     });
@@ -699,12 +714,25 @@ export class PaymentService {
         `payment.resurrected — encaissement ${payment.id} confirmé COMPLETED alors que local=${current?.status}`,
         'error',
       );
+      // Revue du 18/11 : une erreur ici ne doit pas empêcher l'incident.
+      const restored = await this.restoreLateReservationPayment(
+        payment.id,
+        payment.orderId,
+        current.status,
+      ).catch((error: unknown) => {
+        this.logger.error(
+          `Remboursement automatique non ouvert (paiement ${payment.id}) : ${(error as Error).message}`,
+        );
+        Sentry.captureException(error);
+        return false;
+      });
       await this.openOrphanIncident(
         payment.id,
         payment.orderId,
         payment.amount,
         `Le prestataire a confirmé cet encaissement alors qu'il avait été clos localement ` +
-          `(statut ${current?.status ?? 'introuvable'}). Le débit a bien eu lieu.`,
+          `(statut ${current?.status ?? 'introuvable'}). Le débit a bien eu lieu.` +
+          (restored ? LATE_RESERVATION_REFUND_NOTE : ''),
       );
       this.eventEmitter.emit('payment.orphaned', {
         orderId: payment.orderId,
@@ -732,7 +760,8 @@ export class PaymentService {
         payment.orderId,
         payment.amount,
         "La commande n'était plus en attente de paiement (expirée ou annulée) " +
-          'au moment où le prestataire a confirmé.',
+          'au moment où le prestataire a confirmé.' +
+          (refundQueued ? LATE_RESERVATION_REFUND_NOTE : ''),
       );
       this.eventEmitter.emit('payment.orphaned', {
         orderId: payment.orderId,
@@ -822,6 +851,37 @@ export class PaymentService {
           `Incident d'encaissement orphelin non créé : ${(error as Error).message}`,
         ),
       );
+  }
+
+  /**
+   * Lot 4 (4B-2, OD-06) — confirmation tardive d'un encaissement clos
+   * localement (`CANCELLED` à l'expiration de la réservation, ou `FAILED`)
+   * sur une commande liée à une réservation close.
+   *
+   * Le remboursement ne s'exécute que depuis un encaissement `SUCCESS`
+   * (`RefundExecutionService`) : le paiement reprend donc le statut que le
+   * prestataire vient d'affirmer (règle 3 — c'est son verdict, pas un geste
+   * client), et l'obligation `order.refund_due` est écrite dans la même
+   * transaction. La commande et la réservation ne bougent pas. Un rejeu lit
+   * ensuite `SUCCESS` et ressort en `DUPLICATE`, sans second remboursement.
+   * Une commande ordinaire n'est pas concernée : `false`, incident seul.
+   */
+  private async restoreLateReservationPayment(
+    paymentId: string,
+    orderId: string,
+    localStatus: Prisma.PaymentGetPayload<object>['status'],
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const due = await lateReservationRefundDue(tx, orderId);
+      if (!due) return false;
+      const { count } = await tx.payment.updateMany({
+        where: { id: paymentId, status: localStatus },
+        data: { status: PaymentStatus.SUCCESS, completedAt: new Date() },
+      });
+      if (count !== 1) return false;
+      await this.outbox.enqueueInTransaction(tx, due);
+      return true;
+    });
   }
 
   private async openMismatchIncident(
