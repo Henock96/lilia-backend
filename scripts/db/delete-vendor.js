@@ -32,13 +32,20 @@ const IDS = args.filter((a) => !a.startsWith('--'));
  * de cette liste : PostgreSQL s'en charge — `Specialty`, `OperatingHours`,
  * `DeliveryZone` (→ `QuartierZone`), `Banner`, `VendorPhoto`, `OrderHistory`,
  * `DeliveryLocation`, `ProductVariant`, `ProductImage`, `MenuImage`,
- * `MenuProduct`.
+ * `MenuProduct`, et depuis : `Category`, `VendorClosure`, `PickupHandover`,
+ * `ModifierOption`, `ProductModifierGroup`, `OrderItemOption`, `RefundLine`,
+ * `IncidentMessage`, `Delivery*` (offres, affectations, remises, échecs),
+ * `ReservationSettings`, `ReservationWindow`, `ReservationItem`.
  *
- * `$1` = tableau d'ids de vendeurs.
+ * `$1` = tableau d'ids de vendeurs. Le troisième élément, facultatif, liste les
+ * tables dont l'étape dépend : absente de la base visée (migration pas encore
+ * déployée), l'étape est sautée au lieu de faire échouer la transaction.
  */
 const ORDERS = `SELECT id FROM "Order" WHERE "restaurantId" = ANY($1::text[])`;
 const PRODUCTS = `SELECT id FROM "Product" WHERE "restaurantId" = ANY($1::text[])`;
 const PROMOS = `SELECT id FROM "PromoCode" WHERE "restaurantId" = ANY($1::text[])`;
+const OFFERS = `SELECT id FROM "VendorOffer" WHERE "restaurantId" = ANY($1::text[])`;
+const RESERVATIONS = `SELECT id FROM "Reservation" WHERE "restaurantId" = ANY($1::text[])`;
 
 const STEPS = [
   // ─── Argent ───────────────────────────────────────────────────────────────
@@ -56,6 +63,18 @@ const STEPS = [
     `DELETE FROM restaurant_payouts WHERE "restaurantId" = ANY($1::text[])`,
   ],
   ['payments', `DELETE FROM payments WHERE "orderId" IN (${ORDERS})`],
+  // Grand livre vendeur (dette, compensations) : RESTRICT sur Restaurant.
+  [
+    'VendorBalanceEntry',
+    `DELETE FROM "VendorBalanceEntry" WHERE "restaurantId" = ANY($1::text[])`,
+  ],
+  [
+    'VendorSubscription',
+    `DELETE FROM "VendorSubscription" WHERE "restaurantId" = ANY($1::text[])`,
+    ['VendorSubscription'],
+  ],
+  // Récompense de parrainage déclenchée par une commande de ce vendeur.
+  ['ReferralReward', `DELETE FROM "ReferralReward" WHERE "orderId" IN (${ORDERS})`],
 
   // ─── Livraisons ───────────────────────────────────────────────────────────
   [
@@ -87,6 +106,11 @@ const STEPS = [
       WHERE "aggregateId" IN (${ORDERS}) OR "aggregateId" = ANY($1::text[])`,
   ],
   [
+    'OutboxEvent (réservations)',
+    `DELETE FROM "OutboxEvent" WHERE "aggregateId" IN (${RESERVATIONS})`,
+    ['Reservation'],
+  ],
+  [
     'Incident',
     `DELETE FROM "Incident"
       WHERE "restaurantId" = ANY($1::text[]) OR "orderId" IN (${ORDERS})`,
@@ -96,19 +120,57 @@ const STEPS = [
   ['Review', `DELETE FROM "Review" WHERE "restaurantId" = ANY($1::text[])`],
   ['OrderItem', `DELETE FROM "OrderItem" WHERE "orderId" IN (${ORDERS})`],
   ['Order', `DELETE FROM "Order" WHERE "restaurantId" = ANY($1::text[])`],
+  // Après les commandes : `Order.vendorOfferId` est en RESTRICT.
+  [
+    'VendorOfferRedemption',
+    `DELETE FROM "VendorOfferRedemption" WHERE "offerId" IN (${OFFERS})`,
+  ],
+  ['VendorOffer', `DELETE FROM "VendorOffer" WHERE "restaurantId" = ANY($1::text[])`],
+
+  // ─── Réservations sur place ───────────────────────────────────────────────
+  [
+    'ReservationEvent',
+    `DELETE FROM "ReservationEvent" WHERE "reservationId" IN (${RESERVATIONS})`,
+    ['Reservation', 'ReservationEvent'],
+  ],
+  [
+    'Reservation',
+    `DELETE FROM "Reservation" WHERE "restaurantId" = ANY($1::text[])`,
+    ['Reservation'],
+  ],
+  [
+    'ReservationSpace',
+    `DELETE FROM "ReservationSpace" WHERE "restaurantId" = ANY($1::text[])`,
+    ['ReservationSpace'],
+  ],
 
   // ─── Catalogue ────────────────────────────────────────────────────────────
   // Le panier d'un client tiers référence produit ET variante en RESTRICT ;
   // filtrer sur le produit couvre les deux, la variante lui appartenant.
   ['CartItem', `DELETE FROM "CartItem" WHERE "productId" IN (${PRODUCTS})`],
-  ['Product', `DELETE FROM "Product" WHERE "restaurantId" = ANY($1::text[])`],
+  // Avant les produits : `MenuProduct.variant` est en RESTRICT, la variante ne
+  // part pas tant qu'un menu la sert. Ses `MenuProduct` partent avec le menu.
   [
     'MenuDuJour',
     `DELETE FROM "MenuDuJour" WHERE "restaurantId" = ANY($1::text[])`,
   ],
+  ['Product', `DELETE FROM "Product" WHERE "restaurantId" = ANY($1::text[])`],
+  // Après les produits : leurs liaisons `ProductModifierGroup` partent en
+  // cascade avec eux, les options (`ModifierOption`) avec le groupe.
+  [
+    'ModifierGroup',
+    `DELETE FROM "ModifierGroup" WHERE "restaurantId" = ANY($1::text[])`,
+  ],
 
   // ─── Vendeur ──────────────────────────────────────────────────────────────
   ['Favorite', `DELETE FROM "Favorite" WHERE "restaurantId" = ANY($1::text[])`],
+  // Membres de la boutique (OWNER, MANAGER, STAFF) : RESTRICT sur Restaurant.
+  // Les comptes `User` restent, seule leur appartenance à ce vendeur part.
+  [
+    'ShopMembership',
+    `DELETE FROM "ShopMembership" WHERE "restaurantId" = ANY($1::text[])`,
+    ['ShopMembership'],
+  ],
   [
     'VendorProfile',
     `DELETE FROM "VendorProfile" WHERE "restaurantId" = ANY($1::text[])`,
@@ -253,7 +315,15 @@ async function cloudinary(client, ids) {
 
     await client.query('BEGIN');
     const recap = [];
-    for (const [table, sql] of STEPS) {
+    for (const [table, sql, requires = []] of STEPS) {
+      if (requires.length) {
+        const { rows } = await client.query(
+          `SELECT bool_and(to_regclass(format('%I', t)) IS NOT NULL) AS ok
+             FROM unnest($1::text[]) AS t`,
+          [requires],
+        );
+        if (!rows[0].ok) continue;
+      }
       const { rowCount } = await client.query(sql, [IDS]);
       if (rowCount) recap.push({ table, lignes: rowCount });
     }
