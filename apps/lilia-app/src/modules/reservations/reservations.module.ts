@@ -7,6 +7,9 @@ import {
   ReservationsController,
 } from './reservation-booking.controller';
 import { AdminReservationsController } from './admin-reservations.controller';
+import { AdminReservationNoShowsController } from './admin-reservation-no-shows.controller';
+import { ApprovalsModule } from '../approvals/approvals.module';
+import { NoShowPayoutCoreModule } from './no-show-payout-core.module';
 import { ReservationAdminService } from './reservation-admin.service';
 import { ReservationBookingService } from './reservation-booking.service';
 import { ReservationOrderService } from './reservation-order.service';
@@ -34,6 +37,9 @@ import { VendorReservationsController } from './vendor-reservations.controller';
     ReservationsCoreModule,
     // 4B-2 — l'encaissement de la précommande (services seuls, sans route).
     PaymentCoreModule,
+    // J6b — part d'une absence : demande (approbation) et liste.
+    NoShowPayoutCoreModule,
+    ApprovalsModule,
   ],
   controllers: [
     ReservationSettingsController,
@@ -42,6 +48,8 @@ import { VendorReservationsController } from './vendor-reservations.controller';
     VendorReservationsController,
     // J6 — annulation par le support (I-10).
     AdminReservationsController,
+    // J6b — parts d'absence dues aux restaurants.
+    AdminReservationNoShowsController,
   ],
   providers: [
     ReservationSettingsService,

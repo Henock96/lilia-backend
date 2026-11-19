@@ -21,6 +21,7 @@ import { SkipResponseWrap } from '../../../common/interceptors/api-response.inte
 import { PaymentService, maskRef } from '../services/payment.service';
 import { RestaurantPayoutService } from '../services/restaurant-payout.service';
 import { RefundProviderService } from '../../refunds/refund-provider.service';
+import { NoShowPayoutProviderService } from '../../reservations/no-show-payout-provider.service';
 import { PaymentEventService } from '../services/payment-event.service';
 import { PawaPaySignatureService } from '../providers/pawapay/pawapay-signature.service';
 import { WebhookReceptionMonitor } from '../services/webhook-reception.monitor';
@@ -68,6 +69,7 @@ export class PawaPayWebhookController {
     private readonly signature: PawaPaySignatureService,
     private readonly config: ConfigService,
     private readonly reception: WebhookReceptionMonitor,
+    private readonly noShowPayouts: NoShowPayoutProviderService,
   ) {}
 
   @Public()
@@ -190,6 +192,21 @@ export class PawaPayWebhookController {
           return { status: this.toResponseStatus(outcome) };
         }
 
+        // 4B-2 J6b — troisième table : la part d'une absence versée au
+        // restaurant. Même raisonnement : identifiant généré par nous, disjoint.
+        const noShowPayout = await this.noShowPayouts.findByProviderPayoutId(
+          'PAWAPAY',
+          externalId,
+        );
+        if (noShowPayout) {
+          const outcome = await this.noShowPayouts.applyProviderStatus({
+            payoutId: noShowPayout.id,
+            status: this.toProviderStatus(payload),
+            source: PaymentEventSource.WEBHOOK,
+          });
+          return { status: this.toResponseStatus(outcome) };
+        }
+
         await this.events.record({
           kind: PaymentEventKind.PAYOUT,
           provider: 'PAWAPAY',
@@ -200,7 +217,7 @@ export class PawaPayWebhookController {
           outcome: 'IGNORED',
         });
         this.logger.warn(
-          `Callback reversement : aucun reversement NI remboursement pour la ref ${maskRef(externalId)}`,
+          `Callback reversement : aucun reversement, remboursement NI part d’absence pour la ref ${maskRef(externalId)}`,
         );
         return { status: 'ignored', reason: 'unknown-transaction' };
       }

@@ -10,6 +10,7 @@ import { PaymentService, maskRef } from '../payments/services/payment.service';
 import { RestaurantPayoutService } from '../payments/services/restaurant-payout.service';
 import { PaymentProviderRegistry } from '../payments/payment-provider.registry';
 import { RefundProviderService } from '../refunds/refund-provider.service';
+import { NoShowPayoutProviderService } from '../reservations/no-show-payout-provider.service';
 
 /**
  * Réconciliation des transactions restées en attente.
@@ -53,6 +54,8 @@ export class PaymentReconciliationService {
     private readonly registry: PaymentProviderRegistry,
     private readonly cronLock: CronLockService,
     config: ConfigService,
+    // 4B-2 J6b — parts d'absence versées aux restaurants.
+    private readonly noShowPayouts: NoShowPayoutProviderService,
   ) {
     this.abandonAfterMinutes = Number(
       config.get<number>('PAYMENT_RECONCILIATION_TIMEOUT_MINUTES', 15),
@@ -73,7 +76,74 @@ export class PaymentReconciliationService {
       this.reconcileCollections(),
       this.reconcilePayouts(),
       this.reconcileRefunds(),
+      this.reconcileNoShowPayouts(),
     ]);
+  }
+
+  // ─── Parts d'absence (4B-2 J6b) ─────────────────────────────────────────────
+
+  /**
+   * Rattrape un versement de part d'absence resté `PENDING`, par le même
+   * chemin que le webhook. Même asymétrie que les remboursements : un
+   * versement dont le prestataire ne sait rien n'est jamais clos d'office —
+   * le marquer en échec inviterait à le refaire, donc à payer deux fois.
+   */
+  private async reconcileNoShowPayouts(): Promise<void> {
+    const cutoff = new Date(
+      Date.now() - PaymentReconciliationService.GRACE_SECONDS * 1000,
+    );
+    const stale = await this.prisma.reservationNoShowPayout.findMany({
+      where: { status: 'PENDING', updatedAt: { lt: cutoff } },
+      select: {
+        id: true,
+        provider: true,
+        providerPayoutId: true,
+        updatedAt: true,
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: PaymentReconciliationService.MAX_PER_RUN,
+    });
+    if (stale.length === 0) return;
+
+    let resolved = 0;
+    for (const payout of stale) {
+      try {
+        const provider = this.registry.forStoredProvider(payout.provider);
+        if (!provider.supportsPayout) continue;
+
+        const status = await provider.getPayoutStatus(payout.providerPayoutId);
+        if (status) {
+          const outcome = await this.noShowPayouts.applyProviderStatus({
+            payoutId: payout.id,
+            status,
+            source: PaymentEventSource.RECONCILIATION,
+          });
+          if (outcome === 'APPLIED') resolved++;
+          continue;
+        }
+
+        if (this.isAbandoned(payout.updatedAt)) {
+          this.logger.error(
+            `🚨 Part d’absence ${payout.id} sans statut après ${this.abandonAfterMinutes} min — ` +
+              `ref ${maskRef(payout.providerPayoutId)}. Vérification manuelle requise.`,
+          );
+          Sentry.captureMessage(
+            `no_show_payout.unknown_status — versement ${payout.id} introuvable chez le prestataire`,
+            'error',
+          );
+        }
+      } catch (error) {
+        this.logger.error(
+          `Réconciliation de la part d’absence ${payout.id} échouée : ${(error as Error).message}`,
+        );
+      }
+    }
+
+    if (resolved) {
+      this.logger.log(
+        `🔄 Parts d’absence réconciliées : ${resolved} résolue(s) sur ${stale.length}`,
+      );
+    }
   }
 
   // ─── Remboursements client ──────────────────────────────────────────────────

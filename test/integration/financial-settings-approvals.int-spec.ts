@@ -51,6 +51,8 @@ describeIfDb(
         new EventEmitter2(),
         new RefundsService(prisma as never),
         settings,
+        // J6b — aucune part d'absence dans cette suite.
+        null as never,
       );
       requests = new SettingsApprovalsService(
         prisma as never,

@@ -7,6 +7,7 @@ import {
 import type { Request } from 'express';
 
 import { PawaPayWebhookController } from './pawapay-webhook.controller';
+import { NoShowPayoutProviderService } from '../../reservations/no-show-payout-provider.service';
 import { PaymentService } from '../services/payment.service';
 import { RestaurantPayoutService } from '../services/restaurant-payout.service';
 import { RefundProviderService } from '../../refunds/refund-provider.service';
@@ -39,6 +40,10 @@ describe('PawaPayWebhookController', () => {
   // connaît qu'un type de virement sortant.
   const refunds = {
     findByProviderRefundId: jest.fn(),
+    applyProviderStatus: jest.fn(),
+  };
+  const noShowPayouts = {
+    findByProviderPayoutId: jest.fn(),
     applyProviderStatus: jest.fn(),
   };
   const events = { record: jest.fn().mockResolvedValue('evt-1') };
@@ -115,6 +120,8 @@ describe('PawaPayWebhookController', () => {
     trustCloudflare = false;
     refunds.findByProviderRefundId.mockResolvedValue(null);
     refunds.applyProviderStatus.mockResolvedValue('IGNORED');
+    noShowPayouts.findByProviderPayoutId.mockResolvedValue(null);
+    noShowPayouts.applyProviderStatus.mockResolvedValue('IGNORED');
     events.record.mockResolvedValue('evt-1');
 
     const module: TestingModule = await Test.createTestingModule({
@@ -123,6 +130,7 @@ describe('PawaPayWebhookController', () => {
         { provide: PaymentService, useValue: payments },
         { provide: RestaurantPayoutService, useValue: payouts },
         { provide: RefundProviderService, useValue: refunds },
+        { provide: NoShowPayoutProviderService, useValue: noShowPayouts },
         { provide: PaymentEventService, useValue: events },
         { provide: PawaPaySignatureService, useValue: signature },
         { provide: ConfigService, useValue: config },
@@ -178,7 +186,33 @@ describe('PawaPayWebhookController', () => {
       expect(refunds.applyProviderStatus).not.toHaveBeenCalled();
     });
 
-    it('ignore proprement une référence inconnue des DEUX tables', async () => {
+    it('4B-2 J6b — applique un callback de PART D’ABSENCE quand ni reversement ni remboursement ne porte la référence', async () => {
+      signatureEnabled = true;
+      payouts.findByProviderPayoutId.mockResolvedValue(null);
+      refunds.findByProviderRefundId.mockResolvedValue(null);
+      noShowPayouts.findByProviderPayoutId.mockResolvedValue({ id: 'nsp-1' });
+      noShowPayouts.applyProviderStatus.mockResolvedValue('APPLIED');
+
+      const res = await controller.handlePayoutCallback(
+        payoutCallback(),
+        req(),
+      );
+
+      expect(noShowPayouts.applyProviderStatus).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payoutId: 'nsp-1',
+          status: expect.objectContaining({
+            state: 'SUCCESS',
+            amountXaf: 4500,
+            currency: 'XAF',
+          }),
+        }),
+      );
+      expect(refunds.applyProviderStatus).not.toHaveBeenCalled();
+      expect(res).toEqual({ status: 'processed' });
+    });
+
+    it('ignore proprement une référence inconnue des TROIS tables', async () => {
       signatureEnabled = true;
       payouts.findByProviderPayoutId.mockResolvedValue(null);
       refunds.findByProviderRefundId.mockResolvedValue(null);

@@ -22,6 +22,8 @@ export type ReservationNotice =
   | 'REASSIGNED'
   | 'NO_SHOW'
   | 'NO_SHOW_UNDONE'
+  // J6b — la part d'une absence est versée au restaurant.
+  | 'NO_SHOW_SHARE_PAID'
   | 'REMINDER'
   // 4B-2 — le paiement de la précommande est reçu.
   | 'CONFIRMED'
@@ -55,6 +57,8 @@ export interface ReservationNoticePayload {
   refundXaf?: number;
   /** J6 — absence sur une réservation payée : la précommande est retenue. */
   paidPreorder?: boolean;
+  /** J6b — part d'absence versée au restaurant (XAF). */
+  payoutXaf?: number;
   /** Récapitulatif : jour civil et nombre de réservations. */
   date?: string;
   count?: number;
@@ -196,6 +200,11 @@ export function reservationNoticeText(p: ReservationNoticePayload): {
       return {
         title: 'Absence retirée',
         body: `${p.restaurantName} a retiré l’absence enregistrée pour ${when}.`,
+      };
+    case 'NO_SHOW_SHARE_PAID':
+      return {
+        title: '💸 Part d’absence versée',
+        body: `${p.payoutXaf ?? 0} FCFA envoyés sur votre compte Mobile Money pour l’absence du ${when} (${people(p.partySize)}).`,
       };
     case 'CONFIRMED':
       return {

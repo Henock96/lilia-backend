@@ -28,6 +28,7 @@ import { VendorEarningsController } from './controllers/vendor-earnings.controll
 import { VendorEarningsService } from './services/vendor-earnings.service';
 
 import { ApprovalsModule } from '../approvals/approvals.module';
+import { NoShowPayoutCoreModule } from '../reservations/no-show-payout-core.module';
 @Module({
   // ⚠️ `RefundsCoreModule` est ici parce que `PawaPayWebhookController` aiguille
   // les callbacks de virement sortant vers DEUX tables : reversement vendeur et
@@ -53,6 +54,8 @@ import { ApprovalsModule } from '../approvals/approvals.module';
     PlatformSettingsCoreModule,
     // F3-08 — le changement de numéro de versement ouvre une demande.
     ApprovalsModule,
+    // 4B-2 J6b — le webhook des virements connaît la part d'une absence.
+    NoShowPayoutCoreModule,
   ],
   controllers: [
     PaymentController,

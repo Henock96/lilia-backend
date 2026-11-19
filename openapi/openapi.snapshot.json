@@ -4568,6 +4568,55 @@
         ]
       }
     },
+    "/admin/reservation-no-shows": {
+      "get": {
+        "operationId": "AdminReservationNoShowsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Absences et état du versement de la part restaurant",
+        "tags": [
+          "Réservations sur place (admin)"
+        ]
+      }
+    },
+    "/admin/reservation-no-shows/{settlementId}/payout": {
+      "post": {
+        "operationId": "AdminReservationNoShowsController_requestPayout",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "settlementId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Demander le versement de la part restaurant d’une absence (validation par un second administrateur)",
+        "tags": [
+          "Réservations sur place (admin)"
+        ]
+      }
+    },
     "/admin/reservations/{id}/cancel": {
       "post": {
         "operationId": "AdminReservationsController_cancel",

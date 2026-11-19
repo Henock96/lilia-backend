@@ -529,6 +529,8 @@ model Restaurant {
   reservations        Reservation[]
   /// 4B-2 J6 — parts d'encaissement retenues sur les absences.
   noShowSettlements   ReservationNoShowSettlement[]
+  /// 4B-2 J6b — versements de ces parts (à deux administrateurs).
+  noShowPayouts       ReservationNoShowPayout[]
 
   /// F3-12 — le dispatch automatique propose-t-il les courses de ce vendeur ?
   /// `MANUAL` par défaut : l'assignation reste humaine tant qu'un ADMIN n'a
@@ -2097,6 +2099,8 @@ enum ApprovalKind {
   PLATFORM_SETTINGS_CHANGE
   /// R-09 — commission propre à un vendeur.
   VENDOR_COMMISSION_CHANGE
+  /// 4B-2 J6b — versement de la part restaurant d'une absence (toujours).
+  NO_SHOW_VENDOR_SHARE_PAYOUT
 }
 
 enum ApprovalStatus {
@@ -4233,8 +4237,62 @@ model ReservationNoShowSettlement {
   /// Taux appliqué (points de base), copié du réglage au moment de la clôture.
   vendorShareBps   Int
   createdAt        DateTime    @default(now())
+  /// J6b — versements de la part du restaurant (au plus un en cours ou abouti).
+  payouts          ReservationNoShowPayout[]
 
   @@index([restaurantId, createdAt])
+}
+
+/// 4B-2 J6b (19/11) — versement de la part restaurant d'une absence, par
+/// pawaPay, demandé par un administrateur (`FINANCE_EXECUTE`) et validé par
+/// un second (`FINANCE_APPROVE` + MFA, `ApprovalKind.NO_SHOW_VENDOR_SHARE_PAYOUT`).
+///
+/// Table distincte de `RestaurantPayout` : celui-ci vaut un versement par
+/// commande **livrée**, avec ses preuves ; une absence n'en est pas une
+/// (relevé du 21/10 : aucun contournement de son éligibilité). Calqué sur le
+/// remboursement client (`Refund`) : identifiant prestataire généré avant
+/// l'appel, numéro figé, aiguillage webhook, réconciliation.
+///
+/// `status` : `PENDING` (envoyé ou en vol), `SUCCESS`, `FAILED` — terminaux
+/// figés. TEXT + CHECK (règle 14), liste miroir `NO_SHOW_PAYOUT_STATUSES`.
+/// Index unique partiel : au plus une ligne `PENDING`/`SUCCESS` par partage ;
+/// un échec reste en historique et une nouvelle demande devient possible.
+model ReservationNoShowPayout {
+  id                    String                      @id @default(cuid())
+  settlementId          String
+  settlement            ReservationNoShowSettlement @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+  restaurantId          String
+  restaurant            Restaurant                  @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  /// Part versée (XAF) = `settlement.vendorShareXaf`, figée à l'envoi.
+  amountXaf             Int
+  /// Destination, copiée de la fiche du restaurant à la demande et revérifiée
+  /// à la validation (P-2) : le valideur approuve ce numéro-là.
+  phoneNumber           String
+  payoutProvider        PayoutProvider
+  /// Prestataire qui exécute le virement (`PAWAPAY`).
+  provider              String
+  /// Généré par nous AVANT l'appel : clé d'idempotence chez le prestataire.
+  providerPayoutId      String                      @unique
+  providerTransactionId String?
+  status                String                      @default("PENDING")
+  failureCode           String?
+  failureMessage        String?
+  requestedBy           String
+  approvedBy            String
+  /// L'approbation consommée par ce versement (une seule fois).
+  approvalId            String                      @unique
+  createdAt             DateTime                    @default(now())
+  updatedAt             DateTime                    @updatedAt
+  completedAt           DateTime?
+
+  // ⚠️ Hors Prisma, écrits en SQL dans 20261119120100_reservation_no_show_payout
+  // (un `migrate dev` ne doit jamais les retirer) : index partiel SQL
+  // `ReservationNoShowPayout_one_active_per_settlement` (garde contre le double
+  // paiement) et les CHECK `_status_check`, `_amount_check`, `_four_eyes`,
+  // `_success_completed`.
+  @@index([settlementId, createdAt])
+  @@index([status, updatedAt])
+  @@index([restaurantId])
 }
 
 /// Un plat précommandé (C1, D4), copié du panier serveur à la demande, avec

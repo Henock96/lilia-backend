@@ -470,6 +470,49 @@ export function forfeitPosting(s: {
   });
 }
 
+/**
+ * 4B-2 J6b — versement abouti de la part restaurant d'une absence : solde la
+ * dette `vendor_payable` née de `FORFEIT`. Payé = `SUCCESS` confirmé par le
+ * prestataire, rien d'autre (règle 7).
+ */
+export function noShowPayoutPosting(p: {
+  id: string;
+  restaurantId: string;
+  amountXaf: number;
+  provider: string;
+  status: string;
+  completedAt: Date | null;
+  providerTransactionId: string | null;
+  providerPayoutId: string;
+}): Posting {
+  const key = `no_show_payout:${p.id}:success`;
+  if (p.status !== 'SUCCESS' || !p.completedAt) {
+    throw new LedgerPostingError(
+      key,
+      'NOT_SUCCESS',
+      `Part d’absence ${p.status} : aucune écriture`,
+    );
+  }
+  return finalizePosting({
+    sourceEventKey: key,
+    kind: 'PAYOUT',
+    sourceType: 'ReservationNoShowPayout',
+    sourceId: p.id,
+    occurredAt: p.completedAt,
+    origin: 'SYSTEM',
+    evidenceRef: p.providerTransactionId ?? p.providerPayoutId,
+    note: 'part restaurant d’une absence',
+    lines: [
+      {
+        account: 'vendor_payable',
+        ...vendor(p.restaurantId),
+        amountXaf: p.amountXaf,
+      },
+      { account: pspAccount(p.provider), amountXaf: -p.amountXaf },
+    ],
+  });
+}
+
 export function vendorAdjustmentPosting(e: {
   id: string;
   restaurantId: string;

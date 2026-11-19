@@ -79,6 +79,8 @@ describeIfDb('Approbations à deux administrateurs (PostgreSQL réel)', () => {
       events,
       new RefundsService(prisma as never),
       { invalidateCache: () => undefined } as never,
+      // J6b — aucune part d'absence dans cette suite.
+      null as never,
     );
   });
 
