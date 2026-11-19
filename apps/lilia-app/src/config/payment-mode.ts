@@ -1,11 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 
-export const PAYMENT_MODES = [
-  'MANUAL',
-  'SANDBOX',
-  'MTN_PRODUCTION',
-  'PAWAPAY',
-] as const;
+export const PAYMENT_MODES = ['MANUAL', 'PAWAPAY'] as const;
 export type PaymentModeValue = (typeof PAYMENT_MODES)[number];
 
 /**

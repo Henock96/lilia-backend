@@ -8,11 +8,11 @@
  * forme.
  *
  * ⚠️ **Ce n'est pas un formateur d'affichage ni un formateur d'appel.** Le
- * format attendu par les opérateurs (MSISDN pawaPay / MTN) est produit par
- * `payments/mtn-momo-phone.util.ts`, qui a ses propres règles — notamment la
- * réinsertion du zéro initial. Les deux ne doivent pas être confondus : celui-ci
- * *supprime* le zéro national pour rendre les formes comparables, l'autre le
- * remet pour que l'appel aboutisse.
+ * format attendu par les opérateurs (MSISDN pawaPay) est produit par
+ * `toMsisdn` (`payments/providers/pawapay/pawapay.mapper.ts`), qui a ses
+ * propres règles. Les deux ne doivent pas être confondus : celui-ci *supprime*
+ * le zéro national pour rendre les formes comparables, l'autre produit la forme
+ * qu'attend le prestataire pour que l'appel aboutisse.
  *
  * La forme canonique produite ici est **sans indicatif ni zéro** :
  * `+242 06 123 45 67` → `61234567`.

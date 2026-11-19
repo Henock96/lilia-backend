@@ -10,21 +10,18 @@ import {
   PaymentProviderName,
 } from './providers/payment-provider.interface';
 import { ManualPaymentProvider } from './providers/manual.provider';
-import { MtnMomoProvider } from './providers/mtn-momo.provider';
 import { PawaPayProvider } from './providers/pawapay/pawapay.provider';
 import { readPaymentMode } from '../../config/payment-mode';
 
 /**
  * Modes d'encaissement possibles, pilotés par `PAYMENT_MODE`.
  *
- * `SANDBOX` et `MTN_PRODUCTION` désignent le même rail (MTN MoMo Collections)
- * sur deux environnements ; la distinction est portée par `MTN_MOMO_BASE_URL`,
- * pas par le choix du provider.
+ * Le rail direct MTN MoMo (`SANDBOX`, `MTN_PRODUCTION`) a été retiré le
+ * 19/11/2026 : pawaPay encaisse et verse pour MTN comme pour Airtel. Il sera
+ * réécrit le jour où Lilia passera directement par MTN.
  */
 export enum PaymentMode {
   MANUAL = 'MANUAL',
-  SANDBOX = 'SANDBOX',
-  MTN_PRODUCTION = 'MTN_PRODUCTION',
   PAWAPAY = 'PAWAPAY',
 }
 
@@ -50,7 +47,6 @@ export class PaymentProviderRegistry {
   constructor(
     config: ConfigService,
     manual: ManualPaymentProvider,
-    mtn: MtnMomoProvider,
     pawapay: PawaPayProvider,
   ) {
     this.mode = readPaymentMode(config) as PaymentMode;
@@ -66,7 +62,6 @@ export class PaymentProviderRegistry {
     }
     this.byName = new Map<PaymentProviderName, PaymentProvider>([
       [manual.name, manual],
-      [mtn.name, mtn],
       [pawapay.name, pawapay],
     ]);
     this.logger.log(`Mode de paiement : ${this.mode}`);
@@ -81,9 +76,6 @@ export class PaymentProviderRegistry {
     switch (this.mode) {
       case PaymentMode.PAWAPAY:
         return this.byName.get('PAWAPAY')!;
-      case PaymentMode.SANDBOX:
-      case PaymentMode.MTN_PRODUCTION:
-        return this.byName.get('MTN_MOMO')!;
       case PaymentMode.MANUAL:
         return this.byName.get('MANUAL')!;
       default:

@@ -6,7 +6,6 @@ import { AdminPayoutController } from './controllers/admin-payout.controller';
 import { PawaPayWebhookController } from './controllers/pawapay-webhook.controller';
 import { ROLES_KEY } from '../auth/decorators/roles.decorator';
 import { IS_PUBLIC_KEY } from '../auth/decorators/public.decorator';
-import { redactHeaders } from './services/mtn-momo-token.service';
 
 /**
  * Qui a le droit de faire quoi sur l'argent — verrouillé par un test.
@@ -184,45 +183,5 @@ describe('Autorisation — routes de paiement et de reversement', () => {
         '/webhooks/pawapay/payouts',
       ]);
     });
-  });
-});
-
-/**
- * Secrets et journaux.
- *
- * `docs/PAYMENTS.md` promet que ni jeton d'API ni en-tête `Authorization` ne
- * sont journalisés. La promesse tenait pour pawaPay, pas pour le rail MTN : son
- * intercepteur écrivait `JSON.stringify(config.headers)` dans le **message**,
- * là où la `redact` de pino — qui n'agit que sur les propriétés d'un objet
- * journalisé — n'a aucune prise.
- */
-describe('Journaux — aucun secret dans les messages', () => {
-  it('masque Authorization et la subscription key, garde le reste', () => {
-    const redacted = redactHeaders({
-      'Content-Type': 'application/json',
-      Authorization: 'Basic c2VjcmV0OnZhbGV1cg==',
-      'Ocp-Apim-Subscription-Key': '23d8c479592745da846487db04f9cdb0',
-      'X-Reference-Id': 'ref-lisible',
-    });
-
-    expect(redacted).toEqual({
-      'Content-Type': 'application/json',
-      Authorization: '[Redacted]',
-      'Ocp-Apim-Subscription-Key': '[Redacted]',
-      'X-Reference-Id': 'ref-lisible',
-    });
-  });
-
-  it('est insensible à la casse de l’en-tête', () => {
-    expect(redactHeaders({ authorization: 'Bearer x' })).toEqual({
-      authorization: '[Redacted]',
-    });
-  });
-
-  it('sérialisé, le résultat ne contient plus le secret', () => {
-    const serialized = JSON.stringify(
-      redactHeaders({ Authorization: 'Bearer super-secret-token' }),
-    );
-    expect(serialized).not.toContain('super-secret-token');
   });
 });

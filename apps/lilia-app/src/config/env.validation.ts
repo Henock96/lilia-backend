@@ -20,7 +20,7 @@ import { DEPLOYED_ENVIRONMENTS } from './deployment-environment';
  * `.empty('')`, Joi la valide comme une vraie valeur : `Joi.number()` refuse
  * `''` (« must be a number ») et `Joi.string()` aussi (« is not allowed to be
  * empty »). Or **treize** gabarits de `.env.example` étaient dans ce cas —
- * `LOG_LEVEL`, les cinq secrets MTN, `WEB_REVALIDATE_SECRET`, les trois délais
+ * `LOG_LEVEL`, cinq secrets du rail MTN (retiré depuis), `WEB_REVALIDATE_SECRET`, les trois délais
  * Redis et les deux taux Sentry.
  *
  * Copier `.env.example` en `.env` est *la* façon documentée de provisionner un
@@ -29,7 +29,7 @@ import { DEPLOYED_ENVIRONMENTS } from './deployment-environment';
  * `env-example-values.spec.ts` valide désormais aussi les **valeurs**.
  *
  * `.empty('')` ne relâche rien : la valeur devient `undefined`, donc un
- * `.required()` conditionnel (mode MTN, par exemple) échoue toujours. Il dit
+ * `.required()` conditionnel (mode pawaPay, par exemple) échoue toujours. Il dit
  * seulement qu'une ligne laissée vide est une ligne qu'on n'a pas remplie.
  */
 export const envValidationSchema = Joi.object({
@@ -216,7 +216,7 @@ export const envValidationSchema = Joi.object({
   // Ailleurs (poste, tests), `MANUAL` reste le défaut. En production, `MANUAL`
   // exige en plus `ALLOW_MANUAL_PAYMENTS=true` (cf. `.custom` plus bas).
   PAYMENT_MODE: Joi.string()
-    .valid('MANUAL', 'SANDBOX', 'MTN_PRODUCTION', 'PAWAPAY')
+    .valid('MANUAL', 'PAWAPAY')
     .when('NODE_ENV', {
       is: Joi.valid(...DEPLOYED_ENVIRONMENTS),
       then: Joi.required(),
@@ -311,39 +311,8 @@ export const envValidationSchema = Joi.object({
   // (cf. PaymentService) — mais un client Airtel ne peut pas envoyer sur un
   // numéro MTN : à définir dès qu'Airtel Money est proposé au checkout.
   LILIA_AIRTEL_PAYMENT_PHONE: Joi.string().allow('').optional(),
-  MTN_MOMO_API_KEY: Joi.string().empty('').optional(),
-  MTN_MOMO_API_USER: Joi.string().empty('').optional(),
-
-  // Dès qu'on quitte le mode MANUAL, MTN émet des callbacks signés. Le webhook
-  // est fail-closed : sans secret configuré il rejette TOUT en 401, et aucun
-  // paiement ne se confirme jamais — panne silencieuse le jour du go-live.
-  // On préfère donc refuser de démarrer plutôt que de démarrer à moitié.
-  MTN_MOMO_WEBHOOK_SECRET: Joi.string()
-    .empty('')
-    .when('PAYMENT_MODE', {
-      is: Joi.valid('SANDBOX', 'MTN_PRODUCTION'),
-      then: Joi.required(),
-      otherwise: Joi.optional(),
-    }),
-  // Attention : le code a un défaut `sandbox.momodeveloper.mtn.com`. En
-  // MTN_PRODUCTION, oublier cette variable enverrait les paiements réels vers
-  // le sandbox sans le moindre message d'erreur. D'où le `.required()`.
-  MTN_MOMO_BASE_URL: Joi.string()
-    .uri()
-    .when('PAYMENT_MODE', {
-      is: Joi.valid('SANDBOX', 'MTN_PRODUCTION'),
-      then: Joi.required(),
-      otherwise: Joi.optional(),
-    }),
-  MTN_MOMO_CALLBACK_URL: Joi.string().uri().optional(),
-  MTN_MOMO_DISBURSEMENT_SUBSCRIPTION_KEY: Joi.string().empty('').optional(),
-  MTN_MOMO_COLLECTION_SUBSCRIPTION_KEY: Joi.string()
-    .empty('')
-    .when('PAYMENT_MODE', {
-      is: Joi.valid('SANDBOX', 'MTN_PRODUCTION'),
-      then: Joi.required(),
-      otherwise: Joi.optional(),
-    }),
+  // Rail direct MTN MoMo retiré le 19/11/2026 (pawaPay encaisse pour MTN) :
+  // les variables `MTN_MOMO_*` encore posées sur un service sont ignorées.
 
   // ─── Expiration des commandes impayées ────────────────────────────────────
   // Le stock est réservé au checkout : sans expiration il reste bloqué
@@ -417,8 +386,8 @@ export const envValidationSchema = Joi.object({
    * minutes de retard, un client qui attend devant son téléphone, et pawaPay
    * qui rejoue en vain pendant quinze minutes.
    *
-   * C'est exactement le raisonnement déjà appliqué à `MTN_MOMO_WEBHOOK_SECRET`
-   * et à `REDIS_URL` : une dégradation **silencieuse** vaut moins qu'un refus
+   * C'est exactement le raisonnement déjà appliqué à `REDIS_URL` : une
+   * dégradation **silencieuse** vaut moins qu'un refus
    * de démarrer bruyant. On refuse ici la seule configuration qui produit une
    * panne invisible le jour de la mise en service.
    */
