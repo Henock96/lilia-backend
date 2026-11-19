@@ -3262,7 +3262,7 @@
         "operationId": "AdminPayoutController_getOrderMargins",
         "parameters": [
           {
-            "description": "Début de période (ISO 8601).",
+            "description": "Début de période (ISO 8601). Absent : 30 jours avant la fin. Après `to` : 400.",
             "in": "query",
             "name": "from",
             "required": false,
@@ -3271,7 +3271,7 @@
             }
           },
           {
-            "description": "Fin de période (ISO 8601).",
+            "description": "Fin de période (ISO 8601), incluse. Absente : maintenant. En date seule : toute la journée UTC.",
             "in": "query",
             "name": "to",
             "required": false,

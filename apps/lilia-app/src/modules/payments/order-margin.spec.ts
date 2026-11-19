@@ -1,5 +1,6 @@
 import {
   orderMargin,
+  resolveMarginPeriod,
   resolveProviderFee,
   summarizeMargins,
 } from './order-margin';
@@ -108,5 +109,43 @@ describe('summarizeMargins', () => {
 
   it('aucune commande : zéro partout', () => {
     expect(summarizeMargins([]).knownMarginXaf).toBe(0);
+  });
+});
+
+describe('resolveMarginPeriod', () => {
+  const now = new Date('2026-11-19T10:00:00.000Z');
+
+  it('sans borne : les 30 derniers jours', () => {
+    expect(resolveMarginPeriod({}, now)).toEqual({
+      from: new Date('2026-10-20T10:00:00.000Z'),
+      to: now,
+    });
+  });
+
+  it('sans `from` : 30 jours avant `to`', () => {
+    expect(
+      resolveMarginPeriod({ to: '2026-11-01T00:00:00.000Z' }, now)?.from,
+    ).toEqual(new Date('2026-10-02T00:00:00.000Z'));
+  });
+
+  it('un `to` en date seule couvre toute la journée', () => {
+    expect(
+      resolveMarginPeriod({ from: '2026-11-19', to: '2026-11-19' }, now),
+    ).toEqual({
+      from: new Date('2026-11-19T00:00:00.000Z'),
+      to: new Date('2026-11-19T23:59:59.999Z'),
+    });
+  });
+
+  it('un `to` horodaté est pris tel quel', () => {
+    expect(
+      resolveMarginPeriod({ to: '2026-11-18T22:59:59.000Z' }, now)?.to,
+    ).toEqual(new Date('2026-11-18T22:59:59.000Z'));
+  });
+
+  it('`from` après `to` : refusé', () => {
+    expect(
+      resolveMarginPeriod({ from: '2026-11-20', to: '2026-11-19' }, now),
+    ).toBeNull();
   });
 });
