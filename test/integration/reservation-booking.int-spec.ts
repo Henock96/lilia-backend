@@ -6,10 +6,13 @@ import { OrderCalculatorService } from '../../apps/lilia-app/src/modules/orders/
 import { OrderTransitionService } from '../../apps/lilia-app/src/modules/orders/order-transition.service';
 import { OrderValidatorService } from '../../apps/lilia-app/src/modules/orders/order-validator.service';
 import { StockService } from '../../apps/lilia-app/src/modules/orders/stock.service';
+import { LedgerPosterService } from '../../apps/lilia-app/src/modules/ledger/ledger-poster.service';
+import { LedgerService } from '../../apps/lilia-app/src/modules/ledger/ledger.service';
 import { OutboxService } from '../../apps/lilia-app/src/modules/outbox/outbox.service';
 import { PaymentEventService } from '../../apps/lilia-app/src/modules/payments/services/payment-event.service';
 import { PaymentService } from '../../apps/lilia-app/src/modules/payments/services/payment.service';
 import { RefundsService } from '../../apps/lilia-app/src/modules/refunds/refunds.service';
+import { ReservationAdminService } from '../../apps/lilia-app/src/modules/reservations/reservation-admin.service';
 import { ReservationBookingService } from '../../apps/lilia-app/src/modules/reservations/reservation-booking.service';
 import { ReservationLifecycleService } from '../../apps/lilia-app/src/modules/reservations/reservation-lifecycle.service';
 import { ReservationOrderRelease } from '../../apps/lilia-app/src/modules/reservations/reservation-order-release';
@@ -2002,6 +2005,7 @@ describeIfDb('Réservations client (PostgreSQL réel)', () => {
         freeUntil: at(120),
         refundable: true,
         lateCancellation: false,
+        noShowRefundable: false,
       });
 
       await booking.cancel('c1', r.id, at(10));
@@ -2177,6 +2181,264 @@ describeIfDb('Réservations client (PostgreSQL réel)', () => {
       ]);
       expect(results.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
       expect(await refundDue()).toHaveLength(1);
+    });
+
+    describe('J6 — arrivée par code et absence (option D)', () => {
+      const HOUR = 60 * MIN;
+      /** Absence déclarée à l'arrivée + 15 min (fenêtre B2) : 11:15Z. */
+      const noShowAt = at(255);
+      const afterNoShow = (h: number, m = 0) =>
+        new Date(noShowAt.getTime() + h * HOUR + m * MIN);
+
+      /** La remise par code telle que `completePickup` l'écrit. */
+      const handOver = (orderId: string) =>
+        prisma.$transaction((tx) =>
+          new OrderTransitionService().tryTransition(tx as never, {
+            orderId,
+            from: 'PRET',
+            to: 'LIVRER',
+            actor: 'RESTAURATEUR',
+            actorUserId: 'o1',
+            source: 'APP',
+            proof: 'PICKUP_CODE',
+          }),
+        );
+      const ready = (orderId: string) =>
+        prisma.order.update({
+          where: { id: orderId },
+          data: { status: 'PRET' },
+        });
+
+      it('code saisi : commande LIVRER et réservation HONORED dans la même transaction', async () => {
+        const { r, order } = await confirmed();
+        await ready(order.id);
+        await expect(handOver(order.id)).resolves.toEqual({ moved: true });
+        expect((await orderOf(order.id)).status).toBe('LIVRER');
+        expect(await reservationOf(r.id)).toMatchObject({
+          status: 'HONORED',
+          honoredAt: expect.any(Date),
+        });
+        expect(
+          await prisma.reservationEvent.findFirst({
+            where: { reservationId: r.id, toStatus: 'HONORED' },
+          }),
+        ).toMatchObject({ actorRole: 'RESTAURATEUR', reason: 'PICKUP_CODE' });
+      });
+
+      it('absence déclarée : la remise est refusée, rien ne bouge', async () => {
+        const { r, order } = await confirmed();
+        await ready(order.id);
+        await vendor.markNoShow('o1', r.id, noShowAt);
+        await expect(handOver(order.id)).rejects.toSatisfy(
+          (e) =>
+            (e as { getResponse: () => { code: string } }).getResponse()
+              .code === 'RESERVATION_STATE_CONFLICT',
+        );
+        expect((await orderOf(order.id)).status).toBe('PRET');
+        expect((await reservationOf(r.id)).status).toBe('NO_SHOW');
+      });
+
+      it('absence retirée à 5 h 59 : réservation de nouveau confirmée ; à 6 h 01 : retrait refusé', async () => {
+        const first = await confirmed();
+        await vendor.markNoShow('o1', first.r.id, noShowAt);
+        await vendor.undoNoShow('o1', first.r.id, afterNoShow(5, 59));
+        expect((await reservationOf(first.r.id)).status).toBe('CONFIRMED');
+
+        await vendor.markNoShow('o1', first.r.id, afterNoShow(5, 59));
+        await expect(
+          vendor.undoNoShow('o1', first.r.id, afterNoShow(12, 0)),
+        ).rejects.toBeDefined();
+        expect((await reservationOf(first.r.id)).status).toBe('NO_SHOW');
+      });
+
+      it('avis au client : la précommande n’est pas remboursée ; politique affichée avant de payer', async () => {
+        const { r } = await confirmed();
+        expect(
+          (await booking.getMine('c1', r.id, at(10))).cancellationPolicy,
+        ).toMatchObject({ noShowRefundable: false });
+        await vendor.markNoShow('o1', r.id, noShowAt);
+        expect(
+          (await outboxOf()).filter(
+            (n) => (n.payload as { notice: string }).notice === 'NO_SHOW',
+          ),
+        ).toEqual([
+          expect.objectContaining({
+            payload: expect.objectContaining({ paidPreorder: true }),
+          }),
+        ]);
+      });
+
+      it('à 12 h : commande ANNULER sans remboursement, encaissement partagé 50/50, une seule clôture', async () => {
+        const { r, order } = await confirmed();
+        await vendor.markNoShow('o1', r.id, noShowAt);
+
+        expect(await lifecycle.settleNoShows(afterNoShow(11, 59))).toBe(0);
+        expect((await orderOf(order.id)).status).toBe('PAYER');
+
+        const [a, b] = await Promise.all([
+          lifecycle.settleNoShows(afterNoShow(12)),
+          lifecycle.settleNoShows(afterNoShow(12)),
+        ]);
+        expect(a + b).toBe(1);
+        expect((await orderOf(order.id)).status).toBe('ANNULER');
+        expect((await reservationOf(r.id)).status).toBe('NO_SHOW');
+        expect(
+          await prisma.orderHistory.findFirst({
+            where: { orderId: order.id, toStatus: 'ANNULER' },
+          }),
+        ).toMatchObject({ actionId: 'SYSTEM', source: 'CRON' });
+        const half = Math.floor(order.total / 2);
+        expect(
+          await prisma.reservationNoShowSettlement.findUniqueOrThrow({
+            where: { reservationId: r.id },
+          }),
+        ).toMatchObject({
+          orderId: order.id,
+          restaurantId: 'v1',
+          totalXaf: order.total,
+          vendorShareXaf: half,
+          platformShareXaf: order.total - half,
+          vendorShareBps: 5_000,
+        });
+        expect(await refundDue()).toHaveLength(0);
+        expect(await prisma.refund.count()).toBe(0);
+        // Rejouée plus tard : rien de plus.
+        expect(await lifecycle.settleNoShows(afterNoShow(24))).toBe(0);
+      });
+
+      it('grand livre : écriture FORFEIT équilibrée, commande soldée, part du restaurant due', async () => {
+        const { r, order } = await confirmed();
+        await vendor.markNoShow('o1', r.id, noShowAt);
+        await lifecycle.settleNoShows(afterNoShow(12));
+        const s = await prisma.reservationNoShowSettlement.findUniqueOrThrow({
+          where: { reservationId: r.id },
+        });
+
+        const ledger = new LedgerService(prisma as never);
+        await new LedgerPosterService(prisma as never, ledger).catchUp();
+
+        const tx = await prisma.ledgerTransaction.findFirstOrThrow({
+          where: { sourceEventKey: `reservation_no_show:${s.id}:forfeited` },
+          include: { entries: true },
+        });
+        expect(tx.kind).toBe('FORFEIT');
+        expect(tx.entries.reduce((sum, e) => sum + e.amountXaf, 0)).toBe(0);
+        const byAccount = Object.fromEntries(
+          tx.entries.map((e) => [e.account, e.amountXaf]),
+        );
+        expect(byAccount).toEqual({
+          'clearing:order': order.total,
+          'revenue:forfeit': -s.platformShareXaf,
+          vendor_payable: -s.vendorShareXaf,
+        });
+      });
+
+      describe('annulation par le support (I-10)', () => {
+        const audit = { record: jest.fn() };
+        const admin = () =>
+          new ReservationAdminService(
+            prisma as never,
+            new OutboxService(prisma as never),
+            new ReservationOrderRelease(
+              new OrderTransitionService(),
+              new StockService(),
+            ),
+            audit as never,
+          );
+        beforeEach(() => audit.record.mockReset());
+        const MOTIF = 'Restaurant fermé par la mairie ce jour';
+        const adminNotices = async () =>
+          (await outboxOf()).filter(
+            (n) =>
+              (n.payload as { notice: string }).notice === 'CANCELLED_BY_ADMIN',
+          );
+
+        it('réservation payée : CANCELLED_BY_VENDOR (acteur ADMIN, motif), commande ANNULER, remboursement intégral par la file admin, deux avis, audit', async () => {
+          const { r, order } = await confirmed();
+          await expect(
+            admin().cancel('admin-1', r.id, MOTIF, at(30)),
+          ).resolves.toEqual({
+            id: r.id,
+            status: 'CANCELLED_BY_VENDOR',
+            refundXaf: order.total,
+          });
+          expect(await reservationOf(r.id)).toMatchObject({
+            status: 'CANCELLED_BY_VENDOR',
+            cancelReason: 'OTHER',
+          });
+          expect(
+            await prisma.reservationEvent.findFirst({
+              where: { reservationId: r.id, toStatus: 'CANCELLED_BY_VENDOR' },
+            }),
+          ).toMatchObject({
+            actorRole: 'ADMIN',
+            actorId: 'admin-1',
+            reason: MOTIF,
+          });
+          expect(
+            await prisma.orderHistory.findFirst({
+              where: { orderId: order.id, toStatus: 'ANNULER' },
+            }),
+          ).toMatchObject({ actionId: 'ADMIN', source: 'ADMIN_APP' });
+          const [due] = await refundDue();
+          expect(due.payload).toMatchObject({
+            reasonCode: 'ORDER_CANCELLED',
+            requestedBy: 'admin-1',
+          });
+          expect(due.payload).not.toHaveProperty('vendorFault');
+          expect(
+            (await adminNotices()).map(
+              (n) => (n.payload as { audience: string }).audience,
+            ),
+          ).toEqual(['CLIENT', 'VENDOR']);
+          expect(audit.record).toHaveBeenCalledWith(
+            expect.objectContaining({
+              action: 'ORDER_STATUS_FORCED',
+              targetId: order.id,
+              reason: MOTIF,
+            }),
+          );
+        });
+
+        it('demande non acceptée : annulée sans commande ni remboursement, sans audit de commande', async () => {
+          const r = await book(1, 'a', {}, T0);
+          await admin().cancel('admin-1', r.id, MOTIF, at(1));
+          expect((await reservationOf(r.id)).status).toBe(
+            'CANCELLED_BY_VENDOR',
+          );
+          expect(await refundDue()).toHaveLength(0);
+          expect(audit.record).not.toHaveBeenCalled();
+        });
+
+        it('absence non close : annulable (remboursement intégral) ; absence close : 409, rien ne bouge', async () => {
+          const first = await confirmed();
+          await vendor.markNoShow('o1', first.r.id, noShowAt);
+          await admin().cancel('admin-1', first.r.id, MOTIF, afterNoShow(7));
+          expect((await orderOf(first.order.id)).status).toBe('ANNULER');
+          expect(await refundDue()).toHaveLength(1);
+
+          await prisma.cart.deleteMany({ where: { userId: 'c1' } });
+          await cart('c1', 'p1', 'var1');
+          const second = await confirmed(false, 'b');
+          await vendor.markNoShow('o1', second.r.id, noShowAt);
+          await lifecycle.settleNoShows(afterNoShow(12));
+          await expect(
+            admin().cancel('admin-1', second.r.id, MOTIF, afterNoShow(13)),
+          ).rejects.toSatisfy(
+            (e) =>
+              (e as { getResponse: () => { code: string } }).getResponse()
+                .code === 'RESERVATION_STATE_CONFLICT',
+          );
+          expect((await reservationOf(second.r.id)).status).toBe('NO_SHOW');
+          expect(await refundDue()).toHaveLength(1);
+        });
+
+        it('réservation inconnue : 404', async () => {
+          await expect(
+            admin().cancel('admin-1', 'inconnue', MOTIF, at(1)),
+          ).rejects.toThrow('Réservation introuvable.');
+        });
+      });
     });
   });
 

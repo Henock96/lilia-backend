@@ -26,6 +26,7 @@ const current = {
   vendorPayoutDelayMinutes: 60,
   deliveryPricingMode: 'VENDOR_LEGACY',
   premiumMonthlyPriceXaf: 15000,
+  reservationNoShowVendorShareBps: 5000,
   maintenanceMode: false,
 } as unknown as PlatformSettings;
 

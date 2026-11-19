@@ -11,6 +11,7 @@ import {
   Max,
   MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
 
 import { PaginationQueryDto } from '../../../common/pagination/pagination-query.dto';
@@ -117,6 +118,15 @@ export class DeclineReservationDto {
   @ApiProperty({ enum: RESERVATION_DECLINE_REASONS })
   @IsIn(RESERVATION_DECLINE_REASONS)
   reason!: ReservationDeclineReason;
+}
+
+/** J6 — annulation par le support : motif libre, obligatoire, journalisé. */
+export class AdminCancelReservationDto {
+  @ApiProperty({ minLength: 10, maxLength: 500 })
+  @IsString()
+  @MinLength(10, { message: 'Motif obligatoire (10 caractères au moins).' })
+  @MaxLength(500)
+  reason!: string;
 }
 
 export class VendorCancelReservationDto {

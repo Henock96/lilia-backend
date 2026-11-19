@@ -1,4 +1,7 @@
+import { ConflictException } from '@nestjs/common';
 import { OrderStatus, Prisma, RefundReasonCode } from '@prisma/client';
+
+import { BOOKING_ERROR_CODES } from './reservation-booking-vocab';
 
 import {
   ORDER_REFUND_DUE_EVENT,
@@ -8,6 +11,44 @@ import type { ReservationNoticePayload } from './reservation-notices';
 import { canTransition } from './reservation-state.machine';
 
 type Db = Prisma.TransactionClient;
+
+/**
+ * J6 — la commande liée passe `LIVRER` : sa réservation est honorée dans la
+ * même transaction (`OrderTransitionService.tryTransition`). Seule la remise
+ * par code y mène (OD-20 ferme les autres chemins). Une réservation qui n'est
+ * pas `CONFIRMED` (absence déclarée, annulée) refuse la remise : 409, la
+ * transaction entière est annulée, la commande ne bouge pas.
+ */
+export async function honorLinkedReservation(
+  tx: Db,
+  reservationId: string,
+  actorId: string | null,
+  now: Date,
+): Promise<void> {
+  const { count } = canTransition('CONFIRMED', 'HONORED', 'RESTAURATEUR')
+    ? await tx.reservation.updateMany({
+        where: { id: reservationId, status: 'CONFIRMED' },
+        data: { status: 'HONORED', honoredAt: now },
+      })
+    : { count: 0 };
+  if (count !== 1) {
+    throw new ConflictException({
+      message:
+        'La réservation de cette commande n’est plus confirmée (absence déclarée ou annulation) : la remise est impossible.',
+      code: BOOKING_ERROR_CODES.stateConflict,
+    });
+  }
+  await tx.reservationEvent.create({
+    data: {
+      reservationId,
+      fromStatus: 'CONFIRMED',
+      toStatus: 'HONORED',
+      actorRole: 'RESTAURATEUR',
+      actorId,
+      reason: 'PICKUP_CODE',
+    },
+  });
+}
 
 /**
  * Lot 4 (4B-2, OD-06) — encaissement confirmé par le prestataire alors que la

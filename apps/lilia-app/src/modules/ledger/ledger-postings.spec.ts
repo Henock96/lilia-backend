@@ -6,6 +6,7 @@ import {
   collectionPosting,
   driverCostPosting,
   driverSettlementPosting,
+  forfeitPosting,
   payoutPosting,
   pspFeePosting,
   refundPosting,
@@ -351,5 +352,44 @@ describe('Grand livre — corrections', () => {
     expect(pay(4250).sourceEventKey).toBe('payment:p1:success');
     expect(acquisitionPosting(ORDER).sourceEventKey).toBe('order:o1:acquired');
     expect(payout(3000).sourceEventKey).toBe('payout:po1:success');
+  });
+});
+
+describe('Grand livre — absence à une réservation payée (4B-2 J6, option D)', () => {
+  const settlement = {
+    id: 's1',
+    orderId: 'o1',
+    restaurantId: 'r1',
+    totalXaf: 11_501,
+    vendorShareXaf: 5_750,
+    platformShareXaf: 5_751,
+    vendorShareBps: 5_000,
+    createdAt: AT,
+  };
+
+  it('encaissement puis retenue : commande soldée, part Lilia en revenu, part restaurant due', () => {
+    const f = forfeitPosting(settlement);
+    expect(sum(f)).toBe(0);
+    expect(f.kind).toBe('FORFEIT');
+    expect(f.sourceEventKey).toBe('reservation_no_show:s1:forfeited');
+    expect(balances([pay(11_501), f])).toEqual({
+      'psp:PAWAPAY': 11_501,
+      'revenue:forfeit': -5_751,
+      'vendor_payable:r1': -5_750,
+    });
+  });
+
+  it('remboursement commercial après retenue (commande « acquise ») : dépense de Lilia, commande toujours soldée', () => {
+    const r = refund({
+      amount: 11_501,
+      bearer: 'PLATFORM',
+      closureMethod: 'PROVIDER',
+      acquired: true,
+    });
+    expect(balances([pay(11_501), forfeitPosting(settlement), r])).toEqual({
+      'revenue:forfeit': -5_751,
+      'vendor_payable:r1': -5_750,
+      'expense:refund_platform': 11_501,
+    });
   });
 });

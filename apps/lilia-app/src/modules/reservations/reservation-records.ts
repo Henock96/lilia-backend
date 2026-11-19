@@ -162,6 +162,9 @@ function cancellationPolicyView(r: ReservationRecord) {
     ),
     refundable: true,
     lateCancellation: r.lateCancellation,
+    // J6 (option D, 19/11) — une absence n'est pas remboursée ; le client le
+    // voit avant de payer.
+    noShowRefundable: false,
   };
 }
 
@@ -173,7 +176,7 @@ export function noShowWindowOpen(arrivalAt: Date, now: Date): boolean {
   return brazzavilleClock(now).isoDate === brazzavilleClock(arrivalAt).isoDate;
 }
 
-/** Le retrait d'une absence reste possible 24 h (B2). */
+/** Le retrait d'une absence reste possible 6 h (B2, révisé le 19/11). */
 export function noShowUndoOpen(noShowAt: Date | null, now: Date): boolean {
   return (
     noShowAt !== null &&

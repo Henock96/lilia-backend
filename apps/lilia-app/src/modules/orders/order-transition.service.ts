@@ -2,7 +2,10 @@ import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { OrderStatus, Prisma } from '@prisma/client';
 import { acceptanceDeadline } from './order-acceptance-policy';
 import { closeOpenDispatchForOrder } from '../deliveries/dispatch/dispatch-policy';
-import { confirmLinkedReservation } from '../reservations/reservation-payment-link';
+import {
+  confirmLinkedReservation,
+  honorLinkedReservation,
+} from '../reservations/reservation-payment-link';
 
 import {
   DEFAULT_VENDOR_PAYOUT_DELAY_MINUTES,
@@ -121,6 +124,23 @@ export class OrderTransitionService {
         !(await this.confirmReservation(tx, orderId, reservationId))
       ) {
         return { moved: false };
+      }
+    } else if (to === OrderStatus.LIVRER) {
+      // J6 — remise d'une commande liée : sa réservation est honorée dans la
+      // même transaction (409 si elle n'est plus confirmée).
+      const rows = await tx.order.updateManyAndReturn({
+        ...claim,
+        select: { reservationId: true },
+      });
+      if (rows.length === 0) return { moved: false };
+      const reservationId = rows[0].reservationId;
+      if (reservationId) {
+        await honorLinkedReservation(
+          tx,
+          reservationId,
+          params.actorUserId ?? null,
+          new Date(),
+        );
       }
     } else {
       const claimed = await tx.order.updateMany(claim);

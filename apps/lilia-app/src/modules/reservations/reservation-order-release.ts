@@ -177,6 +177,8 @@ export class ReservationOrderRelease {
       reason: string;
       requestedBy: string;
       vendorFault: boolean;
+      /** `ADMIN_APP` pour le support ; `APP` par défaut. */
+      source?: OrderTransitionSource;
     },
   ): Promise<{
     type: string;
@@ -189,7 +191,7 @@ export class ReservationOrderRelease {
       to: 'ANNULER',
       actor: p.actor,
       actorUserId: p.actorUserId,
-      source: 'APP',
+      source: p.source ?? 'APP',
       reason: p.reason,
     });
     // Impossible sous le verrou pris par `lockPaid`.
@@ -206,6 +208,27 @@ export class ReservationOrderRelease {
           : { reasonCode: RefundReasonCode.ORDER_CANCELLED }),
       },
     };
+  }
+
+  /**
+   * J6 (option D) — clôture de la commande d'une absence, 12 h après sa
+   * déclaration : `→ ANNULER` (`SYSTEM`, `CRON`), **sans** remboursement dû —
+   * l'encaissement est partagé (`ReservationNoShowSettlement`, écrite par
+   * l'appelant dans la même transaction) — et **sans** stock rendu : les plats
+   * ont été préparés, et le quota du jour d'arrivée est passé.
+   */
+  async closeForfeited(tx: Db, order: LockedPaidOrder): Promise<void> {
+    const { moved } = await this.transitions.tryTransition(tx, {
+      orderId: order.id,
+      from: order.status,
+      to: 'ANNULER',
+      actor: 'SYSTEM',
+      actorUserId: null,
+      source: 'CRON',
+      reason: 'Absence du client : encaissement retenu et partagé',
+    });
+    // Impossible sous le verrou pris par `lockPaid`.
+    if (!moved) throw stateConflict('NO_SHOW');
   }
 
   private async restoreStock(

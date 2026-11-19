@@ -48,6 +48,19 @@
         "properties": {},
         "type": "object"
       },
+      "AdminCancelReservationDto": {
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 10,
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "type": "object"
+      },
       "ArbitrateDeliveryDto": {
         "properties": {
           "note": {
@@ -4552,6 +4565,45 @@
         "summary": "Arbitrer une récompense en attente de revue",
         "tags": [
           "Admin"
+        ]
+      }
+    },
+    "/admin/reservations/{id}/cancel": {
+      "post": {
+        "operationId": "AdminReservationsController_cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminCancelReservationDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Annuler une réservation (support) : commande liée annulée, remboursement intégral par la file admin si payée",
+        "tags": [
+          "Réservations sur place (admin)"
         ]
       }
     },
@@ -13719,7 +13771,7 @@
             "bearer": []
           }
         ],
-        "summary": "Retirer une absence déclarée par erreur (24 h)",
+        "summary": "Retirer une absence déclarée par erreur (6 h)",
         "tags": [
           "Réservations sur place (vendeur)"
         ]

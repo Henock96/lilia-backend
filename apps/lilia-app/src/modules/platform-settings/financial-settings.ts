@@ -27,6 +27,8 @@ export const FINANCIAL_SETTING_KEYS = [
   'deliveryPricingMode',
   // Premium (Lot 2) — prix d'un mois d'abonnement vendeur.
   'premiumMonthlyPriceXaf',
+  // 4B-2 J6 — part due au restaurant sur l'encaissement d'une absence.
+  'reservationNoShowVendorShareBps',
 ] as const;
 
 export type FinancialSettingKey = (typeof FINANCIAL_SETTING_KEYS)[number];
@@ -118,6 +120,7 @@ const LABELS: Record<FinancialSettingKey, string> = {
   vendorPayoutDelayMinutes: 'Délai avant versement',
   deliveryPricingMode: 'Tarification de la livraison',
   premiumMonthlyPriceXaf: 'Prix mensuel Premium',
+  reservationNoShowVendorShareBps: 'Part restaurant sur une absence',
 };
 
 function formatValue(
@@ -130,6 +133,8 @@ function formatValue(
       return `${String(value)} %`;
     case 'groceryServiceFeeBps':
       return value === null ? 'taux général' : `${Number(value) / 100} %`;
+    case 'reservationNoShowVendorShareBps':
+      return `${Number(value) / 100} %`;
     case 'loyaltyPointValueXaf':
     case 'premiumMonthlyPriceXaf':
       return `${String(value)} XAF`;

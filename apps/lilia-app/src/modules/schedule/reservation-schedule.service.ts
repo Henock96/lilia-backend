@@ -30,6 +30,22 @@ export class ReservationScheduleService {
     });
   }
 
+  /**
+   * 4B-2 J6 — absences déclarées depuis 12 h : commande close, encaissement
+   * partagé (option D). Toutes les 5 min : l'échéance n'a rien d'urgent.
+   */
+  @Cron('*/5 * * * *', { name: 'settle-reservation-no-shows' })
+  async settleNoShows(): Promise<void> {
+    await this.cronLock.runExclusively(
+      'settle-reservation-no-shows',
+      240,
+      async () => {
+        const n = await this.lifecycle.settleNoShows();
+        if (n > 0) this.logger.log(`⏰ ${n} absence(s) close(s)`);
+      },
+    );
+  }
+
   /** Rappel 2 h avant l'arrivée (B7). */
   @Cron('*/5 * * * *', { name: 'reservation-reminders' })
   async remind(): Promise<void> {

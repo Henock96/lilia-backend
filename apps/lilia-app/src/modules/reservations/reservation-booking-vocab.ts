@@ -71,8 +71,13 @@ export const RESERVATION_TIMINGS = {
   paymentWindowMin: 15,
   /** B2 — une absence se déclare au plus tôt 15 min après l'heure d'arrivée. */
   noShowGraceMin: 15,
-  /** B2 — le vendeur peut retirer une absence pendant 24 h. */
-  noShowUndoHours: 24,
+  /** B2 (révisé le 19/11) — le vendeur peut retirer une absence pendant 6 h. */
+  noShowUndoHours: 6,
+  /**
+   * 4B-2 J6 (19/11) — 12 h après sa déclaration, l'absence est close : la
+   * commande liée est annulée et l'encaissement partagé (option D).
+   */
+  noShowSettleHours: 12,
   /** B7 — rappel client 2 h avant l'arrivée… */
   reminderBeforeMin: 120,
   /** …sauf si la réservation a été confirmée moins de 3 h avant. */

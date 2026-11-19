@@ -430,6 +430,46 @@ export function driverSettlementPosting(s: {
 
 // ─── Correction manuelle du solde vendeur ─────────────────────────────────
 
+// ─── Absence à une réservation payée (4B-2 J6) ─────────────────────────────
+
+/**
+ * Le client ne s'est pas présenté : l'encaissement n'est pas remboursé, il est
+ * partagé (`ReservationNoShowSettlement`, figé à la clôture de l'absence). Le
+ * compte de la commande est soldé — le rapprochement ne la signale plus comme
+ * « payée, annulée, jamais soldée » (preuve J0.2). La part du restaurant reste
+ * due (`vendor_payable`) jusqu'à son versement validé par deux
+ * administrateurs (J6b), jamais automatique (règle 8).
+ */
+export function forfeitPosting(s: {
+  id: string;
+  orderId: string;
+  restaurantId: string;
+  totalXaf: number;
+  vendorShareXaf: number;
+  platformShareXaf: number;
+  vendorShareBps: number;
+  createdAt: Date;
+}): Posting {
+  return finalizePosting({
+    sourceEventKey: `reservation_no_show:${s.id}:forfeited`,
+    kind: 'FORFEIT',
+    sourceType: 'ReservationNoShowSettlement',
+    sourceId: s.id,
+    occurredAt: s.createdAt,
+    origin: 'SYSTEM',
+    note: `absence : part restaurant ${s.vendorShareBps} pb`,
+    lines: [
+      { account: 'clearing:order', ...order(s.orderId), amountXaf: s.totalXaf },
+      { account: 'revenue:forfeit', amountXaf: -s.platformShareXaf },
+      {
+        account: 'vendor_payable',
+        ...vendor(s.restaurantId),
+        amountXaf: -s.vendorShareXaf,
+      },
+    ],
+  });
+}
+
 export function vendorAdjustmentPosting(e: {
   id: string;
   restaurantId: string;

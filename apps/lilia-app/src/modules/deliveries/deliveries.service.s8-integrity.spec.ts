@@ -1,5 +1,6 @@
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { OutboxService } from '../outbox/outbox.service';
+import { returningUpdate } from '../../../test/order-update-returning';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConflictException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -72,7 +73,7 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
     user: { findUnique: jest.fn(), update: jest.fn() },
     // Course sans code (récupérée avant F-06) : conclusion `UNVERIFIED`.
     deliveryHandover: { findUnique: jest.fn().mockResolvedValue(null) },
-    order: { updateMany: jest.fn() },
+    order: { updateMany: jest.fn(), updateManyAndReturn: returningUpdate() },
     orderHistory: { create: jest.fn() },
     // Journal d'assignation : ouvert et clos dans la même transaction que le
     // statut de la livraison.
@@ -137,6 +138,7 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
         count: jest.fn(() => Promise.resolve(0)),
       },
       order: {
+        updateManyAndReturn: returningUpdate(),
         updateMany: jest.fn(
           ({
             where,
@@ -361,7 +363,10 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
           }),
         },
         // `EN_ROUTE` attendu, `ANNULER` réel ⇒ 0 ligne.
-        order: { updateMany: jest.fn(() => Promise.resolve({ count: 0 })) },
+        order: {
+          updateMany: jest.fn(() => Promise.resolve({ count: 0 })),
+          updateManyAndReturn: returningUpdate(),
+        },
         orderHistory: {
           create: jest.fn(() => {
             applied.push('history');

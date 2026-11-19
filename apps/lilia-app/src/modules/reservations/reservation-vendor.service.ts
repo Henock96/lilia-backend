@@ -212,7 +212,8 @@ export class ReservationVendorService {
   }
 
   /**
-   * B2 — une absence déclarée par erreur se retire pendant 24 h.
+   * B2 — une absence déclarée par erreur se retire pendant 6 h (révisé le
+   * 19/11) ; après 12 h, elle est close (J6, partage de l'encaissement).
    *
    * ⚠️ NO_SHOW ne tient pas de capacité : entre le marquage et le retrait, la
    * table a pu être redonnée à un autre client pour un créneau qui chevauche
@@ -408,6 +409,7 @@ export class ReservationVendorService {
         arrivalAt: r.arrivalAt.toISOString(),
         partySize: r.partySize,
         ...(paid ? { refundXaf: paid.total } : {}),
+        ...(step.notice === 'NO_SHOW' && r.order ? { paidPreorder: true } : {}),
       });
     });
     return this.get(ownerId, id, now);

@@ -527,6 +527,8 @@ model Restaurant {
   reservationWindows  ReservationWindow[]
   /// Lot 4 — réservations des clients.
   reservations        Reservation[]
+  /// 4B-2 J6 — parts d'encaissement retenues sur les absences.
+  noShowSettlements   ReservationNoShowSettlement[]
 
   /// F3-12 — le dispatch automatique propose-t-il les courses de ce vendeur ?
   /// `MANUAL` par défaut : l'assignation reste humaine tant qu'un ADMIN n'a
@@ -1166,6 +1168,8 @@ model Order {
   /// simultanées. `null` pour toute autre commande.
   reservationId String?      @unique
   reservation   Reservation? @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  /// 4B-2 J6 — partage de l'encaissement si le client ne s'est pas présenté.
+  noShowSettlement ReservationNoShowSettlement?
 
   @@unique([userId, idempotencyKey])
   @@index([restaurantId, status, createdAt(sort: Desc)]) // dashboard resto: commandes par statut, plus recentes (LFD-9)
@@ -3415,6 +3419,12 @@ model PlatformSettings {
   /// aucune route ne l'écrit : l'allumer est une décision séparée.
   reservationsEnabled Boolean @default(false)
 
+  /// 4B-2 J6 (19/11) — part de l'encaissement d'une réservation dont le client
+  /// ne s'est pas présenté, due au restaurant, en points de base (5 000 =
+  /// 50 %). Le reste est retenu par Lilia. Réglage financier (R-09). CHECK
+  /// 0..9999 : toujours strictement moins que le tout.
+  reservationNoShowVendorShareBps Int @default(5000)
+
   updatedAt DateTime @updatedAt
 }
 
@@ -4185,6 +4195,8 @@ model Reservation {
   events ReservationEvent[]
   /// 4B-2 — la commande liée, née à l'acceptation du restaurant.
   order  Order?
+  /// 4B-2 J6 — partage de l'encaissement d'une absence, figé à la clôture.
+  noShowSettlement ReservationNoShowSettlement?
 
   @@unique([userId, requestKey])
   @@index([restaurantId, arrivalAt])
@@ -4193,6 +4205,36 @@ model Reservation {
   @@index([status, responseDeadlineAt])
   @@index([status, paymentDeadlineAt])
   @@index([userId, status, noShowAt])
+}
+
+/// 4B-2 J6 (OD-08 option D, OD-22 rouvert, 19/11) — le client ne s'est pas
+/// présenté : l'encaissement n'est pas remboursé, il est partagé entre Lilia
+/// et le restaurant. Écrit **une fois**, à la clôture de l'absence (12 h après
+/// la déclaration), dans la transaction qui annule la commande liée : les
+/// montants et le taux appliqué sont figés ici, jamais recalculés.
+///
+/// La part du restaurant n'est **jamais versée automatiquement** (règle 8 :
+/// une absence déclarée n'est pas une preuve) : un administrateur la verse,
+/// un second valide (J6b). CHECK : parts ≥ 0, somme = total, taux 0..9999.
+model ReservationNoShowSettlement {
+  id               String      @id @default(cuid())
+  reservationId    String      @unique
+  reservation      Reservation @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  orderId          String      @unique
+  order            Order       @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  restaurantId     String
+  restaurant       Restaurant  @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  /// Encaissement de la commande (XAF).
+  totalXaf         Int
+  /// Part due au restaurant (XAF), arrondie à l'entier inférieur.
+  vendorShareXaf   Int
+  /// Part retenue par Lilia (XAF) : le reste, franc impair compris.
+  platformShareXaf Int
+  /// Taux appliqué (points de base), copié du réglage au moment de la clôture.
+  vendorShareBps   Int
+  createdAt        DateTime    @default(now())
+
+  @@index([restaurantId, createdAt])
 }
 
 /// Un plat précommandé (C1, D4), copié du panier serveur à la demande, avec

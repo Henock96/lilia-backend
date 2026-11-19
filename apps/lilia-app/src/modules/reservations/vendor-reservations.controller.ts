@@ -107,7 +107,7 @@ export class VendorReservationsController {
   @Throttle(GESTURE)
   @Post(':id/undo-no-show')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Retirer une absence déclarée par erreur (24 h)' })
+  @ApiOperation({ summary: 'Retirer une absence déclarée par erreur (6 h)' })
   async undoNoShow(@CurrentUser() user: User, @Param('id') id: string) {
     return {
       data: await this.reservations.undoNoShow(user.id, id),

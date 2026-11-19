@@ -7,6 +7,7 @@ import {
   LedgerPostingError,
   Posting,
   acquisitionPosting,
+  forfeitPosting,
   collectionPosting,
   driverCostPosting,
   driverSettlementPosting,
@@ -34,6 +35,8 @@ export interface CatchUpReport {
   fees: PassReport;
   driverSettlements: PassReport;
   vendorAdjustments: PassReport;
+  /** 4B-2 J6 — absences à une réservation payée (encaissement retenu). */
+  forfeits: PassReport;
 }
 
 const empty = (): PassReport => ({
@@ -127,6 +130,7 @@ export class LedgerPosterService {
       fees: empty(),
       driverSettlements: empty(),
       vendorAdjustments: empty(),
+      forfeits: empty(),
     };
     const mode = (at: Date): LedgerPostingMode =>
       options.backfillBefore && at < options.backfillBefore
@@ -144,6 +148,9 @@ export class LedgerPosterService {
     await this.passCollections(report.collections, mode, excluded);
     await this.passAcquisitions(report.acquisitions, mode, excluded);
     await this.passDriverCosts(report.driverCosts, mode, excluded);
+    // Avant les remboursements : un geste commercial sur une commande retenue
+    // est une dépense de Lilia, pas un retour du compte de la commande.
+    await this.passForfeits(report.forfeits, mode, excluded);
     await this.passRefunds(report.refunds, mode, excluded);
     await this.passPayouts(report.payouts, mode, excluded);
     await this.passFees(report.fees, mode, excluded);
@@ -381,6 +388,16 @@ export class LedgerPosterService {
     const acquired = await this.alreadyPosted(
       todo.map((r) => `order:${r.orderId}:acquired`),
     );
+    // 4B-2 J6 — une commande dont l'encaissement a été retenu (absence) est
+    // soldée : la rembourser ensuite est un geste de Lilia.
+    const forfeited = new Set(
+      (
+        await this.prisma.reservationNoShowSettlement.findMany({
+          where: { orderId: { in: todo.map((r) => r.orderId) } },
+          select: { id: true, orderId: true },
+        })
+      ).map((s) => s.orderId),
+    );
     for (const r of todo) {
       if (excluded.has(r.orderId)) {
         stats.excluded++;
@@ -402,7 +419,9 @@ export class LedgerPosterService {
               providerTransactionId: r.providerTransactionId,
               externalReference: r.externalReference,
             },
-            acquired: acquired.has(`order:${r.orderId}:acquired`),
+            acquired:
+              acquired.has(`order:${r.orderId}:acquired`) ||
+              forfeited.has(r.orderId),
             restaurantId: r.order.restaurantId,
             delivererId: r.order.delivery?.delivererId ?? null,
           }),
@@ -560,6 +579,35 @@ export class LedgerPosterService {
         stats,
         { sourceType: 'DriverSettlement', sourceId: s.id },
         () => driverSettlementPosting(s),
+        mode,
+      );
+    }
+  }
+
+  /** 4B-2 J6 — une écriture `FORFEIT` par partage d'absence. */
+  private async passForfeits(
+    stats: PassReport,
+    mode: (at: Date) => LedgerPostingMode,
+    excluded: Set<string>,
+  ) {
+    const settlements = await this.prisma.reservationNoShowSettlement.findMany({
+      orderBy: { id: 'asc' },
+    });
+    const done = await this.alreadyPosted(
+      settlements.map((s) => `reservation_no_show:${s.id}:forfeited`),
+    );
+    const todo = settlements
+      .filter((s) => !done.has(`reservation_no_show:${s.id}:forfeited`))
+      .slice(0, LedgerPosterService.BATCH);
+    for (const s of todo) {
+      if (excluded.has(s.orderId)) {
+        stats.excluded++;
+        continue;
+      }
+      await this.apply(
+        stats,
+        { sourceType: 'ReservationNoShowSettlement', sourceId: s.id },
+        () => forfeitPosting(s),
         mode,
       );
     }

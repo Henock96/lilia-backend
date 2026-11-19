@@ -6,6 +6,8 @@ import {
   ReservationAvailabilityController,
   ReservationsController,
 } from './reservation-booking.controller';
+import { AdminReservationsController } from './admin-reservations.controller';
+import { ReservationAdminService } from './reservation-admin.service';
 import { ReservationBookingService } from './reservation-booking.service';
 import { ReservationOrderService } from './reservation-order.service';
 import { ReservationPaymentService } from './reservation-payment.service';
@@ -38,6 +40,8 @@ import { VendorReservationsController } from './vendor-reservations.controller';
     ReservationAvailabilityController,
     ReservationsController,
     VendorReservationsController,
+    // J6 — annulation par le support (I-10).
+    AdminReservationsController,
   ],
   providers: [
     ReservationSettingsService,
@@ -45,6 +49,7 @@ import { VendorReservationsController } from './vendor-reservations.controller';
     ReservationVendorService,
     ReservationOrderService,
     ReservationPaymentService,
+    ReservationAdminService,
   ],
 })
 export class ReservationsModule {}

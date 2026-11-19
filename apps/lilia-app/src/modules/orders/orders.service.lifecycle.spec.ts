@@ -16,6 +16,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { PaginationService } from '../../common/pagination/pagination.service';
 import { OrderStateMachine } from './order-state.machine';
 import { OrderTransitionService } from './order-transition.service';
+import { returningUpdate } from '../../../test/order-update-returning';
 import { StockService } from './stock.service';
 import { StockSignalService } from './stock-signal.service';
 import { VendorOffersService } from '../vendor-offers/vendor-offers.service';
@@ -60,6 +61,7 @@ describe('OrdersService (caractérisation — cycle de vie)', () => {
     order: {
       update: jest.fn(),
       updateMany: jest.fn(),
+      updateManyAndReturn: returningUpdate(),
       findUniqueOrThrow: jest.fn(),
     },
     user: { update: jest.fn() },

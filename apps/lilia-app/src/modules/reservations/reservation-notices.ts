@@ -17,6 +17,8 @@ export type ReservationNotice =
   | 'EXPIRED'
   | 'CANCELLED_BY_CLIENT'
   | 'CANCELLED_BY_VENDOR'
+  // J6 — annulation par le support Lilia Food (client et restaurant).
+  | 'CANCELLED_BY_ADMIN'
   | 'REASSIGNED'
   | 'NO_SHOW'
   | 'NO_SHOW_UNDONE'
@@ -51,6 +53,8 @@ export interface ReservationNoticePayload {
    * (XAF). Le message dit « en cours », jamais « remboursé » (OD-07).
    */
   refundXaf?: number;
+  /** J6 — absence sur une réservation payée : la précommande est retenue. */
+  paidPreorder?: boolean;
   /** Récapitulatif : jour civil et nombre de réservations. */
   date?: string;
   count?: number;
@@ -147,6 +151,24 @@ export function reservationNoticeText(p: ReservationNoticePayload): {
             : ''
         }`,
       };
+    case 'CANCELLED_BY_ADMIN':
+      return p.audience === 'CLIENT'
+        ? {
+            title: 'Réservation annulée par Lilia Food',
+            body: `Votre réservation chez ${p.restaurantName} ${when} a été annulée par notre équipe.${
+              p.refundXaf !== undefined
+                ? ` Votre remboursement de ${p.refundXaf} FCFA est en cours.`
+                : ''
+            }`,
+          }
+        : {
+            title: 'Réservation annulée par Lilia Food',
+            body: `${people(p.partySize)}, ${when} : réservation annulée par notre équipe, la table est libérée.${
+              p.refundXaf !== undefined
+                ? ' La précommande payée est annulée : ne la préparez pas.'
+                : ''
+            }`,
+          };
     case 'CANCELLED_BY_VENDOR':
       return {
         title: 'Réservation annulée par le restaurant',
@@ -166,7 +188,9 @@ export function reservationNoticeText(p: ReservationNoticePayload): {
     case 'NO_SHOW':
       return {
         title: 'Absence enregistrée',
-        body: `${p.restaurantName} indique que vous n’êtes pas venu ${when}. Une erreur ? Contactez le support.`,
+        body: `${p.restaurantName} indique que vous n’êtes pas venu ${when}.${
+          p.paidPreorder ? ' Votre précommande n’est pas remboursée.' : ''
+        } Une erreur ? Contactez le support.`,
       };
     case 'NO_SHOW_UNDONE':
       return {
