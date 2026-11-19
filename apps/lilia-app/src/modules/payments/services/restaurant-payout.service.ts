@@ -29,6 +29,7 @@ import {
 import { computePayoutBreakdown, toXaf } from '../money.util';
 import {
   orderMargin,
+  resolveMarginPeriod,
   resolveProviderFee,
   summarizeMargins,
 } from '../order-margin';
@@ -1181,22 +1182,24 @@ export class RestaurantPayoutService {
    * Même calcul que la fiche (`buildContribution`), plus les frais prestataire
    * avec leur qualité (`order-margin.ts`). Lecture seule. La synthèse couvre
    * toute la période lue ; `rows` n'en rend que les `limit` plus récentes.
+   * Sans `from`, la période est des 30 derniers jours (`resolveMarginPeriod`).
    */
   async listOrderMargins(
     query: { from?: string; to?: string; limit: number },
     rates: { collectionFeeBps: number | null; payoutFeeBps: number | null },
+    now: Date = new Date(),
   ) {
+    const period = resolveMarginPeriod(query, now);
+    if (!period) {
+      throw new BadRequestException({
+        message: 'Le début de la période doit précéder sa fin.',
+        code: 'MARGINS_PERIOD_INVALID',
+      });
+    }
     const orders = await this.prisma.order.findMany({
       where: {
         status: 'LIVRER',
-        ...(query.from || query.to
-          ? {
-              createdAt: {
-                ...(query.from ? { gte: new Date(query.from) } : {}),
-                ...(query.to ? { lte: new Date(query.to) } : {}),
-              },
-            }
-          : {}),
+        createdAt: { gte: period.from, lte: period.to },
       },
       orderBy: { createdAt: 'desc' },
       take: RestaurantPayoutService.MARGINS_MAX_ORDERS + 1,
@@ -1300,6 +1303,7 @@ export class RestaurantPayoutService {
 
     return {
       data: {
+        period,
         rates,
         truncated,
         summary: summarizeMargins(rows),

@@ -66,12 +66,18 @@ export class ListPayoutsQueryDto {
 
 /** `GET /admin/margins` — commandes livrées créées dans la période. */
 export class OrderMarginsQueryDto {
-  @ApiPropertyOptional({ description: 'Début de période (ISO 8601).' })
+  @ApiPropertyOptional({
+    description:
+      'Début de période (ISO 8601). Absent : 30 jours avant la fin. Après `to` : 400.',
+  })
   @IsOptional()
   @IsDateString()
   from?: string;
 
-  @ApiPropertyOptional({ description: 'Fin de période (ISO 8601).' })
+  @ApiPropertyOptional({
+    description:
+      'Fin de période (ISO 8601), incluse. Absente : maintenant. En date seule : toute la journée UTC.',
+  })
   @IsOptional()
   @IsDateString()
   to?: string;
