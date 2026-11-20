@@ -9,7 +9,12 @@ import {
   Post,
   Put,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiHeader,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { User } from '@prisma/client';
 
@@ -76,6 +81,12 @@ export class ReservationSettingsController {
   @Throttle({ short: { limit: 1, ttl: 1000 }, long: { limit: 20, ttl: 60000 } })
   @Put()
   @ApiOperation({ summary: 'Enregistrer la configuration (Premium requis)' })
+  @ApiHeader({
+    name: RESERVATIONS_CAPABILITY_HEADER,
+    required: false,
+    description:
+      'Capacité de l’app vendeurs (`agenda`). Exigée seulement pour activer les réservations (`enabled: true`), sinon 426 VENDOR_APP_UPDATE_REQUIRED.',
+  })
   async save(
     @CurrentUser() user: User,
     @Body() dto: SaveReservationSettingsDto,
