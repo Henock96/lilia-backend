@@ -137,5 +137,37 @@ describe('TrackingService.assertCanUpdatePosition — F3-12.0', () => {
         service.assertCanWatchOrder('o1', 'fb-x'),
       ).rejects.toBeInstanceOf(ForbiddenException);
     });
+
+    /**
+     * SEC-08 (audit du 18/11) — l'appartenance à la room n'est contrôlée
+     * qu'au `join`. Un livreur titulaire qui entrait dans la room y restait
+     * après sa réassignation et recevait la position de son successeur.
+     * Aucune app livreur n'émet `order:watch` : le droit est retiré plutôt
+     * que révoqué après coup.
+     */
+    it('le livreur titulaire ne peut pas suivre la room (403)', async () => {
+      prisma.user.findUnique.mockResolvedValue(driver);
+      prisma.order.findUnique.mockResolvedValue(
+        orderWith({ delivererId: 'liv-1', status: DeliveryStatus.EN_TRANSIT }),
+      );
+
+      await expect(
+        service.assertCanWatchOrder('o1', 'fb-liv-1'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('un livreur qui est aussi le client de la commande la suit', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'client-1',
+        role: 'LIVREUR',
+      });
+      prisma.order.findUnique.mockResolvedValue(
+        orderWith({ delivererId: 'liv-2', status: DeliveryStatus.EN_TRANSIT }),
+      );
+
+      await expect(
+        service.assertCanWatchOrder('o1', 'fb-client-1'),
+      ).resolves.toEqual({ live: true });
+    });
   });
 });

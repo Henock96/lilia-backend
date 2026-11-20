@@ -15,6 +15,7 @@ import { FirebaseService } from '../firebase/firebase.service';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import { DriverPositionDto, WatchOrderDto } from './dto/driver-position.dto';
 import { accessRevocationReason } from '../auth/utils/account-access';
+import { resolveCorsOrigin } from '../../config/deployment-environment';
 
 /**
  * `main.ts` n'applique son `useGlobalPipes` qu'au transport HTTP. Les gateways
@@ -35,14 +36,16 @@ const wsValidationPipe = new ValidationPipe({
 
 @WebSocketGateway({
   namespace: '/tracking',
-  // Aligné sur la liste blanche HTTP. Les apps mobiles (Socket.io natif)
-  // n'envoient pas d'Origin → non bloquées ; seuls les navigateurs sont filtrés.
+  // Même règle que la CORS HTTP (`main.ts`). Les apps mobiles (Socket.io
+  // natif) n'envoient pas d'Origin → non bloquées ; seuls les navigateurs sont
+  // filtrés. SEC-14 (audit du 18/11) : la gateway retombait sur `origin: true`
+  // si `ALLOWED_ORIGINS` manquait, y compris en environnement déployé ; elle
+  // refuse désormais de démarrer, comme le HTTP.
   cors: {
-    origin: process.env.ALLOWED_ORIGINS
-      ? process.env.ALLOWED_ORIGINS.split(',')
-          .map((o) => o.trim())
-          .filter(Boolean)
-      : true,
+    origin: resolveCorsOrigin(
+      process.env.NODE_ENV,
+      process.env.ALLOWED_ORIGINS,
+    ),
     credentials: true,
   },
   transports: ['websocket', 'polling'], // polling = fallback réseau faible Congo
@@ -181,6 +184,12 @@ export class TrackingGateway
    * Si l'application livreur se met un jour à suivre une commande, le besoin
    * revient avec elle — et c'est à ce moment-là qu'il faudra revalider
    * l'appartenance, pas avant.
+   *
+   * SEC-08 (audit du 18/11) : le serveur, lui, **autorisait** le livreur
+   * titulaire à émettre `order:watch`. Un client modifié pouvait donc entrer
+   * dans la room et y rester après sa réassignation. Ce droit, qu'aucune app
+   * n'exerçait, est retiré dans `assertCanWatchOrder` : plus aucun livreur
+   * n'entre dans une room, il n'y a donc personne à évincer.
    */
 
   /**

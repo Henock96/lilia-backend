@@ -276,11 +276,13 @@ export class TrackingService implements OnModuleDestroy {
   ): Promise<{ live: boolean }> {
     const { user, order } = await this.getUserAndOrder(orderId, firebaseUid);
 
+    // SEC-08 — le livreur titulaire n'est pas un spectateur : l'appartenance
+    // n'étant contrôlée qu'au `join`, il gardait la room après réassignation.
+    // Aucune app livreur n'émet `order:watch` (cf. `tracking.gateway.ts`).
     if (
       user.role === 'ADMIN' ||
       order.userId === user.id ||
-      order.restaurant.ownerId === user.id ||
-      order.delivery?.delivererId === user.id
+      order.restaurant.ownerId === user.id
     ) {
       return { live: order.delivery?.status === DeliveryStatus.EN_TRANSIT };
     }
