@@ -12,7 +12,7 @@ import {
   BOOKING_ERROR_CODES as CODES,
   RESERVATION_TIMINGS,
 } from './reservation-booking-vocab';
-import { stateConflict } from './reservation-records';
+import { PAID_CANCELLABLE, stateConflict } from './reservation-records';
 
 type Db = Prisma.TransactionClient;
 
@@ -34,17 +34,6 @@ export interface LockedPaidOrder {
   /** Montant encaissé (XAF) : celui du remboursement intégral annoncé. */
   total: number;
 }
-
-/**
- * J5 — états d'une commande liée payée dont la réservation s'annule encore :
- * payée, acceptée, en préparation ou prête — rien n'a été remis.
- */
-const PAID_CANCELLABLE: readonly OrderStatus[] = [
-  'PAYER',
-  'ACCEPTEE',
-  'EN_PREPARATION',
-  'PRET',
-];
 
 /**
  * Lot 4 (4B-2) — libère la commande liée d'une réservation `AWAITING_PAYMENT`

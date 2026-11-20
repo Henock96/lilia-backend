@@ -74,18 +74,35 @@ describe('D-6 — gestes du support (adminAllowedActions)', () => {
       'NO_SHOW',
     ];
     for (const status of RESERVATION_STATUSES) {
-      expect(adminAllowedActions({ status, order: null })).toEqual(
-        cancellable.includes(status) ? ['cancel'] : [],
-      );
+      expect(
+        adminAllowedActions({ status, order: { status: 'PAYER' } }),
+      ).toEqual(cancellable.includes(status) ? ['cancel'] : []);
     }
   });
 
-  it('une absence close (commande ANNULER, encaissement partagé) ne s’annule plus', () => {
+  it('réservation payée : seulement si la commande est encore annulable (règle de lockPaid)', () => {
+    for (const status of ['CONFIRMED', 'NO_SHOW'] as const) {
+      for (const order of ['PAYER', 'ACCEPTEE', 'EN_PREPARATION', 'PRET']) {
+        expect(
+          adminAllowedActions({ status, order: { status: order } }),
+        ).toEqual(['cancel']);
+      }
+      // Absence close (encaissement partagé), commande remise, ou absente.
+      for (const order of [{ status: 'ANNULER' }, { status: 'LIVRER' }, null]) {
+        expect(adminAllowedActions({ status, order })).toEqual([]);
+      }
+    }
+  });
+
+  it('demande ou attente de paiement : annulable sans commande payée', () => {
+    expect(adminAllowedActions({ status: 'PENDING', order: null })).toEqual([
+      'cancel',
+    ]);
     expect(
-      adminAllowedActions({ status: 'NO_SHOW', order: { status: 'ANNULER' } }),
-    ).toEqual([]);
-    expect(
-      adminAllowedActions({ status: 'NO_SHOW', order: { status: 'PAYER' } }),
+      adminAllowedActions({
+        status: 'AWAITING_PAYMENT',
+        order: { status: 'EN_ATTENTE' },
+      }),
     ).toEqual(['cancel']);
   });
 });
