@@ -1,3 +1,5 @@
+import { GATEWAY_OPTIONS } from '@nestjs/websockets/constants';
+
 /**
  * SEC-14 (audit du 18/11) — CORS de la gateway de tracking.
  *
@@ -11,39 +13,55 @@ describe('TrackingGateway — CORS (SEC-14)', () => {
     ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS,
   };
 
+  const restore = (key: keyof typeof saved) => {
+    if (saved[key] === undefined) delete process.env[key];
+    else process.env[key] = saved[key];
+  };
+
   afterEach(() => {
-    process.env.NODE_ENV = saved.NODE_ENV;
-    if (saved.ALLOWED_ORIGINS === undefined) {
-      delete process.env.ALLOWED_ORIGINS;
-    } else {
-      process.env.ALLOWED_ORIGINS = saved.ALLOWED_ORIGINS;
-    }
+    restore('NODE_ENV');
+    restore('ALLOWED_ORIGINS');
   });
 
-  const loadGateway = () =>
+  /** Charge un module neuf et rend l'origine CORS que Nest appliquera. */
+  const corsOrigin = (): unknown => {
+    let origin: unknown;
     jest.isolateModules(() => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require('./tracking.gateway');
+      const { TrackingGateway } = require('./tracking.gateway');
+      const options = Reflect.getMetadata(GATEWAY_OPTIONS, TrackingGateway) as {
+        cors: { origin: unknown };
+      };
+      origin = options.cors.origin;
     });
+    return origin;
+  };
 
-  it('refuse de se charger en production sans ALLOWED_ORIGINS', () => {
+  it.each(['production', 'staging'])(
+    'refuse de se charger en %s sans ALLOWED_ORIGINS',
+    (env) => {
+      process.env.NODE_ENV = env;
+      delete process.env.ALLOWED_ORIGINS;
+
+      expect(corsOrigin).toThrow(/ALLOWED_ORIGINS/);
+    },
+  );
+
+  it('applique la liste blanche en production', () => {
     process.env.NODE_ENV = 'production';
-    delete process.env.ALLOWED_ORIGINS;
+    process.env.ALLOWED_ORIGINS =
+      'https://www.liliafood.com, https://www.liliafood-admin.com';
 
-    expect(loadGateway).toThrow(/ALLOWED_ORIGINS/);
-  });
-
-  it('se charge en production avec une liste blanche', () => {
-    process.env.NODE_ENV = 'production';
-    process.env.ALLOWED_ORIGINS = 'https://www.liliafood.com';
-
-    expect(loadGateway).not.toThrow();
+    expect(corsOrigin()).toEqual([
+      'https://www.liliafood.com',
+      'https://www.liliafood-admin.com',
+    ]);
   });
 
   it('reste ouverte en développement sans configuration', () => {
     process.env.NODE_ENV = 'development';
     delete process.env.ALLOWED_ORIGINS;
 
-    expect(loadGateway).not.toThrow();
+    expect(corsOrigin()).toBe(true);
   });
 });
