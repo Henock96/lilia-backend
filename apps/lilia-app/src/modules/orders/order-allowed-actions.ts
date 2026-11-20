@@ -85,7 +85,29 @@ export function orderAllowedActions(
     deliveryProof?: string | null;
     /** Lot 3 — payée ET déjà acceptée (parcours `ACCEPT_FIRST`). */
     acceptedAt?: Date | null;
+    /** Lot 4 — précommande d'une réservation (`order-reservation-guard.ts`). */
+    reservationId?: string | null;
   },
+  role: string,
+  opts: { acceptanceRequired: boolean },
+): OrderAction[] {
+  const actions = gesturesFor(order, role, opts);
+  // 4C-0 — la réservation annule et conclut sa précommande : ces gestes
+  // seraient refusés en 409 `ORDER_MANAGED_BY_RESERVATION`. Restent la
+  // préparation et la remise par code.
+  return order.reservationId
+    ? actions.filter((a) => !RESERVATION_MANAGED_ACTIONS.includes(a))
+    : actions;
+}
+
+const RESERVATION_MANAGED_ACTIONS: readonly OrderAction[] = [
+  'REJECT',
+  'CANCEL',
+  'CONFIRM_PICKUP',
+];
+
+function gesturesFor(
+  order: Parameters<typeof orderAllowedActions>[0],
   role: string,
   opts: { acceptanceRequired: boolean },
 ): OrderAction[] {
@@ -189,6 +211,7 @@ export function withAllowedActions<
     acceptedAt?: Date | null;
     orderFlow?: string | null;
     paymentDueAt?: Date | null;
+    reservationId?: string | null;
   },
 >(
   orders: T[],

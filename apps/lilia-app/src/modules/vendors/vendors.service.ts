@@ -38,6 +38,13 @@ import {
 } from '../vendor-offers/vendor-offer-projection';
 import { vendorOffersEnabled } from '../vendor-offers/vendor-offers-switch';
 import { VendorOpeningService } from './vendor-opening.service';
+import { hasEntitlement } from '../subscriptions/entitlements';
+import { VendorSubscriptionService } from '../subscriptions/vendor-subscription.service';
+import { isReservable } from '../reservations/reservation-bookable';
+import {
+  RESERVATION_ELIGIBLE_VENDOR_TYPE,
+  RESERVATION_ENTITLEMENT,
+} from '../reservations/reservation-vocab';
 
 /**
  * Relations servies avec une fiche vendeur.
@@ -108,6 +115,9 @@ export class VendorsService {
     // unitaires qui montent le service seul : absent, les options sont
     // éteintes, c'est-à-dire la carte d'avant F3-09.
     @Optional() private readonly platformSettings?: PlatformSettingsService,
+    // 4C-0 — droit Premium « réservations », lu par `reservable`. Absent
+    // (tests unitaires), la fiche se dit non réservable.
+    @Optional() private readonly subscriptions?: VendorSubscriptionService,
   ) {}
 
   async createVendor(dto: CreateVendorDto, adminUserId: string) {
@@ -259,8 +269,38 @@ export class VendorsService {
         ...(await ratingOf(this.prisma, id)),
         totalProducts: _count.products,
         hasMoreProducts: _count.products > MENU_PRODUCTS_LIMIT,
+        reservable: await this.reservable(vendor, now),
       },
     };
+  }
+
+  /**
+   * 4C-0 (D-1) — « Réserver une table » : même règle que la disponibilité
+   * (`isReservable`). L'interrupteur plateforme et le type de vendeur sont lus
+   * d'abord : tant que les réservations sont éteintes, la fiche ne coûte
+   * aucune requête de plus.
+   */
+  private async reservable(
+    vendor: { id: string; vendorType: string },
+    now: Date,
+  ): Promise<boolean> {
+    if (!this.platformSettings || !this.subscriptions) return false;
+    if (vendor.vendorType !== RESERVATION_ELIGIBLE_VENDOR_TYPE) return false;
+    const { reservationsEnabled } = await this.platformSettings.getSettings();
+    if (!reservationsEnabled) return false;
+    const [settings, verdict] = await Promise.all([
+      this.prisma.reservationSettings.findUnique({
+        where: { restaurantId: vendor.id },
+        select: { enabled: true },
+      }),
+      this.subscriptions.verdictFor(vendor.id, now),
+    ]);
+    return isReservable({
+      vendorType: vendor.vendorType,
+      platformEnabled: reservationsEnabled,
+      settingsEnabled: settings?.enabled ?? false,
+      entitled: hasEntitlement(verdict, RESERVATION_ENTITLEMENT),
+    });
   }
 
   /**

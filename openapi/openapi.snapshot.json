@@ -13462,7 +13462,17 @@
       },
       "put": {
         "operationId": "ReservationSettingsController_save",
-        "parameters": [],
+        "parameters": [
+          {
+            "description": "Capacité de l’app vendeurs (`agenda`). Exigée seulement pour activer les réservations (`enabled: true`), sinon 426 VENDOR_APP_UPDATE_REQUIRED.",
+            "in": "header",
+            "name": "x-lilia-reservations",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
