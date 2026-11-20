@@ -674,10 +674,6 @@
         ],
         "type": "object"
       },
-      "MtnWebhookDto": {
-        "properties": {},
-        "type": "object"
-      },
       "PauseVendorDto": {
         "properties": {},
         "type": "object"
@@ -14579,48 +14575,6 @@
         "summary": "Météo actuelle de Brazzaville (OpenWeatherMap)",
         "tags": [
           "Weather"
-        ]
-      }
-    },
-    "/webhooks/mtn-momo": {
-      "post": {
-        "operationId": "WebhookController_handleMtnMomoWebhook",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-callback-signature",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-webhook-secret",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MtnWebhookDto"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "summary": "Callback MTN MoMo (webhook)",
-        "tags": [
-          "Webhooks"
         ]
       }
     }

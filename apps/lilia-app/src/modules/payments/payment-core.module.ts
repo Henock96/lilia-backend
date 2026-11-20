@@ -8,14 +8,11 @@ import { PlatformSettingsCoreModule } from '../platform-settings/platform-settin
 import { PaymentService } from './services/payment.service';
 import { PaymentEventService } from './services/payment-event.service';
 import { RestaurantPayoutService } from './services/restaurant-payout.service';
-import { MtnMomoService } from './services/mtn-momo.service';
-import { MtnMomoTokenService } from './services/mtn-momo-token.service';
 
 import { PaymentProviderRegistry } from './payment-provider.registry';
 import { PayoutStateMachine } from './payout-state.machine';
 import { OrderTransitionService } from '../orders/order-transition.service';
 import { ManualPaymentProvider } from './providers/manual.provider';
-import { MtnMomoProvider } from './providers/mtn-momo.provider';
 import { PawaPayProvider } from './providers/pawapay/pawapay.provider';
 import { PawaPayHttpService } from './providers/pawapay/pawapay-http.service';
 import { PawaPaySignatureService } from './providers/pawapay/pawapay-signature.service';
@@ -51,12 +48,9 @@ import { WebhookReceptionMonitor } from './services/webhook-reception.monitor';
   ],
   providers: [
     ManualPaymentProvider,
-    MtnMomoProvider,
     PawaPayProvider,
     PawaPayHttpService,
     PawaPaySignatureService,
-    MtnMomoTokenService,
-    MtnMomoService,
     PaymentProviderRegistry,
     PaymentService,
     PaymentEventService,

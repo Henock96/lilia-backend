@@ -10,7 +10,6 @@ import { PlatformSettingsCoreModule } from '../platform-settings/platform-settin
 
 import { PaymentController } from './controllers/payment.controller';
 import { AdminPayoutController } from './controllers/admin-payout.controller';
-import { WebhookController } from './controllers/webhook.controller';
 import { PawaPayWebhookController } from './controllers/pawapay-webhook.controller';
 
 /**
@@ -57,7 +56,6 @@ import { ApprovalsModule } from '../approvals/approvals.module';
   controllers: [
     PaymentController,
     AdminPayoutController,
-    WebhookController,
     PawaPayWebhookController,
     // F3-07 — « Mes gains » du vendeur.
     VendorEarningsController,

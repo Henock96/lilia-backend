@@ -59,7 +59,6 @@ const PUBLIC_ROUTES: Record<string, string> = {
   'VendorsController.findAll': 'VENDOR_PROJECTION',
   'VendorsController.findOne': 'VENDOR_PROJECTION',
   'WeatherController.brazzaville': 'MAPPED',
-  'WebhookController.handleMtnMomoWebhook': 'PROVIDER_CALLBACK',
 };
 
 describe('Routes publiques — classement obligatoire (F-32)', () => {
