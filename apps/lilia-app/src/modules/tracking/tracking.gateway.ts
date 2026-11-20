@@ -8,13 +8,14 @@ import {
   MessageBody,
   WsException,
 } from '@nestjs/websockets';
-import { Server, Socket } from 'socket.io';
-import { Logger, UsePipes, ValidationPipe } from '@nestjs/common';
-import { TrackingService } from './tracking.service';
+import { RemoteSocket, Server, Socket } from 'socket.io';
+import { Logger, OnModuleInit, UsePipes, ValidationPipe } from '@nestjs/common';
+import { TrackingService, TrackingWatcherRevoker } from './tracking.service';
 import { FirebaseService } from '../firebase/firebase.service';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import { DriverPositionDto, WatchOrderDto } from './dto/driver-position.dto';
 import { accessRevocationReason } from '../auth/utils/account-access';
+import { resolveCorsOrigin } from '../../config/deployment-environment';
 
 /**
  * `main.ts` n'applique son `useGlobalPipes` qu'au transport HTTP. Les gateways
@@ -35,14 +36,16 @@ const wsValidationPipe = new ValidationPipe({
 
 @WebSocketGateway({
   namespace: '/tracking',
-  // Aligné sur la liste blanche HTTP. Les apps mobiles (Socket.io natif)
-  // n'envoient pas d'Origin → non bloquées ; seuls les navigateurs sont filtrés.
+  // Même règle que la CORS HTTP (`main.ts`). Les apps mobiles (Socket.io
+  // natif) n'envoient pas d'Origin → non bloquées ; seuls les navigateurs sont
+  // filtrés. SEC-14 (audit du 18/11) : la gateway retombait sur `origin: true`
+  // si `ALLOWED_ORIGINS` manquait, y compris en environnement déployé ; elle
+  // refuse désormais de démarrer, comme le HTTP.
   cors: {
-    origin: process.env.ALLOWED_ORIGINS
-      ? process.env.ALLOWED_ORIGINS.split(',')
-          .map((o) => o.trim())
-          .filter(Boolean)
-      : true,
+    origin: resolveCorsOrigin(
+      process.env.NODE_ENV,
+      process.env.ALLOWED_ORIGINS,
+    ),
     credentials: true,
   },
   transports: ['websocket', 'polling'], // polling = fallback réseau faible Congo
@@ -50,7 +53,11 @@ const wsValidationPipe = new ValidationPipe({
   pingTimeout: 5000,
 })
 export class TrackingGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
+  implements
+    OnGatewayConnection,
+    OnGatewayDisconnect,
+    OnModuleInit,
+    TrackingWatcherRevoker
 {
   @WebSocketServer() server: Server;
   private readonly logger = new Logger(TrackingGateway.name);
@@ -60,6 +67,10 @@ export class TrackingGateway
     private readonly firebase: FirebaseService,
     private readonly userCache: UserCacheService,
   ) {}
+
+  onModuleInit() {
+    this.tracking.registerWatcherRevoker(this);
+  }
 
   // ─── Connexion ─────────────────────────────────────────────────────────────
 
@@ -126,11 +137,14 @@ export class TrackingGateway
   @UsePipes(wsValidationPipe)
   async onWatchOrder(client: Socket, @MessageBody() payload: WatchOrderDto) {
     await this.assertSessionStillValid(client);
-    const { live } = await this.tracking.assertCanWatchOrder(
+    const { live, userId } = await this.tracking.assertCanWatchOrder(
       payload.orderId,
       client.data.uid,
     );
-    await client.join(`order:${payload.orderId}`);
+    // `user:<id>` ne reçoit aucune diffusion : il permet seulement de
+    // retrouver les sockets d'un compte à révoquer (SEC-08, `revokeUser`).
+    client.data.userId = userId;
+    await client.join([`order:${payload.orderId}`, `user:${userId}`]);
 
     // F3-12.0 — hors `EN_TRANSIT`, aucune position n'est rejouée : la clé
     // Redis peut survivre à la course (cf. `assertCanWatchOrder`).
@@ -164,24 +178,58 @@ export class TrackingGateway
     await client.leave(`order:${payload.orderId}`);
   }
 
+  // ─── Révocation (SEC-08) ───────────────────────────────────────────────────
+  //
+  // `assertCanWatchOrder` n'est vérifiée qu'à l'entrée dans la room, et les
+  // diffusions ne revérifient rien : une socket entrée garde ses positions
+  // tant qu'elle n'émet pas. Une première révocation avait été retirée, faute
+  // de cas (aucune app livreur n'émet `order:watch`) ; l'audit du 18/11 a
+  // montré que le serveur **autorisait** pourtant le livreur titulaire (droit
+  // retiré depuis), et qu'un compte banni ou supprimé restait dans ses rooms.
+  //
+  // La révocation est déclenchée par l'événement qui retire le droit
+  // (réassignation, bannissement, suppression de compte) via `TrackingService`,
+  // jamais à la diffusion : aucune requête par position GPS. `fetchSockets`
+  // passe par l'adapter Redis, donc couvre toutes les instances.
+
+  /** Réévalue les spectateurs d'une commande ; sortent ceux sans droit. */
+  async revokeOrder(orderId: string): Promise<void> {
+    if (!this.server) return;
+    const sockets = await this.server.in(`order:${orderId}`).fetchSockets();
+    await Promise.all(sockets.map((s) => this.revalidate(s, orderId)));
+  }
+
+  /** Réévalue toutes les rooms de commande d'un compte. */
+  async revokeUser(userId: string): Promise<void> {
+    if (!this.server) return;
+    const sockets = await this.server.in(`user:${userId}`).fetchSockets();
+    await Promise.all(
+      sockets.flatMap((s) =>
+        [...s.rooms]
+          .filter((room) => room.startsWith('order:'))
+          .map((room) => this.revalidate(s, room.slice('order:'.length))),
+      ),
+    );
+  }
+
   /**
-   * ⚠️ Une révocation d'appartenance a été écrite ici puis **retirée**, et il
-   * vaut mieux dire pourquoi que la voir réapparaître.
-   *
-   * `assertCanWatchOrder` n'est effectivement vérifiée qu'à l'entrée dans la
-   * room. Le scénario qu'on croyait couvrir — un livreur réassigné qui continue
-   * de recevoir la position du nouveau — **n'existe pas** : l'application
-   * livreur n'émet jamais `order:watch`, elle ne fait qu'émettre sa position.
-   * Seuls le client, le vendeur et l'administrateur rejoignent une room, et
-   * aucun des trois ne perd son droit lors d'une réassignation.
-   *
-   * Le rappel coûtait donc un `fetchSockets` plus une requête d'autorisation
-   * par spectateur, à chaque réassignation, pour n'évincer personne.
-   *
-   * Si l'application livreur se met un jour à suivre une commande, le besoin
-   * revient avec elle — et c'est à ce moment-là qu'il faudra revalider
-   * l'appartenance, pas avant.
+   * Fermé par défaut : toute erreur d'autorisation — refus, commande ou compte
+   * introuvable, base indisponible — fait sortir de la room. Le client garde
+   * son repli HTTP, qui revérifie le droit à chaque appel.
    */
+  private async revalidate(
+    socket: RemoteSocket<Record<string, never>, { uid?: string }>,
+    orderId: string,
+  ): Promise<void> {
+    try {
+      await this.tracking.assertCanWatchOrder(orderId, socket.data.uid ?? '');
+    } catch (err) {
+      socket.leave(`order:${orderId}`);
+      this.logger.warn(
+        `Spectateur retiré de order:${orderId} uid=${socket.data.uid} : ${(err as Error).message}`,
+      );
+    }
+  }
 
   /**
    * LIVREUR envoie sa position toutes les 5 secondes.

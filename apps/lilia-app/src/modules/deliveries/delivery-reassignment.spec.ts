@@ -69,6 +69,7 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
     cacheLivePosition: jest.fn(),
     calculateETA: jest.fn(),
     forgetLastPosition: jest.fn(),
+    revokeOrderWatchers: jest.fn().mockResolvedValue(undefined),
   };
   const trackingGateway = { broadcastDriverPosition: jest.fn() };
 
@@ -753,6 +754,27 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
     it('une purge en échec n\u2019empêche pas la réassignation', async () => {
       await assign('liv-A');
       trackingService.forgetLastPosition.mockRejectedValueOnce(
+        new Error('redis down'),
+      );
+
+      await expect(assign('liv-B', ADMIN_UID)).resolves.toBeDefined();
+      expect(delivery.delivererId).toBe('liv-B');
+    });
+
+    // SEC-08 — l'ancien livreur, s'il suivait la commande, en sort.
+    it('les spectateurs de la commande sont réévalués', async () => {
+      await assign('liv-A');
+      await accept('liv-A');
+      trackingService.revokeOrderWatchers.mockClear();
+
+      await assign('liv-B', ADMIN_UID);
+
+      expect(trackingService.revokeOrderWatchers).toHaveBeenCalledWith('o1');
+    });
+
+    it('une révocation en échec n’empêche pas la réassignation', async () => {
+      await assign('liv-A');
+      trackingService.revokeOrderWatchers.mockRejectedValueOnce(
         new Error('redis down'),
       );
 

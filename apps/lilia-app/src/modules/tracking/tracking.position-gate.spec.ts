@@ -115,7 +115,7 @@ describe('TrackingService.assertCanUpdatePosition — F3-12.0', () => {
 
       await expect(
         service.assertCanWatchOrder('o1', 'fb-client-1'),
-      ).resolves.toEqual({ live });
+      ).resolves.toEqual({ live, userId: 'client-1' });
     });
 
     it('commande sans livraison : autorisé, rien à rejouer', async () => {
@@ -124,7 +124,7 @@ describe('TrackingService.assertCanUpdatePosition — F3-12.0', () => {
 
       await expect(
         service.assertCanWatchOrder('o1', 'fb-client-1'),
-      ).resolves.toEqual({ live: false });
+      ).resolves.toEqual({ live: false, userId: 'client-1' });
     });
 
     it('un tiers reste refusé (403)', async () => {
@@ -136,6 +136,90 @@ describe('TrackingService.assertCanUpdatePosition — F3-12.0', () => {
       await expect(
         service.assertCanWatchOrder('o1', 'fb-x'),
       ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    /**
+     * SEC-08 (audit du 18/11) — l'appartenance à la room n'est contrôlée
+     * qu'au `join`. Un livreur titulaire qui entrait dans la room y restait
+     * après sa réassignation et recevait la position de son successeur.
+     * Aucune app livreur n'émet `order:watch` : le droit est retiré plutôt
+     * que révoqué après coup.
+     */
+    it('le livreur titulaire ne peut pas suivre la room (403)', async () => {
+      prisma.user.findUnique.mockResolvedValue(driver);
+      prisma.order.findUnique.mockResolvedValue(
+        orderWith({ delivererId: 'liv-1', status: DeliveryStatus.EN_TRANSIT }),
+      );
+
+      await expect(
+        service.assertCanWatchOrder('o1', 'fb-liv-1'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('un livreur qui est aussi le client de la commande la suit', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'client-1',
+        role: 'LIVREUR',
+      });
+      prisma.order.findUnique.mockResolvedValue(
+        orderWith({ delivererId: 'liv-2', status: DeliveryStatus.EN_TRANSIT }),
+      );
+
+      await expect(
+        service.assertCanWatchOrder('o1', 'fb-client-1'),
+      ).resolves.toEqual({ live: true, userId: 'client-1' });
+    });
+
+    it.each(['BLOCKED', 'DELETED'])(
+      'compte %s : refusé même propriétaire (lu en base, pas en cache)',
+      async (statusUser) => {
+        prisma.user.findUnique.mockResolvedValue({ ...client, statusUser });
+        prisma.order.findUnique.mockResolvedValue(
+          orderWith({
+            delivererId: 'liv-1',
+            status: DeliveryStatus.EN_TRANSIT,
+          }),
+        );
+
+        await expect(
+          service.assertCanWatchOrder('o1', 'fb-client-1'),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+      },
+    );
+  });
+
+  /**
+   * SEC-08 — la révocation est best-effort : sans gateway (worker) elle ne fait
+   * rien, et un échec ne remonte jamais à l'appelant (réassignation, ban).
+   */
+  describe('révocation des spectateurs', () => {
+    it('sans révocateur enregistré (worker) : rien, sans erreur', async () => {
+      await expect(service.revokeOrderWatchers('o1')).resolves.toBeUndefined();
+      await expect(service.revokeUserWatchers('u1')).resolves.toBeUndefined();
+    });
+
+    it('délègue à la gateway enregistrée', async () => {
+      const revoker = {
+        revokeOrder: jest.fn().mockResolvedValue(undefined),
+        revokeUser: jest.fn().mockResolvedValue(undefined),
+      };
+      service.registerWatcherRevoker(revoker);
+
+      await service.revokeOrderWatchers('o1');
+      await service.revokeUserWatchers('u1');
+
+      expect(revoker.revokeOrder).toHaveBeenCalledWith('o1');
+      expect(revoker.revokeUser).toHaveBeenCalledWith('u1');
+    });
+
+    it('un échec de la gateway ne remonte pas', async () => {
+      service.registerWatcherRevoker({
+        revokeOrder: jest.fn().mockRejectedValue(new Error('adapter down')),
+        revokeUser: jest.fn().mockRejectedValue(new Error('adapter down')),
+      });
+
+      await expect(service.revokeOrderWatchers('o1')).resolves.toBeUndefined();
+      await expect(service.revokeUserWatchers('u1')).resolves.toBeUndefined();
     });
   });
 });

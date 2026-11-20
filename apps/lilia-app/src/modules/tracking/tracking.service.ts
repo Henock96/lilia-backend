@@ -12,6 +12,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import Redis from 'ioredis';
 import { DeliveryStatus } from '@prisma/client';
 import { buildRedisOptions } from '../../common/redis/redis-options';
+import { accessRevocationReason } from '../auth/utils/account-access';
 
 export interface PositionPayload {
   orderId: string;
@@ -21,10 +22,21 @@ export interface PositionPayload {
   accuracy?: number;
 }
 
+/**
+ * Ce qui sait retirer des rooms de suivi les sockets qui ont perdu leur droit.
+ * Implémenté par `TrackingGateway`, absente du worker : là, la révocation est
+ * sans effet (le worker n'a aucune socket).
+ */
+export interface TrackingWatcherRevoker {
+  revokeOrder(orderId: string): Promise<void>;
+  revokeUser(userId: string): Promise<void>;
+}
+
 @Injectable()
 export class TrackingService implements OnModuleDestroy {
   private readonly logger = new Logger(TrackingService.name);
   private readonly redis: Redis | null;
+  private revoker: TrackingWatcherRevoker | null = null;
 
   // TTL position : 5 minutes sans update → livreur considéré déconnecté
   private readonly POSITION_TTL = 300;
@@ -273,19 +285,73 @@ export class TrackingService implements OnModuleDestroy {
   async assertCanWatchOrder(
     orderId: string,
     firebaseUid: string,
-  ): Promise<{ live: boolean }> {
+  ): Promise<{ live: boolean; userId: string }> {
     const { user, order } = await this.getUserAndOrder(orderId, firebaseUid);
 
+    // SEC-08 — lu en base et non dans le cache : c'est ce contrôle que rejoue
+    // la révocation après un bannissement ou une suppression de compte.
+    if (accessRevocationReason(user.statusUser)) {
+      throw new ForbiddenException('Accès tracking refusé : compte inactif');
+    }
+
+    // SEC-08 — le livreur titulaire n'est pas un spectateur : l'appartenance
+    // n'étant contrôlée qu'au `join`, il gardait la room après réassignation.
+    // Aucune app livreur n'émet `order:watch` (cf. `tracking.gateway.ts`).
     if (
       user.role === 'ADMIN' ||
       order.userId === user.id ||
-      order.restaurant.ownerId === user.id ||
-      order.delivery?.delivererId === user.id
+      order.restaurant.ownerId === user.id
     ) {
-      return { live: order.delivery?.status === DeliveryStatus.EN_TRANSIT };
+      return {
+        live: order.delivery?.status === DeliveryStatus.EN_TRANSIT,
+        userId: user.id,
+      };
     }
 
     throw new ForbiddenException('Accès tracking refusé pour cette commande');
+  }
+
+  /**
+   * SEC-08 — le droit de suivre n'est vérifié qu'à l'entrée dans la room.
+   * Quand il peut disparaître (réassignation, bannissement, suppression de
+   * compte), l'appelant demande la réévaluation des spectateurs concernés ;
+   * ceux qui n'ont plus le droit sortent de la room.
+   *
+   * Rien n'est fait à chaque position GPS : la révocation se paie à
+   * l'événement, rare, pas à la diffusion.
+   *
+   * Best-effort, comme `forgetLastPosition` : appelé après la transaction et
+   * jamais en erreur. Une révocation manquée laisse le comportement d'avant
+   * (droit relu à la prochaine connexion).
+   */
+  registerWatcherRevoker(revoker: TrackingWatcherRevoker): void {
+    this.revoker = revoker;
+  }
+
+  async revokeOrderWatchers(orderId: string): Promise<void> {
+    await this.revokeSafely(`commande ${orderId}`, (r) =>
+      r.revokeOrder(orderId),
+    );
+  }
+
+  async revokeUserWatchers(userId: string): Promise<void> {
+    await this.revokeSafely(`utilisateur ${userId}`, (r) =>
+      r.revokeUser(userId),
+    );
+  }
+
+  private async revokeSafely(
+    target: string,
+    run: (revoker: TrackingWatcherRevoker) => Promise<void>,
+  ): Promise<void> {
+    if (!this.revoker) return;
+    try {
+      await run(this.revoker);
+    } catch (err) {
+      this.logger.warn(
+        `Révocation des spectateurs (${target}) échouée : ${(err as Error).message}`,
+      );
+    }
   }
 
   /**

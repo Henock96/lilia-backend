@@ -40,6 +40,7 @@ import {
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { LoyaltyReconciliationService } from '../loyalty/loyalty-reconciliation.service';
 import { LoyaltyAdminService } from '../loyalty/loyalty-admin.service';
+import { TrackingService } from '../tracking/tracking.service';
 import {
   AdjustLoyaltyDto,
   ReferralRewardFilterDto,
@@ -67,6 +68,8 @@ export class AdminController {
     // Écritures d'administration sur la fidélité : ajustement manuel tracé et
     // arbitrage des récompenses de parrainage retenues par le scoring.
     private readonly loyaltyAdmin: LoyaltyAdminService,
+    // SEC-08 — un compte banni sort des rooms de suivi qu'il regardait.
+    private readonly tracking: TrackingService,
   ) {}
 
   // ─── DASHBOARD ─────────────────────────────────────────────────────────────
@@ -419,6 +422,9 @@ export class AdminController {
       await this.firebaseService.setUserDisabled(firebaseUid, true);
       // Révocation : bloque le renouvellement du token courant.
       await this.firebaseService.revokeUserTokens(firebaseUid);
+      // Les rooms de suivi ne revérifient le droit qu'à l'entrée : sans ceci,
+      // une socket déjà entrée continuait de recevoir les positions.
+      await this.tracking.revokeUserWatchers(id);
     }
 
     await this.audit.record({

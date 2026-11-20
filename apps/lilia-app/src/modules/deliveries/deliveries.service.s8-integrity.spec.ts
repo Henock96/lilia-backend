@@ -259,6 +259,7 @@ describe('DeliveriesService.updateStatus — intégrité livraison/commande (S8)
           useValue: {
             cacheLivePosition: jest.fn(),
             forgetLastPosition: jest.fn().mockResolvedValue(undefined),
+            revokeOrderWatchers: jest.fn().mockResolvedValue(undefined),
           },
         },
         { provide: DeliveryQueryService, useValue: {} },

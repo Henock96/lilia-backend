@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { LoyaltyTransactionType, Prisma, User } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -10,6 +11,7 @@ import { IN_FLIGHT_ORDER_STATUSES } from '../orders/order-status-groups';
 import { FirebaseService } from '../firebase/firebase.service';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import { ACTIVE_DELIVERY_STATUSES } from '../deliveries/delivery-statuses';
+import { TrackingService } from '../tracking/tracking.service';
 import { CAPACITY_HOLDING_STATUSES } from '../reservations/reservation-booking-vocab';
 
 /**
@@ -41,6 +43,10 @@ export class UserDeletionService {
     private readonly prisma: PrismaService,
     private readonly firebase: FirebaseService,
     private readonly userCache: UserCacheService,
+    // Optionnel pour les harnais d'intégration qui instancient le service à la
+    // main ; `UsersModule` importe `TrackingModule`, il est donc toujours là
+    // dans l'application.
+    @Optional() private readonly tracking?: TrackingService,
   ) {}
 
   /**
@@ -157,6 +163,8 @@ export class UserDeletionService {
     // Hors transaction : Firebase et Redis ne sont pas rollbackables, et on ne
     // veut pas tenir une transaction PostgreSQL ouverte pendant un appel réseau.
     await this.firebase.deleteUserSafe(firebaseUid);
+    // SEC-08 — les rooms de suivi ne revérifient le droit qu'à l'entrée.
+    await this.tracking?.revokeUserWatchers(userId);
 
     // Le cache Redis sert le User pendant 5 min : sans invalidation, le token
     // encore valide continuerait de passer les guards avec l'ancien statut.

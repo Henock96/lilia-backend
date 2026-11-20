@@ -39,7 +39,10 @@ describeIfDb('Preuve de remise — code client (PostgreSQL réel)', () => {
       new OrderStateMachine(),
       new OrderTransitionService(),
       { broadcastOrderStatus: () => undefined } as never,
-      { forgetLastPosition: async () => undefined } as never,
+      {
+        forgetLastPosition: async () => undefined,
+        revokeOrderWatchers: async () => undefined,
+      } as never,
       new DeliveryQueryService(
         prisma as never,
         new DeliveryAssignmentLogService(),
@@ -72,7 +75,10 @@ describeIfDb('Preuve de remise — code client (PostgreSQL réel)', () => {
       new OrderTransitionService(),
       new PlatformSettingsService(prisma as never),
       new DeliveryAssignmentLogService(),
-      { forgetLastPosition: async () => undefined } as never,
+      {
+        forgetLastPosition: async () => undefined,
+        revokeOrderWatchers: async () => undefined,
+      } as never,
     );
   });
 
