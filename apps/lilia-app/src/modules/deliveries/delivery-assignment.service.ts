@@ -526,6 +526,9 @@ export class DeliveryAssignmentService {
     // protège que tant que personne ne la retire. Un nettoyage de cache ne
     // doit jamais pouvoir faire tomber l'API.
     this.tracking.forgetLastPosition(delivery.orderId).catch(() => undefined);
+    // SEC-08 — même discipline : l'ancien livreur, s'il suivait la commande,
+    // sort de la room. Sans effet dans le worker (aucune socket).
+    this.tracking.revokeOrderWatchers(delivery.orderId).catch(() => undefined);
 
     // Note: dépend de Prisma include sur order (cf. assignDeliverer / assignDelivererToOrder)
     // pour que isPreorder/scheduledFor arrivent. Ne pas narrow avec un select sans les ajouter.

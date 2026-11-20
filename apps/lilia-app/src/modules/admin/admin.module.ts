@@ -15,9 +15,18 @@ import { AuthModule } from '../auth/auth.module';
 import { VendorsModule } from '../vendors/vendors.module';
 import { LoyaltyModule } from '../loyalty/loyalty.module';
 import { LoyaltyAdminService } from '../loyalty/loyalty-admin.service';
+import { TrackingModule } from '../tracking/tracking.module';
 
 @Module({
-  imports: [FirebaseModule, AuthModule, VendorsModule, LoyaltyModule], // VendorsModule expose VendorsService ; LoyaltyModule expose la réconciliation (M13)
+  // VendorsModule expose VendorsService ; LoyaltyModule expose la
+  // réconciliation (M13) ; TrackingModule la révocation des rooms au ban (SEC-08).
+  imports: [
+    FirebaseModule,
+    AuthModule,
+    VendorsModule,
+    LoyaltyModule,
+    TrackingModule,
+  ],
   controllers: [AdminController],
   providers: [
     AdminService,

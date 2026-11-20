@@ -4,10 +4,9 @@ import { envValidationSchema } from './env.validation';
  * Garde-fous de démarrage.
  *
  * Le principe du fichier validé ici : **une dégradation silencieuse vaut moins
- * qu'un refus de démarrer bruyant**. Trois variables ont déjà été rendues
- * obligatoires pour cette raison (`REDIS_URL` en production,
- * `MTN_MOMO_WEBHOOK_SECRET` hors mode manuel, `ALLOWED_ORIGINS` en production) ;
- * ces tests verrouillent l'équivalent côté pawaPay.
+ * qu'un refus de démarrer bruyant**. Des variables ont déjà été rendues
+ * obligatoires pour cette raison (`REDIS_URL` et `ALLOWED_ORIGINS` en
+ * production) ; ces tests verrouillent l'équivalent côté pawaPay.
  */
 describe('envValidationSchema — mode PAWAPAY', () => {
   /** Le minimum pour franchir les `.required()` sans rapport avec le paiement. */

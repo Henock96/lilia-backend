@@ -5,6 +5,8 @@ import {
   buildPoolConfig,
   DEFAULT_POOL_IDLE_TIMEOUT_MS,
   DEFAULT_POOL_MIN,
+  POOL_KEEPALIVE_INITIAL_DELAY_MS,
+  POOL_MAX_LIFETIME_SECONDS,
 } from './pool-config';
 
 const DATABASE_URL = 'postgresql://user:password@localhost:5432/lilia_db';
@@ -34,6 +36,20 @@ describe('buildPoolConfig', () => {
     expect(pool.min).toBeGreaterThan(0);
     expect(pool.idleTimeoutMillis).toBe(DEFAULT_POOL_IDLE_TIMEOUT_MS);
     expect(pool.idleTimeoutMillis).toBeGreaterThan(60_000);
+  });
+
+  it('sonde et renouvelle les connexions qu’il garde longtemps', () => {
+    const pool = buildPoolConfig(configFrom({}));
+
+    // Une connexion gardée sous `min` peut rester inactive des heures : sans
+    // sonde ni durée de vie, une coupure silencieuse la laisserait morte dans
+    // le pool, pour la requête suivante.
+    expect(pool.keepAlive).toBe(true);
+    expect(pool.keepAliveInitialDelayMillis).toBe(
+      POOL_KEEPALIVE_INITIAL_DELAY_MS,
+    );
+    expect(pool.maxLifetimeSeconds).toBe(POOL_MAX_LIFETIME_SECONDS);
+    expect(pool.maxLifetimeSeconds).toBeGreaterThan(0);
   });
 
   it('traite une variable vide comme non posée', () => {

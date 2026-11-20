@@ -95,3 +95,32 @@ export function summarizeMargins(
   }
   return { orders: rows.length, byQuality, knownMarginXaf };
 }
+
+/** Période lue par défaut quand `from` manque (lot 6, L6-2). */
+export const MARGINS_DEFAULT_PERIOD_DAYS = 30;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Bornes incluses de la période des marges (lot 6, L6-2).
+ *
+ * Sans `from`, la période remonte de 30 jours depuis `to` (ou maintenant) :
+ * une lecture sans borne parcourait tout l'historique jusqu'au plafond de
+ * lignes. Un `to` en date seule (`2026-11-19`) couvre toute la journée UTC,
+ * pas seulement sa première milliseconde. `null` si `from` est après `to`.
+ */
+export function resolveMarginPeriod(
+  query: { from?: string; to?: string },
+  now: Date,
+): { from: Date; to: Date } | null {
+  const to = !query.to
+    ? now
+    : DATE_ONLY.test(query.to)
+      ? new Date(new Date(query.to).getTime() + DAY_MS - 1)
+      : new Date(query.to);
+  const from = query.from
+    ? new Date(query.from)
+    : new Date(to.getTime() - MARGINS_DEFAULT_PERIOD_DAYS * DAY_MS);
+  return from.getTime() > to.getTime() ? null : { from, to };
+}

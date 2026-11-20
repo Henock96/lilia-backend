@@ -87,15 +87,14 @@ describe('.env.example — les valeurs documentées démarrent', () => {
   /**
    * `.empty('')` ne doit relâcher **aucune** exigence conditionnelle.
    *
-   * C'est le point qui mérite un test permanent : `MTN_MOMO_WEBHOOK_SECRET` est
-   * `.required()` dès qu'on quitte le mode MANUAL, parce que le webhook MTN est
-   * fail-closed — sans secret il rejette tout en 401 et aucun paiement ne se
-   * confirme, panne silencieuse le jour de la mise en service. Si `.empty('')`
-   * avait transformé la chaîne vide en « valeur fournie », le boot aurait
-   * accepté une configuration qui ne peut pas encaisser.
+   * C'est le point qui mérite un test permanent : `PAWAPAY_API_TOKEN` est
+   * `.required()` en mode PAWAPAY — sans lui, aucun encaissement ne part, et
+   * la panne n'apparaît qu'au premier client. Une ligne laissée vide dans un
+   * `.env` ne doit jamais passer pour une valeur fournie : le boot accepterait
+   * une configuration qui ne peut pas encaisser.
    *
-   * Il la transforme en `undefined`, donc `.required()` échoue toujours — ce
-   * que ces cas figent.
+   * (Ce test visait `MTN_MOMO_WEBHOOK_SECRET` jusqu'au retrait du rail MTN
+   * direct, le 19/11/2026.)
    */
   describe("`.empty('')` ne relâche pas les exigences conditionnelles", () => {
     const base = {
@@ -103,8 +102,8 @@ describe('.env.example — les valeurs documentées démarrent', () => {
       FIREBASE_PROJECT_ID: 'p',
       FIREBASE_CLIENT_EMAIL: 'a@b.co',
       FIREBASE_PRIVATE_KEY: 'k',
-      MTN_MOMO_BASE_URL: 'https://x.co',
-      MTN_MOMO_COLLECTION_SUBSCRIPTION_KEY: 'k',
+      PAWAPAY_API_URL: 'https://api.sandbox.pawapay.io',
+      PAWAPAY_CALLBACK_IPS: '1.2.3.4',
     };
 
     function messagesFor(env: Record<string, string>): string[] {
@@ -115,40 +114,47 @@ describe('.env.example — les valeurs documentées démarrent', () => {
       return error?.details.map((d) => d.message) ?? [];
     }
 
-    it('refuse un secret de webhook VIDE hors mode MANUAL', () => {
+    it('refuse un jeton pawaPay VIDE en mode PAWAPAY', () => {
       const messages = messagesFor({
         ...base,
-        PAYMENT_MODE: 'SANDBOX',
-        MTN_MOMO_WEBHOOK_SECRET: '',
+        PAYMENT_MODE: 'PAWAPAY',
+        PAWAPAY_API_TOKEN: '',
       });
 
-      expect(messages.join(' | ')).toContain('MTN_MOMO_WEBHOOK_SECRET');
+      expect(messages.join(' | ')).toContain('PAWAPAY_API_TOKEN');
     });
 
-    it('refuse un secret de webhook ABSENT hors mode MANUAL', () => {
-      const messages = messagesFor({ ...base, PAYMENT_MODE: 'SANDBOX' });
+    it('refuse un jeton pawaPay ABSENT en mode PAWAPAY', () => {
+      const messages = messagesFor({ ...base, PAYMENT_MODE: 'PAWAPAY' });
 
-      expect(messages.join(' | ')).toContain('MTN_MOMO_WEBHOOK_SECRET');
+      expect(messages.join(' | ')).toContain('PAWAPAY_API_TOKEN');
     });
 
-    it('accepte un secret réellement posé', () => {
+    it('accepte un jeton réellement posé', () => {
       const messages = messagesFor({
         ...base,
-        PAYMENT_MODE: 'SANDBOX',
-        MTN_MOMO_WEBHOOK_SECRET: 's3cr3t',
+        PAYMENT_MODE: 'PAWAPAY',
+        PAWAPAY_API_TOKEN: 'jeton',
       });
 
       expect(messages).toEqual([]);
     });
 
-    it('tolère un secret vide en mode MANUAL, où il ne sert pas', () => {
+    it('tolère un jeton vide en mode MANUAL, où il ne sert pas', () => {
       const messages = messagesFor({
         ...base,
         PAYMENT_MODE: 'MANUAL',
-        MTN_MOMO_WEBHOOK_SECRET: '',
+        PAWAPAY_API_TOKEN: '',
       });
 
       expect(messages).toEqual([]);
+    });
+
+    it('refuse les anciens modes du rail MTN direct', () => {
+      for (const mode of ['SANDBOX', 'MTN_PRODUCTION']) {
+        const messages = messagesFor({ ...base, PAYMENT_MODE: mode });
+        expect(messages.join(' | ')).toContain('PAYMENT_MODE');
+      }
     });
   });
 

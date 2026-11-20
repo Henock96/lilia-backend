@@ -201,6 +201,31 @@ describeIfDb('Marge par commande (PostgreSQL réel)', () => {
     expect(data.summary.knownMarginXaf).toBe(2208);
   });
 
+  it('sans `from` : seuls les 30 derniers jours comptent', async () => {
+    await order('om-1');
+    await order('om-old');
+    await prisma.order.update({
+      where: { id: 'om-old' },
+      data: { createdAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000) },
+    });
+
+    const { data } = await list(RATES);
+
+    expect(data.rows.map((r) => r.orderId)).toEqual(['om-1']);
+    expect(data.summary.orders).toBe(1);
+  });
+
+  it('`from` après `to` : 400 MARGINS_PERIOD_INVALID', async () => {
+    await expect(
+      payouts.listOrderMargins(
+        { from: '2026-11-20', to: '2026-11-19', limit: 50 },
+        RATES,
+      ),
+    ).rejects.toMatchObject({
+      response: { code: 'MARGINS_PERIOD_INVALID' },
+    });
+  });
+
   it('aucune écriture', async () => {
     await order('om-1');
     const before = await prisma.restaurantPayout.count();

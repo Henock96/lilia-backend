@@ -33,6 +33,7 @@ import {
 /// depuis le dispatch (à la réassignation), et elle est best-effort.
 const trackingServiceDouble = {
   forgetLastPosition: jest.fn().mockResolvedValue(undefined),
+  revokeOrderWatchers: jest.fn().mockResolvedValue(undefined),
 };
 
 describe('DeliveriesService (caractérisation — lectures)', () => {

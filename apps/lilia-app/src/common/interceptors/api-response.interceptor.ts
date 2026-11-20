@@ -46,7 +46,7 @@ const PAGINATION_KEYS = [
  * Usage :
  * ```ts
  * @SkipResponseWrap()
- * @Post('mtn-momo')
+ * @Post('deposits')
  * handleWebhook() { return { status: 'received' }; }
  * ```
  *

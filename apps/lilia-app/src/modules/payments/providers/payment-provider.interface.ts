@@ -17,7 +17,7 @@ import { PaymentMethod, PayoutProvider } from '@prisma/client';
  */
 
 /** Nom du rail d'encaissement / de reversement. */
-export type PaymentProviderName = 'MANUAL' | 'MTN_MOMO' | 'PAWAPAY';
+export type PaymentProviderName = 'MANUAL' | 'PAWAPAY';
 
 /**
  * Instructions affichées au client — mode MANUAL uniquement, où l'encaissement

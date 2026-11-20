@@ -40,6 +40,7 @@ describe('DeliveriesService.updateLocation (convergence Redis — LIL-54)', () =
     calculateETA: jest.fn().mockResolvedValue(7),
     // Purge de la position à la réassignation (cache par commande).
     forgetLastPosition: jest.fn().mockResolvedValue(undefined),
+    revokeOrderWatchers: jest.fn().mockResolvedValue(undefined),
   };
   const gateway = { server: undefined }; // broadcast court-circuité (?. ) — non testé ici
 

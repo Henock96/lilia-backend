@@ -90,12 +90,15 @@ PaymentController          AdminPayoutController      PawaPayWebhookController
        └────────────┬───────────────┘
                     ▼
          PaymentProviderRegistry          ← PAYMENT_MODE
-        ┌───────────┼────────────┐
-        ▼           ▼            ▼
- ManualProvider  MtnMomoProvider  PawaPayProvider
-                                       │
-                                  PawaPayHttpService
-                                  PawaPaySignatureService
+            ┌───────┴───────┐
+            ▼               ▼
+     ManualProvider   PawaPayProvider
+                            │
+                       PawaPayHttpService
+                       PawaPaySignatureService
+
+ (Rail direct MTN MoMo retiré le 19/11/2026 : pawaPay encaisse et verse pour
+  MTN comme pour Airtel. À réécrire le jour où Lilia passera directement par MTN.)
 ```
 
 **Deux règles de conception :**
@@ -743,11 +746,10 @@ dispositif), jeton d'API, en-têtes `Authorization`, corps de réponse brut du
 prestataire. **Masqués** : numéros (`maskPhone`), références (`maskRef`).
 
 ⚠️ **La `redact` de pino ne suffit pas.** Elle agit sur les propriétés d'un
-objet journalisé, pas sur une valeur interpolée dans le message. Le rail MTN
-écrivait `JSON.stringify(config.headers)` : la subscription key et le
-`Authorization` partaient en clair dans `msg`, hors de portée de la redaction.
-Corrigé par `redactHeaders()` (`mtn-momo-token.service.ts`), verrouillé par un
-test. **Règle : ne jamais interpoler d'en-têtes ni de configuration dans un
+objet journalisé, pas sur une valeur interpolée dans le message. L'ancien rail
+MTN direct (retiré le 19/11/2026) écrivait `JSON.stringify(config.headers)` :
+la subscription key et le `Authorization` partaient en clair dans `msg`, hors
+de portée de la redaction. **Règle : ne jamais interpoler d'en-têtes ni de configuration dans un
 message de log — passer un objet, ou masquer explicitement.**
 
 ### Retrouver un paiement — ce qui est disponible

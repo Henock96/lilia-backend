@@ -9,9 +9,8 @@ import { PawaPayActiveConf } from './pawapay.types';
  * Transport HTTP vers l'API pawaPay : URL de base, jeton, délais, et
  * traduction des pannes réseau en `ProviderUnavailableError`.
  *
- * Isolé du provider métier pour la même raison que `MtnMomoTokenService` l'est
- * de `MtnMomoService` (convention LIL-134) : le provider décrit *ce qu'on
- * demande au prestataire*, ce service *comment on lui parle*.
+ * Isolé du provider métier (convention LIL-134) : le provider décrit *ce
+ * qu'on demande au prestataire*, ce service *comment on lui parle*.
  *
  * L'authentification est un simple jeton porteur — pas de cycle de vie à gérer,
  * contrairement à MTN MoMo dont le token expire toutes les heures.

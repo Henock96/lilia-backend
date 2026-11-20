@@ -232,7 +232,10 @@ describeIfDb('Dispatch FCFS (PostgreSQL réel)', () => {
       transitions,
       settings,
       assignmentLog,
-      { forgetLastPosition: async () => undefined } as never,
+      {
+        forgetLastPosition: async () => undefined,
+        revokeOrderWatchers: async () => undefined,
+      } as never,
     );
     ops = new OpsQueueService(prisma as never);
 
