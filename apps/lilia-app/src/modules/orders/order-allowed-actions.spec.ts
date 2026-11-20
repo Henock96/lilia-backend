@@ -287,6 +287,60 @@ describe('orderAllowedActions', () => {
       });
     });
 
+    describe('commande liée à une réservation (4C-0)', () => {
+      const linked = (status: OrderStatus) => ({
+        status,
+        isDelivery: false,
+        acceptedAt: new Date(),
+        reservationId: 'resa-1',
+      });
+      // Gestes que `assertNotManagedByReservation` refuse en 409.
+      const GUARDED: OrderAction[] = ['REJECT', 'CANCEL', 'CONFIRM_PICKUP'];
+
+      it('aucun geste refusé par la garde, pour aucun rôle ni statut', () => {
+        for (const status of STATUSES) {
+          for (const role of ROLES) {
+            for (const acceptanceRequired of [true, false]) {
+              const actions = orderAllowedActions(linked(status), role, {
+                acceptanceRequired,
+              });
+              for (const action of GUARDED) {
+                expect(actions).not.toContain(action);
+              }
+            }
+          }
+        }
+      });
+
+      it('même une remise déclarée par le vendeur seul ne se confirme pas', () => {
+        expect(
+          orderAllowedActions(
+            { ...linked('LIVRER'), deliveryProof: 'PICKUP_VENDOR_DECLARED' },
+            'CLIENT',
+            on,
+          ),
+        ).toEqual([]);
+      });
+
+      it('la cuisine reste pilotable : préparer, prêt, remise par code', () => {
+        expect(
+          orderAllowedActions(linked('PAYER'), 'RESTAURATEUR', on),
+        ).toEqual(['START_PREPARATION']);
+        expect(
+          orderAllowedActions(linked('EN_PREPARATION'), 'RESTAURATEUR', on),
+        ).toEqual(['MARK_READY']);
+        expect(orderAllowedActions(linked('PRET'), 'RESTAURATEUR', on)).toEqual(
+          ['HAND_OVER'],
+        );
+      });
+
+      it('le client n’a aucun geste sur la commande : tout passe par la réservation', () => {
+        for (const status of STATUSES) {
+          expect(orderAllowedActions(linked(status), 'CLIENT', on)).toEqual([]);
+        }
+      });
+    });
+
     it('le vocabulaire des gestes est fermé', () => {
       expect([...ORDER_ACTIONS].sort()).toEqual([
         'ACCEPT',

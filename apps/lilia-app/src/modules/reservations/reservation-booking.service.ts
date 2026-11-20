@@ -42,6 +42,7 @@ import {
   ReservationActiveLimit,
   ReservationStatus,
 } from './reservation-booking-vocab';
+import { isReservable } from './reservation-bookable';
 import { toMinutes } from './reservation-config';
 import { loadDayContext, readTogether } from './reservation-day.loader';
 import { enqueueReservationNotice } from './reservation-notices';
@@ -510,9 +511,12 @@ export class ReservationBookingService {
       () => this.subscriptions.verdictFor(restaurantId, now, db),
     ] as const);
     if (
-      !settings?.enabled ||
-      !platformEnabled ||
-      !hasEntitlement(verdict, RESERVATION_ENTITLEMENT)
+      !isReservable({
+        vendorType: RESERVATION_ELIGIBLE_VENDOR_TYPE,
+        platformEnabled,
+        settingsEnabled: settings?.enabled ?? false,
+        entitled: hasEntitlement(verdict, RESERVATION_ENTITLEMENT),
+      })
     ) {
       throw notBookable();
     }

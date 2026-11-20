@@ -9,6 +9,8 @@ import { PaginationService } from '../../common/pagination/pagination.service';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { MENU_PRODUCTS_LIMIT } from '../products/vendor-menu.include';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import { VendorSubscriptionService } from '../subscriptions/vendor-subscription.service';
 
 /**
  * `GET /vendors/:id` — **source canonique de la carte d'un vendeur** depuis la
@@ -196,5 +198,104 @@ describe('VendorsService.findOne — détail vendeur', () => {
     await expect(service.findOne('inconnu')).rejects.toBeInstanceOf(
       NotFoundException,
     );
+  });
+});
+
+/**
+ * 4C-0 (D-1) — la fiche dit si le restaurant prend des réservations, avec la
+ * règle de la disponibilité (`isReservable`). Sans cela, l'app client devait
+ * sonder chaque fiche et recevoir une 404 chez la plupart des vendeurs.
+ */
+describe('VendorsService.findOne — reservable', () => {
+  const prisma = {
+    restaurant: { findFirst: jest.fn() },
+    review: { groupBy: jest.fn() },
+    reservationSettings: { findUnique: jest.fn() },
+    product: { fields: { availableFrom: 'F', availableUntil: 'U' } },
+  };
+  const platform = { getSettings: jest.fn() };
+  const subscriptions = { verdictFor: jest.fn() };
+  const PREMIUM = {
+    entitlements: ['ON_SITE_RESERVATIONS'],
+    plan: 'PREMIUM',
+    paidUntil: null,
+  };
+
+  async function build(): Promise<VendorsService> {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        VendorsService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: PaginationService, useValue: {} },
+        { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: AdminAuditService, useValue: { record: jest.fn() } },
+        {
+          provide: VendorOpeningService,
+          useValue: { nextOpeningMany: jest.fn().mockResolvedValue(new Map()) },
+        },
+        { provide: PlatformSettingsService, useValue: platform },
+        { provide: VendorSubscriptionService, useValue: subscriptions },
+      ],
+    }).compile();
+    return module.get(VendorsService);
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    prisma.restaurant.findFirst.mockResolvedValue({
+      id: 'v1',
+      vendorType: 'RESTAURANT',
+      isOpen: true,
+      products: [],
+      menuDuJour: [],
+      _count: { products: 0 },
+    });
+    prisma.review.groupBy.mockResolvedValue([]);
+    prisma.reservationSettings.findUnique.mockResolvedValue({ enabled: true });
+    platform.getSettings.mockResolvedValue({ reservationsEnabled: true });
+    subscriptions.verdictFor.mockResolvedValue(PREMIUM);
+  });
+
+  it('restaurant Premium, activé, plateforme allumée : réservable', async () => {
+    const res = await (await build()).findOne('v1');
+    expect(res.data.reservable).toBe(true);
+  });
+
+  it('réservations désactivées par le restaurant : non réservable', async () => {
+    prisma.reservationSettings.findUnique.mockResolvedValue({ enabled: false });
+    const res = await (await build()).findOne('v1');
+    expect(res.data.reservable).toBe(false);
+  });
+
+  it('Premium expiré : non réservable', async () => {
+    subscriptions.verdictFor.mockResolvedValue({
+      entitlements: [],
+      plan: 'STANDARD',
+      paidUntil: null,
+    });
+    const res = await (await build()).findOne('v1');
+    expect(res.data.reservable).toBe(false);
+  });
+
+  it('plateforme éteinte : non réservable, sans lire réglages ni abonnement', async () => {
+    platform.getSettings.mockResolvedValue({ reservationsEnabled: false });
+    const res = await (await build()).findOne('v1');
+    expect(res.data.reservable).toBe(false);
+    expect(prisma.reservationSettings.findUnique).not.toHaveBeenCalled();
+    expect(subscriptions.verdictFor).not.toHaveBeenCalled();
+  });
+
+  it('boulangerie : non réservable, sans lecture', async () => {
+    prisma.restaurant.findFirst.mockResolvedValue({
+      id: 'v1',
+      vendorType: 'BAKERY',
+      isOpen: true,
+      products: [],
+      menuDuJour: [],
+      _count: { products: 0 },
+    });
+    const res = await (await build()).findOne('v1');
+    expect(res.data.reservable).toBe(false);
+    expect(prisma.reservationSettings.findUnique).not.toHaveBeenCalled();
   });
 });

@@ -61,4 +61,42 @@ describe('ReservationSettingsController', () => {
     });
     expect(service.save).toHaveBeenCalledWith('owner-1', dto);
   });
+
+  /**
+   * 4C-0 (F-7, D-5) — une app qui ne sait pas afficher l'agenda ne peut pas
+   * allumer les réservations : les demandes arriveraient sans être vues et
+   * expireraient en 30 minutes. Patron de `accept-first`.
+   */
+  describe('activation : capacité « agenda » exigée', () => {
+    const enable = { enabled: true } as never;
+
+    it('activer sans l’en-tête : 426 VENDOR_APP_UPDATE_REQUIRED, rien n’est écrit', async () => {
+      await expect(controller.save(user, enable)).rejects.toMatchObject({
+        status: 426,
+        response: { code: 'VENDOR_APP_UPDATE_REQUIRED' },
+      });
+      expect(service.save).not.toHaveBeenCalled();
+    });
+
+    it('activer avec une autre capacité seulement : 426', async () => {
+      await expect(
+        controller.save(user, enable, 'something-else'),
+      ).rejects.toMatchObject({ status: 426 });
+    });
+
+    it('activer depuis l’app vendeurs 4C (X-Lilia-Reservations: agenda) : enregistré', async () => {
+      service.save.mockResolvedValue({ configured: true });
+      await expect(
+        controller.save(user, enable, ' Agenda '),
+      ).resolves.toMatchObject({ data: { configured: true } });
+      expect(service.save).toHaveBeenCalledWith('owner-1', enable);
+    });
+
+    it('désactiver reste toujours permis, sans en-tête', async () => {
+      service.save.mockResolvedValue({ configured: true });
+      await expect(
+        controller.save(user, { enabled: false } as never),
+      ).resolves.toBeDefined();
+    });
+  });
 });

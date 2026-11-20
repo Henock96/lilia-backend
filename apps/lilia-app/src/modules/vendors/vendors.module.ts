@@ -29,6 +29,7 @@ import { AdminVendorReachabilityController } from './vendor-reachability.control
 import { VendorReachabilityService } from './vendor-reachability.service';
 import { ShopMembershipController } from './shop-membership.controller';
 import { ShopMembershipService } from './shop-membership.service';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
 @Module({
   imports: [
@@ -47,6 +48,8 @@ import { ShopMembershipService } from './shop-membership.service';
     QuartiersModule,
     // Simulateur de subvention de livraison (F3-02).
     DeliveryPricingCoreModule,
+    // 4C-0 — droit Premium lu par `reservable` de la fiche publique.
+    SubscriptionsModule,
   ],
   controllers: [
     VendorsController,
