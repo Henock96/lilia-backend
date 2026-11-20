@@ -1,3 +1,6 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
@@ -219,6 +222,23 @@ describeIfStack('Réservations payées — parcours HTTP (J7)', () => {
   const data = <T = Record<string, unknown>>(res: { body: unknown }) =>
     (res.body as { data: T }).data;
 
+  /**
+   * 4C/4D — `HTTP_DUMP_DIR=<dossier>` enregistre les réponses réelles du
+   * parcours complet : les tests de contrat des apps les lisent comme
+   * fixtures, au lieu de JSON écrits à la main.
+   */
+  function dump<T extends { body: unknown }>(name: string, res: T): T {
+    const dir = process.env.HTTP_DUMP_DIR;
+    if (dir) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, `${name}.json`),
+        `${JSON.stringify(res.body, null, 2)}\n`,
+      );
+    }
+    return res;
+  }
+
   /** Premier créneau libre, à partir du premier jour réservable. */
   async function firstSlot(): Promise<{ date: string; time: string }> {
     const bounds = data<{ firstDate: string; lastDate: string }>(
@@ -236,7 +256,17 @@ describeIfStack('Réservations payées — parcours HTTP (J7)', () => {
           .query({ date, partySize: 2 })
           .expect(200),
       );
-      if (day.slots.length > 0) return { date, time: day.slots[0].time };
+      if (day.slots.length > 0) {
+        dump(
+          'client_availability_slots',
+          await h
+            .http()
+            .get(`/vendors/${VENDOR}/reservation-availability`)
+            .query({ date, partySize: 2 })
+            .expect(200),
+        );
+        return { date, time: day.slots[0].time };
+      }
       const next = new Date(`${date}T12:00:00Z`);
       next.setUTCDate(next.getUTCDate() + 1);
       date = next.toISOString().slice(0, 10);
@@ -374,9 +404,27 @@ describeIfStack('Réservations payées — parcours HTTP (J7)', () => {
         time: slot.time,
         partySize: 2,
       });
-    const created = await send();
+    const created = dump('client_create_pending', await send());
     expect(created.status).toBe(201);
     const id = data<{ id: string; status: string }>(created).id;
+    dump(
+      'vendor_list_pending',
+      await h
+        .http(OWNER)
+        .get(`/vendors/me/reservations?date=${slot.date}`)
+        .expect(200),
+    );
+    dump(
+      'client_vendor_detail_reservable',
+      await h.http().get(`/vendors/${VENDOR}`).expect(200),
+    );
+    dump(
+      'client_availability_bounds',
+      await h
+        .http(CLIENT_1)
+        .get(`/vendors/${VENDOR}/reservation-availability`)
+        .expect(200),
+    );
     expect(data<{ status: string }>(created).status).toBe('PENDING');
     // Même clé rejouée (après la fenêtre du limiteur, 1 demande par seconde
     // et par client) : la même réservation, rien de plus.
@@ -397,11 +445,18 @@ describeIfStack('Réservations payées — parcours HTTP (J7)', () => {
       })
       .expect(409);
 
-    await h
-      .http(OWNER)
-      .post(`/vendors/me/reservations/${id}/accept`)
-      .expect(200);
+    dump(
+      'vendor_accept',
+      await h
+        .http(OWNER)
+        .post(`/vendors/me/reservations/${id}/accept`)
+        .expect(200),
+    );
     expect((await reservationOf(CLIENT_1, id)).status).toBe('AWAITING_PAYMENT');
+    dump(
+      'client_get_awaiting_payment',
+      await h.http(CLIENT_1).get(`/reservations/${id}`).expect(200),
+    );
 
     // Fenêtre du limiteur de la route de paiement (tentative refusée juste avant).
     await new Promise((resolve) => setTimeout(resolve, 1_100));
@@ -430,6 +485,14 @@ describeIfStack('Réservations payées — parcours HTTP (J7)', () => {
     expect((await reservationOf(CLIENT_1, id)).status).toBe('CONFIRMED');
     expect(await prisma.payment.count({ where: { status: 'SUCCESS' } })).toBe(
       1,
+    );
+    dump(
+      'vendor_get_confirmed',
+      await h.http(OWNER).get(`/vendors/me/reservations/${id}`).expect(200),
+    );
+    dump(
+      'client_list_me_confirmed',
+      await h.http(CLIENT_1).get('/reservations/me').expect(200),
     );
 
     // 4C-0 (F-1) — sur la commande liée, aucun geste que la garde de
@@ -460,7 +523,10 @@ describeIfStack('Réservations payées — parcours HTTP (J7)', () => {
         .expect(200);
     }
     const code = data<{ pickupCode: string }>(
-      await h.http(CLIENT_1).get(`/orders/${order.id}`).expect(200),
+      dump(
+        'client_linked_order_ready',
+        await h.http(CLIENT_1).get(`/orders/${order.id}`).expect(200),
+      ),
     ).pickupCode;
     expect(code).toMatch(/^\d{4}$/);
     expect(await actionsOf(OWNER)).toEqual(['HAND_OVER']);
@@ -473,6 +539,14 @@ describeIfStack('Réservations payées — parcours HTTP (J7)', () => {
 
     expect((await reservationOf(CLIENT_1, id)).status).toBe('HONORED');
     expect((await linkedOrder(id)).status).toBe('LIVRER');
+    dump(
+      'vendor_get_honored',
+      await h.http(OWNER).get(`/vendors/me/reservations/${id}`).expect(200),
+    );
+    dump(
+      'client_get_honored',
+      await h.http(CLIENT_1).get(`/reservations/${id}`).expect(200),
+    );
   });
 
   it('4C-0 (D-1) — la fiche publique dit que le restaurant réserve', async () => {
