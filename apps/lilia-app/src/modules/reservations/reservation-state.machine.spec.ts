@@ -29,6 +29,11 @@ describe('machine d’états des réservations — règles explicites', () => {
     ['CONFIRMED', 'CANCELLED_BY_CLIENT', 'CLIENT'],
     ['CONFIRMED', 'CANCELLED_BY_VENDOR', 'RESTAURATEUR'],
     ['NO_SHOW', 'CONFIRMED', 'RESTAURATEUR'],
+    // J6 (19/11) — annulation par le support, motif obligatoire.
+    ['PENDING', 'CANCELLED_BY_VENDOR', 'ADMIN'],
+    ['AWAITING_PAYMENT', 'CANCELLED_BY_VENDOR', 'ADMIN'],
+    ['CONFIRMED', 'CANCELLED_BY_VENDOR', 'ADMIN'],
+    ['NO_SHOW', 'CANCELLED_BY_VENDOR', 'ADMIN'],
   ];
 
   it.each(allowed)('%s → %s par %s : autorisé', (from, to, actor) => {
@@ -82,7 +87,7 @@ describe('machine d’états des réservations — règles explicites', () => {
     }
   });
 
-  it('exactement les 13 transitions décidées, aucune autre', () => {
+  it('exactement les 17 couples (transition, acteur) décidés, aucun autre', () => {
     let count = 0;
     for (const from of RESERVATION_STATUSES) {
       for (const to of RESERVATION_STATUSES) {

@@ -71,8 +71,13 @@ export const RESERVATION_TIMINGS = {
   paymentWindowMin: 15,
   /** B2 — une absence se déclare au plus tôt 15 min après l'heure d'arrivée. */
   noShowGraceMin: 15,
-  /** B2 — le vendeur peut retirer une absence pendant 24 h. */
-  noShowUndoHours: 24,
+  /** B2 (révisé le 19/11) — le vendeur peut retirer une absence pendant 6 h. */
+  noShowUndoHours: 6,
+  /**
+   * 4B-2 J6 (19/11) — 12 h après sa déclaration, l'absence est close : la
+   * commande liée est annulée et l'encaissement partagé (option D).
+   */
+  noShowSettleHours: 12,
   /** B7 — rappel client 2 h avant l'arrivée… */
   reminderBeforeMin: 120,
   /** …sauf si la réservation a été confirmée moins de 3 h avant. */
@@ -87,6 +92,18 @@ export const RESERVATION_TIMINGS = {
    * ci-dessus ne laissent plus le temps de répondre ni de payer.
    */
   minEffectiveLeadMin: 60,
+  /**
+   * 4B-2 (OD-05) — une tentative de paiement en cours retient l'expiration au
+   * plus 17 min (abandon de la réconciliation à 15 min + un tour de cron).
+   */
+  paymentGraceMin: 17,
+  /**
+   * 4B-2 (C2, I-02) — annulation client gratuite si l'arrivée est à 120 min
+   * ou plus. En deçà, l'annulation est « tardive » (`lateCancellation`) ;
+   * en V1 (OD-08 option E) elle est remboursée quand même : la borne ne
+   * déplace aucun argent, d'où une constante et non un réglage financier.
+   */
+  cancelCutoffMin: 120,
 } as const;
 
 /**
@@ -119,11 +136,26 @@ export const RESERVATION_THROTTLES = {
   },
 } as const;
 
-/** B2 — 3 absences en 90 jours ferment la réservation 30 jours. */
+/**
+ * B2 — 3 absences en 90 jours ferment la réservation 30 jours ; R-ABS
+ * (16/11) : seulement si elles viennent d'au moins 2 restaurants.
+ */
 export const NO_SHOW_RESTRICTION = {
   threshold: 3,
   windowDays: 90,
   restrictionDays: 30,
+  minDistinctRestaurants: 2,
+} as const;
+
+/**
+ * R-SPAM (16/11) — demandes **créées** par un client sur 24 h glissantes,
+ * tous statuts confondus (une demande annulée compte) : 6 en tout, 2 par
+ * restaurant. Contrôlé sous le verrou client, comme les plafonds OD-01.
+ */
+export const RESERVATION_CREATION_LIMITS = {
+  windowHours: 24,
+  total: 6,
+  perRestaurant: 2,
 } as const;
 
 /** Codes d'erreur HTTP stables, lus par les apps (`error.code`). */
@@ -143,4 +175,13 @@ export const BOOKING_ERROR_CODES = {
   noShowTooEarly: 'RESERVATION_NO_SHOW_TOO_EARLY',
   capacityTaken: 'RESERVATION_CAPACITY_TAKEN',
   activeLimit: 'RESERVATION_ACTIVE_LIMIT',
+  creationLimit: 'RESERVATION_CREATION_LIMIT',
+  /** 4B-2 — un plat de la précommande ne peut plus être servi tel quel. */
+  itemsUnavailable: 'RESERVATION_ITEMS_UNAVAILABLE',
+  /** 4B-2 — annulation refusée tant qu'une tentative de paiement est en cours. */
+  paymentInProgress: 'RESERVATION_PAYMENT_IN_PROGRESS',
+  /** 4B-2 — la réservation n'attend plus (ou pas encore) de paiement. */
+  paymentClosed: 'RESERVATION_PAYMENT_CLOSED',
+  /** 4B-2 — le total affiché au client n'est plus celui de la commande. */
+  totalChanged: 'RESERVATION_TOTAL_CHANGED',
 } as const;

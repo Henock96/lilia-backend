@@ -326,6 +326,7 @@ export class OutboxDispatcherService {
         paidAt: true,
         acceptDeadlineAt: true,
         acceptedAt: true,
+        reservationId: true,
         restaurant: {
           select: {
             nom: true,
@@ -339,6 +340,15 @@ export class OutboxDispatcherService {
 
     if (!order) {
       await this.outbox.markFailed(event.id, 'Commande introuvable');
+      return;
+    }
+
+    // Lot 4 (4B-2) — précommande d'une réservation : le restaurant est prévenu
+    // par l'avis « réservation payée », écrit dans la transaction du paiement.
+    // Les rappels et le SMS « à préparer » le relanceraient jusqu'à la
+    // préparation, c'est-à-dire parfois des jours avant l'arrivée.
+    if (order.reservationId) {
+      await this.outbox.markSent(event.id);
       return;
     }
 

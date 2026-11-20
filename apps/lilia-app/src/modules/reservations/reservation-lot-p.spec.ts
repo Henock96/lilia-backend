@@ -12,6 +12,7 @@ import {
 } from './reservation-availability';
 import { ReservationsController } from './reservation-booking.controller';
 import { RESERVATION_THROTTLES } from './reservation-booking-vocab';
+import { customerContactVisible } from './reservation-records';
 import { VendorReservationsController } from './vendor-reservations.controller';
 
 /** Lot P — corrections de 4B-1 (relevé du 21/10, décisions OD-01/02/12/17). */
@@ -148,5 +149,39 @@ describe('Lot P — limites de débit (P-06)', () => {
     const handler = ReservationsController.prototype.cancel;
     expect(limitOf(handler, 'short')).toBe(1);
     expect(limitOf(handler, 'long')).toBe(10);
+  });
+});
+
+describe('R-TEL — contact du client côté restaurant', () => {
+  const DAY = 24 * 60 * MIN;
+  const base = {
+    cancelledAt: null,
+    honoredAt: null,
+    noShowAt: null,
+  };
+
+  it('visible tant que la réservation vit', () => {
+    for (const status of ['PENDING', 'AWAITING_PAYMENT', 'CONFIRMED']) {
+      expect(customerContactVisible({ ...base, status }, NOW)).toBe(true);
+    }
+  });
+
+  it('jamais pour une demande refusée ou expirée', () => {
+    expect(customerContactVisible({ ...base, status: 'DECLINED' }, NOW)).toBe(
+      false,
+    );
+    expect(customerContactVisible({ ...base, status: 'EXPIRED' }, NOW)).toBe(
+      false,
+    );
+  });
+
+  it('30 jours après l’issue, puis masqué', () => {
+    const ended = { ...base, status: 'HONORED', honoredAt: NOW };
+    expect(
+      customerContactVisible(ended, new Date(NOW.getTime() + 29 * DAY)),
+    ).toBe(true);
+    expect(
+      customerContactVisible(ended, new Date(NOW.getTime() + 30 * DAY)),
+    ).toBe(false);
   });
 });

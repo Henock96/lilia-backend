@@ -52,6 +52,13 @@ describe('OrderExpiryService', () => {
     expect(where.Payment).toEqual({ none: { status: 'SUCCESS' } });
   });
 
+  it('4B-2 : épargne la précommande d’une réservation (elle expire avec elle)', async () => {
+    await service.expireUnpaidOrders();
+
+    const where = prisma.order.findMany.mock.calls[0][0].where;
+    expect(where.reservationId).toBeNull();
+  });
+
   it('applique trois délais selon ce que le prestataire a répondu', async () => {
     service = await build({
       ORDER_PAYMENT_TIMEOUT_MINUTES: 45,

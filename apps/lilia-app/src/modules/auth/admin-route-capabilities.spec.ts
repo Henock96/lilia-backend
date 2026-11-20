@@ -82,6 +82,14 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'AdminLedgerController.resolveException': 'FINANCE_EXECUTE',
   'AdminLedgerController.reverse': 'FINANCE_EXECUTE',
   'AdminLedgerController.vendorBalance': 'NONE',
+  // 4B-2 J6 (19/11) — annulation d'une réservation par le support : comme
+  // l'annulation ADMIN d'une commande qu'elle remplace (OD-20) ; aucun argent
+  // ne part, le remboursement passe par la file admin (quatre yeux).
+  'AdminReservationsController.cancel': 'NONE',
+  // 4B-2 J6b (19/11) — part restaurant d'une absence : lecture ouverte (B-3) ;
+  // la demande fait partir de l'argent (à la validation d'un second admin).
+  'AdminReservationNoShowsController.list': 'NONE',
+  'AdminReservationNoShowsController.requestPayout': 'FINANCE_EXECUTE',
   'AdminOrderRefundsController.create': 'FINANCE_EXECUTE',
   'AdminOrderRefundsController.quote': 'NONE',
   'AdminPayoutController.getFinancials': 'NONE',
@@ -334,6 +342,8 @@ const SECOND_FACTOR_ROUTES: readonly string[] = [
   'AdminDriversController.deactivate',
   'AdminDriversController.resendInvitation',
   'AdminDriversController.update',
+  // Réservations (4B-2 J6)
+  'AdminReservationsController.cancel',
   // Livraisons
   'AdminDispatchController.redispatch',
   'AdminDispatchController.redispatchOrder',
@@ -404,6 +414,7 @@ describe('Classement des routes ADMIN (F3-08)', () => {
       'AdminPayoutController.requestPayout',
       'AdminPayoutController.updatePayoutAccount',
       'RefundsController.execute',
+      'AdminReservationNoShowsController.requestPayout',
       'ClaimsController.voucher',
       'PaymentController.confirmPayment',
     ]) {

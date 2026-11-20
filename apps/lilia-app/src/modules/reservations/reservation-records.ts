@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { brazzavilleClock } from '../vendors/vendor-opening.policy';
 import {
   BOOKING_ERROR_CODES,
+  CAPACITY_HOLDING_STATUSES,
   ReservationActor,
   ReservationStatus,
   RESERVATION_TIMINGS,
@@ -47,7 +48,20 @@ export const RESERVATION_RECORD_SELECT = {
   confirmedAt: true,
   honoredAt: true,
   noShowAt: true,
+  indicativeSubTotal: true,
+  lateCancellation: true,
   createdAt: true,
+  // 4B-2 — la commande liée (montant réel, figé à l'acceptation).
+  order: {
+    select: {
+      id: true,
+      status: true,
+      subTotal: true,
+      serviceFee: true,
+      total: true,
+      paymentDueAt: true,
+    },
+  },
   space: { select: { id: true, kind: true, label: true } },
   restaurant: { select: { id: true, nom: true, ownerId: true } },
   user: { select: { id: true, nom: true } },
@@ -58,9 +72,19 @@ export const RESERVATION_RECORD_SELECT = {
       menuId: true,
       variantId: true,
       quantite: true,
+      optionsSignature: true,
       productName: true,
       variantLabel: true,
-      options: { select: { optionId: true, quantity: true } },
+      indicativeLineTotal: true,
+      menuName: true,
+      options: {
+        select: {
+          optionId: true,
+          quantity: true,
+          optionName: true,
+          priceDelta: true,
+        },
+      },
     },
     orderBy: { createdAt: 'asc' },
   },
@@ -70,7 +94,7 @@ export type ReservationRecord = Prisma.ReservationGetPayload<{
   select: typeof RESERVATION_RECORD_SELECT;
 }>;
 
-export type ClientAction = 'cancel';
+export type ClientAction = 'cancel' | 'pay';
 export type VendorAction =
   | 'accept'
   | 'decline'
@@ -83,15 +107,65 @@ const statusOf = (r: Pick<ReservationRecord, 'status'>) =>
   r.status as ReservationStatus;
 
 export function clientAllowedActions(
-  r: Pick<ReservationRecord, 'status'>,
+  r: Pick<ReservationRecord, 'status' | 'paymentDeadlineAt' | 'arrivalAt'> & {
+    order?: { status: string } | null;
+  },
+  now: Date = new Date(),
 ): ClientAction[] {
-  // 4B-1 : rien n'est encore payé ; l'annulation d'une réservation payée
-  // (remboursement ou compensation selon la borne) arrive avec 4B-2.
   const s = statusOf(r);
-  return (s === 'PENDING' || s === 'AWAITING_PAYMENT') &&
+  const actions: ClientAction[] = [];
+  // 4B-2 — payer : acceptée, commande liée en attente, échéance non passée.
+  if (
+    s === 'AWAITING_PAYMENT' &&
+    r.order?.status === 'EN_ATTENTE' &&
+    r.paymentDeadlineAt !== null &&
+    now < r.paymentDeadlineAt
+  ) {
+    actions.push('pay');
+  }
+  // J5 — payée, elle s'annule jusqu'à l'heure d'arrivée (remboursée, même
+  // tardive, en V1) ; ensuite c'est l'arrivée ou l'absence qui la conclut.
+  if (
+    (s === 'PENDING' ||
+      s === 'AWAITING_PAYMENT' ||
+      (s === 'CONFIRMED' && now < r.arrivalAt)) &&
     canTransition(s, 'CANCELLED_BY_CLIENT', 'CLIENT')
-    ? ['cancel']
-    : [];
+  ) {
+    actions.push('cancel');
+  }
+  return actions;
+}
+
+/**
+ * J5 (C2) — annulation « tardive » : l'arrivée est à moins de
+ * `cancelCutoffMin` (120 min). Elle ne change pas le remboursement en V1
+ * (OD-08 option E) ; elle est enregistrée (`lateCancellation`).
+ */
+export function isLateCancellation(arrivalAt: Date, now: Date): boolean {
+  return (
+    arrivalAt.getTime() - now.getTime() <
+    RESERVATION_TIMINGS.cancelCutoffMin * MINUTE_MS
+  );
+}
+
+/**
+ * J5 — la politique d'annulation, verdict serveur affiché avant de payer
+ * (« annulation gratuite jusqu'à HH:MM ») : `freeUntil` = arrivée − 120 min.
+ * `refundable` est vrai pour toute réservation payée en V1 (OD-08 option E) ;
+ * il portera la retenue quand elle existera (OD-22). `null` sans commande.
+ */
+function cancellationPolicyView(r: ReservationRecord) {
+  if (!r.order) return null;
+  return {
+    freeUntil: new Date(
+      r.arrivalAt.getTime() - RESERVATION_TIMINGS.cancelCutoffMin * MINUTE_MS,
+    ),
+    refundable: true,
+    lateCancellation: r.lateCancellation,
+    // J6 (option D, 19/11) — une absence n'est pas remboursée ; le client le
+    // voit avant de payer.
+    noShowRefundable: false,
+  };
 }
 
 /** Fenêtre d'absence (B2) : de l'arrivée + 15 min à la fin du jour d'arrivée. */
@@ -102,7 +176,7 @@ export function noShowWindowOpen(arrivalAt: Date, now: Date): boolean {
   return brazzavilleClock(now).isoDate === brazzavilleClock(arrivalAt).isoDate;
 }
 
-/** Le retrait d'une absence reste possible 24 h (B2). */
+/** Le retrait d'une absence reste possible 6 h (B2, révisé le 19/11). */
 export function noShowUndoOpen(noShowAt: Date | null, now: Date): boolean {
   return (
     noShowAt !== null &&
@@ -123,9 +197,9 @@ export function vendorAllowedActions(
   if (s === 'PENDING' && now < r.responseDeadlineAt) {
     actions.push('accept', 'decline');
   }
-  // 4B-1 : seule une réservation non payée s'annule ; l'annulation d'une
-  // réservation payée (remboursement intégral) arrive avec 4B-2.
-  if (s === 'AWAITING_PAYMENT') actions.push('cancel');
+  // J5 — payée, elle s'annule aussi (remboursement intégral, faute du
+  // restaurant), tant que rien n'a été remis (la commande le vérifie).
+  if (s === 'AWAITING_PAYMENT' || s === 'CONFIRMED') actions.push('cancel');
   if (
     (s === 'PENDING' || s === 'AWAITING_PAYMENT' || s === 'CONFIRMED') &&
     now < r.arrivalAt
@@ -149,8 +223,32 @@ function itemsView(r: ReservationRecord) {
     quantite: i.quantite,
     productName: i.productName,
     variantLabel: i.variantLabel,
+    menuName: i.menuName,
+    // P-04 — part indicative de la ligne, figée à la demande (jamais facturée).
+    indicativeLineTotal: i.indicativeLineTotal,
     options: i.options,
   }));
+}
+
+/**
+ * 4B-2 — ce que la précommande coûte : le montant **réel**, figé sur la
+ * commande liée à l'acceptation, et l'indicatif de la demande. Un écart n'est
+ * jamais silencieux (OD-04) : `priceChanged` le signale, les deux montants
+ * sont rendus. `null` tant que le restaurant n'a pas accepté.
+ */
+function paymentView(r: ReservationRecord) {
+  if (!r.order) return null;
+  return {
+    orderId: r.order.id,
+    orderStatus: r.order.status,
+    subTotal: r.order.subTotal,
+    serviceFee: r.order.serviceFee,
+    total: r.order.total,
+    indicativeSubTotal: r.indicativeSubTotal,
+    priceChanged:
+      r.indicativeSubTotal !== null &&
+      r.indicativeSubTotal !== r.order.subTotal,
+  };
 }
 
 function timelineView(r: ReservationRecord) {
@@ -169,7 +267,7 @@ function timelineView(r: ReservationRecord) {
 }
 
 /** Ce que voit le client : sa réservation, sa table, aucun détail interne. */
-export function toClientView(r: ReservationRecord) {
+export function toClientView(r: ReservationRecord, now: Date = new Date()) {
   return {
     id: r.id,
     status: r.status,
@@ -184,17 +282,50 @@ export function toClientView(r: ReservationRecord) {
     declineReason: r.declineReason,
     cancelReason: r.cancelReason,
     items: itemsView(r),
+    payment: paymentView(r),
+    cancellationPolicy: cancellationPolicyView(r),
     ...timelineView(r),
-    allowedActions: clientAllowedActions(r),
+    allowedActions: clientAllowedActions(r, now),
   };
+}
+
+/** R-TEL (16/11) — durée pendant laquelle le restaurant garde le contact. */
+export const CUSTOMER_CONTACT_RETENTION_DAYS = 30;
+
+/**
+ * R-TEL — le restaurant voit le nom et le numéro du client tant que la
+ * réservation vit, puis 30 jours après son issue ; jamais pour une demande
+ * refusée ou expirée (il n'a pas reçu ce client).
+ */
+export function customerContactVisible(
+  r: Pick<
+    ReservationRecord,
+    'status' | 'cancelledAt' | 'honoredAt' | 'noShowAt'
+  >,
+  now: Date,
+): boolean {
+  const s = statusOf(r);
+  if (s === 'DECLINED' || s === 'EXPIRED') return false;
+  if (CAPACITY_HOLDING_STATUSES.includes(s)) return true;
+  const endedAt = r.cancelledAt ?? r.honoredAt ?? r.noShowAt;
+  if (!endedAt) return true;
+  return (
+    now.getTime() <
+    endedAt.getTime() + CUSTOMER_CONTACT_RETENTION_DAYS * 24 * HOUR_MS
+  );
 }
 
 /** Ce que voit le restaurant : de quoi recevoir et joindre le client. */
 export function toVendorView(r: ReservationRecord, now: Date) {
+  const visible = customerContactVisible(r, now);
   return {
     id: r.id,
     status: r.status,
-    customer: { id: r.user.id, nom: r.user.nom, phone: r.contactPhone },
+    customer: {
+      id: visible ? r.user.id : null,
+      nom: visible ? r.user.nom : null,
+      phone: visible ? r.contactPhone : null,
+    },
     partySize: r.partySize,
     arrivalAt: r.arrivalAt,
     endsAt: r.endsAt,
@@ -203,6 +334,7 @@ export function toVendorView(r: ReservationRecord, now: Date) {
     declineReason: r.declineReason,
     cancelReason: r.cancelReason,
     items: itemsView(r),
+    payment: paymentView(r),
     ...timelineView(r),
     allowedActions: vendorAllowedActions(r, now),
   };

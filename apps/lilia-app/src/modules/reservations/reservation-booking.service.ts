@@ -10,6 +10,9 @@ import { Prisma, User } from '@prisma/client';
 import { cleanCongoMobilePhone } from '../../common/validation/congo-phone.decorator';
 import { PUBLIC_VENDOR_WHERE } from '../../common/vendor-visibility';
 import { PrismaService } from '../../prisma/prisma.service';
+import { CartLine, resolveCartLine } from '../modifiers/cart-line-pricing';
+import { modifierErrorForCheckout } from '../modifiers/modifier-http';
+import { ModifierSelectionError } from '../modifiers/modifier-selection';
 import { OrderValidatorService } from '../orders/order-validator.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
@@ -35,15 +38,19 @@ import {
   CAPACITY_HOLDING_STATUSES,
   NO_SHOW_RESTRICTION,
   RESERVATION_ACTIVE_LIMITS,
+  RESERVATION_CREATION_LIMITS,
   ReservationActiveLimit,
   ReservationStatus,
 } from './reservation-booking-vocab';
 import { toMinutes } from './reservation-config';
 import { loadDayContext, readTogether } from './reservation-day.loader';
 import { enqueueReservationNotice } from './reservation-notices';
+import { ReservationOrderRelease } from './reservation-order-release';
+import { indicativeLineTotals } from './reservation-order.service';
 import {
   applyTransition,
   clientAllowedActions,
+  isLateCancellation,
   RESERVATION_RECORD_SELECT,
   ReservationRecord,
   toClientView,
@@ -84,6 +91,7 @@ export class ReservationBookingService {
     private readonly subscriptions: VendorSubscriptionService,
     private readonly platformSettings: PlatformSettingsService,
     private readonly validator: OrderValidatorService,
+    private readonly linkedOrders: ReservationOrderRelease,
   ) {}
 
   /**
@@ -219,6 +227,11 @@ export class ReservationBookingService {
     });
     const cartSignature = signatureOf(lines);
     const platform = await this.platformSettings.getSettings();
+    // P-04 — prix indicatif, par les fonctions de prix du checkout : il sert
+    // à afficher la précommande et à signaler un écart à l'acceptation, il
+    // n'est jamais facturé. Une ligne aux options devenues invalides est
+    // refusée ici comme au checkout.
+    const indicative = indicativePrices(lines, platform.modifiersEnabled);
 
     const id = await this.prisma.$transaction(
       async (tx) => {
@@ -229,6 +242,11 @@ export class ReservationBookingService {
           userId: user.id,
           restaurantId: dto.restaurantId,
           date: dto.date,
+          now,
+        });
+        await assertCreationLimits(tx, {
+          userId: user.id,
+          restaurantId: dto.restaurantId,
           now,
         });
         await lockRestaurant(tx, dto.restaurantId);
@@ -307,8 +325,12 @@ export class ReservationBookingService {
             note: dto.note?.trim() || null,
             requestKey,
             responseDeadlineAt,
+            // Même horloge que les échéances et les plafonds R-SPAM, qui
+            // comptent les créations par `createdAt`.
+            createdAt: now,
+            indicativeSubTotal: indicative.subTotal,
             items: {
-              create: lines.map((l) => ({
+              create: lines.map((l, index) => ({
                 productId: l.productId,
                 menuId: l.menuId,
                 variantId: l.variantId,
@@ -316,10 +338,14 @@ export class ReservationBookingService {
                 optionsSignature: l.optionsSignature,
                 productName: l.product.nom,
                 variantLabel: l.variant?.label ?? null,
+                indicativeLineTotal: indicative.lineTotals[index],
+                menuName: l.menu?.nom ?? null,
                 options: {
                   create: l.options.map((o) => ({
                     optionId: o.optionId,
                     quantity: o.quantity,
+                    optionName: o.option.name,
+                    priceDelta: o.option.priceDeltaXaf,
                   })),
                 },
               })),
@@ -370,31 +396,69 @@ export class ReservationBookingService {
       this.prisma.reservation.count({ where }),
     ]);
     return {
-      data: rows.map(toClientView),
+      data: rows.map((r) => toClientView(r)),
       meta: { total, page: query.page, limit: query.limit },
     };
   }
 
   /** Une réservation du client ; celle d'un autre répond 404 (aucune fuite). */
-  async getMine(userId: string, id: string) {
-    return toClientView(await this.findOwned(this.prisma, userId, id));
+  async getMine(userId: string, id: string, now: Date = new Date()) {
+    return toClientView(await this.findOwned(this.prisma, userId, id), now);
   }
 
-  /** 4B-1 : seule une demande non payée s'annule (rien à rembourser). */
+  /**
+   * Le client annule sa réservation. 4B-2 : acceptée, elle emporte sa
+   * commande liée (annulée, stock rendu) ; refusée tant qu'une tentative de
+   * paiement est en cours. J5 : payée, jusqu'à l'heure d'arrivée — commande
+   * annulée, remboursement intégral dû (OD-07), y compris pour une annulation
+   * tardive (`lateCancellation`, moins de 120 min avant : OD-08 option E).
+   */
   async cancel(userId: string, id: string, now: Date = new Date()) {
     await this.prisma.$transaction(async (tx) => {
       const r = await this.findOwned(tx, userId, id);
-      if (!clientAllowedActions(r).includes('cancel')) {
+      if (!clientAllowedActions(r, now).includes('cancel')) {
         throw actionUnavailable();
       }
+      // La commande avant la réservation (ordre des verrous du paiement).
+      const linked =
+        r.status === 'AWAITING_PAYMENT'
+          ? await this.linkedOrders.lock(tx, id)
+          : null;
+      this.linkedOrders.assertNoPaymentInProgress(linked);
+      const paid =
+        r.status === 'CONFIRMED'
+          ? await this.linkedOrders.lockPaid(tx, id)
+          : null;
+      const late = paid !== null && isLateCancellation(r.arrivalAt, now);
       await applyTransition(tx, {
         id,
         from: r.status as ReservationStatus,
         to: 'CANCELLED_BY_CLIENT',
         actor: 'CLIENT',
         actorId: userId,
-        data: { cancelledAt: now },
+        reason: late ? 'LATE_CANCELLATION' : undefined,
+        data: { cancelledAt: now, lateCancellation: late },
       });
+      if (linked) {
+        await this.linkedOrders.release(tx, linked, {
+          actor: 'CLIENT',
+          actorUserId: userId,
+          source: 'APP',
+          reason: 'Réservation annulée par le client avant paiement',
+        });
+      }
+      if (paid) {
+        const refundDue = await this.linkedOrders.cancelPaid(tx, paid, {
+          actor: 'SYSTEM',
+          actorUserId: null,
+          reason: late
+            ? 'Réservation annulée par le client moins de 2 h avant l’arrivée (remboursée, V1)'
+            : 'Réservation annulée par le client',
+          requestedBy: userId,
+          vendorFault: false,
+        });
+        await this.outbox.enqueueInTransaction(tx, refundDue);
+      }
       await enqueueReservationNotice(tx, this.outbox, {
         notice: 'CANCELLED_BY_CLIENT',
         audience: 'VENDOR',
@@ -403,6 +467,7 @@ export class ReservationBookingService {
         reservationId: id,
         arrivalAt: r.arrivalAt.toISOString(),
         partySize: r.partySize,
+        ...(paid ? { refundXaf: paid.total } : {}),
       });
     });
     return this.getMine(userId, id);
@@ -454,7 +519,12 @@ export class ReservationBookingService {
     return { restaurant, settings };
   }
 
-  /** B2 — 3 absences en 90 jours ferment la réservation 30 jours. */
+  /**
+   * B2 — 3 absences en 90 jours ferment la réservation 30 jours, **à
+   * condition qu'elles viennent d'au moins 2 restaurants** (R-ABS, 16/11) :
+   * l'absence est déclarée par le restaurant seul, sans preuve ; un
+   * restaurant ne peut donc pas à lui seul fermer la réservation d'un client.
+   */
   private async assertNotRestricted(userId: string, now: Date): Promise<void> {
     const noShows = await this.prisma.reservation.findMany({
       where: {
@@ -466,10 +536,12 @@ export class ReservationBookingService {
           ),
         },
       },
-      select: { noShowAt: true },
+      select: { noShowAt: true, restaurantId: true },
       orderBy: { noShowAt: 'desc' },
     });
     if (noShows.length < NO_SHOW_RESTRICTION.threshold) return;
+    const restaurants = new Set(noShows.map((n) => n.restaurantId)).size;
+    if (restaurants < NO_SHOW_RESTRICTION.minDistinctRestaurants) return;
     const latest = noShows[0].noShowAt as Date;
     const until = new Date(
       latest.getTime() + NO_SHOW_RESTRICTION.restrictionDays * DAY_MS,
@@ -612,6 +684,43 @@ async function assertActiveLimits(
   }
 }
 
+/**
+ * R-SPAM (16/11) — demandes créées sur 24 h glissantes, annulées comprises :
+ * créer puis annuler en boucle ne libère pas le compteur (chaque demande
+ * notifie le restaurant et tient une table). Sous le verrou client.
+ */
+async function assertCreationLimits(
+  tx: Db,
+  p: { userId: string; restaurantId: string; now: Date },
+): Promise<void> {
+  const L = RESERVATION_CREATION_LIMITS;
+  const since = new Date(p.now.getTime() - L.windowHours * 60 * MINUTE_MS);
+  const [total, perRestaurant] = await readTogether(true, [
+    () =>
+      tx.reservation.count({
+        where: { userId: p.userId, createdAt: { gte: since } },
+      }),
+    () =>
+      tx.reservation.count({
+        where: {
+          userId: p.userId,
+          restaurantId: p.restaurantId,
+          createdAt: { gte: since },
+        },
+      }),
+  ] as const);
+  if (total >= L.total || perRestaurant >= L.perRestaurant) {
+    throw new ConflictException({
+      message:
+        total >= L.total
+          ? `Vous avez déjà fait ${L.total} demandes de réservation en 24 h. Réessayez plus tard.`
+          : `Vous avez déjà fait ${L.perRestaurant} demandes dans cet établissement en 24 h. Réessayez plus tard.`,
+      code: CODES.creationLimit,
+      limit: total >= L.total ? 'total' : 'perRestaurant',
+    });
+  }
+}
+
 function notBookable(): NotFoundException {
   return new NotFoundException({
     message: 'Ce restaurant ne prend pas de réservation en ligne.',
@@ -644,6 +753,28 @@ function assertRequestKey(raw: string | undefined): string {
     );
   }
   return key;
+}
+
+/** P-04 — sous-total et part de chaque ligne, indicatifs (jamais facturés). */
+function indicativePrices(
+  lines: readonly CartLine[],
+  modifiersEnabled: boolean,
+): { subTotal: number; lineTotals: number[] } {
+  const priced = lines.map((line) => {
+    try {
+      return { line, selection: resolveCartLine(line, modifiersEnabled) };
+    } catch (err) {
+      if (err instanceof ModifierSelectionError) {
+        throw modifierErrorForCheckout(err, line.id);
+      }
+      throw err;
+    }
+  });
+  const lineTotals = indicativeLineTotals(priced);
+  return {
+    subTotal: lineTotals.reduce((sum, total) => sum + total, 0),
+    lineTotals,
+  };
 }
 
 /** Empreinte d'un panier : identité et quantité de chaque ligne. */

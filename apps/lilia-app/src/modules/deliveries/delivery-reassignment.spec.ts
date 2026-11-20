@@ -1,5 +1,6 @@
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { OutboxService } from '../outbox/outbox.service';
+import { returningUpdate } from '../../../test/order-update-returning';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
   BadRequestException,
@@ -138,6 +139,7 @@ describe('Dispatch livreur — cycle complet et réassignation', () => {
       ),
     },
     order: {
+      updateManyAndReturn: returningUpdate(),
       updateMany: jest.fn(({ where, data }: Row) => {
         if (!matches(order, where)) return Promise.resolve({ count: 0 });
         Object.assign(order, data);

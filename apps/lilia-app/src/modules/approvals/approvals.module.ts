@@ -4,6 +4,7 @@ import { AdminAuditModule } from '../admin-audit/admin-audit.module';
 import { AuthModule } from '../auth/auth.module';
 import { PlatformSettingsCoreModule } from '../platform-settings/platform-settings-core.module';
 import { RefundsCoreModule } from '../refunds/refunds-core.module';
+import { NoShowPayoutCoreModule } from '../reservations/no-show-payout-core.module';
 import { ApprovalsController } from './approvals.controller';
 import { ApprovalsService } from './approvals.service';
 import { SettingsApprovalsController } from './settings-approvals.controller';
@@ -21,6 +22,8 @@ import { SettingsApprovalsService } from './settings-approvals.service';
     RefundsCoreModule,
     // R-09 — invalider le cache des réglages après une approbation appliquée.
     PlatformSettingsCoreModule,
+    // 4B-2 J6b — versement de la part d'une absence.
+    NoShowPayoutCoreModule,
   ],
   controllers: [ApprovalsController, SettingsApprovalsController],
   providers: [ApprovalsService, SettingsApprovalsService],

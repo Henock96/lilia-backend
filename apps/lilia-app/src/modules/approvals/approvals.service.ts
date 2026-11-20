@@ -30,6 +30,7 @@ import { RefundsService } from '../refunds/refunds.service';
 import { closureFromPayload } from '../refunds/refund-approval.policy';
 import { UserCacheService } from '../auth/services/user-cache.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
+import { NoShowPayoutService } from '../reservations/no-show-payout.service';
 import {
   APPROVAL_TTL_HOURS,
   approvalPayloadHash,
@@ -72,6 +73,8 @@ export class ApprovalsService {
     private readonly refunds: RefundsService,
     // R-09 — le cache de 60 s doit voir tout de suite un taux approuvé.
     private readonly settings: PlatformSettingsService,
+    // 4B-2 J6b — part d'une absence versée à la validation.
+    private readonly noShowPayouts: NoShowPayoutService,
   ) {}
 
   /**
@@ -194,8 +197,9 @@ export class ApprovalsService {
     }
 
     const result =
-      approval.kind === ApprovalKind.REFUND_EXECUTION
-        ? await this.approveRefund(approval, approverId, relaunch)
+      approval.kind === ApprovalKind.REFUND_EXECUTION ||
+      approval.kind === ApprovalKind.NO_SHOW_VENDOR_SHARE_PAYOUT
+        ? await this.approveMoneyLeaving(approval, approverId, relaunch)
         : await this.prisma.$transaction(async (tx) => {
             if (!relaunch) await this.markApproved(tx, approval, approverId);
             switch (approval.kind) {
@@ -418,6 +422,48 @@ export class ApprovalsService {
     return {
       kind: approval.kind,
       refundId: approval.refId,
+      execution: executed,
+    };
+  }
+
+  /** Gestes dont l'exécution appelle le prestataire, hors transaction. */
+  private approveMoneyLeaving(
+    approval: FinancialApproval,
+    approverId: string,
+    relaunch: boolean,
+  ) {
+    switch (approval.kind) {
+      case ApprovalKind.NO_SHOW_VENDOR_SHARE_PAYOUT:
+        return this.approveNoShowPayout(approval, approverId, relaunch);
+      case ApprovalKind.REFUND_EXECUTION:
+        return this.approveRefund(approval, approverId, relaunch);
+      default:
+        throw new ConflictException({
+          message: `Type d’approbation non pris en charge : ${approval.kind}.`,
+          code: 'APPROVAL_KIND_UNSUPPORTED',
+        });
+    }
+  }
+
+  /**
+   * 4B-2 J6b (P-1) — comme un remboursement : l'approbation est marquée dans
+   * sa transaction, le virement part ensuite, hors transaction. L'approbation
+   * est consommée dans la transaction qui réserve le versement.
+   */
+  private async approveNoShowPayout(
+    approval: FinancialApproval,
+    approverId: string,
+    relaunch: boolean,
+  ) {
+    if (!relaunch) {
+      await this.prisma.$transaction((tx) =>
+        this.markApproved(tx, approval, approverId),
+      );
+    }
+    const executed = await this.noShowPayouts.execute(approval, approverId);
+    return {
+      kind: approval.kind,
+      settlementId: approval.refId,
       execution: executed,
     };
   }

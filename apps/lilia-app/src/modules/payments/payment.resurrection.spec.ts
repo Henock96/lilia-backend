@@ -9,6 +9,10 @@ import { PaymentProviderRegistry } from './payment-provider.registry';
 import { OutboxService } from '../outbox/outbox.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderTransitionService } from '../orders/order-transition.service';
+import {
+  returningImpl,
+  returningUpdate,
+} from '../../../test/order-update-returning';
 
 /**
  * Résurrection de commande et commande à total nul (fixes H2 et M3 — audit du
@@ -40,6 +44,7 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
     // Aucune ligne de réglages : acceptation vendeur non mise en service.
     platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
     order: {
+      updateManyAndReturn: returningUpdate(),
       updateMany: jest.fn(),
       findUnique: jest.fn(),
       findFirst: jest.fn(),
@@ -95,6 +100,8 @@ describe('PaymentService — résurrection (H2) et total nul (M3)', () => {
     prisma.incident.create.mockResolvedValue({ id: 'inc-1' });
     // Idem pour la relecture des articles (D-3) : tous disponibles.
     prisma.orderItem.findMany.mockResolvedValue([]);
+    // Idem pour le passage à PAYER (4B-2), branché sur `updateMany`.
+    prisma.order.updateManyAndReturn.mockImplementation(returningImpl);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [

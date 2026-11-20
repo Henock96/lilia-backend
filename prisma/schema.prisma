@@ -527,6 +527,10 @@ model Restaurant {
   reservationWindows  ReservationWindow[]
   /// Lot 4 — réservations des clients.
   reservations        Reservation[]
+  /// 4B-2 J6 — parts d'encaissement retenues sur les absences.
+  noShowSettlements   ReservationNoShowSettlement[]
+  /// 4B-2 J6b — versements de ces parts (à deux administrateurs).
+  noShowPayouts       ReservationNoShowPayout[]
 
   /// F3-12 — le dispatch automatique propose-t-il les courses de ce vendeur ?
   /// `MANUAL` par défaut : l'assignation reste humaine tant qu'un ADMIN n'a
@@ -1159,6 +1163,15 @@ model Order {
   /// non plus Redis, garantit qu'une même clé d'un même client ne crée qu'une
   /// commande ; un rejeu relit celle-ci. `null` pour les commandes antérieures.
   idempotencyKey String?
+
+  /// Lot 4 (4B-2) — commande d'une précommande de réservation, créée à
+  /// l'acceptation du restaurant (parcours `ACCEPT_FIRST`). Une commande par
+  /// réservation au plus : l'index unique arbitre deux acceptations
+  /// simultanées. `null` pour toute autre commande.
+  reservationId String?      @unique
+  reservation   Reservation? @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  /// 4B-2 J6 — partage de l'encaissement si le client ne s'est pas présenté.
+  noShowSettlement ReservationNoShowSettlement?
 
   @@unique([userId, idempotencyKey])
   @@index([restaurantId, status, createdAt(sort: Desc)]) // dashboard resto: commandes par statut, plus recentes (LFD-9)
@@ -2086,6 +2099,8 @@ enum ApprovalKind {
   PLATFORM_SETTINGS_CHANGE
   /// R-09 — commission propre à un vendeur.
   VENDOR_COMMISSION_CHANGE
+  /// 4B-2 J6b — versement de la part restaurant d'une absence (toujours).
+  NO_SHOW_VENDOR_SHARE_PAYOUT
 }
 
 enum ApprovalStatus {
@@ -3408,6 +3423,12 @@ model PlatformSettings {
   /// aucune route ne l'écrit : l'allumer est une décision séparée.
   reservationsEnabled Boolean @default(false)
 
+  /// 4B-2 J6 (19/11) — part de l'encaissement d'une réservation dont le client
+  /// ne s'est pas présenté, due au restaurant, en points de base (5 000 =
+  /// 50 %). Le reste est retenu par Lilia. Réglage financier (R-09). CHECK
+  /// 0..9999 : toujours strictement moins que le tout.
+  reservationNoShowVendorShareBps Int @default(5000)
+
   updatedAt DateTime @updatedAt
 }
 
@@ -4162,11 +4183,24 @@ model Reservation {
   noShowAt           DateTime?
   /// Rappel client posé une seule fois (B7).
   reminderSentAt     DateTime?
+  /// 4B-2 — sous-total **indicatif** de la précommande, figé à la demande
+  /// (XAF entiers, jamais facturé) : le montant réel est calculé à
+  /// l'acceptation, sur la commande liée. `null` avant 4B-2.
+  indicativeSubTotal Int?
+  /// 4B-2 — annulée par le client à moins de la borne d'annulation de
+  /// l'arrivée. En V1 elle est remboursée comme les autres (OD-08, option E).
+  lateCancellation   Boolean          @default(false)
+  /// 4B-2 — rappel « à payer » envoyé une seule fois avant l'échéance.
+  paymentDueNoticeAt DateTime?
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
 
   items  ReservationItem[]
   events ReservationEvent[]
+  /// 4B-2 — la commande liée, née à l'acceptation du restaurant.
+  order  Order?
+  /// 4B-2 J6 — partage de l'encaissement d'une absence, figé à la clôture.
+  noShowSettlement ReservationNoShowSettlement?
 
   @@unique([userId, requestKey])
   @@index([restaurantId, arrivalAt])
@@ -4177,8 +4211,93 @@ model Reservation {
   @@index([userId, status, noShowAt])
 }
 
-/// Un plat précommandé (C1, D4), copié du panier serveur à la demande. Aucun
-/// prix : le montant sera calculé au paiement (4B-2), par le checkout.
+/// 4B-2 J6 (OD-08 option D, OD-22 rouvert, 19/11) — le client ne s'est pas
+/// présenté : l'encaissement n'est pas remboursé, il est partagé entre Lilia
+/// et le restaurant. Écrit **une fois**, à la clôture de l'absence (12 h après
+/// la déclaration), dans la transaction qui annule la commande liée : les
+/// montants et le taux appliqué sont figés ici, jamais recalculés.
+///
+/// La part du restaurant n'est **jamais versée automatiquement** (règle 8 :
+/// une absence déclarée n'est pas une preuve) : un administrateur la verse,
+/// un second valide (J6b). CHECK : parts ≥ 0, somme = total, taux 0..9999.
+model ReservationNoShowSettlement {
+  id               String      @id @default(cuid())
+  reservationId    String      @unique
+  reservation      Reservation @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  orderId          String      @unique
+  order            Order       @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  restaurantId     String
+  restaurant       Restaurant  @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  /// Encaissement de la commande (XAF).
+  totalXaf         Int
+  /// Part due au restaurant (XAF), arrondie à l'entier inférieur.
+  vendorShareXaf   Int
+  /// Part retenue par Lilia (XAF) : le reste, franc impair compris.
+  platformShareXaf Int
+  /// Taux appliqué (points de base), copié du réglage au moment de la clôture.
+  vendorShareBps   Int
+  createdAt        DateTime    @default(now())
+  /// J6b — versements de la part du restaurant (au plus un en cours ou abouti).
+  payouts          ReservationNoShowPayout[]
+
+  @@index([restaurantId, createdAt])
+}
+
+/// 4B-2 J6b (19/11) — versement de la part restaurant d'une absence, par
+/// pawaPay, demandé par un administrateur (`FINANCE_EXECUTE`) et validé par
+/// un second (`FINANCE_APPROVE` + MFA, `ApprovalKind.NO_SHOW_VENDOR_SHARE_PAYOUT`).
+///
+/// Table distincte de `RestaurantPayout` : celui-ci vaut un versement par
+/// commande **livrée**, avec ses preuves ; une absence n'en est pas une
+/// (relevé du 21/10 : aucun contournement de son éligibilité). Calqué sur le
+/// remboursement client (`Refund`) : identifiant prestataire généré avant
+/// l'appel, numéro figé, aiguillage webhook, réconciliation.
+///
+/// `status` : `PENDING` (envoyé ou en vol), `SUCCESS`, `FAILED` — terminaux
+/// figés. TEXT + CHECK (règle 14), liste miroir `NO_SHOW_PAYOUT_STATUSES`.
+/// Index unique partiel : au plus une ligne `PENDING`/`SUCCESS` par partage ;
+/// un échec reste en historique et une nouvelle demande devient possible.
+model ReservationNoShowPayout {
+  id                    String                      @id @default(cuid())
+  settlementId          String
+  settlement            ReservationNoShowSettlement @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+  restaurantId          String
+  restaurant            Restaurant                  @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  /// Part versée (XAF) = `settlement.vendorShareXaf`, figée à l'envoi.
+  amountXaf             Int
+  /// Destination, copiée de la fiche du restaurant à la demande et revérifiée
+  /// à la validation (P-2) : le valideur approuve ce numéro-là.
+  phoneNumber           String
+  payoutProvider        PayoutProvider
+  /// Prestataire qui exécute le virement (`PAWAPAY`).
+  provider              String
+  /// Généré par nous AVANT l'appel : clé d'idempotence chez le prestataire.
+  providerPayoutId      String                      @unique
+  providerTransactionId String?
+  status                String                      @default("PENDING")
+  failureCode           String?
+  failureMessage        String?
+  requestedBy           String
+  approvedBy            String
+  /// L'approbation consommée par ce versement (une seule fois).
+  approvalId            String                      @unique
+  createdAt             DateTime                    @default(now())
+  updatedAt             DateTime                    @updatedAt
+  completedAt           DateTime?
+
+  // ⚠️ Hors Prisma, écrits en SQL dans 20261119120100_reservation_no_show_payout
+  // (un `migrate dev` ne doit jamais les retirer) : index partiel SQL
+  // `ReservationNoShowPayout_one_active_per_settlement` (garde contre le double
+  // paiement) et les CHECK `_status_check`, `_amount_check`, `_four_eyes`,
+  // `_success_completed`.
+  @@index([settlementId, createdAt])
+  @@index([status, updatedAt])
+  @@index([restaurantId])
+}
+
+/// Un plat précommandé (C1, D4), copié du panier serveur à la demande, avec
+/// un prix **indicatif** : le montant facturé est calculé à l'acceptation du
+/// restaurant (4B-2), par les fonctions de prix du checkout.
 /// Produit, menu, variante et options restent des **identifiants simples**,
 /// sans clé étrangère : une réservation ne doit pas bloquer l'édition du
 /// catalogue — un menu du jour se supprime (`menu-lifecycle.service.ts`), un
@@ -4197,6 +4316,12 @@ model ReservationItem {
   /// Libellés figés à la demande, pour l'écran du vendeur.
   productName      String
   variantLabel     String?
+  /// 4B-2 (P-04) — part **indicative** de la ligne dans le sous-total, figée
+  /// à la demande (options comprises ; menu : la première ligne porte le prix
+  /// du menu, les suivantes 0). Jamais facturée. `null` avant 4B-2.
+  indicativeLineTotal Int?
+  /// 4B-2 (P-04) — nom du menu à la demande, lisible même s'il est supprimé.
+  menuName         String?
   createdAt        DateTime    @default(now())
 
   options ReservationItemOption[]
@@ -4210,6 +4335,9 @@ model ReservationItemOption {
   item     ReservationItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
   optionId String
   quantity Int             @default(1)
+  /// 4B-2 (P-04) — libellé et supplément à la demande (indicatifs).
+  optionName String?
+  priceDelta Int?
 
   @@id([itemId, optionId])
 }

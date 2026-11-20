@@ -29,6 +29,7 @@ import {
   type PickupArbitration,
 } from './pickup-arbitration';
 import { OrderTransitionService } from './order-transition.service';
+import { assertNotManagedByReservation } from './order-reservation-guard';
 import {
   actorFromRole,
   DeliveryProof,
@@ -163,6 +164,7 @@ export class OrderLifecycleService {
         "Vous n'êtes pas autorisé à annuler cette commande.",
       );
     }
+    assertNotManagedByReservation(order);
 
     // Fix H5 : le CLIENT ne peut plus annuler une commande déjà payée —
     // l'argent est encaissé. Message explicite plutôt que l'erreur générique
@@ -539,6 +541,10 @@ export class OrderLifecycleService {
     );
 
     const { user, order } = await this.loadStaffOrder(orderId, firebaseUid);
+    // 4B-2 (OD-20) — la réservation annule et conclut sa précommande.
+    if (newStatus === 'ANNULER' || newStatus === 'LIVRER') {
+      assertNotManagedByReservation(order);
+    }
 
     // 1B (ADM-03, D-1) — clôturer un retrait à la place du client ouvre un
     // versement : c'est un arbitrage motivé (`arbitratePickup`), pas un
@@ -949,6 +955,8 @@ export class OrderLifecycleService {
     if (!user || !order || order.userId !== user.id) {
       throw new NotFoundException('Commande introuvable.');
     }
+    // 4B-2 (OD-20) — « j'ai récupéré » ouvrirait le versement sans le code.
+    assertNotManagedByReservation(order);
     if (order.isDelivery) {
       throw new ConflictException({
         message:

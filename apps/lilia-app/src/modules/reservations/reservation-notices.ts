@@ -17,10 +17,17 @@ export type ReservationNotice =
   | 'EXPIRED'
   | 'CANCELLED_BY_CLIENT'
   | 'CANCELLED_BY_VENDOR'
+  // J6 — annulation par le support Lilia Food (client et restaurant).
+  | 'CANCELLED_BY_ADMIN'
   | 'REASSIGNED'
   | 'NO_SHOW'
   | 'NO_SHOW_UNDONE'
+  // J6b — la part d'une absence est versée au restaurant.
+  | 'NO_SHOW_SHARE_PAID'
   | 'REMINDER'
+  // 4B-2 — le paiement de la précommande est reçu.
+  | 'CONFIRMED'
+  | 'PAID'
   | 'DAILY_SUMMARY';
 
 export interface ReservationNoticePayload {
@@ -39,6 +46,19 @@ export interface ReservationNoticePayload {
   expiredFrom?: 'PENDING' | 'AWAITING_PAYMENT';
   /** Délai de paiement, à l'acceptation. */
   paymentDeadlineAt?: string;
+  /** 4B-2 — montant réel à payer, figé à l'acceptation (XAF). */
+  totalXaf?: number;
+  /** 4B-2 — le sous-total réel diffère de l'indicatif de la demande (OD-04). */
+  priceChanged?: boolean;
+  /**
+   * J5 — réservation payée annulée : montant du remboursement intégral dû
+   * (XAF). Le message dit « en cours », jamais « remboursé » (OD-07).
+   */
+  refundXaf?: number;
+  /** J6 — absence sur une réservation payée : la précommande est retenue. */
+  paidPreorder?: boolean;
+  /** J6b — part d'absence versée au restaurant (XAF). */
+  payoutXaf?: number;
   /** Récapitulatif : jour civil et nombre de réservations. */
   date?: string;
   count?: number;
@@ -97,9 +117,13 @@ export function reservationNoticeText(p: ReservationNoticePayload): {
     case 'ACCEPTED':
       return {
         title: '✅ Le restaurant a accepté votre demande',
-        body: `${p.restaurantName}, ${when}. Payez votre précommande avant ${
+        body: `${p.restaurantName}, ${when}. Payez votre précommande${
+          p.totalXaf !== undefined ? ` (${p.totalXaf} FCFA)` : ''
+        } avant ${
           p.paymentDeadlineAt ? formatTime(p.paymentDeadlineAt) : 'l’échéance'
-        } pour confirmer la table.`,
+        } pour confirmer la table.${
+          p.priceChanged ? ' Le montant a changé depuis votre demande.' : ''
+        }`,
       };
     case 'DECLINED':
       return {
@@ -125,12 +149,38 @@ export function reservationNoticeText(p: ReservationNoticePayload): {
     case 'CANCELLED_BY_CLIENT':
       return {
         title: 'Réservation annulée par le client',
-        body: `${people(p.partySize)}, ${when} : la table est libérée.`,
+        body: `${people(p.partySize)}, ${when} : la table est libérée.${
+          p.refundXaf !== undefined
+            ? ' La précommande payée est annulée : ne la préparez pas.'
+            : ''
+        }`,
       };
+    case 'CANCELLED_BY_ADMIN':
+      return p.audience === 'CLIENT'
+        ? {
+            title: 'Réservation annulée par Lilia Food',
+            body: `Votre réservation chez ${p.restaurantName} ${when} a été annulée par notre équipe.${
+              p.refundXaf !== undefined
+                ? ` Votre remboursement de ${p.refundXaf} FCFA est en cours.`
+                : ''
+            }`,
+          }
+        : {
+            title: 'Réservation annulée par Lilia Food',
+            body: `${people(p.partySize)}, ${when} : réservation annulée par notre équipe, la table est libérée.${
+              p.refundXaf !== undefined
+                ? ' La précommande payée est annulée : ne la préparez pas.'
+                : ''
+            }`,
+          };
     case 'CANCELLED_BY_VENDOR':
       return {
         title: 'Réservation annulée par le restaurant',
-        body: `${p.restaurantName} a annulé votre réservation ${when}.`,
+        body: `${p.restaurantName} a annulé votre réservation ${when}.${
+          p.refundXaf !== undefined
+            ? ` Votre remboursement de ${p.refundXaf} FCFA est en cours.`
+            : ''
+        }`,
       };
     case 'REASSIGNED':
       return {
@@ -142,12 +192,29 @@ export function reservationNoticeText(p: ReservationNoticePayload): {
     case 'NO_SHOW':
       return {
         title: 'Absence enregistrée',
-        body: `${p.restaurantName} indique que vous n’êtes pas venu ${when}. Une erreur ? Contactez le support.`,
+        body: `${p.restaurantName} indique que vous n’êtes pas venu ${when}.${
+          p.paidPreorder ? ' Votre précommande n’est pas remboursée.' : ''
+        } Une erreur ? Contactez le support.`,
       };
     case 'NO_SHOW_UNDONE':
       return {
         title: 'Absence retirée',
         body: `${p.restaurantName} a retiré l’absence enregistrée pour ${when}.`,
+      };
+    case 'NO_SHOW_SHARE_PAID':
+      return {
+        title: '💸 Part d’absence versée',
+        body: `${p.payoutXaf ?? 0} FCFA envoyés sur votre compte Mobile Money pour l’absence du ${when} (${people(p.partySize)}).`,
+      };
+    case 'CONFIRMED':
+      return {
+        title: '✅ Table confirmée',
+        body: `Paiement reçu : ${p.restaurantName} vous attend ${when}, ${people(p.partySize)}.`,
+      };
+    case 'PAID':
+      return {
+        title: '💳 Réservation payée',
+        body: `${people(p.partySize)}, ${when} : la précommande est payée. Préparez-la pour l’arrivée.`,
       };
     case 'REMINDER':
       return {

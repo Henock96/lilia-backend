@@ -23,6 +23,8 @@ import {
   paymentDeadline,
 } from './reservation-availability';
 import { lockRestaurant } from './reservation-booking.service';
+import { ReservationOrderRelease } from './reservation-order-release';
+import { ReservationOrderService } from './reservation-order.service';
 import {
   BOOKING_ERROR_CODES as CODES,
   CAPACITY_HOLDING_STATUSES,
@@ -62,6 +64,8 @@ export class ReservationVendorService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxService,
+    private readonly linkedOrders: ReservationOrderService,
+    private readonly release: ReservationOrderRelease,
   ) {}
 
   async list(
@@ -114,17 +118,53 @@ export class ReservationVendorService {
   /**
    * Le restaurant accepte : la table est tenue 15 min pour le paiement (C4),
    * jamais au-delà de l'arrivée − 10 min (OD-02).
+   *
+   * 4B-2 (OD-03) — l'acceptation crée la commande liée, au montant réel :
+   * plats relus et chiffrés **avant** la transaction (un plat indisponible ⇒
+   * 409 nominatif, rien d'écrit), puis transition, commande, stock et avis
+   * dans une seule transaction. Deux acceptations simultanées : la seconde
+   * trouve la réservation déjà `AWAITING_PAYMENT` (409), et l'index unique
+   * `Order.reservationId` tient en dernier recours.
    */
-  accept(ownerId: string, id: string, now: Date = new Date()) {
-    return this.act(ownerId, id, now, 'accept', (r) => {
-      const paymentDeadlineAt = paymentDeadline(now, r.arrivalAt);
-      return {
+  async accept(ownerId: string, id: string, now: Date = new Date()) {
+    const vendor = await this.resolveVendor(ownerId);
+    const read = await this.findOwned(this.prisma, vendor.id, id);
+    assertAllowed(read, now, 'accept');
+    const prepared = await this.linkedOrders.prepare(read, now);
+    const paymentDeadlineAt = paymentDeadline(now, read.arrivalAt);
+    await this.prisma.$transaction(async (tx) => {
+      const r = await this.findOwned(tx, vendor.id, id);
+      assertAllowed(r, now, 'accept');
+      await applyTransition(tx, {
+        id,
+        from: r.status as ReservationStatus,
         to: 'AWAITING_PAYMENT',
+        actor: 'RESTAURATEUR',
+        actorId: ownerId,
         data: { acceptedAt: now, paymentDeadlineAt },
+      });
+      const { total } = await this.linkedOrders.createInTransaction(
+        tx,
+        r,
+        prepared,
+        { now, paymentDueAt: paymentDeadlineAt, acceptedBy: ownerId },
+      );
+      await enqueueReservationNotice(tx, this.outbox, {
         notice: 'ACCEPTED',
-        paymentDeadlineAt,
-      };
+        audience: 'CLIENT',
+        recipientUserId: r.userId,
+        restaurantName: r.restaurant.nom,
+        reservationId: id,
+        arrivalAt: r.arrivalAt.toISOString(),
+        partySize: r.partySize,
+        paymentDeadlineAt: paymentDeadlineAt.toISOString(),
+        totalXaf: total,
+        priceChanged:
+          r.indicativeSubTotal !== null &&
+          r.indicativeSubTotal !== prepared.amounts.subTotal,
+      });
     });
+    return this.get(ownerId, id, now);
   }
 
   decline(
@@ -141,7 +181,10 @@ export class ReservationVendorService {
     }));
   }
 
-  /** 4B-1 : seule une réservation non payée s'annule (rien à rembourser). */
+  /**
+   * Non payée : la commande liée est libérée. Payée (J5) : elle est annulée
+   * et le client remboursé intégralement, comme un refus du restaurant.
+   */
   cancel(
     ownerId: string,
     id: string,
@@ -169,7 +212,8 @@ export class ReservationVendorService {
   }
 
   /**
-   * B2 — une absence déclarée par erreur se retire pendant 24 h.
+   * B2 — une absence déclarée par erreur se retire pendant 6 h (révisé le
+   * 19/11) ; après 12 h, elle est close (J6, partage de l'encaissement).
    *
    * ⚠️ NO_SHOW ne tient pas de capacité : entre le marquage et le retrait, la
    * table a pu être redonnée à un autre client pour un créneau qui chevauche
@@ -280,7 +324,6 @@ export class ReservationVendorService {
       data: Prisma.ReservationUpdateManyMutationInput;
       notice: ReservationNotice;
       reason?: string;
-      paymentDeadlineAt?: Date;
     },
     options: { reclaimsCapacity?: boolean } = {},
   ) {
@@ -291,6 +334,19 @@ export class ReservationVendorService {
       if (options.reclaimsCapacity) await lockRestaurant(tx, vendor.id);
       const r = await this.findOwned(tx, vendor.id, id);
       assertAllowed(r, now, action);
+      // 4B-2 — annuler une réservation acceptée emporte sa commande liée ;
+      // la commande se verrouille avant la réservation (ordre du paiement).
+      const linked =
+        action === 'cancel' && r.status === 'AWAITING_PAYMENT'
+          ? await this.release.lock(tx, id)
+          : null;
+      this.release.assertNoPaymentInProgress(linked);
+      // J5 — payée : la commande suit, remboursement intégral, faute du
+      // restaurant (chemin automatique existant).
+      const paid =
+        action === 'cancel' && r.status === 'CONFIRMED'
+          ? await this.release.lockPaid(tx, id)
+          : null;
       if (options.reclaimsCapacity) {
         const [space, frozen] = [
           await tx.reservationSpace.findUniqueOrThrow({
@@ -326,6 +382,24 @@ export class ReservationVendorService {
         reason: step.reason,
         data: step.data,
       });
+      if (linked) {
+        await this.release.release(tx, linked, {
+          actor: 'RESTAURATEUR',
+          actorUserId: ownerId,
+          source: 'APP',
+          reason: 'Réservation annulée par le restaurant avant paiement',
+        });
+      }
+      if (paid) {
+        const refundDue = await this.release.cancelPaid(tx, paid, {
+          actor: 'RESTAURATEUR',
+          actorUserId: ownerId,
+          reason: 'Réservation payée annulée par le restaurant',
+          requestedBy: ownerId,
+          vendorFault: true,
+        });
+        await this.outbox.enqueueInTransaction(tx, refundDue);
+      }
       await enqueueReservationNotice(tx, this.outbox, {
         notice: step.notice,
         audience: 'CLIENT',
@@ -334,9 +408,8 @@ export class ReservationVendorService {
         reservationId: id,
         arrivalAt: r.arrivalAt.toISOString(),
         partySize: r.partySize,
-        ...(step.paymentDeadlineAt
-          ? { paymentDeadlineAt: step.paymentDeadlineAt.toISOString() }
-          : {}),
+        ...(paid ? { refundXaf: paid.total } : {}),
+        ...(step.notice === 'NO_SHOW' && r.order ? { paidPreorder: true } : {}),
       });
     });
     return this.get(ownerId, id, now);

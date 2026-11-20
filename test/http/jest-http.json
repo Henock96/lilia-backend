@@ -1,0 +1,11 @@
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": "../..",
+  "testRegex": ".*\\.http-spec\\.ts$",
+  "transform": { "^.+\\.(t|j)s$": "ts-jest" },
+  "transformIgnorePatterns": [
+    "node_modules/(?!(?:uuid|nanoid|p-limit|p-locate|p-retry|yocto-queue|chalk|ansi-regex|strip-ansi)/)"
+  ],
+  "testEnvironment": "node",
+  "testTimeout": 60000
+}

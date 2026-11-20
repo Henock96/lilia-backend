@@ -23,6 +23,7 @@ import { LedgerCoreModule } from '../ledger/ledger-core.module';
 import { LedgerPostingCron } from '../ledger/ledger-posting.cron';
 import { OrderRequestExpiryService } from './order-request-expiry.service';
 import { ReservationsCoreModule } from '../reservations/reservations-core.module';
+import { NoShowPayoutCoreModule } from '../reservations/no-show-payout-core.module';
 import { ReservationScheduleService } from './reservation-schedule.service';
 
 @Module({
@@ -39,6 +40,7 @@ import { ReservationScheduleService } from './reservation-schedule.service';
         VendorOffersCoreModule, // F3-11 : échéance des offres
         LedgerCoreModule, // lot 2 : posteur du grand livre (interrupteur éteint)
         ReservationsCoreModule, // Lot 4 : expirations, rappels, récapitulatif
+        NoShowPayoutCoreModule, // J6b : réconciliation des parts d'absence
     ],
     providers: [
         // Les 5 crons sont toujours enregistrés. Le choix « ce processus

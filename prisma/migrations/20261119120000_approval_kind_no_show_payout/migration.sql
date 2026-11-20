@@ -1,0 +1,14 @@
+-- 4B-2 J6b (19/11/2026) — versement de la part restaurant d'une absence :
+-- toujours à deux administrateurs (`16-J6b-design.md`).
+--
+-- Seule dans sa migration : `ALTER TYPE … ADD VALUE` ne se rejoue pas dans
+-- une transaction avec d'autres ordres (précédent :
+-- 20261011120000_approval_kind_financial_settings). `IF NOT EXISTS` rend le
+-- rejeu sûr.
+--
+-- Aucune table ni aucune ligne touchée.
+--
+-- Retour arrière : PostgreSQL ne retire pas une valeur d'enum. Si le code J6b
+-- est retiré, la valeur reste inerte (aucune ligne ne la porte tant qu'aucune
+-- demande n'a été faite) ; ne rien faire en base.
+ALTER TYPE "ApprovalKind" ADD VALUE IF NOT EXISTS 'NO_SHOW_VENDOR_SHARE_PAYOUT';

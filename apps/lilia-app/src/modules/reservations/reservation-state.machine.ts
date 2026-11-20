@@ -15,7 +15,7 @@ import {
  *
  *   PENDING ──vendeur──▶ AWAITING_PAYMENT ──paiement──▶ CONFIRMED ──code──▶ HONORED
  *      │                     │                             │
- *      ├─▶ DECLINED          ├─▶ EXPIRED (paiement)        ├─▶ NO_SHOW ⇄ (retrait 24 h)
+ *      ├─▶ DECLINED          ├─▶ EXPIRED (paiement)        ├─▶ NO_SHOW ⇄ (retrait 6 h)
  *      ├─▶ EXPIRED           ├─▶ CANCELLED_BY_CLIENT        ├─▶ CANCELLED_BY_CLIENT
  *      └─▶ CANCELLED_BY_CLIENT └▶ CANCELLED_BY_VENDOR       └─▶ CANCELLED_BY_VENDOR
  */
@@ -31,6 +31,8 @@ export const RESERVATION_TRANSITION_MATRIX: Record<
     EXPIRED: ['SYSTEM'],
     // Rien n'est payé : le client retire sa demande quand il veut.
     CANCELLED_BY_CLIENT: ['CLIENT'],
+    // J6 — annulation par le support (motif obligatoire, journalisée).
+    CANCELLED_BY_VENDOR: ['ADMIN'],
   },
   AWAITING_PAYMENT: {
     // Seul le prestataire de paiement confirme (règle 3) — 4B-2.
@@ -38,7 +40,7 @@ export const RESERVATION_TRANSITION_MATRIX: Record<
     // Délai de paiement dépassé (C4).
     EXPIRED: ['SYSTEM'],
     CANCELLED_BY_CLIENT: ['CLIENT'],
-    CANCELLED_BY_VENDOR: ['RESTAURATEUR'],
+    CANCELLED_BY_VENDOR: ['RESTAURATEUR', 'ADMIN'],
   },
   CONFIRMED: {
     // Code du client saisi par le vendeur (D2) — 4B-2.
@@ -46,11 +48,12 @@ export const RESERVATION_TRANSITION_MATRIX: Record<
     NO_SHOW: ['RESTAURATEUR'],
     // Remboursement ou compensation selon la borne (C3) — 4B-2.
     CANCELLED_BY_CLIENT: ['CLIENT'],
-    // Remboursement intégral (C3) — 4B-2.
-    CANCELLED_BY_VENDOR: ['RESTAURATEUR'],
+    // Remboursement intégral (C3) — 4B-2. ADMIN : J6, par le support.
+    CANCELLED_BY_VENDOR: ['RESTAURATEUR', 'ADMIN'],
   },
-  // Retrait d'une absence déclarée par erreur, sous 24 h (B2).
-  NO_SHOW: { CONFIRMED: ['RESTAURATEUR'] },
+  // Retrait d'une absence déclarée par erreur, sous 6 h (B2, révisé le 19/11).
+  // J6 — le support peut annuler une absence avant sa clôture (12 h).
+  NO_SHOW: { CONFIRMED: ['RESTAURATEUR'], CANCELLED_BY_VENDOR: ['ADMIN'] },
   DECLINED: {},
   EXPIRED: {},
   CANCELLED_BY_CLIENT: {},

@@ -1,7 +1,9 @@
 import { Module } from '@nestjs/common';
 
 import { PrismaModule } from '../../prisma/prisma.module';
+import { OrdersCoreModule } from '../orders/orders-core.module';
 import { ReservationLifecycleService } from './reservation-lifecycle.service';
+import { ReservationOrderRelease } from './reservation-order-release';
 
 /**
  * Lot 4 — ce que le temps fait aux réservations (expirations, rappels,
@@ -12,8 +14,10 @@ import { ReservationLifecycleService } from './reservation-lifecycle.service';
  * (`worker.module.spec.ts`). `OutboxModule`, lui, est global des deux côtés.
  */
 @Module({
-  imports: [PrismaModule],
-  providers: [ReservationLifecycleService],
-  exports: [ReservationLifecycleService],
+  // `OrdersCoreModule` est sans controller (règle du worker) : la commande
+  // liée d'une réservation qui expire est annulée dans la même transaction.
+  imports: [PrismaModule, OrdersCoreModule],
+  providers: [ReservationLifecycleService, ReservationOrderRelease],
+  exports: [ReservationLifecycleService, ReservationOrderRelease],
 })
 export class ReservationsCoreModule {}

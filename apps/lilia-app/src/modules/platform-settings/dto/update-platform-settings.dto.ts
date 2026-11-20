@@ -183,6 +183,18 @@ export class UpdatePlatformSettingsDto {
   @Max(PLATFORM_SETTINGS_BOUNDS.MAX_PREMIUM_MONTHLY_PRICE_XAF)
   premiumMonthlyPriceXaf?: number;
 
+  /**
+   * 4B-2 J6 — part de l'encaissement d'une réservation dont le client ne
+   * s'est pas présenté, due au restaurant, en points de base (5 000 = 50 %).
+   * Réglage financier (R-09) : passe par une demande approuvée. Borné
+   * 0..9999 comme le CHECK de la base (jamais le tout).
+   */
+  @IsOptional()
+  @IsInt({ message: 'Un taux en points de base est un entier.' })
+  @Min(0)
+  @Max(9_999)
+  reservationNoShowVendorShareBps?: number;
+
   /** Récompense du parrain à la première commande livrée de son filleul. */
   @IsOptional()
   @IsInt()

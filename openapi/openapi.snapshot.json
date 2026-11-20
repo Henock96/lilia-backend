@@ -48,6 +48,19 @@
         "properties": {},
         "type": "object"
       },
+      "AdminCancelReservationDto": {
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 10,
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "type": "object"
+      },
       "ArbitrateDeliveryDto": {
         "properties": {
           "note": {
@@ -676,6 +689,31 @@
       },
       "PauseVendorDto": {
         "properties": {},
+        "type": "object"
+      },
+      "PayReservationDto": {
+        "properties": {
+          "expectedTotal": {
+            "description": "Total affiché au client (XAF entiers)",
+            "type": "number"
+          },
+          "method": {
+            "enum": [
+              "MTN_MOMO",
+              "AIRTEL_MONEY"
+            ],
+            "type": "string"
+          },
+          "phoneNumber": {
+            "description": "Numéro mobile money qui paie",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expectedTotal",
+          "phoneNumber",
+          "method"
+        ],
         "type": "object"
       },
       "PickupHandoverDto": {
@@ -4523,6 +4561,94 @@
         "summary": "Arbitrer une récompense en attente de revue",
         "tags": [
           "Admin"
+        ]
+      }
+    },
+    "/admin/reservation-no-shows": {
+      "get": {
+        "operationId": "AdminReservationNoShowsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Absences et état du versement de la part restaurant",
+        "tags": [
+          "Réservations sur place (admin)"
+        ]
+      }
+    },
+    "/admin/reservation-no-shows/{settlementId}/payout": {
+      "post": {
+        "operationId": "AdminReservationNoShowsController_requestPayout",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "settlementId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Demander le versement de la part restaurant d’une absence (validation par un second administrateur)",
+        "tags": [
+          "Réservations sur place (admin)"
+        ]
+      }
+    },
+    "/admin/reservations/{id}/cancel": {
+      "post": {
+        "operationId": "AdminReservationsController_cancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminCancelReservationDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Annuler une réservation (support) : commande liée annulée, remboursement intégral par la file admin si payée",
+        "tags": [
+          "Réservations sur place (admin)"
         ]
       }
     },
@@ -11812,6 +11938,53 @@
         ]
       }
     },
+    "/reservations/{id}/pay": {
+      "post": {
+        "operationId": "ReservationsController_pay",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-lilia-payment-flow",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PayReservationDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Payer ma précommande acceptée — montant de la commande liée, `expectedTotal` = total affiché",
+        "tags": [
+          "Réservations sur place (client)"
+        ]
+      }
+    },
     "/restaurants": {
       "get": {
         "operationId": "RestaurantsController_findAll",
@@ -13643,7 +13816,7 @@
             "bearer": []
           }
         ],
-        "summary": "Retirer une absence déclarée par erreur (24 h)",
+        "summary": "Retirer une absence déclarée par erreur (6 h)",
         "tags": [
           "Réservations sur place (vendeur)"
         ]

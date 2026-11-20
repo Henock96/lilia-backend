@@ -5,6 +5,7 @@ import { OrderLifecycleService } from './order-lifecycle.service';
 import { OrderStateMachine } from './order-state.machine';
 import { OrderTransitionService } from './order-transition.service';
 import { PaymentService } from '../payments/services/payment.service';
+import { returningUpdate } from '../../../test/order-update-returning';
 
 /**
  * Qui a fait quoi, et depuis où (P0-4).
@@ -47,6 +48,7 @@ describe('Acteur et provenance des transitions', () => {
 
       tx = {
         order: {
+          updateManyAndReturn: returningUpdate(),
           updateMany: jest.fn().mockResolvedValue({ count: 1 }),
           findUniqueOrThrow: jest.fn().mockResolvedValue(order),
         },
@@ -121,6 +123,7 @@ describe('Acteur et provenance des transitions', () => {
 
       tx = {
         order: {
+          updateManyAndReturn: returningUpdate(),
           updateMany: jest.fn().mockResolvedValue({ count: 1 }),
           findUniqueOrThrow: jest.fn().mockResolvedValue(order),
         },
@@ -190,7 +193,10 @@ describe('Acteur et provenance des transitions', () => {
       };
 
       tx = {
-        order: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+        order: {
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          updateManyAndReturn: returningUpdate(),
+        },
         orderHistory: captureHistory(),
         // Aucune ligne de réglages : acceptation vendeur non mise en service.
         platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
@@ -274,7 +280,10 @@ describe('Acteur et provenance des transitions', () => {
 
       tx = {
         payment: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-        order: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+        order: {
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          updateManyAndReturn: returningUpdate(),
+        },
         orderHistory: captureHistory(),
         // Aucune ligne de réglages : acceptation vendeur non mise en service.
         platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },

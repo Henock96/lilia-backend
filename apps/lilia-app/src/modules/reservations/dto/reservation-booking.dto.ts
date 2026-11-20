@@ -1,6 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { PaymentMethod } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
+  IsEnum,
   IsIn,
   IsInt,
   IsOptional,
@@ -9,6 +11,7 @@ import {
   Max,
   MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
 
 import { PaginationQueryDto } from '../../../common/pagination/pagination-query.dto';
@@ -117,6 +120,15 @@ export class DeclineReservationDto {
   reason!: ReservationDeclineReason;
 }
 
+/** J6 — annulation par le support : motif libre, obligatoire, journalisé. */
+export class AdminCancelReservationDto {
+  @ApiProperty({ minLength: 10, maxLength: 500 })
+  @IsString()
+  @MinLength(10, { message: 'Motif obligatoire (10 caractères au moins).' })
+  @MaxLength(500)
+  reason!: string;
+}
+
 export class VendorCancelReservationDto {
   @ApiProperty({ enum: RESERVATION_VENDOR_CANCEL_REASONS })
   @IsIn(RESERVATION_VENDOR_CANCEL_REASONS)
@@ -128,4 +140,28 @@ export class ReassignReservationDto {
   @IsString()
   @MaxLength(64)
   spaceId!: string;
+}
+
+/**
+ * 4B-2 — `POST /reservations/:id/pay`. Aucun montant à facturer : le serveur
+ * prend celui de la commande liée. `expectedTotal` est le total que le client
+ * a vu, pour refuser un écran périmé (OD-04).
+ */
+export class PayReservationDto {
+  @ApiProperty({ description: 'Total affiché au client (XAF entiers)' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(100_000_000)
+  expectedTotal!: number;
+
+  @ApiProperty({ description: 'Numéro mobile money qui paie' })
+  @IsCongoMobilePhone()
+  phoneNumber!: string;
+
+  @ApiProperty({ enum: PaymentMethod })
+  @IsEnum(PaymentMethod, {
+    message: 'Opérateur invalide (MTN_MOMO ou AIRTEL_MONEY).',
+  })
+  method!: PaymentMethod;
 }

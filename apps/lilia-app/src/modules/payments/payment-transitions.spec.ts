@@ -9,6 +9,7 @@ import { PaymentProviderRegistry } from './payment-provider.registry';
 import { OutboxService } from '../outbox/outbox.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderTransitionService } from '../orders/order-transition.service';
+import { returningUpdate } from '../../../test/order-update-returning';
 
 /**
  * Transitions d'encaissement et **concurrence réelle**.
@@ -122,6 +123,7 @@ describe('PaymentService — transitions et concurrence', () => {
     platformSettings: { findUnique: jest.fn().mockResolvedValue(null) },
     order: {
       findUnique: jest.fn(async () => ({ ...orderRow })),
+      updateManyAndReturn: returningUpdate(),
       updateMany: jest.fn(
         async ({
           where,

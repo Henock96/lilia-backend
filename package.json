@@ -25,6 +25,7 @@
     "start:worker:dev": "nest start worker --watch",
     "build:worker": "npx @nestjs/cli build worker",
     "test:integration": "jest --config ./test/integration/jest-integration.json --runInBand",
+    "test:http": "jest --config ./test/http/jest-http.json --runInBand --forceExit",
     "db:seed": "node scripts/db/assert-local-db.js \"amorçage (prisma db seed)\" && prisma db seed",
     "db:reset:dev": "node scripts/db/assert-local-db.js \"réinitialisation complète (migrate reset)\" && prisma migrate reset --force --skip-seed && prisma db seed",
     "db:target": "node -e \"require('./scripts/load-env').loadEnv();console.log(require('./scripts/db/target-database').describeTarget())\"",
