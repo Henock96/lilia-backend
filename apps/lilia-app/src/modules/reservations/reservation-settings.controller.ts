@@ -2,7 +2,9 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   HttpCode,
+  HttpException,
   HttpStatus,
   Post,
   Put,
@@ -18,6 +20,25 @@ import {
   SaveReservationSettingsDto,
 } from './dto/reservation-settings.dto';
 import { ReservationSettingsService } from './reservation-settings.service';
+
+/**
+ * 4C-0 (D-5) — capacité déclarée par l'app vendeurs qui affiche l'agenda des
+ * réservations (`agenda`). Déclarative, comme `X-Lilia-Order-Flow` : ce n'est
+ * pas une barrière de sécurité, c'est l'assurance qu'une app installée ne
+ * laisse pas expirer des demandes qu'elle ne sait pas montrer.
+ */
+export const RESERVATIONS_CAPABILITY_HEADER = 'x-lilia-reservations';
+const AGENDA_CAPABILITY = 'agenda';
+const HTTP_UPGRADE_REQUIRED = 426;
+
+export function declaresReservationAgenda(raw: string | undefined): boolean {
+  return (
+    typeof raw === 'string' &&
+    raw
+      .split(',')
+      .some((part) => part.trim().toLowerCase() === AGENDA_CAPABILITY)
+  );
+}
 
 /**
  * Premium (Lot 3) — « Réservations sur place » : le restaurateur configure
@@ -58,7 +79,21 @@ export class ReservationSettingsController {
   async save(
     @CurrentUser() user: User,
     @Body() dto: SaveReservationSettingsDto,
+    @Headers(RESERVATIONS_CAPABILITY_HEADER) capability?: string,
   ) {
+    // 4C-0 (F-7, D-5) — allumer les réservations depuis une app qui ne sait
+    // pas afficher l'agenda, c'est laisser les demandes expirer sans être
+    // vues. Éteindre reste toujours permis.
+    if (dto.enabled && !declaresReservationAgenda(capability)) {
+      throw new HttpException(
+        {
+          message:
+            'Pour recevoir des réservations, mettez à jour l’application vendeurs : cette version ne sait pas encore afficher les demandes des clients.',
+          code: 'VENDOR_APP_UPDATE_REQUIRED',
+        },
+        HTTP_UPGRADE_REQUIRED,
+      );
+    }
     return {
       data: await this.reservations.save(user.id, dto),
       message: 'Configuration des réservations enregistrée.',

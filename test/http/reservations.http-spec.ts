@@ -432,8 +432,26 @@ describeIfStack('Réservations payées — parcours HTTP (J7)', () => {
       1,
     );
 
-    // Le restaurant prépare, le client montre son code, le vendeur le saisit.
+    // 4C-0 (F-1) — sur la commande liée, aucun geste que la garde de
+    // réservation refuserait en 409, ni pour le restaurant ni pour le client.
     const order = await linkedOrder(id);
+    // Le restaurant lit sa commande par `/orders/restaurant/:id`, le client
+    // par `/orders/:id`.
+    const actionsOf = async (uid: string) =>
+      data<{ allowedActions: string[] }>(
+        await h
+          .http(uid)
+          .get(
+            uid === OWNER
+              ? `/orders/restaurant/${order.id}`
+              : `/orders/${order.id}`,
+          )
+          .expect(200),
+      ).allowedActions;
+    expect(await actionsOf(OWNER)).toEqual(['START_PREPARATION']);
+    expect(await actionsOf(CLIENT_1)).toEqual([]);
+
+    // Le restaurant prépare, le client montre son code, le vendeur le saisit.
     for (const status of ['EN_PREPARATION', 'PRET']) {
       await h
         .http(OWNER)
@@ -445,6 +463,8 @@ describeIfStack('Réservations payées — parcours HTTP (J7)', () => {
       await h.http(CLIENT_1).get(`/orders/${order.id}`).expect(200),
     ).pickupCode;
     expect(code).toMatch(/^\d{4}$/);
+    expect(await actionsOf(OWNER)).toEqual(['HAND_OVER']);
+    expect(await actionsOf(CLIENT_1)).toEqual([]);
     await h
       .http(OWNER)
       .post(`/orders/${order.id}/pickup/handover`)
@@ -453,6 +473,21 @@ describeIfStack('Réservations payées — parcours HTTP (J7)', () => {
 
     expect((await reservationOf(CLIENT_1, id)).status).toBe('HONORED');
     expect((await linkedOrder(id)).status).toBe('LIVRER');
+  });
+
+  it('4C-0 (D-1) — la fiche publique dit que le restaurant réserve', async () => {
+    const vendor = await h.http().get(`/vendors/${VENDOR}`).expect(200);
+    expect(data<{ reservable: boolean }>(vendor).reservable).toBe(true);
+    await prisma.reservationSettings.update({
+      where: { restaurantId: VENDOR },
+      data: { enabled: false },
+    });
+    const off = await h.http().get(`/vendors/${VENDOR}`).expect(200);
+    expect(data<{ reservable: boolean }>(off).reservable).toBe(false);
+    await prisma.reservationSettings.update({
+      where: { restaurantId: VENDOR },
+      data: { enabled: true },
+    });
   });
 
   it('payer avec un montant périmé : 409, rien ne part chez pawaPay', async () => {
