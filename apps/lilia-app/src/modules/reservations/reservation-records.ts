@@ -340,6 +340,46 @@ export function toVendorView(r: ReservationRecord, now: Date) {
   };
 }
 
+export type AdminAction = 'cancel';
+
+/**
+ * D-6 — gestes du support. Annuler suit la machine d'états (acteur `ADMIN`) ;
+ * une absence close (commande `ANNULER`, encaissement partagé) ne s'annule
+ * plus : le serveur le refuserait (`lockPaid`), le bouton n'existe donc pas.
+ */
+export function adminAllowedActions(
+  r: Pick<ReservationRecord, 'status'> & {
+    order?: { status: string } | null;
+  },
+): AdminAction[] {
+  const s = statusOf(r);
+  if (!canTransition(s, 'CANCELLED_BY_VENDOR', 'ADMIN')) return [];
+  if (s === 'NO_SHOW' && r.order?.status === 'ANNULER') return [];
+  return ['cancel'];
+}
+
+/** D-6 — détail admin : tout ce que voit le restaurant, contact complet. */
+export function toAdminView(r: ReservationRecord) {
+  return {
+    id: r.id,
+    status: r.status,
+    restaurant: { id: r.restaurant.id, nom: r.restaurant.nom },
+    customer: { id: r.user.id, nom: r.user.nom, phone: r.contactPhone },
+    partySize: r.partySize,
+    arrivalAt: r.arrivalAt,
+    endsAt: r.endsAt,
+    space: r.space,
+    note: r.note,
+    declineReason: r.declineReason,
+    cancelReason: r.cancelReason,
+    lateCancellation: r.lateCancellation,
+    items: itemsView(r),
+    payment: paymentView(r),
+    ...timelineView(r),
+    allowedActions: adminAllowedActions(r),
+  };
+}
+
 export interface TransitionArgs {
   id: string;
   from: ReservationStatus;
