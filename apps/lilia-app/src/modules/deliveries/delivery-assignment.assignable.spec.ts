@@ -122,6 +122,7 @@ describe('DeliveryAssignmentService — assertAssignable', () => {
           provide: TrackingService,
           useValue: {
             forgetLastPosition: jest.fn().mockResolvedValue(undefined),
+            revokeOrderWatchers: jest.fn().mockResolvedValue(undefined),
           },
         },
         {

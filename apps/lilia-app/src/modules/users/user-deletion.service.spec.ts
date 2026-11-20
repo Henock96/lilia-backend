@@ -137,6 +137,23 @@ describe('UserDeletionService', () => {
     expect(Object.keys(tx)).not.toContain('order');
   });
 
+  // SEC-08 — les rooms de suivi ne revérifient le droit qu'à l'entrée.
+  it('révoque les rooms de suivi du compte supprimé', async () => {
+    const tracking = {
+      revokeUserWatchers: jest.fn().mockResolvedValue(undefined),
+    };
+    const withTracking = new UserDeletionService(
+      prisma as never,
+      firebase as never,
+      userCache as never,
+      tracking as never,
+    );
+
+    await withTracking.deleteOwnAccount('u1');
+
+    expect(tracking.revokeUserWatchers).toHaveBeenCalledWith('u1');
+  });
+
   it('supprime le compte Firebase avec l’UID d’origine, avant renommage', async () => {
     await service.deleteOwnAccount('u1');
 

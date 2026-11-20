@@ -115,7 +115,7 @@ describe('TrackingService.assertCanUpdatePosition — F3-12.0', () => {
 
       await expect(
         service.assertCanWatchOrder('o1', 'fb-client-1'),
-      ).resolves.toEqual({ live });
+      ).resolves.toEqual({ live, userId: 'client-1' });
     });
 
     it('commande sans livraison : autorisé, rien à rejouer', async () => {
@@ -124,7 +124,7 @@ describe('TrackingService.assertCanUpdatePosition — F3-12.0', () => {
 
       await expect(
         service.assertCanWatchOrder('o1', 'fb-client-1'),
-      ).resolves.toEqual({ live: false });
+      ).resolves.toEqual({ live: false, userId: 'client-1' });
     });
 
     it('un tiers reste refusé (403)', async () => {
@@ -167,7 +167,59 @@ describe('TrackingService.assertCanUpdatePosition — F3-12.0', () => {
 
       await expect(
         service.assertCanWatchOrder('o1', 'fb-client-1'),
-      ).resolves.toEqual({ live: true });
+      ).resolves.toEqual({ live: true, userId: 'client-1' });
+    });
+
+    it.each(['BLOCKED', 'DELETED'])(
+      'compte %s : refusé même propriétaire (lu en base, pas en cache)',
+      async (statusUser) => {
+        prisma.user.findUnique.mockResolvedValue({ ...client, statusUser });
+        prisma.order.findUnique.mockResolvedValue(
+          orderWith({
+            delivererId: 'liv-1',
+            status: DeliveryStatus.EN_TRANSIT,
+          }),
+        );
+
+        await expect(
+          service.assertCanWatchOrder('o1', 'fb-client-1'),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+      },
+    );
+  });
+
+  /**
+   * SEC-08 — la révocation est best-effort : sans gateway (worker) elle ne fait
+   * rien, et un échec ne remonte jamais à l'appelant (réassignation, ban).
+   */
+  describe('révocation des spectateurs', () => {
+    it('sans révocateur enregistré (worker) : rien, sans erreur', async () => {
+      await expect(service.revokeOrderWatchers('o1')).resolves.toBeUndefined();
+      await expect(service.revokeUserWatchers('u1')).resolves.toBeUndefined();
+    });
+
+    it('délègue à la gateway enregistrée', async () => {
+      const revoker = {
+        revokeOrder: jest.fn().mockResolvedValue(undefined),
+        revokeUser: jest.fn().mockResolvedValue(undefined),
+      };
+      service.registerWatcherRevoker(revoker);
+
+      await service.revokeOrderWatchers('o1');
+      await service.revokeUserWatchers('u1');
+
+      expect(revoker.revokeOrder).toHaveBeenCalledWith('o1');
+      expect(revoker.revokeUser).toHaveBeenCalledWith('u1');
+    });
+
+    it('un échec de la gateway ne remonte pas', async () => {
+      service.registerWatcherRevoker({
+        revokeOrder: jest.fn().mockRejectedValue(new Error('adapter down')),
+        revokeUser: jest.fn().mockRejectedValue(new Error('adapter down')),
+      });
+
+      await expect(service.revokeOrderWatchers('o1')).resolves.toBeUndefined();
+      await expect(service.revokeUserWatchers('u1')).resolves.toBeUndefined();
     });
   });
 });
