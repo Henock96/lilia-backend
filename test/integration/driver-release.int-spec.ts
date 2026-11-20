@@ -242,7 +242,10 @@ describeIfDb('F3-12.1 R5 — libération du livreur (PostgreSQL réel)', () => {
       transitions,
       new PlatformSettingsService(prisma as never),
       assignmentLog,
-      { forgetLastPosition: async () => undefined } as never,
+      {
+        forgetLastPosition: async () => undefined,
+        revokeOrderWatchers: async () => undefined,
+      } as never,
     );
     deliveries = new DeliveriesService(
       prisma as never,
@@ -251,7 +254,10 @@ describeIfDb('F3-12.1 R5 — libération du livreur (PostgreSQL réel)', () => {
       stateMachine,
       transitions,
       {} as never,
-      { forgetLastPosition: async () => undefined } as never,
+      {
+        forgetLastPosition: async () => undefined,
+        revokeOrderWatchers: async () => undefined,
+      } as never,
       new DeliveryQueryService(prisma as never, assignmentLog),
       assignment,
       { awardForDeliveredOrder: async () => undefined } as never,

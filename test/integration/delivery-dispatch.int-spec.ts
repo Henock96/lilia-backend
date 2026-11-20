@@ -92,7 +92,10 @@ describeIfDb(
         new DeliveryAssignmentLogService(),
         // Le tracking n'est pas exercé ici ; seule la purge de position est
         // appelée à la réassignation, et elle est best-effort.
-        { forgetLastPosition: async () => undefined } as never,
+        {
+          forgetLastPosition: async () => undefined,
+          revokeOrderWatchers: async () => undefined,
+        } as never,
       );
 
       await prisma.$executeRawUnsafe(`
