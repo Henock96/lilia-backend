@@ -12,6 +12,7 @@ import { OutboxService } from '../../apps/lilia-app/src/modules/outbox/outbox.se
 import { PaymentEventService } from '../../apps/lilia-app/src/modules/payments/services/payment-event.service';
 import { PaymentService } from '../../apps/lilia-app/src/modules/payments/services/payment.service';
 import { RefundsService } from '../../apps/lilia-app/src/modules/refunds/refunds.service';
+import { AdminReservationsQueryDto } from '../../apps/lilia-app/src/modules/reservations/dto/reservation-booking.dto';
 import { ReservationAdminService } from '../../apps/lilia-app/src/modules/reservations/reservation-admin.service';
 import { ReservationBookingService } from '../../apps/lilia-app/src/modules/reservations/reservation-booking.service';
 import { ReservationLifecycleService } from '../../apps/lilia-app/src/modules/reservations/reservation-lifecycle.service';
@@ -2437,6 +2438,38 @@ describeIfDb('Réservations client (PostgreSQL réel)', () => {
           await expect(
             admin().cancel('admin-1', 'inconnue', MOTIF, at(1)),
           ).rejects.toThrow('Réservation introuvable.');
+        });
+
+        it('D-6 — lecture : filtre par restaurant, numéro masqué en liste, complet au détail, absence close sans geste', async () => {
+          // Une seule réservation active par jour et par client : l'absence
+          // d'abord, close, puis la réservation vivante.
+          const closed = await confirmed();
+          await vendor.markNoShow('o1', closed.r.id, noShowAt);
+          await lifecycle.settleNoShows(afterNoShow(12));
+          await prisma.cart.deleteMany({ where: { userId: 'c1' } });
+          await cart('c1', 'p1', 'var1');
+          const live = await confirmed(false, 'b');
+
+          const query = (over: object) =>
+            Object.assign(new AdminReservationsQueryDto(), over);
+          const v1 = await admin().list(query({ restaurantId: 'v1' }));
+          expect(v1.meta.total).toBe(2);
+          expect(JSON.stringify(v1)).not.toContain('061234561');
+          expect(
+            Object.fromEntries(v1.data.map((r) => [r.id, r.allowedActions])),
+          ).toEqual({ [live.r.id]: ['cancel'], [closed.r.id]: [] });
+
+          expect(
+            (await admin().list(query({ restaurantId: 'v2' }))).meta.total,
+          ).toBe(0);
+          const noShows = await admin().list(
+            query({ restaurantId: 'v1', status: 'NO_SHOW', date: DATE }),
+          );
+          expect(noShows.data.map((r) => r.id)).toEqual([closed.r.id]);
+
+          const detail = await admin().get(live.r.id);
+          expect(detail.customer.phone).toBe('061234561');
+          expect(detail.payment?.total).toBe(live.order.total);
         });
       });
     });

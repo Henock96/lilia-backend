@@ -4613,6 +4613,114 @@
         ]
       }
     },
+    "/admin/reservations": {
+      "get": {
+        "operationId": "AdminReservationsController_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Jour civil de Brazzaville (AAAA-MM-JJ)",
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "PENDING",
+                "AWAITING_PAYMENT",
+                "CONFIRMED",
+                "DECLINED",
+                "EXPIRED",
+                "CANCELLED_BY_CLIENT",
+                "CANCELLED_BY_VENDOR",
+                "HONORED",
+                "NO_SHOW"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Identifiant du restaurant",
+            "in": "query",
+            "name": "restaurantId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Réservations, par restaurant, jour et statut",
+        "tags": [
+          "Réservations sur place (admin)"
+        ]
+      }
+    },
+    "/admin/reservations/{id}": {
+      "get": {
+        "operationId": "AdminReservationsController_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Détail d’une réservation (contact du client)",
+        "tags": [
+          "Réservations sur place (admin)"
+        ]
+      }
+    },
     "/admin/reservations/{id}/cancel": {
       "post": {
         "operationId": "AdminReservationsController_cancel",

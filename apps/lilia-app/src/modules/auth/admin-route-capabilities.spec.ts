@@ -86,6 +86,9 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   // l'annulation ADMIN d'une commande qu'elle remplace (OD-20) ; aucun argent
   // ne part, le remboursement passe par la file admin (quatre yeux).
   'AdminReservationsController.cancel': 'NONE',
+  // D-6 (20/11) — lecture ; le numéro complet du client n'est que sur le détail.
+  'AdminReservationsController.get': 'NONE',
+  'AdminReservationsController.list': 'NONE',
   // 4B-2 J6b (19/11) — part restaurant d'une absence : lecture ouverte (B-3) ;
   // la demande fait partir de l'argent (à la validation d'un second admin).
   'AdminReservationNoShowsController.list': 'NONE',

@@ -114,6 +114,15 @@ export class VendorReservationsQueryDto extends PaginationQueryDto {
   status?: ReservationStatus;
 }
 
+/** D-6 — lecture admin : mêmes filtres que le restaurant, plus le restaurant. */
+export class AdminReservationsQueryDto extends VendorReservationsQueryDto {
+  @ApiPropertyOptional({ description: 'Identifiant du restaurant' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  restaurantId?: string;
+}
+
 export class DeclineReservationDto {
   @ApiProperty({ enum: RESERVATION_DECLINE_REASONS })
   @IsIn(RESERVATION_DECLINE_REASONS)
