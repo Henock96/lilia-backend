@@ -1,5 +1,5 @@
 import { ConflictException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { OrderStatus, Prisma } from '@prisma/client';
 
 import { brazzavilleClock } from '../vendors/vendor-opening.policy';
 import {
@@ -337,6 +337,65 @@ export function toVendorView(r: ReservationRecord, now: Date) {
     payment: paymentView(r),
     ...timelineView(r),
     allowedActions: vendorAllowedActions(r, now),
+  };
+}
+
+/**
+ * J5 — états d'une commande liée payée dont la réservation s'annule encore :
+ * payée, acceptée, en préparation ou prête — rien n'a été remis.
+ */
+export const PAID_CANCELLABLE: readonly OrderStatus[] = [
+  'PAYER',
+  'ACCEPTEE',
+  'EN_PREPARATION',
+  'PRET',
+];
+
+export type AdminAction = 'cancel';
+
+/**
+ * D-6 — gestes du support. Annuler suit la machine d'états (acteur `ADMIN`)
+ * et, pour une réservation payée (confirmée ou absence), la règle de
+ * `lockPaid` : commande liée encore annulable. Une absence close (commande
+ * `ANNULER`, encaissement partagé) ou une commande remise n'a donc pas de
+ * bouton. Une tentative de paiement en cours (`AWAITING_PAYMENT`) reste
+ * tranchée au geste (409 explicite) : elle dure quelques minutes.
+ */
+export function adminAllowedActions(
+  r: Pick<ReservationRecord, 'status'> & {
+    order?: { status: string } | null;
+  },
+): AdminAction[] {
+  const s = statusOf(r);
+  if (!canTransition(s, 'CANCELLED_BY_VENDOR', 'ADMIN')) return [];
+  if (
+    (s === 'CONFIRMED' || s === 'NO_SHOW') &&
+    !PAID_CANCELLABLE.includes(r.order?.status as OrderStatus)
+  ) {
+    return [];
+  }
+  return ['cancel'];
+}
+
+/** D-6 — détail admin : tout ce que voit le restaurant, contact complet. */
+export function toAdminView(r: ReservationRecord) {
+  return {
+    id: r.id,
+    status: r.status,
+    restaurant: { id: r.restaurant.id, nom: r.restaurant.nom },
+    customer: { id: r.user.id, nom: r.user.nom, phone: r.contactPhone },
+    partySize: r.partySize,
+    arrivalAt: r.arrivalAt,
+    endsAt: r.endsAt,
+    space: r.space,
+    note: r.note,
+    declineReason: r.declineReason,
+    cancelReason: r.cancelReason,
+    lateCancellation: r.lateCancellation,
+    items: itemsView(r),
+    payment: paymentView(r),
+    ...timelineView(r),
+    allowedActions: adminAllowedActions(r),
   };
 }
 

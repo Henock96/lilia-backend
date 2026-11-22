@@ -1,14 +1,54 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { AdminAuditAction } from '@prisma/client';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { AdminAuditAction, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
 import { OutboxService } from '../outbox/outbox.service';
-import { ReservationStatus } from './reservation-booking-vocab';
+import { maskPhone } from '../payments/services/payment.service';
+import { AdminReservationsQueryDto } from './dto/reservation-booking.dto';
+import { arrivalInstant, parseIsoDate } from './reservation-availability';
+import {
+  BOOKING_ERROR_CODES as CODES,
+  ReservationStatus,
+} from './reservation-booking-vocab';
 import { enqueueReservationNotice } from './reservation-notices';
 import { ReservationOrderRelease } from './reservation-order-release';
-import { applyTransition } from './reservation-records';
+import {
+  adminAllowedActions,
+  applyTransition,
+  RESERVATION_RECORD_SELECT,
+  ReservationRecord,
+  toAdminView,
+} from './reservation-records';
 import { assertReservationTransition } from './reservation-state.machine';
+
+/**
+ * D-6 — ligne de liste admin : de quoi retrouver une réservation, sans le
+ * numéro complet du client (D6-4 : il n'apparaît que sur le détail).
+ */
+export function toAdminListView(r: ReservationRecord) {
+  return {
+    id: r.id,
+    status: r.status,
+    restaurant: { id: r.restaurant.id, nom: r.restaurant.nom },
+    customer: {
+      id: r.user.id,
+      nom: r.user.nom,
+      maskedPhone: maskPhone(r.contactPhone),
+    },
+    partySize: r.partySize,
+    arrivalAt: r.arrivalAt,
+    spaceLabel: r.space.label,
+    total: r.order?.total ?? null,
+    orderId: r.order?.id ?? null,
+    createdAt: r.createdAt,
+    allowedActions: adminAllowedActions(r),
+  };
+}
 
 /**
  * 4B-2 J6 (I-10, 19/11) — le support annule une réservation.
@@ -34,6 +74,56 @@ export class ReservationAdminService {
     private readonly release: ReservationOrderRelease,
     private readonly audit: AdminAuditService,
   ) {}
+
+  /**
+   * D-6 — réservations de tous les restaurants, ou d'un seul. Lecture pour
+   * tout administrateur ; les plus proches de l'arrivée d'abord, comme
+   * l'agenda du restaurant.
+   */
+  async list(query: AdminReservationsQueryDto) {
+    if (query.date !== undefined && !parseIsoDate(query.date)) {
+      throw new BadRequestException({
+        message: 'Date invalide.',
+        code: CODES.invalidDate,
+      });
+    }
+    const where: Prisma.ReservationWhereInput = {
+      ...(query.restaurantId ? { restaurantId: query.restaurantId } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.date
+        ? {
+            arrivalAt: {
+              gte: arrivalInstant(query.date, 0),
+              lt: arrivalInstant(query.date, 24 * 60),
+            },
+          }
+        : {}),
+    };
+    const [rows, total] = await Promise.all([
+      this.prisma.reservation.findMany({
+        where,
+        select: RESERVATION_RECORD_SELECT,
+        orderBy: [{ arrivalAt: 'desc' }, { id: 'asc' }],
+        skip: (query.page - 1) * query.limit,
+        take: query.limit,
+      }),
+      this.prisma.reservation.count({ where }),
+    ]);
+    return {
+      data: rows.map(toAdminListView),
+      meta: { total, page: query.page, limit: query.limit },
+    };
+  }
+
+  /** D-6 — détail d'une réservation, contact du client compris (D6-4). */
+  async get(id: string) {
+    const r = await this.prisma.reservation.findUnique({
+      where: { id },
+      select: RESERVATION_RECORD_SELECT,
+    });
+    if (!r) throw new NotFoundException('Réservation introuvable.');
+    return toAdminView(r);
+  }
 
   async cancel(
     adminUserId: string,
