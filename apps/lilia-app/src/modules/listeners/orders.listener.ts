@@ -8,9 +8,11 @@ import {
 import { orderPaidReminderAt } from '../outbox/vendor-contact';
 import { PrismaService } from '../../prisma/prisma.service';
 import { OrderCreatedEvent, OrderStatusUpdatedEvent, OrderCancelledEvent } from '../events/order-events';
-import { OrderStatus } from '@prisma/client';
+import { OrderStatus, OutboxEventStatus } from '@prisma/client';
 import { TrackingGateway } from '../tracking/tracking.gateway';
 import { OutboxService } from '../outbox/outbox.service';
+import { ORDER_REQUEST_ACCEPTED_EVENT } from '../outbox/outbox-events';
+import { requestAcceptedPush } from '../outbox/request-accepted-push';
 import { otherOrderRecipients } from '../vendors/shop-access';
 
 @Injectable()
@@ -206,19 +208,80 @@ export class OrdersListener {
     }
   }
 
+  /**
+   * Lot 3 — « payez maintenant », chemin rapide de `order.request_accepted`.
+   *
+   * L'obligation est écrite dans la transaction d'acceptation ; ce listener
+   * l'honore tout de suite et l'acquitte. Il ne faisait rien, en comptant sur
+   * l'outbox : or celle-ci ne reprend qu'après son délai de grâce (60 s,
+   * dépilée toutes les 30 s), et abandonne si la commande n'est plus
+   * `EN_ATTENTE`. Constaté le 22/11/2026 : acceptée à 20:37:07, payée à
+   * 20:37:58 sans avoir été prévenue, reprise à 20:38:30 — aucun push.
+   *
+   * Même règle que `order.paid` (F-01) : acquittée **seulement** si Firebase a
+   * accepté le push. Sans appareil, elle reste due et l'outbox la reprend.
+   * Pas de doublon : l'outbox ne reprend que ce qui reste `PENDING`, après son
+   * délai de grâce. Seule fenêtre : un push accepté dont l'acquittement échoue
+   * (ou arrive après 60 s) serait renvoyé une fois — accepté, un « payez
+   * maintenant » en double vaut mieux qu'aucun.
+   */
+  private async notifyRequestAccepted(orderId: string): Promise<void> {
+    try {
+      const pending = await this.prisma.outboxEvent.findFirst({
+        where: {
+          type: ORDER_REQUEST_ACCEPTED_EVENT,
+          aggregateId: orderId,
+          status: OutboxEventStatus.PENDING,
+        },
+        select: { id: true },
+      });
+      // Déjà honorée (reprise de l'outbox) : rien à doubler.
+      if (!pending) return;
+
+      const order = await this.prisma.order.findUnique({
+        where: { id: orderId },
+        select: {
+          id: true,
+          userId: true,
+          status: true,
+          total: true,
+          paymentDueAt: true,
+          restaurant: { select: { nom: true } },
+        },
+      });
+      // Payée ou annulée entre-temps : on ne demande pas de payer. L'outbox
+      // fera le même constat et acquittera.
+      if (!order || order.status !== OrderStatus.EN_ATTENTE) return;
+
+      const push = requestAcceptedPush(order);
+      const result = await this.notificationsService.sendPushNotification(
+        order.userId,
+        push.title,
+        push.body,
+        push.data,
+      );
+      if (pushWasAccepted(result)) await this.outbox.markSent(pending.id);
+    } catch (error) {
+      this.logger.error(
+        `« Payez maintenant » non envoyé pour ${orderId} — l'outbox le reprendra : ${(error as Error).message}`,
+        (error as Error).stack,
+      );
+    }
+  }
+
   // ===== MISE À JOUR DE STATUT =====
   @OnEvent('order.status.updated')
   async handleOrderStatusUpdated(event: OrderStatusUpdatedEvent) {
     this.logger.log(`order.status.updated : ${event.orderId} → ${event.newStatus}`);
     // Le client voit le changement de statut en temps réel sur sa carte
     this.trackingGateway.broadcastOrderStatus(event.orderId, event.newStatus);
-    // Lot 3 — demande acceptée : le client est prévenu par l'outbox
-    // (`order.request_accepted`, « payez maintenant »), durable même si ce
-    // processus meurt après le commit. Un second push ici le doublerait.
+    // Lot 3 — demande acceptée : « payez maintenant », dans la seconde.
+    // Pas le message générique de changement de statut : il en ferait deux.
     if (
       event.previousStatus === 'DEMANDE_ENVOYEE' &&
       event.newStatus === 'EN_ATTENTE'
     ) {
+      await this.notifyRequestAccepted(event.orderId);
       return;
     }
     // F3-07 — un retrait ne se « livre » pas : prête et remise se disent
