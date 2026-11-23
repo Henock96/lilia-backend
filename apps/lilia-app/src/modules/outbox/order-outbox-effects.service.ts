@@ -17,6 +17,7 @@ import {
   ORDER_REQUEST_EXPIRED_EVENT,
   ORDER_VOUCHER_ISSUED_EVENT,
 } from './outbox-events';
+import { requestAcceptedPush } from './request-accepted-push';
 
 /**
  * Traitement des obligations durables nées d'une transition de commande
@@ -127,24 +128,12 @@ export class OrderOutboxEffectsService implements OnModuleInit {
       await this.outbox.markSent(event.id);
       return;
     }
-    const minutes = order.paymentDueAt
-      ? Math.max(
-          1,
-          Math.ceil((order.paymentDueAt.getTime() - Date.now()) / 60_000),
-        )
-      : null;
+    const push = requestAcceptedPush(order);
     await this.notifications.sendPushNotification(
       order.userId,
-      '✅ Commande acceptée — payez maintenant',
-      `${order.restaurant.nom} a accepté votre commande. Payez ${Math.round(order.total)} FCFA` +
-        (minutes ? ` dans les ${minutes} min` : '') +
-        ' pour qu’elle soit préparée.',
-      {
-        orderId: order.id,
-        type: 'order_update',
-        status: 'EN_ATTENTE',
-        action: 'pay',
-      },
+      push.title,
+      push.body,
+      push.data,
     );
     await this.outbox.markSent(event.id);
   }
