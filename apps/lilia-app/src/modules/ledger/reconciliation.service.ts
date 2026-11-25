@@ -303,6 +303,27 @@ export class ReconciliationService {
         },
       }),
     ]);
+    // 4B-2 J6b — parts d'absence versées aux restaurants : même route de
+    // virement que les reversements (`payoutId`). Sans elles, la première
+    // sortait en PROVIDER_ONLY (CRITICAL, blocage GLOBAL des versements).
+    const noShowPayouts = await this.prisma.reservationNoShowPayout.findMany({
+      where: {
+        provider: PROVIDER,
+        OR: [
+          { providerPayoutId: { in: ids('PAYOUT') } },
+          { status: 'SUCCESS', completedAt: period },
+        ],
+      },
+      select: {
+        id: true,
+        restaurantId: true,
+        status: true,
+        amountXaf: true,
+        providerPayoutId: true,
+        completedAt: true,
+        settlement: { select: { orderId: true } },
+      },
+    });
 
     return [
       ...payments.map(
@@ -366,6 +387,23 @@ export class ReconciliationService {
           restaurantId: s.restaurantId,
           orderId: null,
           concludedInPeriod: s.status === 'SUCCESS' && inPeriod(s.completedAt),
+        }),
+      ),
+      ...noShowPayouts.map(
+        (n): LiliaOperation => ({
+          externalId: n.providerPayoutId,
+          kind: 'PAYOUT',
+          entity: 'ReservationNoShowPayout',
+          entityId: n.id,
+          status: n.status,
+          amountXaf: n.amountXaf,
+          // Devise imposée en entrée : le service refuse tout SUCCESS dont la
+          // devise n'est pas XAF (`NoShowPayoutProviderService.mismatch`).
+          currency: 'XAF',
+          feeXaf: null,
+          restaurantId: n.restaurantId,
+          orderId: n.settlement.orderId,
+          concludedInPeriod: n.status === 'SUCCESS' && inPeriod(n.completedAt),
         }),
       ),
     ];
@@ -451,6 +489,22 @@ export class ReconciliationService {
       },
       take: 500,
     });
+    // 4B-2 J6b — une part d'absence n'est jamais close d'office (la marquer
+    // en échec inviterait à la verser deux fois) : PENDING au-delà de 24 h,
+    // un humain doit interroger le prestataire.
+    const staleNoShowPayouts =
+      await this.prisma.reservationNoShowPayout.findMany({
+        where: { status: 'PENDING', createdAt: { lt: staleBefore } },
+        select: {
+          id: true,
+          restaurantId: true,
+          amountXaf: true,
+          providerPayoutId: true,
+          createdAt: true,
+          settlement: { select: { orderId: true } },
+        },
+        take: 500,
+      });
 
     return [
       ...stalePayouts.map((p) =>
@@ -489,6 +543,15 @@ export class ReconciliationService {
           externalId: s.providerTransactionId,
           expectedXaf: s.amountXaf,
           detail: `Paiement d'abonnement en attente du prestataire depuis le ${s.createdAt.toISOString()}`,
+        }),
+      ),
+      ...staleNoShowPayouts.map((n) =>
+        finding('STALE_IN_FLIGHT', `no_show_payout:${n.id}`, {
+          restaurantId: n.restaurantId,
+          orderId: n.settlement.orderId,
+          externalId: n.providerPayoutId,
+          expectedXaf: n.amountXaf,
+          detail: `Part d'absence en attente du prestataire depuis le ${n.createdAt.toISOString()}`,
         }),
       ),
       ...residuals.map((x) =>

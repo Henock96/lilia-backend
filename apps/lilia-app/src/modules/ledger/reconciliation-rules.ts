@@ -150,7 +150,13 @@ export interface LiliaOperation {
    * de colonne dédiée dans `ReconciliationItem` : l'écart porte la boutique
    * et l'identifiant prestataire, le détail nomme l'entité.
    */
-  entity: 'Payment' | 'RestaurantPayout' | 'Refund' | 'SubscriptionPayment';
+  entity:
+    | 'Payment'
+    | 'RestaurantPayout'
+    | 'Refund'
+    | 'SubscriptionPayment'
+    // 4B-2 J6b — part d'une absence versée au restaurant (sortie d'argent).
+    | 'ReservationNoShowPayout';
   entityId: string;
   /** `SUCCESS`/`FAILED`… (paiements, versements), `COMPLETED`… (remboursements). */
   status: string;
