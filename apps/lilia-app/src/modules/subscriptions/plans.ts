@@ -22,6 +22,29 @@ export type SubscriptionPaymentMethod =
   (typeof SUBSCRIPTION_PAYMENT_METHODS)[number];
 
 /**
+ * Premium S1 — moyen d'une période **payée par le vendeur dans la
+ * plateforme** (dépôt pawaPay). Jamais saisi par un administrateur : absent de
+ * `SUBSCRIPTION_PAYMENT_METHODS`, que le DTO d'attribution accepte. Miroir du
+ * CHECK `VendorSubscription_paymentMethod_check`
+ * (migration `20261125120000_premium_subscription_payments`).
+ */
+export const IN_PLATFORM_PAYMENT_METHOD = 'PAWAPAY' as const;
+
+/** Durées proposées à l'achat (CHECK `SubscriptionPayment_months_check`). */
+export const SUBSCRIPTION_DURATIONS_MONTHS = [1, 3, 6, 12] as const;
+export type SubscriptionDurationMonths =
+  (typeof SUBSCRIPTION_DURATIONS_MONTHS)[number];
+
+/** CHECK `SubscriptionPayment_status_check`. */
+export const SUBSCRIPTION_PAYMENT_STATUSES = [
+  'PENDING',
+  'SUCCESS',
+  'FAILED',
+] as const;
+export type SubscriptionPaymentStatus =
+  (typeof SUBSCRIPTION_PAYMENT_STATUSES)[number];
+
+/**
  * Droits accordés par chaque formule. Noms de travail du Lot 0.
  * `ON_SITE_RESERVATIONS` est consommé par le Lot 3 (configuration des
  * réservations) et le Lot 4 (parcours client) — numérotation redéfinie par le

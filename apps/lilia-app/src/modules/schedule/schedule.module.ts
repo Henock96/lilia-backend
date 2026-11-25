@@ -25,6 +25,8 @@ import { OrderRequestExpiryService } from './order-request-expiry.service';
 import { ReservationsCoreModule } from '../reservations/reservations-core.module';
 import { NoShowPayoutCoreModule } from '../reservations/no-show-payout-core.module';
 import { ReservationScheduleService } from './reservation-schedule.service';
+import { SubscriptionsCoreModule } from '../subscriptions/subscriptions-core.module';
+import { SubscriptionReminderService } from './subscription-reminder.service';
 
 @Module({
     imports: [
@@ -41,6 +43,7 @@ import { ReservationScheduleService } from './reservation-schedule.service';
         LedgerCoreModule, // lot 2 : posteur du grand livre (interrupteur éteint)
         ReservationsCoreModule, // Lot 4 : expirations, rappels, récapitulatif
         NoShowPayoutCoreModule, // J6b : réconciliation des parts d'absence
+        SubscriptionsCoreModule, // Premium S1 : paiements, rappels, avis outbox
     ],
     providers: [
         // Les 5 crons sont toujours enregistrés. Le choix « ce processus
@@ -69,6 +72,8 @@ import { ReservationScheduleService } from './reservation-schedule.service';
         OrderRequestExpiryService,
         // Lot 4 : échéances, rappels et récapitulatif des réservations.
         ReservationScheduleService,
+        // Premium S1 : rappels d'échéance d'abonnement (J-3, J0).
+        SubscriptionReminderService,
         PrismaService,
     ],
 })

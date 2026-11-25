@@ -22,6 +22,7 @@ import { PaymentService, maskRef } from '../services/payment.service';
 import { RestaurantPayoutService } from '../services/restaurant-payout.service';
 import { RefundProviderService } from '../../refunds/refund-provider.service';
 import { NoShowPayoutProviderService } from '../../reservations/no-show-payout-provider.service';
+import { SubscriptionPaymentService } from '../../subscriptions/subscription-payment.service';
 import { PaymentEventService } from '../services/payment-event.service';
 import { PawaPaySignatureService } from '../providers/pawapay/pawapay-signature.service';
 import { WebhookReceptionMonitor } from '../services/webhook-reception.monitor';
@@ -70,6 +71,8 @@ export class PawaPayWebhookController {
     private readonly config: ConfigService,
     private readonly reception: WebhookReceptionMonitor,
     private readonly noShowPayouts: NoShowPayoutProviderService,
+    // Premium S1 — dépôts d'abonnement payés par les vendeurs.
+    private readonly subscriptionPayments: SubscriptionPaymentService,
   ) {}
 
   @Public()
@@ -98,6 +101,24 @@ export class PawaPayWebhookController {
       );
 
       if (!payment) {
+        // Premium S1 — seconde table de dépôts : l'abonnement payé par un
+        // vendeur. Identifiants générés par nous, uniques et disjoints : une
+        // référence n'appartient qu'à une table (même raisonnement que les
+        // reversements, plus bas).
+        const subscriptionPayment =
+          await this.subscriptionPayments.findByProviderTransactionId(
+            'PAWAPAY',
+            externalId,
+          );
+        if (subscriptionPayment) {
+          const outcome = await this.subscriptionPayments.applyProviderStatus({
+            paymentId: subscriptionPayment.id,
+            status: this.toProviderStatus(payload),
+            source: PaymentEventSource.WEBHOOK,
+          });
+          return { status: this.toResponseStatus(outcome) };
+        }
+
         // Transaction inconnue : on garde la trace (c'est le signal d'une fuite
         // de configuration, d'un environnement croisé sandbox/production, ou
         // d'une tentative), mais rien à faire avancer.
