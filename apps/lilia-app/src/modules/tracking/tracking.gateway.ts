@@ -6,6 +6,7 @@ import {
   OnGatewayConnection,
   OnGatewayDisconnect,
   MessageBody,
+  ConnectedSocket,
   WsException,
 } from '@nestjs/websockets';
 import { RemoteSocket, Server, Socket } from 'socket.io';
@@ -135,7 +136,12 @@ export class TrackingGateway
    */
   @SubscribeMessage('order:watch')
   @UsePipes(wsValidationPipe)
-  async onWatchOrder(client: Socket, @MessageBody() payload: WatchOrderDto) {
+  // `@ConnectedSocket()` obligatoire : dès qu'un paramètre est décoré
+  // (`@MessageBody`), NestJS laisse les autres à `undefined` (05/08 → 23/11).
+  async onWatchOrder(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: WatchOrderDto,
+  ) {
     await this.assertSessionStillValid(client);
     const { live, userId } = await this.tracking.assertCanWatchOrder(
       payload.orderId,
@@ -174,7 +180,10 @@ export class TrackingGateway
    */
   @SubscribeMessage('order:unwatch')
   @UsePipes(wsValidationPipe)
-  async onUnwatchOrder(client: Socket, @MessageBody() payload: WatchOrderDto) {
+  async onUnwatchOrder(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: WatchOrderDto,
+  ) {
     await client.leave(`order:${payload.orderId}`);
   }
 
@@ -239,7 +248,7 @@ export class TrackingGateway
   @SubscribeMessage('driver:position')
   @UsePipes(wsValidationPipe)
   async onDriverPosition(
-    client: Socket,
+    @ConnectedSocket() client: Socket,
     @MessageBody() payload: DriverPositionDto,
   ) {
     const { orderId, lat, lng, accuracy } = payload;
