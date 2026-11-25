@@ -145,7 +145,12 @@ export interface ProviderRow {
 export interface LiliaOperation {
   externalId: string;
   kind: 'DEPOSIT' | 'PAYOUT';
-  entity: 'Payment' | 'RestaurantPayout' | 'Refund';
+  /**
+   * `SubscriptionPayment` (Premium S1) : abonnement payé par un vendeur. Pas
+   * de colonne dédiée dans `ReconciliationItem` : l'écart porte la boutique
+   * et l'identifiant prestataire, le détail nomme l'entité.
+   */
+  entity: 'Payment' | 'RestaurantPayout' | 'Refund' | 'SubscriptionPayment';
   entityId: string;
   /** `SUCCESS`/`FAILED`… (paiements, versements), `COMPLETED`… (remboursements). */
   status: string;

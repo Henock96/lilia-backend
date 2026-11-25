@@ -1,6 +1,9 @@
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PaymentEventSource, PrismaClient } from '@prisma/client';
 
+import { LedgerPosterService } from '../../apps/lilia-app/src/modules/ledger/ledger-poster.service';
+import { LedgerService } from '../../apps/lilia-app/src/modules/ledger/ledger.service';
+import { ReconciliationService } from '../../apps/lilia-app/src/modules/ledger/reconciliation.service';
 import { OutboxService } from '../../apps/lilia-app/src/modules/outbox/outbox.service';
 import { PaymentEventService } from '../../apps/lilia-app/src/modules/payments/services/payment-event.service';
 import { PlatformSettingsService } from '../../apps/lilia-app/src/modules/platform-settings/platform-settings.service';
@@ -101,6 +104,10 @@ describeIfDb('Paiement d’abonnement Premium (PostgreSQL réel)', () => {
   beforeEach(async () => {
     deposits.length = 0;
     collectionAccepted = true;
+    // TRUNCATE contourne le trigger « ajout seul » du grand livre (test).
+    await prisma.$executeRawUnsafe(
+      `TRUNCATE TABLE "ReconciliationItemEvent", "ReconciliationItem", "ReconciliationRun", "LedgerEntry", "LedgerTransaction"`,
+    );
     await prisma.$executeRawUnsafe(`
       TRUNCATE TABLE "VendorSubscription", "SubscriptionPayment", "PaymentEvent",
                      "OutboxEvent", "Incident", "AdminAuditLog", "PlatformSettings",
@@ -334,6 +341,32 @@ describeIfDb('Paiement d’abonnement Premium (PostgreSQL réel)', () => {
     expect(row.grantedAt).not.toBeNull();
   });
 
+  it('clôture par délai : reste réinterrogeable 6 h, pas un échec ordinaire', async () => {
+    const timedOut = await service.startForOwner(OWNER, {
+      months: 1,
+      phoneNumber: PHONE,
+      method: 'MTN_MOMO',
+    });
+    await service.abandon(timedOut.id);
+    const refused = await service.startForOwner(OWNER, {
+      months: 1,
+      phoneNumber: PHONE,
+      method: 'MTN_MOMO',
+    });
+    await service.applyProviderStatus({
+      paymentId: refused.id,
+      status: failed,
+      source: PaymentEventSource.WEBHOOK,
+    });
+
+    const since = new Date(Date.now() - 6 * 3_600_000);
+    const rows = await service.recentlyAbandoned(since, 100);
+    expect(rows.map((r) => r.id)).toEqual([timedOut.id]);
+    expect(
+      await service.recentlyAbandoned(new Date(Date.now() + 60_000), 100),
+    ).toEqual([]);
+  });
+
   it('FAILED après SUCCESS ne défait rien', async () => {
     const p = await service.startForOwner(OWNER, {
       months: 1,
@@ -434,6 +467,146 @@ describeIfDb('Paiement d’abonnement Premium (PostgreSQL réel)', () => {
       }),
     ).rejects.toMatchObject({ response: { code: 'VENDOR_NOT_APPROVED' } });
     expect(deposits).toHaveLength(0);
+  });
+
+  describe('rapprochement Lilia ↔ pawaPay et grand livre', () => {
+    const periodStart = new Date(Date.now() - 24 * 3_600_000);
+    const periodEnd = new Date(Date.now() + 3_600_000);
+
+    const paidSubscription = async () => {
+      const p = await service.startForOwner(OWNER, {
+        months: 3,
+        phoneNumber: PHONE,
+        method: 'MTN_MOMO',
+      });
+      await service.applyProviderStatus({
+        paymentId: p.id,
+        status: success(75000),
+        source: PaymentEventSource.WEBHOOK,
+      });
+      return prisma.subscriptionPayment.findUniqueOrThrow({
+        where: { id: p.id },
+      });
+    };
+
+    it('un dépôt d’abonnement de l’export n’est plus « inconnu de Lilia »', async () => {
+      const paid = await paidSubscription();
+      const reconciliation = new ReconciliationService(prisma as never);
+
+      const run = await reconciliation.importProviderExport({
+        periodStart,
+        periodEnd,
+        actorUserId: ADMIN,
+        rows: [
+          {
+            externalId: paid.providerTransactionId,
+            kind: 'DEPOSIT',
+            status: 'COMPLETED',
+            amountXaf: 75000,
+            currency: 'XAF',
+          },
+        ],
+      });
+
+      expect(run.findings).toBe(0);
+      expect(await prisma.reconciliationItem.count()).toBe(0);
+    });
+
+    it('montant différent dans l’export → écart sur la boutique, pas global', async () => {
+      const paid = await paidSubscription();
+      const reconciliation = new ReconciliationService(prisma as never);
+
+      await reconciliation.importProviderExport({
+        periodStart,
+        periodEnd,
+        actorUserId: ADMIN,
+        rows: [
+          {
+            externalId: paid.providerTransactionId,
+            kind: 'DEPOSIT',
+            status: 'COMPLETED',
+            amountXaf: 70000,
+            currency: 'XAF',
+          },
+        ],
+      });
+
+      const items = await prisma.reconciliationItem.findMany();
+      expect(items.map((i) => i.type)).toEqual(['AMOUNT_MISMATCH']);
+      expect(items[0]).toMatchObject({
+        restaurantId: VENDOR,
+        blockScope: 'VENDOR',
+        externalId: paid.providerTransactionId,
+      });
+    });
+
+    it('abonnement conclu absent de l’export → LILIA_ONLY', async () => {
+      await paidSubscription();
+      const reconciliation = new ReconciliationService(prisma as never);
+      await reconciliation.importProviderExport({
+        periodStart,
+        periodEnd,
+        actorUserId: ADMIN,
+        rows: [],
+      });
+      const items = await prisma.reconciliationItem.findMany();
+      expect(items.map((i) => i.type)).toEqual(['LILIA_ONLY']);
+    });
+
+    it('grand livre : psp:PAWAPAY débité, revenue:subscription crédité ; wallet concordant', async () => {
+      const paid = await paidSubscription();
+      const ledger = new LedgerService(prisma as never);
+      const poster = new LedgerPosterService(prisma as never, ledger);
+
+      const first = await poster.catchUp();
+      const again = await poster.catchUp();
+      expect(first.subscriptions.posted).toBe(1);
+      expect(again.subscriptions.posted).toBe(0);
+
+      const entries = await prisma.ledgerEntry.findMany({
+        where: { tx: { sourceType: 'SubscriptionPayment', sourceId: paid.id } },
+        orderBy: { amountXaf: 'desc' },
+      });
+      expect(entries.map((e) => [e.account, e.amountXaf, e.subjectId])).toEqual(
+        [
+          ['psp:PAWAPAY', 75000, null],
+          ['revenue:subscription', -75000, VENDOR],
+        ],
+      );
+
+      // Le wallet a reçu 75 000 : le grand livre le sait, pas d'écart global.
+      const reconciliation = new ReconciliationService(prisma as never);
+      await reconciliation.importProviderExport({
+        periodStart,
+        periodEnd,
+        actorUserId: ADMIN,
+        walletBalanceXaf: 75000,
+        rows: [
+          {
+            externalId: paid.providerTransactionId,
+            kind: 'DEPOSIT',
+            status: 'COMPLETED',
+            amountXaf: 75000,
+            currency: 'XAF',
+          },
+        ],
+      });
+      expect(await prisma.reconciliationItem.count()).toBe(0);
+    });
+
+    it('PENDING depuis plus de 24 h → STALE_IN_FLIGHT', async () => {
+      const p = await service.startForOwner(OWNER, {
+        months: 1,
+        phoneNumber: PHONE,
+        method: 'MTN_MOMO',
+      });
+      const reconciliation = new ReconciliationService(prisma as never);
+      const later = new Date(Date.now() + 25 * 3_600_000);
+      const findings = await reconciliation.internalFindings(later);
+      expect(
+        findings.filter((f) => f.itemKey.includes(p.id)).map((f) => f.type),
+      ).toEqual(['STALE_IN_FLIGHT']);
+    });
   });
 
   it('rappel J-3 programmé une seule fois par échéance', async () => {

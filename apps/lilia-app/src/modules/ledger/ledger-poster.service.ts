@@ -15,6 +15,7 @@ import {
   payoutPosting,
   pspFeePosting,
   refundPosting,
+  subscriptionCollectionPosting,
   vendorAdjustmentPosting,
 } from './ledger-postings';
 import { LedgerService } from './ledger.service';
@@ -40,6 +41,8 @@ export interface CatchUpReport {
   forfeits: PassReport;
   /** 4B-2 J6b — parts d'absence versées aux restaurants. */
   noShowPayouts: PassReport;
+  /** Premium S1 — abonnements payés par les vendeurs (pawaPay). */
+  subscriptions: PassReport;
 }
 
 const empty = (): PassReport => ({
@@ -135,6 +138,7 @@ export class LedgerPosterService {
       vendorAdjustments: empty(),
       forfeits: empty(),
       noShowPayouts: empty(),
+      subscriptions: empty(),
     };
     const mode = (at: Date): LedgerPostingMode =>
       options.backfillBefore && at < options.backfillBefore
@@ -150,6 +154,7 @@ export class LedgerPosterService {
     );
 
     await this.passCollections(report.collections, mode, excluded);
+    await this.passSubscriptionPayments(report.subscriptions, mode);
     await this.passAcquisitions(report.acquisitions, mode, excluded);
     await this.passDriverCosts(report.driverCosts, mode, excluded);
     // Avant les remboursements : un geste commercial sur une commande retenue
@@ -257,6 +262,44 @@ export class LedgerPosterService {
             },
             origin: originFromEvent(applied?.source, p.provider),
           }),
+        mode,
+      );
+    }
+  }
+
+  /**
+   * Premium S1 — abonnements payés : l'argent entre dans le wallet, il doit
+   * entrer au grand livre (sinon `WALLET_BALANCE_MISMATCH`). Aucune commande,
+   * donc aucune exclusion de test par commande.
+   */
+  private async passSubscriptionPayments(
+    stats: PassReport,
+    mode: (at: Date) => LedgerPostingMode,
+  ) {
+    const payments = await this.prisma.subscriptionPayment.findMany({
+      where: { status: 'SUCCESS' },
+      select: {
+        id: true,
+        restaurantId: true,
+        provider: true,
+        amountXaf: true,
+        status: true,
+        completedAt: true,
+        providerTransactionId: true,
+      },
+      orderBy: { id: 'asc' },
+    });
+    const done = await this.alreadyPosted(
+      payments.map((p) => `subscription_payment:${p.id}:success`),
+    );
+    const todo = payments
+      .filter((p) => !done.has(`subscription_payment:${p.id}:success`))
+      .slice(0, LedgerPosterService.BATCH);
+    for (const p of todo) {
+      await this.apply(
+        stats,
+        { sourceType: 'SubscriptionPayment', sourceId: p.id },
+        () => subscriptionCollectionPosting(p),
         mode,
       );
     }

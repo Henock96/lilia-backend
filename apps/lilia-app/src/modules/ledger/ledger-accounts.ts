@@ -40,6 +40,8 @@ export const LEDGER_ACCOUNTS = [
   'revenue:delivery',
   // 4B-2 J6 — part de l'encaissement retenue sur une absence.
   'revenue:forfeit',
+  // Premium S1 — abonnement payé par un vendeur dans la plateforme.
+  'revenue:subscription',
   'expense:platform_discount',
   'expense:refund_platform',
   'expense:driver_cost',
@@ -53,7 +55,7 @@ export type LedgerAccount = (typeof LEDGER_ACCOUNTS)[number] | PspAccount;
 
 /** Motif SQL miroir (CHECK `LedgerEntry_account_known`). */
 export const LEDGER_ACCOUNT_PATTERN =
-  '^(psp:[A-Z_]+|cash:manual|suspense:unmatched|clearing:order|vendor_payable|driver_payable|revenue:(service_fee|commission|delivery|forfeit)|expense:(platform_discount|refund_platform|driver_cost|psp_fee|vendor_adjustment))$';
+  '^(psp:[A-Z_]+|cash:manual|suspense:unmatched|clearing:order|vendor_payable|driver_payable|revenue:(service_fee|commission|delivery|forfeit|subscription)|expense:(platform_discount|refund_platform|driver_cost|psp_fee|vendor_adjustment))$';
 
 export function pspAccount(provider: string): PspAccount {
   const p = provider.trim().toUpperCase();

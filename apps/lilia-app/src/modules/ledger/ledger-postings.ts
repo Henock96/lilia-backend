@@ -139,6 +139,51 @@ export function collectionPosting(input: {
   });
 }
 
+/**
+ * Premium S1 — abonnement payé par un vendeur (dépôt pawaPay abouti).
+ *
+ * Pas de commande, donc pas de transit : l'argent est acquis à Lilia dès la
+ * confirmation (les mois sont ouverts dans la même transaction). Débit du
+ * prestataire, crédit du produit `revenue:subscription` au nom du vendeur.
+ * Un paiement non abouti n'est jamais écrit.
+ */
+export function subscriptionCollectionPosting(p: {
+  id: string;
+  restaurantId: string;
+  provider: string;
+  amountXaf: number;
+  status: string;
+  completedAt: Date | null;
+  providerTransactionId: string;
+}): Posting {
+  const key = `subscription_payment:${p.id}:success`;
+  if (p.status !== 'SUCCESS' || !p.completedAt) {
+    throw new LedgerPostingError(
+      key,
+      'NOT_SUCCESS',
+      `Abonnement ${p.status} : aucune écriture`,
+    );
+  }
+  return finalizePosting({
+    sourceEventKey: key,
+    kind: 'COLLECTION',
+    sourceType: 'SubscriptionPayment',
+    sourceId: p.id,
+    occurredAt: p.completedAt,
+    origin: 'SYSTEM',
+    evidenceRef: p.providerTransactionId,
+    note: 'abonnement Premium',
+    lines: [
+      { account: pspAccount(p.provider), amountXaf: p.amountXaf },
+      {
+        account: 'revenue:subscription',
+        ...vendor(p.restaurantId),
+        amountXaf: -p.amountXaf,
+      },
+    ],
+  });
+}
+
 // ─── Acquisition (commande livrée) ──────────────────────────────────────────
 
 export interface AcquisitionOrder {
