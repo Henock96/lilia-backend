@@ -8,6 +8,7 @@ import {
   HttpStatus,
   Param,
   Post,
+  Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -20,6 +21,11 @@ import {
   GrantSubscriptionDto,
   RevokeSubscriptionDto,
 } from './dto/subscription.dto';
+import {
+  AdminSubscriptionPaymentsQueryDto,
+  StartSubscriptionPaymentDto,
+} from './dto/subscription-payment.dto';
+import { SubscriptionPaymentService } from './subscription-payment.service';
 import { VendorSubscriptionService } from './vendor-subscription.service';
 
 /** Borne de l'en-tête `Idempotency-Key` (un UUID en fait 36). */
@@ -117,11 +123,77 @@ export class AdminVendorSubscriptionsController {
 @Controller('vendors/me/subscription')
 @Roles('RESTAURATEUR')
 export class VendorSubscriptionController {
-  constructor(private readonly subscriptions: VendorSubscriptionService) {}
+  constructor(
+    private readonly subscriptions: VendorSubscriptionService,
+    private readonly payments: SubscriptionPaymentService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'Mon statut Premium et mes droits' })
   async mine(@CurrentUser() user: User) {
     return { data: await this.subscriptions.verdictForOwner(user.id) };
+  }
+
+  /**
+   * Premium S1 — l'offre telle que le serveur la calcule : statut, prix,
+   * durées avec leur montant, paiement en cours. L'écran n'additionne rien.
+   */
+  @Get('offer')
+  @ApiOperation({ summary: 'Offre Premium, prix et paiements récents' })
+  async offer(@CurrentUser() user: User) {
+    return { data: await this.payments.offerForOwner(user.id) };
+  }
+
+  /**
+   * Premium S1 — paie N mois par un dépôt pawaPay. Les mois sont ouverts au
+   * `SUCCESS` du prestataire, jamais par ce geste.
+   */
+  @Throttle({ short: { limit: 1, ttl: 2000 }, long: { limit: 10, ttl: 60000 } })
+  @Post('payments')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Payer mon abonnement Premium (pawaPay)' })
+  async pay(
+    @CurrentUser() user: User,
+    @Body() dto: StartSubscriptionPaymentDto,
+  ) {
+    return {
+      data: await this.payments.startForOwner(user.id, dto),
+      message:
+        'Demande envoyée : validez le paiement sur votre téléphone avec votre code.',
+    };
+  }
+
+  @Get('payments/:paymentId')
+  @ApiOperation({ summary: 'Suivre un paiement d’abonnement' })
+  async payment(
+    @CurrentUser() user: User,
+    @Param('paymentId') paymentId: string,
+  ) {
+    return { data: await this.payments.findForOwner(user.id, paymentId) };
+  }
+}
+
+/**
+ * Premium S1 — paiements d'abonnement, **lecture seule** côté
+ * administration : seul le prestataire fait aboutir un paiement, et les mois
+ * s'ouvrent seuls. L'attribution manuelle reste sur
+ * `admin/vendors/:vendorId/subscriptions`.
+ */
+@ApiTags('Abonnements (admin)')
+@ApiBearerAuth()
+@Controller('admin/subscription-payments')
+@Roles('ADMIN')
+export class AdminSubscriptionPaymentsController {
+  constructor(private readonly payments: SubscriptionPaymentService) {}
+
+  @Get()
+  @ApiOperation({ summary: 'Paiements pawaPay d’abonnement Premium' })
+  async list(@Query() query: AdminSubscriptionPaymentsQueryDto) {
+    return this.payments.listForAdmin({
+      status: query.status,
+      restaurantId: query.restaurantId,
+      page: query.page,
+      limit: query.limit,
+    });
   }
 }

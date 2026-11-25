@@ -101,7 +101,10 @@ describe('Abonnements — contrôleurs', () => {
   it('GET /vendors/me/subscription : verdict résolu par le compte, pas par un identifiant', async () => {
     const verdict = { plan: null, active: false, entitlements: [] };
     service.verdictForOwner.mockResolvedValue(verdict);
-    const mine = new VendorSubscriptionController(service as never);
+    const mine = new VendorSubscriptionController(
+      service as never,
+      {} as never,
+    );
 
     const res = await mine.mine({ id: 'owner-1' } as never);
 

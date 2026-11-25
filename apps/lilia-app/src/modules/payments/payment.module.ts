@@ -28,6 +28,7 @@ import { VendorEarningsService } from './services/vendor-earnings.service';
 
 import { ApprovalsModule } from '../approvals/approvals.module';
 import { NoShowPayoutCoreModule } from '../reservations/no-show-payout-core.module';
+import { SubscriptionsCoreModule } from '../subscriptions/subscriptions-core.module';
 @Module({
   // ⚠️ `RefundsCoreModule` est ici parce que `PawaPayWebhookController` aiguille
   // les callbacks de virement sortant vers DEUX tables : reversement vendeur et
@@ -55,6 +56,10 @@ import { NoShowPayoutCoreModule } from '../reservations/no-show-payout-core.modu
     ApprovalsModule,
     // 4B-2 J6b — le webhook des virements connaît la part d'une absence.
     NoShowPayoutCoreModule,
+    // Premium S1 — le webhook des dépôts connaît l'abonnement payé par un
+    // vendeur. Module sans controller ; pas de cycle (`PaymentCoreModule`
+    // n'importe rien des abonnements).
+    SubscriptionsCoreModule,
   ],
   controllers: [
     PaymentController,

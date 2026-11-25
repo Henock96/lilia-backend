@@ -153,6 +153,9 @@ const ADMIN_ROUTE_CAPABILITIES: Record<string, string> = {
   'AdminVendorSubscriptionsController.grant': 'FINANCE_EXECUTE',
   'AdminVendorSubscriptionsController.list': 'NONE',
   'AdminVendorSubscriptionsController.revoke': 'FINANCE_EXECUTE',
+  // Premium S1 — lecture des paiements pawaPay d'abonnement (aucun geste :
+  // seul le prestataire fait aboutir un paiement).
+  'AdminSubscriptionPaymentsController.list': 'NONE',
   'ApprovalsController.admins': 'NONE',
   'ApprovalsController.approve': 'FINANCE_APPROVE',
   'ApprovalsController.list': 'NONE',

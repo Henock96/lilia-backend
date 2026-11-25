@@ -17,6 +17,20 @@
 export const ORDER_DELIVERED_EVENT = 'order.delivered';
 
 /**
+ * Premium S1 — un paiement pawaPay d'abonnement a abouti et ses mois sont
+ * créés : prévenir le vendeur (push + e-mail). Écrit dans la transaction qui
+ * crée les mois ; payload `{ subscriptionPaymentId }`.
+ */
+export const SUBSCRIPTION_ACTIVATED_EVENT = 'subscription.activated';
+
+/**
+ * Premium S1 — l'abonnement d'un vendeur arrive à échéance (J-3, puis le
+ * jour même). Écrit par le cron de rappel, une fois par échéance et par
+ * palier (`aggregateId` = `<restaurantId>:<paidUntil ISO>:<palier>`).
+ */
+export const SUBSCRIPTION_EXPIRING_EVENT = 'subscription.expiring';
+
+/**
  * Arbitrage de livraison (15/11/2026) — un avoir a été offert au client : il
  * doit en recevoir le code. Écrit avec l'avoir ; payload `{ promoCodeId }`.
  */

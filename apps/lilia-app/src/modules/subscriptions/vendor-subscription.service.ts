@@ -7,9 +7,9 @@ import {
 import { AdminAuditAction, Prisma, VendorSubscription } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service';
-import { addOneCalendarMonth } from './billing-period';
 import { subscriptionVerdict, SubscriptionVerdict } from './entitlements';
 import { SubscriptionPaymentMethod } from './plans';
+import { stackPeriods } from './subscription-stacking';
 
 export interface GrantSubscriptionInput {
   restaurantId: string;
@@ -70,34 +70,18 @@ export class VendorSubscriptionService {
           throw new NotFoundException('Vendeur introuvable.');
         }
 
-        // Prolongation : la nouvelle période commence à la fin de la
-        // dernière période encore due, jamais avant — pas de mois payé
-        // deux fois sur les mêmes jours.
-        const last = await tx.vendorSubscription.findFirst({
-          where: {
-            restaurantId: input.restaurantId,
-            status: 'ACTIVE',
-            endsAt: { gt: now },
-          },
-          orderBy: { endsAt: 'desc' },
-          select: { endsAt: true },
-        });
-        const startsAt = last ? last.endsAt : now;
-
-        const created = await tx.vendorSubscription.create({
-          data: {
-            restaurantId: input.restaurantId,
-            plan: 'PREMIUM',
-            status: 'ACTIVE',
-            startsAt,
-            endsAt: addOneCalendarMonth(startsAt),
-            priceXaf: premiumMonthlyPriceXaf,
-            paymentMethod: input.paymentMethod,
-            paymentReference: input.paymentReference ?? null,
-            note: input.note ?? null,
-            requestKey: input.requestKey,
-            grantedById: input.adminId,
-          },
+        // Un mois, empilé à la suite de la dernière période encore due
+        // (même moteur que l'aboutissement d'un paiement pawaPay).
+        const [created] = await stackPeriods(tx, {
+          restaurantId: input.restaurantId,
+          months: 1,
+          priceXaf: premiumMonthlyPriceXaf,
+          paymentMethod: input.paymentMethod,
+          paymentReference: input.paymentReference,
+          note: input.note,
+          requestKeyFor: () => input.requestKey,
+          grantedById: input.adminId,
+          now,
         });
         // Journal écrit AVEC la période : un mois payé ne peut pas exister
         // sans trace (l'audit post-commit avalait ses erreurs, et un rejeu

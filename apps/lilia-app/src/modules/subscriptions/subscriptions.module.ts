@@ -1,25 +1,27 @@
 import { Module } from '@nestjs/common';
-import { PlatformSettingsCoreModule } from '../platform-settings/platform-settings-core.module';
 import {
+  AdminSubscriptionPaymentsController,
   AdminVendorSubscriptionsController,
   VendorSubscriptionController,
 } from './subscriptions.controller';
-import { VendorSubscriptionService } from './vendor-subscription.service';
+import { SubscriptionsCoreModule } from './subscriptions-core.module';
 
 /**
  * Premium (Lot 2) — abonnements vendeur.
  *
  * Servi par l'API uniquement : il déclare des controllers, il n'entre donc
- * jamais dans le graphe du worker (`worker.module.spec.ts`). Le service est
- * exporté pour les lots suivants (garde des statistiques, réservations).
+ * jamais dans le graphe du worker (`worker.module.spec.ts`). La logique vit
+ * dans `SubscriptionsCoreModule` (sans controller), réexporté ici pour les
+ * modules qui lisent le droit (statistiques, réservations, vendeurs).
  */
 @Module({
-  imports: [PlatformSettingsCoreModule],
+  imports: [SubscriptionsCoreModule],
   controllers: [
     AdminVendorSubscriptionsController,
     VendorSubscriptionController,
+    // Premium S1 — paiements pawaPay d'abonnement (lecture).
+    AdminSubscriptionPaymentsController,
   ],
-  providers: [VendorSubscriptionService],
-  exports: [VendorSubscriptionService],
+  exports: [SubscriptionsCoreModule],
 })
 export class SubscriptionsModule {}

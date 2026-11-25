@@ -11,6 +11,7 @@ import { RestaurantPayoutService } from '../payments/services/restaurant-payout.
 import { PaymentProviderRegistry } from '../payments/payment-provider.registry';
 import { RefundProviderService } from '../refunds/refund-provider.service';
 import { NoShowPayoutProviderService } from '../reservations/no-show-payout-provider.service';
+import { SubscriptionPaymentService } from '../subscriptions/subscription-payment.service';
 
 /**
  * Réconciliation des transactions restées en attente.
@@ -56,6 +57,8 @@ export class PaymentReconciliationService {
     config: ConfigService,
     // 4B-2 J6b — parts d'absence versées aux restaurants.
     private readonly noShowPayouts: NoShowPayoutProviderService,
+    // Premium S1 — abonnements payés par les vendeurs.
+    private readonly subscriptionPayments: SubscriptionPaymentService,
   ) {
     this.abandonAfterMinutes = Number(
       config.get<number>('PAYMENT_RECONCILIATION_TIMEOUT_MINUTES', 15),
@@ -77,7 +80,66 @@ export class PaymentReconciliationService {
       this.reconcilePayouts(),
       this.reconcileRefunds(),
       this.reconcileNoShowPayouts(),
+      this.reconcileSubscriptionPayments(),
     ]);
+  }
+
+  // ─── Abonnements Premium (S1) ───────────────────────────────────────────────
+
+  /**
+   * Rattrape un paiement d'abonnement resté `PENDING`, par le même chemin que
+   * le webhook. Même règle que les encaissements de commande : un dépôt dont
+   * le prestataire ne sait rien après le délai est clos `FAILED` (le vendeur
+   * peut réessayer) — un `SUCCESS` tardif ouvrirait quand même les mois.
+   */
+  private async reconcileSubscriptionPayments(): Promise<void> {
+    const cutoff = new Date(
+      Date.now() - PaymentReconciliationService.GRACE_SECONDS * 1000,
+    );
+    const stale = await this.subscriptionPayments.stalePending(
+      cutoff,
+      PaymentReconciliationService.MAX_PER_RUN,
+    );
+    if (stale.length === 0) return;
+
+    let resolved = 0;
+    let abandoned = 0;
+    for (const payment of stale) {
+      try {
+        const provider = this.registry.forStoredProvider(payment.provider);
+        if (!provider.supportsCollection) continue;
+        const status = await provider.getCollectionStatus(
+          payment.providerTransactionId,
+        );
+        if (status) {
+          const outcome = await this.subscriptionPayments.applyProviderStatus({
+            paymentId: payment.id,
+            status,
+            source: PaymentEventSource.RECONCILIATION,
+          });
+          if (outcome === 'APPLIED') resolved++;
+          continue;
+        }
+        if (
+          this.isAbandoned(payment.createdAt) &&
+          (await this.subscriptionPayments.abandon(payment.id))
+        ) {
+          abandoned++;
+          this.logger.warn(
+            `⏱️ Paiement d'abonnement ${payment.id} abandonné — prestataire muet après ${this.abandonAfterMinutes} min`,
+          );
+        }
+      } catch (error) {
+        this.logger.error(
+          `Réconciliation du paiement d'abonnement ${payment.id} échouée : ${(error as Error).message}`,
+        );
+      }
+    }
+    if (resolved || abandoned) {
+      this.logger.log(
+        `🔄 Abonnements réconciliés : ${resolved} résolu(s), ${abandoned} abandonné(s) sur ${stale.length}`,
+      );
+    }
   }
 
   // ─── Parts d'absence (4B-2 J6b) ─────────────────────────────────────────────

@@ -8,6 +8,7 @@ import type { Request } from 'express';
 
 import { PawaPayWebhookController } from './pawapay-webhook.controller';
 import { NoShowPayoutProviderService } from '../../reservations/no-show-payout-provider.service';
+import { SubscriptionPaymentService } from '../../subscriptions/subscription-payment.service';
 import { PaymentService } from '../services/payment.service';
 import { RestaurantPayoutService } from '../services/restaurant-payout.service';
 import { RefundProviderService } from '../../refunds/refund-provider.service';
@@ -44,6 +45,10 @@ describe('PawaPayWebhookController', () => {
   };
   const noShowPayouts = {
     findByProviderPayoutId: jest.fn(),
+    applyProviderStatus: jest.fn(),
+  };
+  const subscriptionPayments = {
+    findByProviderTransactionId: jest.fn(),
     applyProviderStatus: jest.fn(),
   };
   const events = { record: jest.fn().mockResolvedValue('evt-1') };
@@ -122,6 +127,8 @@ describe('PawaPayWebhookController', () => {
     refunds.applyProviderStatus.mockResolvedValue('IGNORED');
     noShowPayouts.findByProviderPayoutId.mockResolvedValue(null);
     noShowPayouts.applyProviderStatus.mockResolvedValue('IGNORED');
+    subscriptionPayments.findByProviderTransactionId.mockResolvedValue(null);
+    subscriptionPayments.applyProviderStatus.mockResolvedValue('IGNORED');
     events.record.mockResolvedValue('evt-1');
 
     const module: TestingModule = await Test.createTestingModule({
@@ -131,6 +138,7 @@ describe('PawaPayWebhookController', () => {
         { provide: RestaurantPayoutService, useValue: payouts },
         { provide: RefundProviderService, useValue: refunds },
         { provide: NoShowPayoutProviderService, useValue: noShowPayouts },
+        { provide: SubscriptionPaymentService, useValue: subscriptionPayments },
         { provide: PaymentEventService, useValue: events },
         { provide: PawaPaySignatureService, useValue: signature },
         { provide: ConfigService, useValue: config },
@@ -426,6 +434,49 @@ describe('PawaPayWebhookController', () => {
       await expect(
         controller.handleDepositCallback(depositCallback(), req()),
       ).rejects.toBeInstanceOf(ServiceUnavailableException);
+    });
+
+    it('Premium S1 — dépôt d’abonnement : aiguillé vers SubscriptionPaymentService', async () => {
+      payments.findByProviderTransactionId.mockResolvedValue(null);
+      subscriptionPayments.findByProviderTransactionId.mockResolvedValue({
+        id: 'sub-pay-1',
+      });
+      subscriptionPayments.applyProviderStatus.mockResolvedValue('APPLIED');
+
+      const res = await controller.handleDepositCallback(
+        depositCallback({ amount: '75000', requestedAmount: '75000' }),
+        req(),
+      );
+
+      expect(res).toEqual({ status: 'processed' });
+      expect(subscriptionPayments.applyProviderStatus).toHaveBeenCalledWith(
+        expect.objectContaining({
+          paymentId: 'sub-pay-1',
+          source: 'WEBHOOK',
+          status: expect.objectContaining({
+            state: 'SUCCESS',
+            amountXaf: 75000,
+            currency: 'XAF',
+          }),
+        }),
+      );
+      expect(payments.applyCollectionProviderStatus).not.toHaveBeenCalled();
+      // Une référence trouvée n'est pas « inconnue » : pas de trace IGNORED.
+      expect(events.record).not.toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'IGNORED' }),
+      );
+    });
+
+    it('Premium S1 — un dépôt de commande ne consulte jamais la table des abonnements', async () => {
+      payments.findByProviderTransactionId.mockResolvedValue({ id: 'pay-1' });
+      payments.applyCollectionProviderStatus.mockResolvedValue('APPLIED');
+
+      await controller.handleDepositCallback(depositCallback(), req());
+
+      expect(
+        subscriptionPayments.findByProviderTransactionId,
+      ).not.toHaveBeenCalled();
+      expect(subscriptionPayments.applyProviderStatus).not.toHaveBeenCalled();
     });
 
     it('ne traite JAMAIS un dépôt comme un reversement', async () => {

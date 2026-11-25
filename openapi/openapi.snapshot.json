@@ -1183,6 +1183,36 @@
         "properties": {},
         "type": "object"
       },
+      "StartSubscriptionPaymentDto": {
+        "properties": {
+          "method": {
+            "enum": [
+              "MTN_MOMO",
+              "AIRTEL_MONEY"
+            ],
+            "type": "string"
+          },
+          "months": {
+            "enum": [
+              1,
+              3,
+              6,
+              12
+            ],
+            "type": "number"
+          },
+          "phoneNumber": {
+            "description": "Numéro Mobile Money qui paie (Congo).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "months",
+          "phoneNumber",
+          "method"
+        ],
+        "type": "object"
+      },
       "StopVendorOfferDto": {
         "properties": {
           "reason": {
@@ -5249,6 +5279,69 @@
         "summary": "Supprimer un avis (modération)",
         "tags": [
           "Admin"
+        ]
+      }
+    },
+    "/admin/subscription-payments": {
+      "get": {
+        "operationId": "AdminSubscriptionPaymentsController_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "PENDING",
+                "SUCCESS",
+                "FAILED"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "restaurantId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Paiements pawaPay d’abonnement Premium",
+        "tags": [
+          "Abonnements (admin)"
         ]
       }
     },
@@ -14045,6 +14138,85 @@
           }
         ],
         "summary": "Mon statut Premium et mes droits",
+        "tags": [
+          "Abonnements"
+        ]
+      }
+    },
+    "/vendors/me/subscription/offer": {
+      "get": {
+        "operationId": "VendorSubscriptionController_offer",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Offre Premium, prix et paiements récents",
+        "tags": [
+          "Abonnements"
+        ]
+      }
+    },
+    "/vendors/me/subscription/payments": {
+      "post": {
+        "operationId": "VendorSubscriptionController_pay",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartSubscriptionPaymentDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Payer mon abonnement Premium (pawaPay)",
+        "tags": [
+          "Abonnements"
+        ]
+      }
+    },
+    "/vendors/me/subscription/payments/{paymentId}": {
+      "get": {
+        "operationId": "VendorSubscriptionController_payment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "paymentId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Suivre un paiement d’abonnement",
         "tags": [
           "Abonnements"
         ]

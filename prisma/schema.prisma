@@ -521,6 +521,8 @@ model Restaurant {
   vendorOffers   VendorOffer[]
   /// Premium — périodes d'abonnement payées (voir `VendorSubscription`).
   subscriptions  VendorSubscription[]
+  /// Premium S1 — paiements d'abonnement faits par le vendeur (pawaPay).
+  subscriptionPayments SubscriptionPayment[]
   /// Premium Lot 3 — configuration de la réservation sur place.
   reservationSettings ReservationSettings?
   reservationSpaces   ReservationSpace[]
@@ -3412,8 +3414,9 @@ model PlatformSettings {
   /// Prix d'un mois d'abonnement Premium, en XAF entiers. Figé sur chaque
   /// période à l'attribution (`VendorSubscription.priceXaf`) : le modifier ne
   /// touche que les périodes suivantes. Réglage financier (R-09) : modifiable
-  /// seulement par une demande approuvée. CHECK > 0.
-  premiumMonthlyPriceXaf Int @default(15000)
+  /// seulement par une demande approuvée. CHECK > 0. 25 000 depuis le
+  /// 25/11/2026 (décision du propriétaire, migration `premium_subscription_payments`).
+  premiumMonthlyPriceXaf Int @default(25000)
 
   // ── Réservation sur place (Premium Lot 3, octobre 2026) ──────────────────
 
@@ -3782,7 +3785,8 @@ model VendorSubscription {
   endsAt           DateTime
   /// Prix lu dans `PlatformSettings` à l'attribution — jamais saisi.
   priceXaf         Int
-  /// CHECK : 'MOBILE_MONEY' | 'CASH' | 'BANK_TRANSFER' | 'OTHER'.
+  /// CHECK : 'MOBILE_MONEY' | 'CASH' | 'BANK_TRANSFER' | 'OTHER' | 'PAWAPAY'
+  /// (`PAWAPAY` : payé par le vendeur dans la plateforme, Premium S1).
   paymentMethod    String
   /// Référence de la transaction (n° MoMo…), pour le rapprochement.
   paymentReference String?
@@ -3795,8 +3799,68 @@ model VendorSubscription {
   revokedById      String?
   revokedAt        DateTime?
   revokeReason     String?
+  /// Premium S1 — paiement pawaPay qui a ouvert ce mois (`null` pour une
+  /// attribution par un administrateur). Un paiement de N mois porte N lignes.
+  subscriptionPaymentId String?
+  subscriptionPayment   SubscriptionPayment? @relation(fields: [subscriptionPaymentId], references: [id], onDelete: Restrict)
 
   @@index([restaurantId, status, endsAt])
+  @@index([subscriptionPaymentId])
+}
+
+/// Premium S1 (25/11/2026) — le vendeur paie son abonnement **dans la
+/// plateforme**, par un dépôt pawaPay (MTN MoMo ou Airtel Money). Une ligne =
+/// une tentative. Seul le prestataire décide du succès (webhook signé ou
+/// interrogation serveur, règle 3) ; un `SUCCESS` crée les N mois
+/// (`VendorSubscription`, `paymentMethod = 'PAWAPAY'`), y compris s'il arrive
+/// après une clôture locale en échec (décision du 25/11 : l'argent est reçu).
+///
+/// Table distincte de `payments` : toute la chaîne d'encaissement des
+/// commandes est indexée sur `Order` (`payments.orderId` NOT NULL). Le webhook
+/// de dépôt essaie les deux tables ; les `depositId` sont générés par nous,
+/// uniques et disjoints.
+///
+/// Prix figé à la création (`unitPriceXaf` lu dans `PlatformSettings`).
+/// Une seule tentative `PENDING` par vendeur : index unique **partiel**
+/// `SubscriptionPayment_one_pending_per_vendor` (SQL). CHECK : `months` ∈
+/// {1,3,6,12}, `amountXaf = months × unitPriceXaf`, `currency = 'XAF'`,
+/// `status` ∈ {PENDING, SUCCESS, FAILED}.
+model SubscriptionPayment {
+  id                    String               @id @default(cuid())
+  restaurantId          String
+  restaurant            Restaurant           @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  /// Toujours 'PREMIUM' pour l'instant. CHECK.
+  plan                  String               @default("PREMIUM")
+  months                Int
+  unitPriceXaf          Int
+  amountXaf             Int
+  currency              String               @default("XAF")
+  phoneNumber           String
+  method                PaymentMethod
+  /// Prestataire au moment de la tentative ('PAWAPAY').
+  provider              String
+  /// `depositId` pawaPay, généré et persisté AVANT l'appel : un rejeu renvoie
+  /// `DUPLICATE_IGNORED`, jamais un second débit.
+  providerTransactionId String               @unique
+  /// Référence courte lisible par le vendeur sur son relevé (`PRM…`).
+  reference             String               @unique
+  status                String               @default("PENDING")
+  failureCode           String?
+  failureMessage        String?
+  completedAt           DateTime?
+  /// Frais du prestataire, charge de Lilia (comme `payments`). `null` tant
+  /// qu'inconnus.
+  collectionFeeXaf      Int?
+  /// `User.id` du vendeur qui a payé.
+  requestedById         String
+  /// Instant où les mois ont été créés. `null` tant que rien n'est accordé.
+  grantedAt             DateTime?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  subscriptions         VendorSubscription[]
+
+  @@index([status, createdAt])
+  @@index([restaurantId, createdAt])
 }
 
 // ─── Réservation sur place — configuration (Premium Lot 3, octobre 2026) ────
