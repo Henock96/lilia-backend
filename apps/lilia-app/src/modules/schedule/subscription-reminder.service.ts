@@ -80,26 +80,34 @@ export class SubscriptionReminderService {
       if (!tier) continue;
 
       const aggregateId = `${row.restaurantId}:${paidUntil.toISOString()}:${tier}`;
-      // Le cron tourne sous verrou exclusif : lire puis écrire suffit à ne
-      // programmer qu'un rappel par échéance et par palier.
-      const already = await this.prisma.outboxEvent.findFirst({
-        where: { type: SUBSCRIPTION_EXPIRING_EVENT, aggregateId },
-        select: { id: true },
-      });
-      if (already) continue;
+      try {
+        // Le cron tourne sous verrou exclusif : lire puis écrire suffit à ne
+        // programmer qu'un rappel par échéance et par palier.
+        const already = await this.prisma.outboxEvent.findFirst({
+          where: { type: SUBSCRIPTION_EXPIRING_EVENT, aggregateId },
+          select: { id: true },
+        });
+        if (already) continue;
 
-      await this.prisma.$transaction((tx) =>
-        this.outbox.enqueueInTransaction(tx, {
-          type: SUBSCRIPTION_EXPIRING_EVENT,
-          aggregateId,
-          payload: {
-            restaurantId: row.restaurantId,
-            paidUntil: paidUntil.toISOString(),
-            tier,
-          },
-        }),
-      );
-      enqueued++;
+        await this.prisma.$transaction((tx) =>
+          this.outbox.enqueueInTransaction(tx, {
+            type: SUBSCRIPTION_EXPIRING_EVENT,
+            aggregateId,
+            payload: {
+              restaurantId: row.restaurantId,
+              paidUntil: paidUntil.toISOString(),
+              tier,
+            },
+          }),
+        );
+        enqueued++;
+      } catch (error) {
+        // Un vendeur en erreur n'empêche pas les rappels des autres ; il sera
+        // repris au passage suivant (la fenêtre dure 24 h).
+        this.logger.error(
+          `Rappel d'échéance Premium non programmé pour ${row.restaurantId} : ${(error as Error).message}`,
+        );
+      }
     }
     return enqueued;
   }

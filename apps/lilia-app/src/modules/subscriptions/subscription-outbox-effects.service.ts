@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { OutboxEvent } from '@prisma/client';
+import * as Sentry from '@sentry/nestjs';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
@@ -66,10 +67,15 @@ export class SubscriptionOutboxEffectsService implements OnModuleInit {
       },
     });
     if (!payment) {
+      // La ligne ne devrait jamais disparaître (FK RESTRICT) : l'obligation
+      // reste visible en échec plutôt qu'acquittée sans envoi.
       this.logger.error(
-        `Avis Premium : paiement ${subscriptionPaymentId} introuvable — acquitté sans envoi.`,
+        `Avis Premium : paiement ${subscriptionPaymentId} introuvable — obligation en échec.`,
       );
-      await this.outbox.markSent(event.id);
+      await this.outbox.markFailed(
+        event.id,
+        `SubscriptionPayment ${subscriptionPaymentId} introuvable`,
+      );
       return;
     }
     const paidUntil = payment.subscriptions.reduce<Date | null>(
@@ -123,32 +129,48 @@ export class SubscriptionOutboxEffectsService implements OnModuleInit {
     const base = this.config.get<string>('ADMIN_WEB_URL');
     const href = base ? `${base.replace(/\/$/, '')}/premium` : null;
 
-    await this.notifications
+    // `sendPushNotification` ne lève pas : il rend son bilan (NO_TOKEN,
+    // FIREBASE_NOT_READY…). On le lit au lieu de le perdre.
+    const push = await this.notifications
       .sendPushNotification(vendor.owner.id, message.title, message.body, {
         type: 'subscription_update',
         restaurantId,
       })
-      .catch((error: unknown) =>
+      .catch((error: unknown) => {
         this.logger.warn(
           `Push Premium non parti (${restaurantId}) : ${(error as Error).message}`,
-        ),
-      );
+        );
+        return null;
+      });
+    const pushed = (push?.accepted ?? 0) > 0;
 
+    let emailed = false;
     if (vendor.owner.email) {
-      const sent = await this.email.sendEmail({
+      // Resend ne lève pas non plus : `false` = refusé.
+      emailed = await this.email.sendEmail({
         to: vendor.owner.email,
         subject: message.subject,
         html:
           `<p>Bonjour ${escapeHtml(vendor.owner.nom ?? vendor.nom)},</p>` +
           `<p>${escapeHtml(message.body)}</p>` +
           (href
-            ? `<p><a href="${href}">Ouvrir mon espace Premium</a></p>`
+            ? `<p><a href="${escapeHtml(href)}">Ouvrir mon espace Premium</a></p>`
             : '') +
           '<p>L’équipe Lilia Food</p>',
       });
-      if (!sent) {
-        this.logger.warn(`E-mail Premium non parti (${restaurantId}).`);
-      }
+    }
+
+    if (!pushed && !emailed) {
+      // Aucun canal n'a porté l'avis : le droit est ouvert (ou l'échéance
+      // approche) sans que le vendeur le sache. On le rend visible.
+      this.logger.warn(
+        `Avis Premium non distribué à ${restaurantId} : push ${push?.reason ?? 'en échec'}, ` +
+          `e-mail ${vendor.owner.email ? 'refusé' : 'absent'}.`,
+      );
+      Sentry.captureMessage(
+        `subscription.notice_undelivered — boutique ${restaurantId}`,
+        'warning',
+      );
     }
   }
 }
@@ -158,5 +180,6 @@ function escapeHtml(value: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }

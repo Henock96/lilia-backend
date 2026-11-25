@@ -39,6 +39,7 @@ import {
   IN_PLATFORM_PAYMENT_METHOD,
   SUBSCRIPTION_DURATIONS_MONTHS,
   SubscriptionDurationMonths,
+  SubscriptionPaymentStatus,
 } from './plans';
 import { stackPeriods } from './subscription-stacking';
 
@@ -242,9 +243,23 @@ export class SubscriptionPaymentService {
       if (error instanceof ProviderUnavailableError) {
         // On ne sait pas si le prestataire a reçu la demande : la ligne reste
         // PENDING avec son identifiant, la réconciliation tranchera (ou la
-        // clôturera faute de trace). Surtout pas FAILED.
+        // clôturera faute de trace). Surtout pas FAILED. L'écran la retrouve
+        // par `pendingPayment` de l'offre.
         this.logger.error(
           `👑 Prestataire injoignable — paiement d'abonnement ${row.id} (vendeur ${vendor.id})`,
+        );
+        await this.events.record({
+          kind: PaymentEventKind.COLLECTION,
+          provider: provider.name,
+          externalId: row.providerTransactionId,
+          source: PaymentEventSource.INITIATION,
+          rawStatus: 'PROVIDER_UNAVAILABLE',
+          payload: { message: error.message },
+          outcome: PaymentEventOutcome.IGNORED,
+        });
+        Sentry.captureMessage(
+          `subscription_payment.provider_unavailable — paiement ${row.id}`,
+          'warning',
         );
         throw new HttpException(
           {
@@ -255,6 +270,14 @@ export class SubscriptionPaymentService {
           HttpStatus.BAD_GATEWAY,
         );
       }
+      // Erreur inattendue : on ne sait pas davantage si la demande est partie.
+      // La ligne reste PENDING (jamais FAILED à l'aveugle : un SUCCESS
+      // ultérieur serait alors accordé, mais le vendeur aurait pu repayer) ;
+      // la réconciliation tranche en 15 min au plus. L'erreur doit se voir.
+      Sentry.captureException(error);
+      this.logger.error(
+        `👑 Échec inattendu à l'initiation du paiement d'abonnement ${row.id} : ${(error as Error).message}`,
+      );
       throw error;
     }
 
@@ -340,9 +363,19 @@ export class SubscriptionPaymentService {
           }
         }
       } catch (error) {
-        this.logger.warn(
-          `Interrogation du paiement d'abonnement ${row.id} impossible : ${(error as Error).message}`,
-        );
+        // La lecture reste servie. Un prestataire injoignable est banal (le
+        // webhook et la réconciliation suivent) ; une erreur d'application
+        // (base, transaction) ne l'est pas et doit remonter.
+        if (error instanceof ProviderUnavailableError) {
+          this.logger.warn(
+            `Interrogation du paiement d'abonnement ${row.id} impossible : ${error.message}`,
+          );
+        } else {
+          this.logger.error(
+            `Application du statut du paiement d'abonnement ${row.id} en échec : ${(error as Error).message}`,
+          );
+          Sentry.captureException(error);
+        }
       }
     }
     return this.toView(row);
@@ -402,6 +435,23 @@ export class SubscriptionPaymentService {
     return claimed.count > 0;
   }
 
+  /**
+   * Tentatives closes faute de réponse du prestataire depuis `since` : elles
+   * peuvent encore aboutir chez lui (réinterrogation bornée).
+   */
+  async recentlyAbandoned(since: Date, take: number) {
+    return this.prisma.subscriptionPayment.findMany({
+      where: {
+        status: 'FAILED',
+        failureCode: 'RECONCILIATION_TIMEOUT',
+        completedAt: { gte: since },
+      },
+      select: { id: true, provider: true, providerTransactionId: true },
+      orderBy: { completedAt: 'asc' },
+      take,
+    });
+  }
+
   /** Tentatives `PENDING` plus anciennes que `cutoff` (réconciliation). */
   async stalePending(cutoff: Date, take: number) {
     return this.prisma.subscriptionPayment.findMany({
@@ -420,7 +470,7 @@ export class SubscriptionPaymentService {
   // ─── Administration ───────────────────────────────────────────────────────
 
   async listForAdmin(filter: {
-    status?: string;
+    status?: SubscriptionPaymentStatus;
     restaurantId?: string;
     page: number;
     limit: number;
@@ -475,11 +525,14 @@ export class SubscriptionPaymentService {
       this.logger.error(
         `🚨 [PREMIUM] Incohérence — paiement d'abonnement ${payment.id} : ${mismatch}`,
       );
-      Sentry.captureMessage(
-        `subscription_payment.mismatch — paiement ${payment.id}`,
-        'error',
-      );
-      await this.openIncident(payment, mismatch);
+      // La ligne reste PENDING et la réconciliation la rejoue : Sentry n'est
+      // alerté qu'à l'ouverture de l'incident, pas à chaque passage.
+      if (await this.openIncident(payment, mismatch)) {
+        Sentry.captureMessage(
+          `subscription_payment.mismatch — paiement ${payment.id}`,
+          'error',
+        );
+      }
       return 'MISMATCH';
     }
 
@@ -509,7 +562,9 @@ export class SubscriptionPaymentService {
     const now = new Date();
     const result = await this.prisma.$transaction(async (tx) => {
       // Ordre des verrous : le paiement, puis la boutique (`grant` ne prend
-      // que la boutique) — aucun cycle possible.
+      // que la boutique) — aucun cycle possible. Boutique en `FOR NO KEY
+      // UPDATE` : il sérialise toujours avec `grant`/`revoke` (FOR UPDATE),
+      // sans bloquer les INSERT qui pointent vers elle (commandes, produits).
       const [locked] = await tx.$queryRaw<{ status: string }[]>`
         SELECT "status" FROM "SubscriptionPayment" WHERE "id" = ${payment.id} FOR UPDATE
       `;
@@ -529,7 +584,7 @@ export class SubscriptionPaymentService {
       if (claimed.count === 0) return null;
 
       await tx.$queryRaw`
-        SELECT "id" FROM "Restaurant" WHERE "id" = ${payment.restaurantId} FOR UPDATE
+        SELECT "id" FROM "Restaurant" WHERE "id" = ${payment.restaurantId} FOR NO KEY UPDATE
       `;
       const months = await stackPeriods(tx, {
         restaurantId: payment.restaurantId,
@@ -618,11 +673,16 @@ export class SubscriptionPaymentService {
     return null;
   }
 
+  /**
+   * Ouvre l'incident d'incohérence. `true` s'il vient d'être ouvert (ou n'a
+   * pas pu l'être : il faut alors alerter quand même), `false` s'il l'était
+   * déjà.
+   */
   private async openIncident(
     payment: SubscriptionPayment,
     detail: string,
-  ): Promise<void> {
-    await this.prisma.incident
+  ): Promise<boolean> {
+    return this.prisma.incident
       .create({
         data: {
           type: 'OTHER',
@@ -638,16 +698,19 @@ export class SubscriptionPaymentService {
           metadata: { subscriptionPaymentId: payment.id },
         },
       })
+      .then(() => true)
       .catch((error: unknown) => {
         if (
           error instanceof Prisma.PrismaClientKnownRequestError &&
           error.code === 'P2002'
         ) {
-          return; // déjà ouvert
+          return false; // déjà ouvert
         }
         this.logger.error(
           `Incident de paiement d'abonnement non créé : ${(error as Error).message}`,
         );
+        Sentry.captureException(error);
+        return true;
       });
   }
 

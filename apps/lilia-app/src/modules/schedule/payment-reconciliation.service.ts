@@ -128,11 +128,19 @@ export class PaymentReconciliationService {
           this.logger.warn(
             `⏱️ Paiement d'abonnement ${payment.id} abandonné — prestataire muet après ${this.abandonAfterMinutes} min`,
           );
+          Sentry.captureMessage(
+            `subscription_payment.reconciliation_timeout — paiement ${payment.id}`,
+            'warning',
+          );
         }
       } catch (error) {
+        // Le paiement reste PENDING et sera repris au tour suivant, mais un
+        // prestataire injoignable ou une erreur d'application doivent se voir
+        // (le vendeur a peut-être été débité).
         this.logger.error(
           `Réconciliation du paiement d'abonnement ${payment.id} échouée : ${(error as Error).message}`,
         );
+        Sentry.captureException(error);
       }
     }
     if (resolved || abandoned) {
@@ -473,5 +481,49 @@ export class PaymentReconciliationService {
 
   private isAbandoned(startedAt: Date): boolean {
     return Date.now() - startedAt.getTime() > this.abandonAfterMinutes * 60_000;
+  }
+
+  /**
+   * Premium S1 — un paiement d'abonnement clos `RECONCILIATION_TIMEOUT` peut
+   * encore aboutir chez pawaPay (opérateur lent). Le webhook le rattraperait,
+   * mais s'il se perd, le vendeur aurait payé sans mois. On réinterroge donc
+   * ces clôtures pendant 6 h, toutes les 15 min — pas plus : chaque appel est
+   * facturé. Un `SUCCESS` passe par le chemin habituel (mois accordés,
+   * décision du 25/11).
+   */
+  @Cron('*/15 * * * *', { name: 'recheck-abandoned-subscription-payments' })
+  async recheckAbandonedSubscriptionPayments(): Promise<void> {
+    await this.cronLock.runExclusively(
+      'recheck-abandoned-subscription-payments',
+      600,
+      async () => {
+        const since = new Date(Date.now() - 6 * 3_600_000);
+        const rows = await this.subscriptionPayments.recentlyAbandoned(
+          since,
+          PaymentReconciliationService.MAX_PER_RUN,
+        );
+        for (const payment of rows) {
+          try {
+            const provider = this.registry.forStoredProvider(payment.provider);
+            if (!provider.supportsCollection) continue;
+            const status = await provider.getCollectionStatus(
+              payment.providerTransactionId,
+            );
+            if (status?.state === 'SUCCESS') {
+              await this.subscriptionPayments.applyProviderStatus({
+                paymentId: payment.id,
+                status,
+                source: PaymentEventSource.RECONCILIATION,
+              });
+            }
+          } catch (error) {
+            this.logger.error(
+              `Réinterrogation du paiement d'abonnement ${payment.id} échouée : ${(error as Error).message}`,
+            );
+            Sentry.captureException(error);
+          }
+        }
+      },
+    );
   }
 }

@@ -163,6 +163,12 @@ export class VendorSubscriptionController {
     };
   }
 
+  /**
+   * Une lecture peut interroger pawaPay (après 15 s) : bornée pour qu'un
+   * script ne transforme pas le suivi en rafale d'appels facturés. L'écran
+   * interroge toutes les 3 à 5 s pendant 3 min, puis toutes les 30 s.
+   */
+  @Throttle({ short: { limit: 1, ttl: 2000 }, long: { limit: 30, ttl: 60000 } })
   @Get('payments/:paymentId')
   @ApiOperation({ summary: 'Suivre un paiement d’abonnement' })
   async payment(
