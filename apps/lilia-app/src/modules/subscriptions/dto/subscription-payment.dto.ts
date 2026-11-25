@@ -17,6 +17,7 @@ import {
   SUBSCRIPTION_DURATIONS_MONTHS,
   SUBSCRIPTION_PAYMENT_STATUSES,
   SubscriptionDurationMonths,
+  SubscriptionPaymentStatus,
 } from '../plans';
 
 /**
@@ -47,7 +48,7 @@ export class AdminSubscriptionPaymentsQueryDto extends PaginationQueryDto {
   @ApiPropertyOptional({ enum: SUBSCRIPTION_PAYMENT_STATUSES })
   @IsOptional()
   @IsIn(SUBSCRIPTION_PAYMENT_STATUSES)
-  status?: string;
+  status?: SubscriptionPaymentStatus;
 
   @ApiPropertyOptional()
   @IsOptional()

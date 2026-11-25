@@ -218,7 +218,7 @@ export class ReconciliationService {
     const inPeriod = (d: Date | null) =>
       d != null && d >= input.periodStart && d < input.periodEnd;
 
-    const [payments, payouts, refunds] = await Promise.all([
+    const [payments, payouts, refunds, subscriptions] = await Promise.all([
       this.prisma.payment.findMany({
         where: {
           provider: PROVIDER,
@@ -281,6 +281,27 @@ export class ReconciliationService {
           order: { select: { restaurantId: true } },
         },
       }),
+      // Premium S1 — dépôts d'abonnement : sans eux, chacun sortait en
+      // PROVIDER_ONLY (CRITICAL, blocage GLOBAL des versements).
+      this.prisma.subscriptionPayment.findMany({
+        where: {
+          provider: PROVIDER,
+          OR: [
+            { providerTransactionId: { in: ids('DEPOSIT') } },
+            { status: 'SUCCESS', completedAt: period },
+          ],
+        },
+        select: {
+          id: true,
+          restaurantId: true,
+          status: true,
+          amountXaf: true,
+          currency: true,
+          providerTransactionId: true,
+          collectionFeeXaf: true,
+          completedAt: true,
+        },
+      }),
     ]);
 
     return [
@@ -330,6 +351,21 @@ export class ReconciliationService {
           orderId: r.orderId,
           concludedInPeriod:
             r.status === 'COMPLETED' && inPeriod(r.processedAt),
+        }),
+      ),
+      ...subscriptions.map(
+        (s): LiliaOperation => ({
+          externalId: s.providerTransactionId,
+          kind: 'DEPOSIT',
+          entity: 'SubscriptionPayment',
+          entityId: s.id,
+          status: s.status,
+          amountXaf: s.amountXaf,
+          currency: s.currency,
+          feeXaf: s.collectionFeeXaf,
+          restaurantId: s.restaurantId,
+          orderId: null,
+          concludedInPeriod: s.status === 'SUCCESS' && inPeriod(s.completedAt),
         }),
       ),
     ];
@@ -402,6 +438,19 @@ export class ReconciliationService {
           HAVING SUM(e."amountXaf") <> 0
            LIMIT 500`,
       ]);
+    // Premium S1 — la réconciliation clôt un dépôt d'abonnement muet en
+    // 15 min : encore PENDING après 24 h, c'est qu'elle ne tourne plus.
+    const staleSubscriptions = await this.prisma.subscriptionPayment.findMany({
+      where: { status: 'PENDING', createdAt: { lt: staleBefore } },
+      select: {
+        id: true,
+        restaurantId: true,
+        amountXaf: true,
+        providerTransactionId: true,
+        createdAt: true,
+      },
+      take: 500,
+    });
 
     return [
       ...stalePayouts.map((p) =>
@@ -432,6 +481,14 @@ export class ReconciliationService {
           expectedXaf: r.amount,
           detail:
             'Remboursement « terminé » sans méthode ni référence de clôture',
+        }),
+      ),
+      ...staleSubscriptions.map((s) =>
+        finding('STALE_IN_FLIGHT', `subscription_payment:${s.id}`, {
+          restaurantId: s.restaurantId,
+          externalId: s.providerTransactionId,
+          expectedXaf: s.amountXaf,
+          detail: `Paiement d'abonnement en attente du prestataire depuis le ${s.createdAt.toISOString()}`,
         }),
       ),
       ...residuals.map((x) =>
