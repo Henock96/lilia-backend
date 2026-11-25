@@ -6,6 +6,7 @@ import { AdminAuditService } from '../../apps/lilia-app/src/modules/admin-audit/
 import { ApprovalsService } from '../../apps/lilia-app/src/modules/approvals/approvals.service';
 import { LedgerPosterService } from '../../apps/lilia-app/src/modules/ledger/ledger-poster.service';
 import { LedgerService } from '../../apps/lilia-app/src/modules/ledger/ledger.service';
+import { ReconciliationService } from '../../apps/lilia-app/src/modules/ledger/reconciliation.service';
 import { OutboxService } from '../../apps/lilia-app/src/modules/outbox/outbox.service';
 import { ProviderUnavailableError } from '../../apps/lilia-app/src/modules/payments/providers/payment-provider.interface';
 import { PaymentEventService } from '../../apps/lilia-app/src/modules/payments/services/payment-event.service';
@@ -653,6 +654,77 @@ describeIfDb('Versement de la part d’absence (PostgreSQL réel)', () => {
       _sum: { amountXaf: true },
     });
     expect(vendorPayable._sum.amountXaf).toBe(0);
+  });
+
+  describe('rapprochement Lilia ↔ pawaPay (25/11)', () => {
+    const periodStart = new Date(Date.now() - 24 * 3_600_000);
+    const periodEnd = new Date(Date.now() + 3_600_000);
+
+    beforeEach(async () => {
+      await prisma.$executeRawUnsafe(
+        `TRUNCATE TABLE "ReconciliationItemEvent", "ReconciliationItem", "ReconciliationRun"`,
+      );
+    });
+
+    const paidShare = async () => {
+      const approval = await request();
+      await approvals.approve(approval.id, A2);
+      const id = await resolveRow((await rows())[0].providerPayoutId);
+      await webhook(id);
+      return (await rows())[0];
+    };
+
+    it('part versée présente dans l’export : aucun écart (plus de PROVIDER_ONLY global)', async () => {
+      const paid = await paidShare();
+      const run = await new ReconciliationService(
+        prisma as never,
+      ).importProviderExport({
+        periodStart,
+        periodEnd,
+        actorUserId: A1,
+        rows: [
+          {
+            externalId: paid.providerPayoutId,
+            kind: 'PAYOUT',
+            status: 'COMPLETED',
+            amountXaf: SHARE,
+            currency: 'XAF',
+          },
+        ],
+      });
+      expect(run.findings).toBe(0);
+      expect(await prisma.reconciliationItem.count()).toBe(0);
+    });
+
+    it('part versée absente de l’export : LILIA_ONLY sur la boutique, pas global', async () => {
+      await paidShare();
+      await new ReconciliationService(prisma as never).importProviderExport({
+        periodStart,
+        periodEnd,
+        actorUserId: A1,
+        rows: [],
+      });
+      const items = await prisma.reconciliationItem.findMany();
+      expect(items.map((i) => [i.type, i.blockScope, i.restaurantId])).toEqual([
+        ['LILIA_ONLY', 'VENDOR', VENDOR],
+      ]);
+    });
+
+    it('part en attente depuis plus de 24 h : STALE_IN_FLIGHT', async () => {
+      const approval = await request();
+      await approvals.approve(approval.id, A2);
+      const pending = (await rows())[0];
+      expect(pending.status).toBe('PENDING');
+
+      const findings = await new ReconciliationService(
+        prisma as never,
+      ).internalFindings(new Date(Date.now() + 25 * 3_600_000));
+      expect(
+        findings
+          .filter((f) => f.itemKey.includes(pending.id))
+          .map((f) => f.type),
+      ).toEqual(['STALE_IN_FLIGHT']);
+    });
   });
 });
 
